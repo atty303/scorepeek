@@ -185,10 +185,6 @@ pub enum EditorInput {
         output: String,
         logical_size: [u32; 2],
     },
-    LegacyOutputsResolved {
-        unresolved_output: String,
-        canvases: Vec<CanvasPresentation>,
-    },
     TransportReady {
         screen: Option<ScreenKind>,
         sample: bool,
@@ -215,7 +211,6 @@ impl EditorInput {
             Self::Action(_) => "action",
             Self::Surface(_) => "surface",
             Self::Resize { .. } => "resize",
-            Self::LegacyOutputsResolved { .. } => "legacy_outputs_resolved",
             Self::TransportReady { .. } => "transport_ready",
             Self::TransportLost => "transport_lost",
             Self::KeepAliveTick => "keep_alive_tick",
@@ -371,20 +366,6 @@ impl EditorSession {
                 logical_size,
             } => {
                 self.resize_output(&output, logical_size);
-                Vec::new()
-            }
-            EditorInput::LegacyOutputsResolved {
-                unresolved_output,
-                canvases,
-            } => {
-                for current in self.saved.iter_mut().chain(&mut self.draft) {
-                    if current.output.as_deref() == Some(unresolved_output.as_str())
-                        && let Some(resolved) =
-                            canvases.iter().find(|canvas| canvas.id == current.id)
-                    {
-                        current.output.clone_from(&resolved.output);
-                    }
-                }
                 Vec::new()
             }
             EditorInput::TransportReady {
@@ -2067,39 +2048,6 @@ mod skin_tests {
         });
 
         assert_eq!(model.preview, ScreenKind::Result);
-    }
-
-    #[test]
-    fn legacy_output_resolution_is_reduced_without_overwriting_a_user_assignment() {
-        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
-        model.set_outputs(vec![
-            crate::editor::EditorOutput {
-                name: "DP-1".into(),
-                model: "first".into(),
-                logical_size: Some([1920, 1080]),
-            },
-            crate::editor::EditorOutput {
-                name: "DP-2".into(),
-                model: "second".into(),
-                logical_size: Some([1920, 1080]),
-            },
-        ]);
-        model.editing = true;
-        model.readonly = false;
-        assert!(model.action(&EditorAction::AddCanvas));
-        model.saved = model.draft.clone();
-        model.saved[0].output = Some("legacy-unresolved".into());
-        model.draft[0].output = Some("DP-2".into());
-        let mut resolved = model.saved.clone();
-        resolved[0].output = Some("DP-1".into());
-
-        model.reduce(EditorInput::LegacyOutputsResolved {
-            unresolved_output: "legacy-unresolved".into(),
-            canvases: resolved,
-        });
-
-        assert_eq!(model.saved[0].output.as_deref(), Some("DP-1"));
-        assert_eq!(model.draft[0].output.as_deref(), Some("DP-2"));
     }
 
     #[test]

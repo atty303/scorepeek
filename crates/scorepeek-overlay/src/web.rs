@@ -117,9 +117,6 @@ mod server {
                     backend, editor_id, ..
                 } => (backend, Some(editor_id)),
                 Request::GetBackend { backend } => (backend, None),
-                Request::ResolveWaylandOutputs { .. } => {
-                    return Err("stage control cannot resolve Wayland outputs".into());
-                }
             };
             if *backend != crate::runtime::Backend::Obs {
                 return Err("stage control only accepts the OBS backend".into());

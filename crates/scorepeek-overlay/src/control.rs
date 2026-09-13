@@ -38,9 +38,6 @@ pub enum Request {
     GetBackend {
         backend: Backend,
     },
-    ResolveWaylandOutputs {
-        outputs: Vec<String>,
-    },
     UpdateBackendDraft {
         backend: Backend,
         editor_id: String,
@@ -257,7 +254,7 @@ fn request_identity(request: &Request) -> Option<(Backend, String)> {
         | Request::CommitBackend {
             backend, editor_id, ..
         } => Some((*backend, editor_id.clone())),
-        Request::GetBackend { .. } | Request::ResolveWaylandOutputs { .. } => None,
+        Request::GetBackend { .. } => None,
     }
 }
 
@@ -396,51 +393,6 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             Ok(backend_response(&state.config, backend, false))
         }
         Request::GetBackend { backend } => Ok(backend_response(&state.config, backend, true)),
-        Request::ResolveWaylandOutputs { mut outputs } => {
-            outputs.sort();
-            outputs.dedup();
-            let first = outputs
-                .first()
-                .filter(|output| !output.is_empty())
-                .ok_or("Wayland output discovery returned no named outputs")?
-                .clone();
-            let mut candidate = state.config.clone();
-            let mut changed = 0_usize;
-            for canvas in &mut candidate.canvases {
-                if canvas.backend == Backend::Wayland
-                    && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
-                {
-                    canvas.output.clone_from(&first);
-                    changed += 1;
-                }
-            }
-            if changed > 0 {
-                if let Err(error) = save_atomic(path, &candidate) {
-                    state.observe(
-                        "overlay_config_migration",
-                        serde_json::json!({
-                            "schema":crate::config::SCHEMA_VERSION,
-                            "status":"failed",
-                            "canvas_count":changed,
-                            "output_count":outputs.len(),
-                            "error":error
-                        }),
-                    );
-                    return Err(error);
-                }
-                state.config = candidate;
-            }
-            state.observe(
-                "overlay_config_migration",
-                serde_json::json!({
-                    "schema":crate::config::SCHEMA_VERSION,
-                    "status":if changed>0{"saved"}else{"unchanged"},
-                    "canvas_count":changed,
-                    "output_count":outputs.len()
-                }),
-            );
-            Ok(backend_response(&state.config, Backend::Wayland, true))
-        }
         Request::UpdateBackendDraft {
             backend,
             editor_id,
@@ -477,12 +429,6 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             candidate.canvases.extend(replacements);
             if let Some(refresh) = wayland_refresh_hz {
                 candidate.wayland_refresh_hz = refresh;
-            }
-            if candidate.canvases.iter().any(|canvas| {
-                canvas.backend == Backend::Wayland
-                    && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
-            }) {
-                return Err("Wayland output migration is waiting for output discovery".into());
             }
             candidate.projection_generations.increment(backend)?;
             if let Err(error) = save_atomic(path, &candidate) {
@@ -680,122 +626,6 @@ mod tests {
         let reopened = acquire_config_lock(&path).unwrap();
         drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn wayland_output_discovery_finalizes_deferred_schema_migration_once() {
-        let (path, shared) = fixture("resolve-output");
-        {
-            let mut state = shared.lock().unwrap();
-            for canvas in &mut state.config.canvases {
-                if canvas.backend == Backend::Wayland {
-                    canvas.output = crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into();
-                }
-            }
-        }
-        let response = apply(
-            Request::ResolveWaylandOutputs {
-                outputs: vec!["DP-2".into(), "DP-1".into()],
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert!(
-            response
-                .canvases
-                .iter()
-                .all(|canvas| { canvas.output.as_deref() == Some("DP-1") })
-        );
-        let persisted = std::fs::read_to_string(&path).unwrap();
-        assert!(persisted.contains("schema_version = 8"));
-        assert!(persisted.contains("output = \"DP-1\""));
-        assert!(!persisted.contains("revision"));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn another_backend_cannot_persist_a_pending_wayland_output_migration() {
-        let (path, shared) = fixture("pending-output-commit");
-        {
-            let mut state = shared.lock().unwrap();
-            for canvas in &mut state.config.canvases {
-                if canvas.backend == Backend::Wayland {
-                    canvas.output = crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into();
-                }
-            }
-        }
-        let acquired = apply(
-            Request::AcquireBackend {
-                backend: Backend::Obs,
-                editor_id: "editor".into(),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        let error = apply(
-            Request::CommitBackend {
-                backend: Backend::Obs,
-                editor_id: "editor".into(),
-                canvases: acquired.canvases,
-                wayland_refresh_hz: None,
-            },
-            &path,
-            &shared,
-        )
-        .unwrap_err();
-        assert!(error.contains("waiting for output discovery"));
-        assert!(!path.exists());
-        assert!(shared.lock().unwrap().config.canvases.iter().any(|canvas| {
-            canvas.backend == Backend::Wayland
-                && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
-        }));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn failed_output_migration_save_keeps_the_pending_state_for_retry() {
-        let (path, shared) = fixture("output-save-retry");
-        {
-            let mut state = shared.lock().unwrap();
-            for canvas in &mut state.config.canvases {
-                if canvas.backend == Backend::Wayland {
-                    canvas.output = crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into();
-                }
-            }
-        }
-        std::fs::create_dir(&path).unwrap();
-        assert!(
-            apply(
-                Request::ResolveWaylandOutputs {
-                    outputs: vec!["DP-1".into()],
-                },
-                &path,
-                &shared,
-            )
-            .is_err()
-        );
-        assert!(shared.lock().unwrap().config.canvases.iter().any(|canvas| {
-            canvas.backend == Backend::Wayland
-                && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
-        }));
-        std::fs::remove_dir(&path).unwrap();
-        let response = apply(
-            Request::ResolveWaylandOutputs {
-                outputs: vec!["DP-1".into()],
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert!(
-            response
-                .canvases
-                .iter()
-                .all(|canvas| { canvas.output.as_deref() == Some("DP-1") })
-        );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

@@ -21,7 +21,7 @@ completion-manifest SHA-256, terminal status/completeness, priority, and managed
 bytes, including whether priority came from an operator freeze. It does not expose paths, pixels, OCR text, song/player values, replay
 request fields, or recognition bindings.
 
-A canonical `run.json` without `manifest.json` is listed as `partial`, with no
+A canonical current-schema `run.json` without `manifest.json` is listed as `partial`, with no
 terminal status or manifest digest, and is priority evidence. This represents
 the observable state at inspection time; it does not decide whether a worker is
 currently active or a prior process crashed. A completion manifest is accepted
@@ -29,18 +29,18 @@ only when it strictly parses, binds the exact start document, and its manifest
 and total byte accounting match the directory snapshot. Typed frame, fact,
 degradation, and reason-count entries must preserve the writer's bounds and
 outcome semantics, and their declared filenames and bytes must cover the exact
-regular-file set. A partial run may contain only `run.json` and bounded
-writer-named frame/fact files within the writer's per-type count and fact-size
+regular-file set. A partial run may contain only `run.json`, `facts.ndjson`, and
+bounded writer-named QOI frame files within the writer's per-type and byte
 bounds. Producer package version must be valid SemVer and is recorded identity;
-the v1 schema, not equality with the inspecting binary version, determines
-compatibility.
+the current capture schema, not equality with the inspecting binary version,
+determines compatibility.
 
 One durable zero-byte inventory marker is the only non-run store-root entry
 accepted by the inventory. The writer locks both the store-root directory inode
 and one canonical-root-path-derived, zero-byte ownership anchor in its stable parent for the
 entire run; status takes the same locks in shared mode while taking an idle
-snapshot. A legacy root without the parent anchor remains read-only under its
-root lock, while the first writer durably creates the anchor. The root marker is
+snapshot. A root without the parent anchor remains read-only under its root
+lock, while the first writer durably creates the anchor. The root marker is
 an inventory sentinel, not the lease identity. Scorepeek resolves aliases and
 intermediate symlinks and revalidates both the requested path and canonical root
 against the locked inode before and after anchor acquisition. Scorepeek processes
@@ -82,8 +82,8 @@ documents, byte-accounting mismatches, and a root or run directory that changes
 during any part of inspection fail the whole command with a value-free error.
 Per-run or aggregate policy overflow also fails instead of returning zero
 remaining capacity as healthy state. The controls
-do not rehash every QOI/fact artifact; strict replay or a future explicit verify
-control remains the integrity boundary for artifact contents.
+do not rehash every QOI/fact artifact. Reevaluation verifies the exact retained
+QOI content it consumes.
 
 `freeze` and `delete` require the current run digest and exact manifest digest.
 For a partial run with no manifest the explicit manifest confirmation value is

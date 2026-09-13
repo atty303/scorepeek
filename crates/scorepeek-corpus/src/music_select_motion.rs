@@ -742,11 +742,8 @@ pub fn plan_music_select_motion_review(
         run_artifact,
         MAX_DOCUMENT_BYTES as u64,
     )?)?;
-    if !matches!(
-        run.schema.as_str(),
-        "scorepeek-private-diagnostic-capture-start-v3"
-            | "scorepeek-private-diagnostic-capture-start-v4"
-    ) || run.run_id != session.source_session_id
+    if run.schema != "scorepeek-private-diagnostic-capture-start-v4"
+        || run.run_id != session.source_session_id
         || run.source.kind != "video_replay"
         || run.source.video_sha256 != video_sha256
         || run.binding.capture_profile_sha256 != session.profile_sha256
@@ -2258,7 +2255,6 @@ fn load_bound_session(
     store: &Path,
     session_sha256: &str,
 ) -> Result<(ActiveSuite, CaptureSession), CorpusError> {
-    crate::frame_corpus::ensure_complete_corpus_store(store)?;
     let active: ActiveSuite = read_json(&store.join("active-suite.json"))?;
     if active.schema != ACTIVE_SCHEMA || !valid_sha256(&active.generation_sha256) {
         return invalid("active motion-review suite is invalid");
@@ -3759,7 +3755,7 @@ mod tests {
             GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap();
         let profile_ref = write_object(&store, &authored.bytes);
         let run = serde_json::to_vec(&json!({
-            "schema": "scorepeek-private-diagnostic-capture-start-v3",
+            "schema": "scorepeek-private-diagnostic-capture-start-v4",
             "run_id": source_session_id,
             "binding": {
                 "capture_profile_sha256": authored.capture_profile_sha256,

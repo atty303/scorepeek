@@ -3,7 +3,7 @@
 ## Retained full-frame reevaluation
 
 `scorepeek diagnostic reevaluate` is the recognition path for an existing
-`scorepeek-private-diagnostic-session-v4` or legacy v3. It verifies the exact source session and every retained
+`scorepeek-private-diagnostic-session-v5`. It verifies the exact source session and every retained
 QOI it consumes, requires each QOI to remain a complete canonical RGB8 1920x1080 frame, then runs
 the current production screen predicate and applicable registered OCR/catalog/result resolvers.
 
@@ -26,7 +26,7 @@ retention cadence, quota, and source files are unchanged.
 
 `scorepeek diagnostic replay` feeds digest-bound canonical RGB8 extraction
 frames through the same bounded application worker and QOI diagnostic writer
-planned for live capture. It does not execute recognition or reconstruct a game
+used by live capture. It does not execute recognition or reconstruct a game
 session. The command is an offline evidence path, not a capture-support or
 performance gate.
 

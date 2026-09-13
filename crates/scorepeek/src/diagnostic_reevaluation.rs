@@ -711,11 +711,8 @@ fn load_source(source: &Path, expected_session_sha256: &str) -> Result<LoadedSou
     let run_bytes = read_artifact(source, run_artifact, MAX_RUN_BYTES)?;
     let start: CaptureStart = serde_json::from_slice(&run_bytes)
         .map_err(|error| format!("capture start is invalid: {error}"))?;
-    if !matches!(
-        start.schema.as_str(),
-        "scorepeek-private-diagnostic-capture-start-v3"
-            | "scorepeek-private-diagnostic-capture-start-v4"
-    ) || start.run_id != manifest.session_id
+    if start.schema != "scorepeek-private-diagnostic-capture-start-v4"
+        || start.run_id != manifest.session_id
         || start.binding.capture_generation != manifest.capture_generation
         || start.binding.capture_profile_sha256 != manifest.profile_sha256
         || !valid_sha256(&start.binding.normalizer_sha256)
@@ -734,10 +731,8 @@ fn load_source(source: &Path, expected_session_sha256: &str) -> Result<LoadedSou
 }
 
 fn validate_source_manifest(manifest: &SourceSessionManifest) -> Result<(), String> {
-    if !matches!(
-        manifest.schema.as_str(),
-        "scorepeek-private-diagnostic-session-v3" | "scorepeek-private-diagnostic-session-v4"
-    ) || manifest.source_kind != "live_run"
+    if manifest.schema != "scorepeek-private-diagnostic-session-v5"
+        || manifest.source_kind != "live_run"
         || manifest.session_id.is_empty()
         || manifest.capture_generation == 0
         || !valid_sha256(&manifest.profile_sha256)
@@ -764,10 +759,8 @@ fn validate_source_manifest(manifest: &SourceSessionManifest) -> Result<(), Stri
 }
 
 fn validate_capture_manifest(manifest: &CaptureManifest) -> Result<(), String> {
-    if !matches!(
-        manifest.schema.as_str(),
-        "scorepeek-private-diagnostic-capture-v3" | "scorepeek-private-diagnostic-capture-v4"
-    ) || manifest.frames.len() > MAX_RETAINED_FRAMES
+    if manifest.schema != "scorepeek-private-diagnostic-capture-v4"
+        || manifest.frames.len() > MAX_RETAINED_FRAMES
     {
         return Err("capture manifest contract is invalid".to_owned());
     }
@@ -1154,7 +1147,7 @@ mod tests {
         let profile_sha256 = "a".repeat(64);
         let catalog_sha256 = "b".repeat(64);
         let run = serde_json::to_vec(&json!({
-            "schema": "scorepeek-private-diagnostic-capture-start-v3",
+            "schema": "scorepeek-private-diagnostic-capture-start-v4",
             "run_id": "session-1",
             "binding": {
                 "capture_generation": 7,
@@ -1172,7 +1165,7 @@ mod tests {
         let pixel_sha256 = digest_bytes(&pixels);
         let run_sha256 = digest_bytes(&run);
         let capture_manifest = serde_json::to_vec(&json!({
-            "schema": "scorepeek-private-diagnostic-capture-v3",
+            "schema": "scorepeek-private-diagnostic-capture-v4",
             "start": {
                 "schema": "scorepeek-private-diagnostic-artifact-v1",
                 "filename": "run.json",
@@ -1198,7 +1191,7 @@ mod tests {
             artifact(&format!("capture/{frame_name}"), &encoded),
         ];
         let session_manifest = serde_json::to_vec(&json!({
-            "schema": "scorepeek-private-diagnostic-session-v3",
+            "schema": "scorepeek-private-diagnostic-session-v5",
             "source_kind": "live_run",
             "session_id": "session-1",
             "capture_generation": 7,

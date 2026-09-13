@@ -51,10 +51,9 @@ pub use numeric_character_layout::{
 };
 pub use numeric_fixed_slot::{FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID};
 pub use numeric_onnx::{
-    LegacyNumericModelContract, NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256,
-    NUMERIC_PREPROCESSOR_ID, NumericBatchInference, NumericCellCandidate, NumericCellInference,
-    NumericModelCalibrations, NumericModelContract, ReadableNumericModelContract,
-    RegisteredNumericRuntime, read_numeric_model_contract,
+    NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
+    NumericBatchInference, NumericCellCandidate, NumericCellInference, NumericModelCalibrations,
+    NumericModelContract, RegisteredNumericRuntime,
 };
 pub use numeric_specialist::{
     NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NUMERIC_TOP_CANDIDATES, NumericCalibration,
@@ -3688,7 +3687,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_general_text_numeric_comparison_keeps_its_fixed_character_sets() {
+    fn general_text_numeric_comparison_keeps_its_fixed_character_sets() {
         for field in [
             ScreenTextField::ResultNotes,
             ScreenTextField::ResultCurrentScore,

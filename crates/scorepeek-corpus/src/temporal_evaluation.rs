@@ -261,7 +261,6 @@ pub fn evaluate_temporal_corpus(
     store: &Path,
     policies: &[TemporalEvaluationPolicy],
 ) -> Result<TemporalEvaluationSummary, CorpusError> {
-    crate::frame_corpus::ensure_complete_corpus_store(store)?;
     let policies = validate_policies(policies)?;
     let active: ActiveSuite = read_json(&store.join("active-suite.json"))?;
     if active.schema != ACTIVE_SCHEMA || !valid_sha256(&active.generation_sha256) {
@@ -960,7 +959,7 @@ mod tests {
         assert_eq!(parsed.song, None);
         assert_eq!(parsed.clear_type, None);
 
-        let legacy = serde_json::json!({
+        let direct_projection = serde_json::json!({
             "schema": OBSERVATION_SCHEMA,
             "tick_sequence": 9,
             "source_timestamp_ms": 900,
@@ -968,7 +967,7 @@ mod tests {
             "fields": {"clear_type": "CLEAR"},
             "song_id": expected
         });
-        let parsed = parse_record(&legacy).unwrap();
+        let parsed = parse_record(&direct_projection).unwrap();
         assert_eq!(parsed.song, Some(song(expected)));
         assert_eq!(parsed.clear_type.as_deref(), Some("CLEAR"));
 

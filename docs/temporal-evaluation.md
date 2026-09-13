@@ -1,6 +1,6 @@
 # Offline temporal evaluation
 
-`scorepeek-corpus temporal evaluate` compares historical result-local temporal policies against the
+`scorepeek-corpus temporal evaluate` compares candidate result-local temporal policies against the
 ordered recognition observations in the active, operator-reviewed private corpus suite. It is a
 read-only descriptive evaluator: it does not alter the suite, select thresholds, accept events, or
 grant release-accuracy authority. The production v3 resolver instead finalizes one semantic RESULT
@@ -26,8 +26,8 @@ not claim one interval. An interval with fewer than two retained result observat
 `insufficient_temporal_observations`; a label that cannot be assigned or has multiple possible
 assignments is excluded with a separate typed reason.
 
-Current `scorepeek-recognition-observation-v22` and legacy v5 through v21 shapes are decoded into the same typed
-input. Only an accepted song resolution supplies a song ID. Unknown resolution remains unknown,
+Current `scorepeek-private-corpus-observation-v1` records are decoded into one typed input. They may
+carry the accepted song as a decision projection or as the direct corpus projection. Unknown resolution remains unknown,
 and clear type uses the production resolver rather than an evaluator-specific mapping. A merged
 stream's predicate-only `fields: null, song_id: null` placeholder contributes a screen boundary but
 not a reducer observation, matching the production path's missing-evidence behavior.
@@ -39,9 +39,9 @@ The stdout document has schema `scorepeek-private-temporal-evaluation-v1` and au
 
 - `raw_observations` counts each analyzable result observation as correct, incorrect, or unknown for
   song and clear type before temporal reduction.
-- Each `policies` entry runs the historical `ResultTemporalReducer` independently for every episode
-  and reports the final song and clear-type state as stable correct, stable incorrect, conflict, or
-  unresolved. These states describe the retired reducer and are not production authority.
+- Each `policies` entry runs `ResultTemporalReducer` independently for every episode and reports the
+  final song and clear-type state as stable correct, stable incorrect, conflict, or unresolved.
+  These offline states are not production authority.
 - `joint_stable_correct` requires both final field states to equal the operator label.
 - stabilization latency starts at the first retained result observation and ends when both fields
   first become stable and correct. Observation-count and millisecond distributions use nearest-rank

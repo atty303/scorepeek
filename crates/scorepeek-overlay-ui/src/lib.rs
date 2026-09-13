@@ -465,11 +465,11 @@ fn render_inner_widget(
     if widget.kind == WidgetKind::Empty {
         return composition::empty_widget(widget, skin);
     }
-    let mut legacy = widget.clone();
-    legacy.width += 16;
-    legacy.height += 16;
-    rsx! { div { class: "widget-content-origin", style:format!("position:absolute;left:-8px;top:-8px;width:{}px;height:{}px",legacy.width,legacy.height),
-        {render_widget(&legacy,state,title,artist,play_type,difficulty,level,notes,skin)}
+    let mut content_bounds = widget.clone();
+    content_bounds.width += 16;
+    content_bounds.height += 16;
+    rsx! { div { class: "widget-content-origin", style:format!("position:absolute;left:-8px;top:-8px;width:{}px;height:{}px",content_bounds.width,content_bounds.height),
+        {render_widget(&content_bounds,state,title,artist,play_type,difficulty,level,notes,skin)}
     } }
 }
 

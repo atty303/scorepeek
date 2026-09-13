@@ -971,12 +971,6 @@ enum CoordinatorCommand {
         canvas: String,
         preview_screen: Option<scorepeek_overlay_ui::ScreenKind>,
     },
-    ResolveOutput {
-        output_names: Vec<String>,
-        output: Option<String>,
-        canvas: String,
-        preview_screen: Option<scorepeek_overlay_ui::ScreenKind>,
-    },
 }
 
 fn stop_workers<'a>(
@@ -1666,32 +1660,6 @@ pub fn run_with_editor_scenario(
                         refresh,
                     );
                 }
-                CoordinatorCommand::ResolveOutput {
-                    output_names,
-                    output,
-                    canvas,
-                    preview_screen,
-                } => {
-                    let result = crate::control::request(
-                        &config.control_socket,
-                        &crate::control::Request::ResolveWaylandOutputs {
-                            outputs: output_names,
-                        },
-                    );
-                    if let Ok(response) = result
-                        && response.ok
-                    {
-                        let _ = authority.dispatch(EditorInput::LegacyOutputsResolved {
-                            unresolved_output: crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into(),
-                            canvases: response.canvases,
-                        });
-                        let _ = coordinator_tx.send(CoordinatorCommand::Open {
-                            output,
-                            canvas,
-                            preview_screen,
-                        });
-                    }
-                }
             }
             for wake in canvas_wakes
                 .lock()
@@ -2020,11 +1988,12 @@ fn run_canvas(
             "elapsed_us": duration_us(startup_started.elapsed()),
         }),
     );
-    let mut pending_resolved_output = None;
-    if let Some(selected_output) = shell.output_name.as_deref()
-        && canvas.output != selected_output
-    {
-        pending_resolved_output = Some(selected_output.to_owned());
+    let resolved_output = shell
+        .output_name
+        .as_deref()
+        .filter(|selected_output| canvas.output != *selected_output);
+    let output_changed = resolved_output.is_some();
+    if let Some(selected_output) = resolved_output {
         if let Some([output_width, output_height]) = shell.output_logical_size {
             canvas.width = canvas.width.min(grid_floor(output_width));
             canvas.height = canvas.height.min(grid_floor(output_height));
@@ -2047,9 +2016,7 @@ fn run_canvas(
     }
     canvas.x = shell.position[0];
     canvas.y = shell.position[1];
-    if pending_resolved_output.is_some()
-        && let Some([output_width, output_height]) = shell.output_logical_size
-    {
+    if output_changed && let Some([output_width, output_height]) = shell.output_logical_size {
         if canvas.id.starts_with("__scorepeek-editor-") {
             canvas.x = 0;
             canvas.y = 0;
@@ -2113,7 +2080,6 @@ fn run_canvas(
         skin_assets,
         outputs,
         Rc::clone(&report),
-        pending_resolved_output,
         published_stages,
         wayland_refresh_hz,
         startup_started,
@@ -2273,8 +2239,6 @@ struct App {
     role: SurfaceRole,
     coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
     output_descriptions: Vec<OutputDescription>,
-    pending_resolved_output: Option<String>,
-    next_output_persist: Instant,
     surface_logical: [u32; 2],
     wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     display_skin: Option<NativeDisplaySkin>,
@@ -2642,7 +2606,6 @@ impl App {
         skin_assets: Arc<SkinAssetCache>,
         outputs: Vec<OutputDescription>,
         report: Rc<RefCell<RunReport>>,
-        pending_resolved_output: Option<String>,
         published_stages: Arc<std::sync::Mutex<PublishedStages>>,
         wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
         startup_started: Instant,
@@ -2801,8 +2764,6 @@ impl App {
             role,
             coordinator,
             output_descriptions: outputs,
-            pending_resolved_output,
-            next_output_persist: Instant::now() + Duration::from_secs(1),
             surface_logical,
             wayland_refresh_hz,
             display_skin,
@@ -2947,7 +2908,6 @@ impl App {
                 .clone()
                 .unwrap_or_else(|| self.frame_work.snapshot());
             let projection_changed = self.sync_projection();
-            self.retry_resolved_output();
             let events = match self.shell.dispatch(Duration::from_millis(500)) {
                 Ok(events) => events,
                 Err(_)
@@ -3206,26 +3166,6 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    fn retry_resolved_output(&mut self) {
-        if Instant::now() < self.next_output_persist {
-            return;
-        }
-        if self.pending_resolved_output.is_none() {
-            return;
-        }
-        self.next_output_persist = Instant::now() + Duration::from_secs(1);
-        let _ = self.coordinator.send(CoordinatorCommand::ResolveOutput {
-            output_names: self
-                .output_descriptions
-                .iter()
-                .map(|item| item.name.clone())
-                .collect(),
-            output: self.surface_output.clone(),
-            canvas: self.canvas.id.clone(),
-            preview_screen: self.current_state.screen.kind,
-        });
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool, x: f64, y: f64) {
@@ -6708,7 +6648,6 @@ mod skin_tests {
                             preview: preview_screen
                                 .unwrap_or(scorepeek_overlay_ui::ScreenKind::MusicSelect),
                         }),
-                        CoordinatorCommand::ResolveOutput { .. } => Vec::new(),
                     };
                     for effect in effects {
                         let kind = effect.kind();
@@ -9188,7 +9127,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn migrated_minimum_widget_resizes_from_every_corner() {
+    fn minimum_widget_resizes_from_every_corner() {
         for (x, y) in [(8, 8), (-24, -24), (40, 40)] {
             let original = WidgetLayout {
                 id: "minimum".into(),

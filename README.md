@@ -54,7 +54,6 @@ preparation, training, and ONNX export tooling.
   unsupported input produce typed unavailability rather than guessed values.
 
 See the [architecture map](docs/architecture.md),
-[current implementation plan](docs/plan.ja.md),
 [field semantics](docs/field-semantics.md),
 [Event API v2](docs/event-api.md), and
 [external source policy](docs/sources.md).
@@ -221,9 +220,8 @@ enter the shared editor. Canvas movement uses secondary-button drag; widget
 movement and resize use the primary button. Each canvas has an explicit output,
 name, screen visibility, opacity, geometry, widgets, and installed skin.
 Disconnected outputs and invalid geometry remain explicit editor errors until
-the operator reassigns or fits them. A legacy document without canvas outputs
-is upgraded only after named output discovery can assign the stable first
-output.
+the operator reassigns or fits them. The configuration loader accepts only the
+current schema-v8 document.
 
 Score, recorded state, RESULT detail, history, and graphs come only from
 committed SQLite readback. Overlay failure does not stop recognition, score

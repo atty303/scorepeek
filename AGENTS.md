@@ -10,22 +10,20 @@
   measured from scorepeek captures. Upstream code, coordinates, resources,
   catalogs, and generated artifacts are not project inputs.
 - Keep only living artifacts in the current tree. Current capabilities and
-  operation belong in README, architecture and domain references; current
-  unfinished work belongs in `docs/plan.ja.md`. Superseded design, completed
-  work, experiments and point-in-time verification belong in Git history.
+  operation belong in README, architecture and domain references. Superseded
+  design, completed or abandoned plans, experiments and point-in-time
+  verification belong in Git history.
 
 ## Task start and resumption
 
 - At task start, take the repository VCS snapshot first, then read `README.md`,
-  `docs/architecture.md`, `docs/plan.ja.md`, and the domain references
-  relevant to the change.
+  `docs/architecture.md`, and the domain references relevant to the change.
 - Treat committed code and tests as implementation facts. Treat current
   references and user-confirmed contracts as intent. If they conflict in a way
   that changes user-visible behavior or unfinished scope, stop and ask instead
   of guessing.
 - When a logical commit changes current behavior, update or remove its owning
-  living documentation in that commit. When planned work is completed or
-  abandoned, remove it from `docs/plan.ja.md` in that commit.
+  living documentation in that commit.
 - A dirty working tree is outside the committed checkpoint. Inspect every
   existing change and preserve it; never discard, overwrite, or describe it as
   checkpoint state.

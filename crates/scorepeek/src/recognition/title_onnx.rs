@@ -2003,7 +2003,7 @@ mod tests {
         CtcCharacterSet, DynamicBundleManifest, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
         LiveRuntimeManifest, NumericCtcDecoder, RegisteredRecognitionResources,
         RegisteredResourceLoadError, RegisteredResourceLoadErrorType, argmax_tokens,
-        ctc_log_probability, encode_sha256, strict_p6, valid_presentation_transform_id,
+        ctc_log_probability, strict_p6, valid_presentation_transform_id,
         validate_argmax_probability_rows,
     };
     use crate::catalog::{Catalog, CatalogStore};
@@ -2024,12 +2024,6 @@ mod tests {
         assert_eq!(manifest.inter_threads, 1);
         assert!(!manifest.parallel_execution);
         assert_eq!(manifest.execution_provider, "CPUExecutionProvider");
-        let legacy_v1 =
-            include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v1.json");
-        assert_eq!(
-            encode_sha256(legacy_v1),
-            "4864f57937b6d57510e82234325f611df31521ff508767011de137bebdf531dc"
-        );
     }
 
     #[test]

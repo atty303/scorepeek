@@ -1490,13 +1490,8 @@ pub fn completed_run_start_is_intact(directory: &Path) -> bool {
     else {
         return false;
     };
-    if !matches!(
-        manifest.schema.as_str(),
-        "scorepeek-private-diagnostic-run-v1"
-            | "scorepeek-private-diagnostic-run-v2"
-            | "scorepeek-private-diagnostic-capture-v3"
-            | "scorepeek-private-diagnostic-capture-v4"
-    ) || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
+    if manifest.schema != "scorepeek-private-diagnostic-capture-v4"
+        || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
         || manifest.start.filename != "run.json"
         || !valid_sha256(&manifest.start.file_sha256)
     {

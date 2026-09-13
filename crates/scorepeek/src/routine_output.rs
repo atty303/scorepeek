@@ -1571,8 +1571,12 @@ impl RunEvent {
     }
 
     pub fn from_value(value: Value) -> Result<Self, String> {
-        serde_json::from_value(value)
-            .map_err(|error| format!("run event contract validation failed: {error}"))
+        let event: Self = serde_json::from_value(value)
+            .map_err(|error| format!("run event contract validation failed: {error}"))?;
+        if event.schema != RUN_EVENT_SCHEMA {
+            return Err("run event schema is unsupported".to_owned());
+        }
+        Ok(event)
     }
 
     #[allow(
@@ -3083,7 +3087,7 @@ impl RoutineOutput {
             SemanticEpisodePhase::Started => {
                 self.semantic_episode_suspended = false;
                 self.clear_resolver_field_observation()?;
-                let legacy = RunEvent {
+                let screen_change = RunEvent {
                     schema: event.schema.clone(),
                     kind: RunEventKind::ScreenChanged {
                         session_id: session_id.clone(),
@@ -3095,7 +3099,7 @@ impl RoutineOutput {
                         screen: screen.clone(),
                     },
                 };
-                self.publish_screen_change(&legacy, false)
+                self.publish_screen_change(&screen_change, false)
             }
             SemanticEpisodePhase::Suspended => {
                 self.semantic_episode_suspended = true;
@@ -5947,7 +5951,7 @@ mod tests {
     fn accepted_result_event(sequence: u64) -> RunEvent {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::FieldObservation {
                 session_id: Some("invocation-1-session-1".to_owned()),
                 capture_generation: Some(1),
@@ -6085,7 +6089,7 @@ mod tests {
         result: ResultDomainEvent,
     ) -> RunEvent {
         RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResultChanged {
                 session_id: session_id.to_owned(),
                 capture_generation,
@@ -6160,7 +6164,7 @@ mod tests {
 
     fn screen_event(sequence: u64, screen: &str) -> RunEvent {
         RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ScreenChanged {
                 session_id: Some("invocation-1-session-1".to_owned()),
                 capture_generation: Some(1),
@@ -6179,7 +6183,7 @@ mod tests {
         phase: SemanticEpisodePhase,
     ) -> RunEvent {
         RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some("invocation-1-session-1".to_owned()),
                 capture_generation: Some(1),
@@ -6194,7 +6198,7 @@ mod tests {
 
     fn failed_session_finished_event() -> RunEvent {
         RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v3",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "session_finished",
             "session_id": "invocation-1-session-1",
             "capture_generation": 1,
@@ -7597,7 +7601,7 @@ mod tests {
     fn typed_reducer_tracks_session_report_and_stop_transitions() {
         let mut state = RunViewState::new("invocation-1".to_owned(), "d".repeat(64), true);
         let started = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v3",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "session_started",
             "session_id": "invocation-1-session-1",
             "capture_generation": 1,
@@ -7614,7 +7618,7 @@ mod tests {
         );
 
         let finished = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v3",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "session_finished",
             "session_id": "invocation-1-session-1",
             "capture_generation": 1,
@@ -7633,7 +7637,7 @@ mod tests {
         state.latest_stabilized_result = Some(json!({ "state": { "song": "stable" } }));
         state.latest_temporal_music_select = Some(json!({ "state": { "status": "changing" } }));
         let next_started = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v3",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "session_started",
             "session_id": "invocation-1-session-2",
             "capture_generation": 2,
@@ -7650,7 +7654,7 @@ mod tests {
         assert!(state.latest_report.is_none());
 
         let stopped = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v3",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "watcher_stopped",
             "invocation_id": "invocation-1",
             "reason": "signal"
@@ -7668,7 +7672,7 @@ mod tests {
         let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
         assert_eq!(state.status_recording, "armed");
         let health = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v6",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "recording_health_changed",
             "session_id": "session-1",
             "capture_generation": 1,
@@ -7684,7 +7688,7 @@ mod tests {
         assert_eq!(state.recording_memory_used_bytes, 900_000_000);
 
         let finished = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v6",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "session_finished",
             "session_id": "session-1",
             "capture_generation": 1,
@@ -7696,7 +7700,7 @@ mod tests {
         assert_eq!(state.status_recording, "finalizing");
 
         let ready = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v6",
+            "schema": RUN_EVENT_SCHEMA,
             "event": "recording_ready",
             "session_id": "session-1",
             "directory": "/private/session-1",
@@ -7767,7 +7771,7 @@ mod tests {
         );
 
         let next_session = RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::SessionStarted {
                 session_id: Some("session-2".to_owned()),
                 capture_generation: 2,

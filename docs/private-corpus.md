@@ -10,7 +10,7 @@ objects, or deduplicate frames by pixel content.
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
 starts capture diagnostics, recognition observation v22, run-event v12, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
-`--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
+`--record`. Routine capture diagnostics retain structured facts but no QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.
 
 Recording preflight requires bounded diagnostic-store capacity and a PATH-resolved FFmpeg that exposes
@@ -92,7 +92,7 @@ Regression truth uses only `scorepeek-private-session-regression-label-v5`. Each
   `play_options` list, including `[]` when no option was shown.
 
 The existing `expected_result.play_type` is also SELECT play-type truth. `play_mode` must agree as
-`single_play` with `single` or `double_play` with `double`; no separate SELECT label or legacy
+`single_play` with `single` or `double_play` with `double`; no separate SELECT label or alternate
 conversion exists. Real full frames, complete labels, and generated corpus objects remain outside
 the repository. The two independently measured 100x80 SP/DP templates under
 `crates/scorepeek/assets/music-select-play-type-v1` are the sole narrow
@@ -111,7 +111,7 @@ Apply the reviewed truth create-only:
 scorepeek-corpus review apply --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v5.json
 ```
 
-Partial sessions cannot become active regression entries. There is no legacy label reader,
+Partial sessions cannot become active regression entries. There is no alternate label reader,
 converter, or archive path.
 
 ## Replay semantics

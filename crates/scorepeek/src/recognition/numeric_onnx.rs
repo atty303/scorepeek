@@ -107,54 +107,6 @@ pub struct NumericModelContract {
     pub calibrations: NumericModelCalibrations,
 }
 
-/// Historical CTC manifest shape retained for diagnostic and migration readers.
-///
-/// A legacy contract can be inspected, but it is never accepted by the active fixed-slot
-/// runtime or its create-only installer.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacyNumericModelContract {
-    pub schema: String,
-    pub model_id: String,
-    pub model_filename: String,
-    pub model_sha256: String,
-    pub model_bytes: u64,
-    pub candidate: String,
-    pub dictionary: String,
-    pub preprocessor_id: String,
-    pub input_shape: [usize; 3],
-    pub output_classes: usize,
-    pub dataset_sha256: String,
-    pub preparation_sha256: String,
-    pub evaluation_manifest_sha256: String,
-    pub final_training_manifest_sha256: String,
-    pub initializer_manifest_sha256: String,
-    pub initializer_checkpoint_sha256: String,
-    pub training_source_commit: String,
-    pub export_manifest_sha256: String,
-    pub paddle_graph_sha256: String,
-    pub paddle_parameters_sha256: String,
-    pub license_id: String,
-    pub calibrations: NumericModelCalibrations,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum ReadableNumericModelContract {
-    FixedSlot(NumericModelContract),
-    LegacyCtc(LegacyNumericModelContract),
-}
-
-/// Parses the current fixed-slot manifest or the immutable historical CTC manifest.
-///
-/// # Errors
-/// Returns a JSON error for any unknown manifest generation or malformed contract.
-pub fn read_numeric_model_contract(
-    bytes: &[u8],
-) -> Result<ReadableNumericModelContract, serde_json::Error> {
-    serde_json::from_slice(bytes)
-}
-
 impl NumericModelContract {
     fn validate(&self) -> bool {
         self.schema == "scorepeek-private-numeric-model-runtime-v2"
@@ -843,22 +795,6 @@ mod tests {
 
         batch.join_level(None).unwrap();
         assert_eq!(batch.accepted_text(NumericField::Level), None);
-    }
-
-    #[test]
-    fn current_and_legacy_numeric_manifests_remain_readable() {
-        assert!(matches!(
-            read_numeric_model_contract(NUMERIC_MODEL_MANIFEST_BYTES).unwrap(),
-            ReadableNumericModelContract::FixedSlot(_)
-        ));
-        assert!(matches!(
-            read_numeric_model_contract(include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../models/manifests/numeric-mobile-ctc-runtime-v1.json"
-            )))
-            .unwrap(),
-            ReadableNumericModelContract::LegacyCtc(_)
-        ));
     }
 
     #[test]

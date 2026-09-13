@@ -2,8 +2,7 @@
 
 This document maps the current system, its data flow, and authority boundaries.
 Detailed contracts live in the linked domain references and in the typed source
-and tests that implement them. Current unfinished work is listed only in
-[the implementation plan](plan.ja.md).
+and tests that implement them.
 
 ## Data flow
 

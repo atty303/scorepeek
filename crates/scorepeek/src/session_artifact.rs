@@ -542,7 +542,7 @@ mod tests {
         fs::create_dir(&events).unwrap();
         fs::write(
             events.join("events.ndjson"),
-            b"{\"schema\":\"scorepeek-run-event-v2\",\"channel_sequence\":1,\"event\":\"session_started\"}\n",
+            b"{\"schema\":\"scorepeek-run-event-v12\",\"channel_sequence\":1,\"event\":\"session_started\"}\n",
         )
         .unwrap();
         fs::write(events.join("manifest.json"), b"{}\n").unwrap();
