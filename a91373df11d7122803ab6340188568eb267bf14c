@@ -1,0 +1,27 @@
+Task: Fix the observed OBS and Wayland overlay regressions and make panic/exit causes diagnosable.
+Anchor: a91373df11d7122803ab6340188568eb267bf14c
+Base: 939e8a0e8e5d98f26bab3dc97ab6c6e1740792d9
+Line: main
+Commits: a91373df11d7122803ab6340188568eb267bf14c
+Authority: User authorized repository implementation with "実行して"; no deployment or push was authorized.
+Artifact: durable
+Control domain: Same-user local Scorepeek processes, Wayland/OBS adapters, local IPC, and configuration; no new external code, data, dependency, credential, public sink, schema, or migration.
+
+Outcome:
+- OBS/browser display connections remain passive across load and reload; explicit right-click enters the editor, including when it races the initial transport handshake.
+- Wayland visibility transitions release the Dioxus reactive read before writing, and native skin state/tree updates request paint.
+- Native worker panic payloads and stable error types are emitted, both reconciliation and shutdown reap preserve failure, and retry suppression remains bounded.
+- Overlay child exit observations include stable status/error types, including forced shutdown after the deadline.
+
+Verification:
+- mise run check
+- mise run test
+- mise run overlay:web:test (browser 1, overlay-web 8, overlay 96, integration 2)
+- mise run overlay:visual:wayland:nested (input-to-paint 6184 us on final production-code snapshot)
+- Fresh independent review plus two delta reviews; final review had no actionable findings.
+- mise run build after commit
+- Real infinitas.lan OBS/Wayland reload and play-transition validation was not performed.
+
+Transcript:
+- U1: 実行して
+- A1: Implemented and verified the passive editor, Wayland transition/repaint, and typed panic/child-exit diagnostic fixes; committed locally without deployment or push.
