@@ -418,8 +418,7 @@ pub struct GamescopeFieldObservationGateReport {
     recognition_artifact_retained_observations: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     canonical_recording_completeness: Option<CanonicalRecordingCompleteness>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    canonical_recording_manifest_sha256: Option<String>,
+    canonical_recording_manifest_published: bool,
     field_worker_status: Option<FieldWorkerStatus>,
     field_worker_submitted: Option<u64>,
     field_worker_completed: Option<u64>,
@@ -523,46 +522,11 @@ impl GamescopeFieldObservationGateReport {
         })
     }
 
-    pub fn diagnostic_manifest_sha256(&self) -> Option<&str> {
-        self.diagnostic_manifest_sha256.as_deref()
-    }
-
-    pub fn recognition_artifact_manifest_sha256(&self) -> Option<&str> {
-        self.recognition_artifact_manifest_sha256.as_deref()
-    }
-
-    pub const fn recognition_sampling(&self) -> (u64, u64, u64) {
-        (
-            self.recognition_ticks,
-            self.recognition_busy_skips,
-            self.maximum_consecutive_busy_skips,
-        )
-    }
-
-    pub const fn field_busy_sampling(&self) -> (u64, u64) {
-        (
-            self.field_observation_busy_skips,
-            self.maximum_consecutive_field_observation_busy_skips,
-        )
-    }
-
-    pub const fn diagnostic_completeness_name(&self) -> &'static str {
-        match self.diagnostic_completeness {
-            Some(DiagnosticCompleteness::Complete) => "complete",
-            Some(DiagnosticCompleteness::Partial) => "partial",
-            Some(DiagnosticCompleteness::Dropped) | None => "dropped",
-        }
-    }
-
     pub const fn canonical_recording_is_complete(&self) -> bool {
         matches!(
             self.canonical_recording_completeness,
             Some(CanonicalRecordingCompleteness::Complete)
-        ) && self.canonical_recording_manifest_sha256.is_some()
-    }
-
-    pub fn canonical_recording_manifest_sha256(&self) -> Option<&str> {
-        self.canonical_recording_manifest_sha256.as_deref()
+        ) && self.canonical_recording_manifest_published
     }
 }
 
@@ -674,6 +638,7 @@ pub struct GamescopeFieldObservationGateConfig<'a> {
     pub catalog_root: &'a std::path::Path,
     pub bundle_root: &'a std::path::Path,
     pub recognition_artifact_root: Option<&'a std::path::Path>,
+    pub canonical_recording_root: Option<&'a std::path::Path>,
     pub recognition_artifact_retention: RecognitionArtifactRetention,
     pub recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
 }
@@ -1173,7 +1138,7 @@ pub fn run_gamescope_live_session(
         artifact_worker.map(|worker| worker.finish(terminal.is_none() || source_ended));
     let mut canonical_recording_completeness =
         canonical_recording_start_failed.then_some(CanonicalRecordingCompleteness::Partial);
-    let mut canonical_recording_manifest_sha256 = None;
+    let mut canonical_recording_manifest_published = false;
     if let Some(recorder) = canonical_recorder {
         if emit(GamescopeLiveSessionEvent::RecordingFinalizing).is_err() {
             terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
@@ -1187,7 +1152,7 @@ pub fn run_gamescope_live_session(
             terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
         }
         canonical_recording_completeness = Some(outcome.completeness);
-        canonical_recording_manifest_sha256.clone_from(&outcome.manifest_sha256);
+        canonical_recording_manifest_published = outcome.manifest_published;
     }
     let stop_reason = if source_ended {
         LiveSessionStopReason::SourceEnded
@@ -1217,7 +1182,7 @@ pub fn run_gamescope_live_session(
     report.schema = "scorepeek-gamescope-live-session-v1";
     report.session_stop_reason = Some(stop_reason);
     report.canonical_recording_completeness = canonical_recording_completeness;
-    report.canonical_recording_manifest_sha256 = canonical_recording_manifest_sha256;
+    report.canonical_recording_manifest_published = canonical_recording_manifest_published;
     report
 }
 
@@ -1374,19 +1339,19 @@ fn start_field_observation_gate(
                     )
                 }
             });
-    let (canonical_recorder, canonical_recording_start_failed) = if let Some(recognition_root) =
-        config.recognition_artifact_root
-    {
-        let recorder = recognition_root.parent().map(|root| {
-            CanonicalRecordingWorker::start_named(root, "canonical", config.recording_memory_limit)
-        });
-        match recorder {
-            Some(Ok(recorder)) => (Some(recorder), false),
-            Some(Err(_)) | None => (None, true),
-        }
-    } else {
-        (None, artifact_requested)
-    };
+    let (canonical_recorder, canonical_recording_start_failed) =
+        if let Some(recording_root) = config.canonical_recording_root {
+            match CanonicalRecordingWorker::start_named(
+                recording_root,
+                "canonical",
+                config.recording_memory_limit,
+            ) {
+                Ok(recorder) => (Some(recorder), false),
+                Err(_) => (None, true),
+            }
+        } else {
+            (None, artifact_requested)
+        };
     Ok(StartedFieldObservationGate {
         lease,
         session,
@@ -2310,7 +2275,7 @@ fn field_observation_report(
             .then_some(recognition_artifact_retained_observations)
             .flatten(),
         canonical_recording_completeness: None,
-        canonical_recording_manifest_sha256: None,
+        canonical_recording_manifest_published: false,
         field_worker_status,
         field_worker_submitted,
         field_worker_completed,

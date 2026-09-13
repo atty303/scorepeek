@@ -1,7 +1,8 @@
 //! Owned subprocesses. Closing stdin revokes their lifetime lease.
 use crate::runtime::Config;
 use std::{
-    io::{BufRead as _, BufReader, Write as _},
+    io::{BufRead as _, BufReader, Read as _, Write as _},
+    os::unix::process::ExitStatusExt as _,
     path::Path,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
@@ -10,6 +11,7 @@ use std::{
 };
 
 pub const ENTRYPOINT: &str = "__scorepeek-overlay";
+const MAX_DIAGNOSTIC_LINE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Default)]
 pub struct Children {
@@ -53,18 +55,7 @@ impl Children {
         let backend = name.clone();
         let reader = std::thread::Builder::new()
             .name("overlay-diagnostics".into())
-            .spawn(move || {
-                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                    if let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) {
-                        let mut records = observations
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if records.len() < 128 {
-                            records.push(serde_json::json!({"backend": backend, "record": record}));
-                        }
-                    }
-                }
-            });
+            .spawn(move || read_diagnostics(stdout, &observations, &backend));
         match reader {
             Ok(reader) => {
                 self.status.insert(name.clone(), "running");
@@ -107,6 +98,9 @@ impl Children {
                     if let Some(reader) = reader.take() {
                         let _ = reader.join();
                     }
+                    self.observations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                        serde_json::json!({"backend": name, "operation":"process_exit", "success":status.success(), "code":status.code(), "signal":status.signal()})
+                    );
                     exits.push(format!("{name} overlay exited: {status}"));
                     false
                 }
@@ -119,6 +113,9 @@ impl Children {
                     if let Some(reader) = reader.take() {
                         let _ = reader.join();
                     }
+                    self.observations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                        serde_json::json!({"backend": name, "operation":"process_wait", "error_type":"wait_failed", "error":error.to_string()})
+                    );
                     false
                 }
             });
@@ -155,6 +152,86 @@ impl Children {
             }
         }
     }
+}
+
+fn read_diagnostics(
+    stdout: impl std::io::Read,
+    observations: &Mutex<Vec<serde_json::Value>>,
+    backend: &str,
+) {
+    let mut expected_sequence = 1_u64;
+    let mut terminal_seen = false;
+    let mut reader = BufReader::new(stdout);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = match reader
+            .by_ref()
+            .take(MAX_DIAGNOSTIC_LINE_BYTES + 1)
+            .read_until(b'\n', &mut line)
+        {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) => {
+                push_observation(
+                    observations,
+                    serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"read_failed", "error":error.to_string()}),
+                );
+                return;
+            }
+        };
+        if read as u64 > MAX_DIAGNOSTIC_LINE_BYTES {
+            push_observation(
+                observations,
+                serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"record_too_large", "limit_bytes":MAX_DIAGNOSTIC_LINE_BYTES}),
+            );
+            return;
+        }
+        if line.last() != Some(&b'\n') {
+            push_observation(
+                observations,
+                serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"malformed_ndjson", "error":"incomplete terminal record"}),
+            );
+            break;
+        }
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        let observation = match serde_json::from_slice::<serde_json::Value>(&line) {
+            Ok(record) => {
+                let sequence = record["sequence"].as_u64();
+                if sequence != Some(expected_sequence) {
+                    push_observation(
+                        observations,
+                        serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"sequence_gap", "expected_sequence":expected_sequence, "actual_sequence":sequence}),
+                    );
+                }
+                expected_sequence = sequence.unwrap_or(expected_sequence).saturating_add(1);
+                terminal_seen |= record["operation"] == "child_exit";
+                serde_json::json!({"backend": backend, "record": record})
+            }
+            Err(error) => {
+                serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"malformed_ndjson", "error":error.to_string()})
+            }
+        };
+        push_observation(observations, observation);
+    }
+    push_observation(
+        observations,
+        if terminal_seen {
+            serde_json::json!({"backend": backend, "transport":"stdout", "operation":"eof"})
+        } else {
+            serde_json::json!({"backend": backend, "transport":"stdout", "operation":"eof", "error_type":"unexpected_eof"})
+        },
+    );
+}
+
+fn push_observation(observations: &Mutex<Vec<serde_json::Value>>, value: serde_json::Value) {
+    observations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(value);
 }
 
 impl Drop for Children {

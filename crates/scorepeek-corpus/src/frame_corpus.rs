@@ -5,7 +5,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Component, Path, PathBuf};
@@ -112,14 +112,57 @@ struct CanonicalRecordingManifest {
     completeness: String,
     ffmpeg_sha256: String,
     ffmpeg_version: String,
-    tick_index_sha256: String,
+    #[serde(default)]
+    tick_index_sha256: Option<String>,
     tick_count: usize,
     segments: Vec<CanonicalSegment>,
     dropped_frames: u64,
     completeness_reasons: Vec<String>,
     memory_limit_bytes: u64,
     memory_high_water_bytes: u64,
-    integrity_verification: String,
+    #[serde(default)]
+    integrity_verification: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CanonicalRecordingManifestV3 {
+    schema: String,
+    completeness: String,
+    ffmpeg_sha256: String,
+    ffmpeg_version: String,
+    tick_count: usize,
+    segments: Vec<CanonicalSegmentV3>,
+    dropped_frames: u64,
+    completeness_reasons: Vec<String>,
+    memory_limit_bytes: u64,
+    memory_high_water_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CanonicalSegmentV3 {
+    path: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    frames: usize,
+    bytes: u64,
+}
+
+struct RunSessionDiagnostic {
+    run_id: String,
+    capture_session_id: String,
+    capture_generation: u64,
+    profile_sha256: String,
+    normalizer_sha256: String,
+    catalog_sha256: String,
+    canonical_layout_sha256: String,
+    model_sha256: String,
+    runtime_sha256: String,
+    diagnostic_sha256: Option<String>,
+    observation_count: u64,
+    canonical: CanonicalRecordingManifestV3,
+    ticks: Vec<CanonicalTick>,
+    segment_digests: Vec<String>,
+    observations: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,8 +171,10 @@ struct CanonicalSegment {
     first_sequence: u64,
     last_sequence: u64,
     frames: usize,
-    raw_rgb24_sha256: String,
-    encoded_sha256: String,
+    #[serde(default)]
+    raw_rgb24_sha256: Option<String>,
+    #[serde(default)]
+    encoded_sha256: Option<String>,
     bytes: u64,
 }
 
@@ -211,7 +256,8 @@ impl Drop for OwnedStaging {
 #[serde(deny_unknown_fields)]
 struct CaptureSession {
     schema: String,
-    diagnostic_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_sha256: Option<String>,
     source_kind: SourceKind,
     source_session_id: String,
     capture_generation: u64,
@@ -249,7 +295,8 @@ struct CorpusArtifact {
 struct ReviewDraft {
     schema: String,
     session_sha256: String,
-    diagnostic_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_sha256: Option<String>,
     source_session_id: String,
     canonical_frames: Vec<ReviewFrame>,
     observation_count: u64,
@@ -455,7 +502,8 @@ struct ActiveSuite {
 #[derive(Debug, Serialize)]
 pub struct DiagnosticVerificationSummary {
     schema: &'static str,
-    diagnostic_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostic_sha256: Option<String>,
     session_id: String,
     artifact_count: usize,
     canonical_frame_count: usize,
@@ -466,7 +514,8 @@ pub struct DiagnosticVerificationSummary {
 pub struct DiagnosticImportSummary {
     schema: &'static str,
     session_sha256: String,
-    diagnostic_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostic_sha256: Option<String>,
     review_draft: PathBuf,
     canonical_frame_count: usize,
     local_segment_objects: u64,
@@ -474,6 +523,22 @@ pub struct DiagnosticImportSummary {
     remote_transferred_objects: u64,
     remote_reused_objects: u64,
     remote_segment_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RunImportReceipt {
+    schema: String,
+    store: PathBuf,
+    review_draft: PathBuf,
+    session_sha256: String,
+    canonical_frame_count: usize,
+    local_segment_objects: u64,
+    remote_segment_objects: u64,
+    remote_transferred_objects: u64,
+    remote_reused_objects: u64,
+    remote_segment_bytes: u64,
+    segment_paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -671,11 +736,14 @@ fn verify_canonical_diagnostic(
                 .unwrap_or_default()
         || !valid_sha256(&canonical.ffmpeg_sha256)
         || canonical.ffmpeg_version.is_empty()
-        || !valid_sha256(&canonical.tick_index_sha256)
+        || canonical
+            .tick_index_sha256
+            .as_deref()
+            .is_none_or(|sha256| !valid_sha256(sha256))
         || canonical.segments.len() > MAX_ARTIFACTS
         || !(128 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&canonical.memory_limit_bytes)
         || canonical.memory_high_water_bytes > canonical.memory_limit_bytes
-        || canonical.integrity_verification != "deferred_to_import"
+        || canonical.integrity_verification.as_deref() != Some("deferred_to_import")
         || (canonical.completeness == "complete"
             && (canonical.dropped_frames != 0 || !canonical.completeness_reasons.is_empty()))
     {
@@ -683,13 +751,12 @@ fn verify_canonical_diagnostic(
     }
     let tick_artifact = manifest_artifact(&manifest, "recognition/canonical-ticks.ndjson")?;
     let tick_path = path.join("recognition/canonical-ticks.ndjson");
-    if tick_artifact.sha256 != canonical.tick_index_sha256
-        || verify_file(
-            &tick_path,
-            &canonical.tick_index_sha256,
-            tick_artifact.bytes,
-        )
-        .is_err()
+    let tick_index_sha256 = canonical
+        .tick_index_sha256
+        .as_deref()
+        .expect("v2 validation requires a tick digest");
+    if tick_artifact.sha256 != tick_index_sha256
+        || verify_file(&tick_path, tick_index_sha256, tick_artifact.bytes).is_err()
     {
         return invalid("canonical tick index binding differs");
     }
@@ -726,8 +793,14 @@ fn verify_canonical_diagnostic(
         if segment.frames == 0
             || segment.frames > 600
             || segment.last_sequence < segment.first_sequence
-            || !valid_sha256(&segment.raw_rgb24_sha256)
-            || !valid_sha256(&segment.encoded_sha256)
+            || segment
+                .raw_rgb24_sha256
+                .as_deref()
+                .is_none_or(|sha256| !valid_sha256(sha256))
+            || segment
+                .encoded_sha256
+                .as_deref()
+                .is_none_or(|sha256| !valid_sha256(sha256))
             || segment.bytes == 0
             || segment.bytes > MAX_ARTIFACT_BYTES
         {
@@ -735,7 +808,9 @@ fn verify_canonical_diagnostic(
         }
         safe_relative(&segment.path)?;
         let artifact = manifest_artifact(&manifest, &format!("recognition/{}", segment.path))?;
-        if artifact.sha256 != segment.encoded_sha256 || artifact.bytes != segment.bytes {
+        if Some(artifact.sha256.as_str()) != segment.encoded_sha256.as_deref()
+            || artifact.bytes != segment.bytes
+        {
             return invalid("canonical segment artifact binding differs");
         }
         let expected = retained
@@ -754,7 +829,9 @@ fn verify_canonical_diagnostic(
             &path.join("recognition").join(&segment.path),
             segment.frames,
         )?;
-        if decoded_sha256 != segment.raw_rgb24_sha256 || decoded_frames != segment.frames {
+        if Some(decoded_sha256.as_str()) != segment.raw_rgb24_sha256.as_deref()
+            || decoded_frames != segment.frames
+        {
             return invalid("canonical segment lossless decode differs");
         }
         retained_offset = retained_offset.saturating_add(segment.frames);
@@ -765,7 +842,7 @@ fn verify_canonical_diagnostic(
     }
     Ok(DiagnosticVerificationSummary {
         schema: "scorepeek-private-diagnostic-verification-v2",
-        diagnostic_sha256: digest(manifest_bytes),
+        diagnostic_sha256: Some(digest(manifest_bytes)),
         session_id: manifest.session_id,
         artifact_count: manifest.artifacts.len(),
         canonical_frame_count: retained.len(),
@@ -1191,6 +1268,560 @@ fn hex_digest(bytes: &[u8]) -> String {
     encoded
 }
 
+pub fn verify_run_diagnostic(
+    run: &Path,
+    capture_session_id: &str,
+) -> Result<DiagnosticVerificationSummary, CorpusError> {
+    let verified = read_run_session_diagnostic(run, capture_session_id)?;
+    Ok(DiagnosticVerificationSummary {
+        schema: "scorepeek-run-diagnostic-verification-v1",
+        diagnostic_sha256: verified.diagnostic_sha256,
+        session_id: verified.capture_session_id,
+        artifact_count: verified.canonical.segments.len().saturating_add(3),
+        canonical_frame_count: verified
+            .ticks
+            .iter()
+            .filter(|tick| tick.disposition == "retained")
+            .count(),
+        observation_count: verified.observation_count,
+    })
+}
+
+pub fn import_run_diagnostic(
+    store: &Path,
+    run: &Path,
+    capture_session_id: &str,
+    review_draft: &Path,
+) -> Result<DiagnosticImportSummary, CorpusError> {
+    let remote = SegmentRemote::from_environment()?;
+    import_run_diagnostic_with_remote(
+        store,
+        run,
+        capture_session_id,
+        review_draft,
+        remote.as_ref(),
+    )
+}
+
+fn import_run_diagnostic_with_remote(
+    store: &Path,
+    run: &Path,
+    capture_session_id: &str,
+    review_draft: &Path,
+    remote: Option<&SegmentRemote>,
+) -> Result<DiagnosticImportSummary, CorpusError> {
+    let canonical_root = run
+        .join("sessions")
+        .join(capture_session_id)
+        .join("canonical");
+    let receipt_path = canonical_root.join("import-receipt.json");
+    if receipt_path.is_file() {
+        let (receipt, _) = read_json::<RunImportReceipt>(&receipt_path)?;
+        return finish_run_import_cleanup(store, review_draft, &canonical_root, &receipt);
+    }
+    let verified = read_run_session_diagnostic(run, capture_session_id)?;
+    ensure_store(store)?;
+    let retained = verified
+        .ticks
+        .iter()
+        .filter(|tick| tick.disposition == "retained")
+        .collect::<Vec<_>>();
+    let mut frames = Vec::with_capacity(retained.len());
+    let mut offset = 0usize;
+    let mut artifacts = Vec::new();
+    let binding_bytes = canonical_json(&serde_json::json!({
+        "schema":"scorepeek-imported-run-binding-v1",
+        "binding":{
+            "capture_profile_sha256":verified.profile_sha256,
+            "normalizer_sha256":verified.normalizer_sha256,
+            "canonical_layout_sha256":verified.canonical_layout_sha256,
+            "catalog_sha256":verified.catalog_sha256,
+            "model_sha256":verified.model_sha256,
+            "runtime_sha256":verified.runtime_sha256,
+        }
+    }))?;
+    let binding_sha256 = digest(&binding_bytes);
+    publish_object_bytes(store, &binding_sha256, &binding_bytes)?;
+    artifacts.push(CorpusArtifact {
+        kind: "run_binding".to_owned(),
+        source_path: "capture/run.json".to_owned(),
+        sha256: binding_sha256,
+        bytes: binding_bytes.len() as u64,
+    });
+    for (kind, source_name, corpus_name) in [
+        (
+            "canonical_manifest",
+            "canonical-manifest.json",
+            "recognition/canonical-manifest.json",
+        ),
+        (
+            "canonical_tick_index",
+            "canonical-ticks.ndjson",
+            "recognition/canonical-ticks.ndjson",
+        ),
+    ] {
+        let source = canonical_root.join(source_name);
+        let bytes = source.metadata()?.len();
+        if bytes > MAX_ARTIFACT_BYTES {
+            return invalid("canonical metadata artifact exceeds the corpus bound");
+        }
+        let sha256 = digest_file(&source)?;
+        publish_object(store, &source, &sha256, bytes)?;
+        artifacts.push(CorpusArtifact {
+            kind: kind.to_owned(),
+            source_path: corpus_name.to_owned(),
+            sha256,
+            bytes,
+        });
+    }
+    let mut local_segment_objects = 0_u64;
+    let mut remote_segment_objects = 0_u64;
+    let mut remote_segment_bytes = 0_u64;
+    for (segment, encoded_sha256) in verified
+        .canonical
+        .segments
+        .iter()
+        .zip(&verified.segment_digests)
+    {
+        let expected = retained
+            .get(offset..offset.saturating_add(segment.frames))
+            .ok_or_else(|| {
+                CorpusError::InvalidRequest(
+                    "canonical segment exceeds retained tick index".to_owned(),
+                )
+            })?;
+        for tick in expected {
+            frames.push(ReviewFrame {
+                sequence: tick.sequence,
+                artifact_sha256: encoded_sha256.clone(),
+            });
+        }
+        offset = offset.saturating_add(segment.frames);
+        let source = canonical_root.join(safe_relative(&segment.path)?);
+        if let Some(remote) = remote {
+            remote.upload_verified(File::open(&source)?, encoded_sha256, segment.bytes)?;
+            remote_segment_objects += 1;
+            remote_segment_bytes = remote_segment_bytes.saturating_add(segment.bytes);
+        } else {
+            publish_object(store, &source, encoded_sha256, segment.bytes)?;
+            local_segment_objects += 1;
+        }
+        artifacts.push(CorpusArtifact {
+            kind: "canonical_video_segment".to_owned(),
+            source_path: format!("recognition/{}", segment.path),
+            sha256: encoded_sha256.clone(),
+            bytes: segment.bytes,
+        });
+    }
+    if offset != retained.len() {
+        return invalid("canonical retained tick coverage differs");
+    }
+    if !verified.observations.is_empty() {
+        let sha256 = digest(&verified.observations);
+        publish_object_bytes(store, &sha256, &verified.observations)?;
+        artifacts.push(CorpusArtifact {
+            kind: "analysis".to_owned(),
+            source_path: "analysis/observations.ndjson".to_owned(),
+            sha256,
+            bytes: verified.observations.len() as u64,
+        });
+    }
+    let session = CaptureSession {
+        schema: SESSION_SCHEMA.to_owned(),
+        diagnostic_sha256: verified.diagnostic_sha256.clone(),
+        source_kind: SourceKind::LiveRun,
+        source_session_id: verified.capture_session_id.clone(),
+        capture_generation: verified.capture_generation,
+        profile_sha256: verified.profile_sha256,
+        catalog_sha256: verified.catalog_sha256,
+        recognition_interval_ms: 0,
+        processed_ticks: verified.ticks.len() as u64,
+        busy_skips: 0,
+        maximum_consecutive_busy_skips: 0,
+        completeness: "complete".to_owned(),
+        canonical_frames: frames.clone(),
+        normalization_pairs: Vec::new(),
+        artifacts,
+    };
+    let session_bytes = canonical_json(&session)?;
+    let session_sha256 = digest(&session_bytes);
+    let identity_key = canonical_json(&serde_json::json!({
+        "run_id": verified.run_id,
+        "capture_session_id": verified.capture_session_id,
+    }))?;
+    let identity_sha256 = digest(&identity_key);
+    publish_document(
+        &store
+            .join("identities")
+            .join(format!("{identity_sha256}.json")),
+        &canonical_json(&SessionIdentity {
+            schema: "scorepeek-private-capture-session-identity-v4",
+            source_session_id: &session.source_session_id,
+            capture_generation: session.capture_generation,
+            session_sha256: &session_sha256,
+        })?,
+    )?;
+    publish_document(
+        &store
+            .join("sessions")
+            .join(format!("{session_sha256}.json")),
+        &session_bytes,
+    )?;
+    let draft = ReviewDraft {
+        schema: DRAFT_SCHEMA.to_owned(),
+        session_sha256: session_sha256.clone(),
+        diagnostic_sha256: verified.diagnostic_sha256.clone(),
+        source_session_id: verified.capture_session_id,
+        canonical_frames: frames,
+        observation_count: verified.observation_count,
+        completeness: "complete".to_owned(),
+    };
+    publish_document(review_draft, &canonical_json(&draft)?)?;
+    let receipt = RunImportReceipt {
+        schema: "scorepeek-run-import-receipt-v1".to_owned(),
+        store: store.to_owned(),
+        review_draft: review_draft.to_owned(),
+        session_sha256,
+        canonical_frame_count: draft.canonical_frames.len(),
+        local_segment_objects,
+        remote_segment_objects,
+        remote_transferred_objects: remote.map_or(0, |remote| remote.metrics().transferred_objects),
+        remote_reused_objects: remote.map_or(0, |remote| remote.metrics().reused_objects),
+        remote_segment_bytes,
+        segment_paths: verified
+            .canonical
+            .segments
+            .iter()
+            .map(|segment| segment.path.clone())
+            .collect(),
+    };
+    publish_document(&receipt_path, &canonical_json(&receipt)?)?;
+    File::open(&canonical_root)?.sync_all()?;
+    finish_run_import_cleanup(store, review_draft, &canonical_root, &receipt)
+}
+
+fn finish_run_import_cleanup(
+    store: &Path,
+    review_draft: &Path,
+    canonical_root: &Path,
+    receipt: &RunImportReceipt,
+) -> Result<DiagnosticImportSummary, CorpusError> {
+    let session_path = store
+        .join("sessions")
+        .join(format!("{}.json", receipt.session_sha256));
+    if receipt.schema != "scorepeek-run-import-receipt-v1"
+        || receipt.store != store
+        || receipt.review_draft != review_draft
+        || !valid_sha256(&receipt.session_sha256)
+        || !review_draft.is_file()
+    {
+        return invalid("run import receipt binding is invalid");
+    }
+    let session_bytes = session_path.metadata()?.len();
+    verify_file(&session_path, &receipt.session_sha256, session_bytes)?;
+    let (draft, _) = read_json::<ReviewDraft>(review_draft)?;
+    if draft.session_sha256 != receipt.session_sha256 || draft.completeness != "complete" {
+        return invalid("run import receipt review binding is invalid");
+    }
+    let mut failures = Vec::new();
+    for segment in &receipt.segment_paths {
+        let path = canonical_root.join(safe_relative(segment)?);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if let Err(error) = File::open(canonical_root).and_then(|directory| directory.sync_all()) {
+        failures.push(format!("{}: {error}", canonical_root.display()));
+    }
+    if !failures.is_empty() {
+        return invalid(&format!(
+            "imported video cleanup is incomplete and can be retried: {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(DiagnosticImportSummary {
+        schema: "scorepeek-private-diagnostic-import-v4",
+        session_sha256: receipt.session_sha256.clone(),
+        diagnostic_sha256: None,
+        review_draft: review_draft.to_owned(),
+        canonical_frame_count: receipt.canonical_frame_count,
+        local_segment_objects: receipt.local_segment_objects,
+        remote_segment_objects: receipt.remote_segment_objects,
+        remote_transferred_objects: receipt.remote_transferred_objects,
+        remote_reused_objects: receipt.remote_reused_objects,
+        remote_segment_bytes: receipt.remote_segment_bytes,
+    })
+}
+
+fn read_run_session_diagnostic(
+    run: &Path,
+    capture_session_id: &str,
+) -> Result<RunSessionDiagnostic, CorpusError> {
+    if capture_session_id.is_empty()
+        || capture_session_id.contains('/')
+        || capture_session_id.contains("..")
+    {
+        return invalid("capture session ID is invalid");
+    }
+    let stream_path = run.join("diagnostics.ndjson");
+    let stream_file = File::open(&stream_path)?;
+    let mut reader = BufReader::new(stream_file);
+    let mut line = Vec::new();
+    let mut expected_sequence = 1_u64;
+    let mut run_id = None;
+    let mut started = None;
+    let mut completed = false;
+    let mut public_binding = None;
+    let mut observation_count = 0_u64;
+    let mut observations = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .by_ref()
+            .take(u64::try_from(MAX_NDJSON_RECORD_BYTES).unwrap_or(u64::MAX) + 1)
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        if read > MAX_NDJSON_RECORD_BYTES {
+            return invalid("diagnostic NDJSON record exceeds its byte bound");
+        }
+        if line.last() != Some(&b'\n') {
+            break;
+        }
+        let envelope: Value = serde_json::from_slice(&line)?;
+        if envelope["schema"] != "scorepeek-diagnostic-event-v1" {
+            return invalid("diagnostic stream schema is invalid");
+        }
+        if envelope["sequence"].as_u64() != Some(expected_sequence) {
+            return invalid("diagnostic stream sequence is not contiguous");
+        }
+        expected_sequence = expected_sequence.saturating_add(1);
+        let envelope_run = envelope["run_id"]
+            .as_str()
+            .ok_or_else(|| CorpusError::InvalidRequest("diagnostic run ID is absent".to_owned()))?;
+        if run_id.as_deref().is_some_and(|value| value != envelope_run) {
+            return invalid("diagnostic stream changes run ID");
+        }
+        run_id.get_or_insert_with(|| envelope_run.to_owned());
+        if envelope["operation"] == "public_event"
+            && envelope["data"]["public_event"]["capture"]["session_id"].as_str()
+                == Some(capture_session_id)
+        {
+            let binding = &envelope["data"]["public_event"]["capture"]["binding"];
+            public_binding = Some((
+                binding["capture_profile_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                binding["normalizer_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                binding["canonical_layout_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                binding["catalog_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                binding["model_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                binding["runtime_sha256"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            ));
+        }
+        if envelope["operation"] != "run_event" {
+            continue;
+        }
+        let event = &envelope["data"];
+        let matching = event["session_id"].as_str() == Some(capture_session_id);
+        match event["event"].as_str() {
+            Some("session_started") if matching => {
+                started = Some((
+                    event["capture_generation"].as_u64().ok_or_else(|| {
+                        CorpusError::InvalidRequest("capture generation is absent".to_owned())
+                    })?,
+                    event["capture_profile_sha256"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    event["normalizer_artifact_sha256"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                ));
+            }
+            Some("field_observation") if matching => {
+                observation_count = observation_count.saturating_add(1);
+                observations.extend_from_slice(&normalize_run_observation(event)?);
+                if observations.len() as u64 > MAX_CORPUS_OBSERVATION_BYTES {
+                    return invalid("diagnostic observation artifact exceeds the corpus bound");
+                }
+            }
+            Some("recording_completed") if matching => completed = true,
+            _ => {}
+        }
+    }
+    if !completed {
+        return invalid("session has no saved recording_completed terminal record");
+    }
+    let (capture_generation, profile_sha256, normalizer_sha256) = started.ok_or_else(|| {
+        CorpusError::InvalidRequest("session_started record is absent".to_owned())
+    })?;
+    let (
+        public_profile_sha256,
+        public_normalizer_sha256,
+        canonical_layout_sha256,
+        catalog_sha256,
+        model_sha256,
+        runtime_sha256,
+    ) = public_binding.ok_or_else(|| {
+        CorpusError::InvalidRequest("session catalog binding is absent".to_owned())
+    })?;
+    if public_profile_sha256 != profile_sha256
+        || public_normalizer_sha256 != normalizer_sha256
+        || !valid_sha256(&profile_sha256)
+        || !valid_sha256(&normalizer_sha256)
+        || !valid_sha256(&canonical_layout_sha256)
+        || !valid_sha256(&catalog_sha256)
+        || !valid_sha256(&model_sha256)
+        || !valid_sha256(&runtime_sha256)
+    {
+        return invalid("session binding is invalid");
+    }
+    let canonical_root = run
+        .join("sessions")
+        .join(capture_session_id)
+        .join("canonical");
+    let (canonical, _) =
+        read_json::<CanonicalRecordingManifestV3>(&canonical_root.join("canonical-manifest.json"))?;
+    if canonical.schema != "scorepeek-canonical-session-recording-v3"
+        || canonical.completeness != "complete"
+        || canonical.dropped_frames != 0
+        || !canonical.completeness_reasons.is_empty()
+        || !valid_sha256(&canonical.ffmpeg_sha256)
+        || canonical.ffmpeg_version.is_empty()
+        || canonical.memory_high_water_bytes > canonical.memory_limit_bytes
+    {
+        return invalid("canonical recording manifest is invalid");
+    }
+    let ticks = read_canonical_ticks(&canonical_root.join("canonical-ticks.ndjson"))?;
+    if ticks.len() != canonical.tick_count || ticks.is_empty() {
+        return invalid("canonical tick index count differs");
+    }
+    let mut segment_digests = Vec::with_capacity(canonical.segments.len());
+    let mut previous = None;
+    for tick in &ticks {
+        if !canonical_tick_follows(previous, tick) {
+            return invalid("canonical tick chronology is invalid");
+        }
+        previous = Some((tick.sequence, tick.monotonic_ms));
+    }
+    let retained_ticks = ticks
+        .iter()
+        .filter(|tick| tick.disposition == "retained")
+        .collect::<Vec<_>>();
+    let retained = retained_ticks.len();
+    if retained == 0 || canonical.segments.is_empty() {
+        return invalid("canonical recording has no video");
+    }
+    if canonical
+        .segments
+        .iter()
+        .map(|segment| segment.frames)
+        .sum::<usize>()
+        != retained
+    {
+        return invalid("canonical retained tick coverage differs");
+    }
+    let mut retained_offset = 0usize;
+    for segment in &canonical.segments {
+        if segment.frames == 0
+            || segment.frames > 600
+            || segment.last_sequence < segment.first_sequence
+        {
+            return invalid("canonical segment is invalid");
+        }
+        let expected = retained_ticks
+            .get(retained_offset..retained_offset.saturating_add(segment.frames))
+            .ok_or_else(|| {
+                CorpusError::InvalidRequest(
+                    "canonical segment exceeds retained tick index".to_owned(),
+                )
+            })?;
+        if expected.first().map(|tick| tick.sequence) != Some(segment.first_sequence)
+            || expected.last().map(|tick| tick.sequence) != Some(segment.last_sequence)
+        {
+            return invalid("canonical segment sequence binding differs");
+        }
+        retained_offset = retained_offset.saturating_add(segment.frames);
+        let path = canonical_root.join(safe_relative(&segment.path)?);
+        let metadata = path.metadata()?;
+        if metadata.len() != segment.bytes {
+            return invalid("canonical segment byte count differs");
+        }
+        let encoded = digest_file(&path)?;
+        let (_, decoded_frames) = decode_canonical_segment(&path, segment.frames)?;
+        if decoded_frames != segment.frames {
+            return invalid("canonical segment decode count differs");
+        }
+        segment_digests.push(encoded);
+    }
+    Ok(RunSessionDiagnostic {
+        run_id: run_id
+            .ok_or_else(|| CorpusError::InvalidRequest("diagnostic stream is empty".to_owned()))?,
+        capture_session_id: capture_session_id.to_owned(),
+        capture_generation,
+        profile_sha256,
+        normalizer_sha256,
+        catalog_sha256,
+        canonical_layout_sha256,
+        model_sha256,
+        runtime_sha256,
+        diagnostic_sha256: None,
+        observation_count,
+        canonical,
+        ticks,
+        segment_digests,
+        observations,
+    })
+}
+
+fn normalize_run_observation(event: &Value) -> Result<Vec<u8>, CorpusError> {
+    let sequence = event["sequence"].as_u64().ok_or_else(|| {
+        CorpusError::InvalidRequest("run observation sequence is invalid".to_owned())
+    })?;
+    let timestamp_ms = event["monotonic_end_ms"].as_u64().ok_or_else(|| {
+        CorpusError::InvalidRequest("run observation timestamp is invalid".to_owned())
+    })?;
+    let screen = event["screen"].as_str().ok_or_else(|| {
+        CorpusError::InvalidRequest("run observation screen is invalid".to_owned())
+    })?;
+    canonical_json(&serde_json::json!({
+        "schema":CORPUS_OBSERVATION_SCHEMA,
+        "tick_sequence":sequence,
+        "source_timestamp_ms":timestamp_ms,
+        "screen":screen,
+        "fields":event.get("fields").cloned().unwrap_or(Value::Null),
+        "decision":{
+            "result_song_resolution":event.get("result_song_resolution").cloned().unwrap_or(Value::Null),
+            "music_select_song_resolution":event.get("music_select_song_resolution").cloned().unwrap_or(Value::Null),
+            "parsed_result_fields":event.get("parsed_result_fields").cloned().unwrap_or(Value::Null),
+            "result_chart_resolution":event.get("result_chart_resolution").cloned().unwrap_or(Value::Null),
+            "result_performance_resolution":event.get("result_performance_resolution").cloned().unwrap_or(Value::Null),
+        },
+        "song_id":event.pointer("/song_resolution_presentation/selected/scorepeek_song_id").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 pub fn import_diagnostic(
     store: &Path,
     diagnostic: &Path,
@@ -1356,7 +1987,10 @@ fn import_canonical_diagnostic(
         for tick in expected {
             frames.push(ReviewFrame {
                 sequence: tick.sequence,
-                artifact_sha256: segment.encoded_sha256.clone(),
+                artifact_sha256: segment
+                    .encoded_sha256
+                    .clone()
+                    .expect("verified v2 manifest has an encoded digest"),
             });
         }
         offset = offset.saturating_add(segment.frames);
@@ -3660,7 +4294,9 @@ fn process_replay_segment(
     while !preprocessing.is_empty() {
         commit_replay_preprocessed(runtime, &mut preprocessing, true, outstanding_limit)?;
     }
-    if decoded_digest != segment.raw_rgb24_sha256 {
+    if let Some(expected) = &segment.raw_rgb24_sha256
+        && decoded_digest != *expected
+    {
         return invalid_replay("canonical segment decoded pixel digest differs");
     }
     runtime.retained_offset = runtime.retained_offset.saturating_add(segment.frames);
@@ -4232,7 +4868,9 @@ fn for_each_canonical_session_frame_with_activity(
                 observe(tick, pixels)
             },
         )?;
-        if decoded_digest != segment.raw_rgb24_sha256 {
+        if let Some(expected) = &segment.raw_rgb24_sha256
+            && decoded_digest != *expected
+        {
             return invalid_replay("canonical segment decoded pixel digest differs");
         }
         offset = offset.saturating_add(segment.frames);
@@ -5365,6 +6003,313 @@ mod tests {
     use object_store::memory::InMemory;
     use std::io::Seek as _;
 
+    #[test]
+    fn run_import_requires_the_selected_sessions_saved_completion_record() {
+        let root = tempfile::tempdir().unwrap();
+        let run_id = "run-1-0-1";
+        let session_id = "run-1-0-1-session-1";
+        let event = serde_json::json!({
+            "schema":"scorepeek-diagnostic-event-v1", "run_id":run_id, "sequence":1,
+            "observed_unix_us":1, "operation":"run_event", "data":{
+                "schema":"scorepeek-run-event-v12", "event":"session_started",
+                "session_id":session_id, "capture_generation":1,
+                "capture_profile_sha256":"1".repeat(64),
+                "normalizer_artifact_sha256":"2".repeat(64)
+            }
+        });
+        std::fs::write(
+            root.path().join("diagnostics.ndjson"),
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .unwrap();
+        let error = verify_run_diagnostic(root.path(), session_id).unwrap_err();
+        assert!(error.to_string().contains("recording_completed"));
+    }
+
+    #[test]
+    fn run_import_rejects_a_complete_manifest_without_video() {
+        let root = tempfile::tempdir().unwrap();
+        let run = root.path().join("run-1-0-1");
+        let session_id = "run-1-0-1-session-1";
+        let canonical = run.join("sessions").join(session_id).join("canonical");
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(
+            canonical.join("canonical-ticks.ndjson"),
+            b"{\"sequence\":1,\"source_sequence\":1,\"monotonic_ms\":100,\"screen\":\"unknown\",\"semantic_episode_id\":null,\"disposition\":\"elided\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            canonical.join("canonical-manifest.json"),
+            canonical_json(&serde_json::json!({
+                "schema":"scorepeek-canonical-session-recording-v3",
+                "completeness":"complete",
+                "ffmpeg_sha256":"4".repeat(64),
+                "ffmpeg_version":"test",
+                "tick_count":1,
+                "segments":[],
+                "dropped_frames":0,
+                "completeness_reasons":[],
+                "memory_limit_bytes":1_073_741_824_u64,
+                "memory_high_water_bytes":0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let records = [
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
+                    "schema":"scorepeek-run-event-v12", "event":"session_started",
+                    "session_id":session_id, "capture_generation":1,
+                    "capture_profile_sha256":"1".repeat(64),
+                    "normalizer_artifact_sha256":"2".repeat(64)
+                }
+            }),
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":2, "observed_unix_us":2, "operation":"public_event", "data":{
+                    "public_event":{"capture":{"session_id":session_id,"binding":{
+                        "capture_profile_sha256":"1".repeat(64),
+                        "normalizer_sha256":"2".repeat(64),
+                        "canonical_layout_sha256":"5".repeat(64),
+                        "catalog_sha256":"3".repeat(64),
+                        "model_sha256":"6".repeat(64),
+                        "runtime_sha256":"7".repeat(64)
+                    }}}
+                }
+            }),
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
+                    "schema":"scorepeek-run-event-v12", "event":"recording_completed",
+                    "session_id":session_id, "directory":canonical.parent().unwrap()
+                }
+            }),
+        ];
+        let mut stream = Vec::new();
+        for record in records {
+            serde_json::to_writer(&mut stream, &record).unwrap();
+            stream.push(b'\n');
+        }
+        fs::write(run.join("diagnostics.ndjson"), stream).unwrap();
+
+        let error = verify_run_diagnostic(&run, session_id).unwrap_err();
+        assert!(error.to_string().contains("no video"));
+    }
+
+    #[test]
+    fn run_import_preserves_video_and_replay_metadata_before_releasing_local_video() {
+        let root = tempfile::tempdir().unwrap();
+        let run = root.path().join("run-1-0-1");
+        let session_id = "run-1-0-1-session-1";
+        let canonical = run.join("sessions").join(session_id).join("canonical");
+        fs::create_dir_all(&canonical).unwrap();
+        let segment = canonical.join("segment-0000.mkv");
+        let mut child = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-video_size",
+                "1920x1080",
+                "-framerate",
+                "10",
+                "-i",
+                "pipe:0",
+                "-an",
+                "-c:v",
+                "libx264rgb",
+                "-crf",
+                "0",
+                "-preset",
+                "ultrafast",
+                "-frames:v",
+                "1",
+                "-f",
+                "matroska",
+                "pipe:1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(File::create(&segment).unwrap()))
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&vec![0; 1_920 * 1_080 * 3])
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let segment_bytes = segment.metadata().unwrap().len();
+        fs::write(
+            canonical.join("canonical-ticks.ndjson"),
+            b"{\"sequence\":1,\"source_sequence\":1,\"monotonic_ms\":100,\"screen\":\"result\",\"semantic_episode_id\":1,\"disposition\":\"retained\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            canonical.join("canonical-manifest.json"),
+            canonical_json(&serde_json::json!({
+                "schema":"scorepeek-canonical-session-recording-v3",
+                "completeness":"complete",
+                "ffmpeg_sha256":"4".repeat(64),
+                "ffmpeg_version":"test",
+                "tick_count":1,
+                "segments":[{
+                    "path":"segment-0000.mkv", "first_sequence":1,
+                    "last_sequence":1, "frames":1, "bytes":segment_bytes
+                }],
+                "dropped_frames":0,
+                "completeness_reasons":[],
+                "memory_limit_bytes":1_073_741_824_u64,
+                "memory_high_water_bytes":6_220_800_u64
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let records = [
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
+                    "schema":"scorepeek-run-event-v12", "event":"session_started",
+                    "session_id":session_id, "capture_generation":1,
+                    "capture_profile_sha256":"1".repeat(64),
+                    "normalizer_artifact_sha256":"2".repeat(64)
+                }
+            }),
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":2, "observed_unix_us":2, "operation":"public_event", "data":{
+                    "public_event":{"capture":{"session_id":session_id,"binding":{
+                        "capture_profile_sha256":"1".repeat(64),
+                        "normalizer_sha256":"2".repeat(64),
+                        "canonical_layout_sha256":"5".repeat(64),
+                        "catalog_sha256":"3".repeat(64),
+                        "model_sha256":"6".repeat(64),
+                        "runtime_sha256":"7".repeat(64)
+                    }}}
+                }
+            }),
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
+                    "schema":"scorepeek-run-event-v12", "event":"field_observation",
+                    "session_id":session_id, "capture_generation":1, "sequence":1,
+                    "monotonic_start_ms":90, "monotonic_end_ms":100, "screen":"result",
+                    "fields":{"screen":"result"},
+                    "result_song_resolution":{"status":"accepted"},
+                    "music_select_song_resolution":{"status":"unknown"},
+                    "song_resolution_presentation":{"status":"unknown","selected":null}
+                }
+            }),
+            serde_json::json!({
+                "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
+                "sequence":4, "observed_unix_us":4, "operation":"run_event", "data":{
+                    "schema":"scorepeek-run-event-v12", "event":"recording_completed",
+                    "session_id":session_id, "directory":canonical.parent().unwrap()
+                }
+            }),
+        ];
+        let mut stream = Vec::new();
+        for record in records {
+            serde_json::to_writer(&mut stream, &record).unwrap();
+            stream.push(b'\n');
+        }
+        fs::write(run.join("diagnostics.ndjson"), stream).unwrap();
+
+        let store = root.path().join("store");
+        let draft = root.path().join("review.json");
+        let verification = verify_run_diagnostic(&run, session_id).unwrap();
+        assert!(
+            serde_json::to_value(verification)
+                .unwrap()
+                .get("diagnostic_sha256")
+                .is_none()
+        );
+        let summary =
+            import_run_diagnostic_with_remote(&store, &run, session_id, &draft, None).unwrap();
+        assert!(
+            serde_json::to_value(&summary)
+                .unwrap()
+                .get("diagnostic_sha256")
+                .is_none()
+        );
+        let (session, _) = read_json::<CaptureSession>(
+            &store
+                .join("sessions")
+                .join(format!("{}.json", summary.session_sha256)),
+        )
+        .unwrap();
+        assert!(
+            session
+                .artifacts
+                .iter()
+                .any(|artifact| { artifact.source_path == "recognition/canonical-manifest.json" })
+        );
+        assert!(
+            session
+                .artifacts
+                .iter()
+                .any(|artifact| { artifact.source_path == "recognition/canonical-ticks.ndjson" })
+        );
+        assert!(
+            session
+                .artifacts
+                .iter()
+                .any(|artifact| { artifact.source_path == "recognition/segment-0000.mkv" })
+        );
+        assert!(
+            session
+                .artifacts
+                .iter()
+                .any(|artifact| { artifact.source_path == "capture/run.json" })
+        );
+        let binding = session_binding(&store, &session).unwrap();
+        assert_eq!(binding.capture_profile_sha256, "1".repeat(64));
+        assert_eq!(binding.normalizer_sha256, "2".repeat(64));
+        let (manifest, _) = read_json::<CanonicalRecordingManifest>(
+            &session_object_for_source(&store, &session, "recognition/canonical-manifest.json")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.schema, "scorepeek-canonical-session-recording-v3");
+        assert!(manifest.segments[0].raw_rgb24_sha256.is_none());
+        assert!(
+            session_object_for_source(&store, &session, "recognition/segment-0000.mkv")
+                .unwrap()
+                .is_file()
+        );
+        let analysis = session
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.source_path == "analysis/observations.ndjson")
+            .unwrap();
+        let analysis: Value = serde_json::from_slice(
+            &fs::read(store.join("objects").join(&analysis.sha256)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(analysis["schema"], CORPUS_OBSERVATION_SCHEMA);
+        assert_eq!(analysis["tick_sequence"], 1);
+        assert!(analysis.get("event").is_none());
+        assert!(!segment.exists());
+        assert!(canonical.join("import-receipt.json").is_file());
+        fs::write(&segment, b"leftover already transferred segment").unwrap();
+        let repeated =
+            import_run_diagnostic_with_remote(&store, &run, session_id, &draft, None).unwrap();
+        assert_eq!(repeated.session_sha256, summary.session_sha256);
+        assert!(!segment.exists());
+        assert!(run.join("diagnostics.ndjson").exists());
+    }
+
     fn diagnostic_manifest() -> DiagnosticManifest {
         DiagnosticManifest {
             schema: DIAGNOSTIC_SCHEMA.to_owned(),
@@ -5600,7 +6545,7 @@ mod tests {
         };
         let session = CaptureSession {
             schema: SESSION_SCHEMA.to_owned(),
-            diagnostic_sha256: "1".repeat(64),
+            diagnostic_sha256: Some("1".repeat(64)),
             source_kind: SourceKind::LiveRun,
             source_session_id: "session".to_owned(),
             capture_generation: 1,
@@ -5658,7 +6603,7 @@ mod tests {
         };
         let session = CaptureSession {
             schema: SESSION_SCHEMA.to_owned(),
-            diagnostic_sha256: "1".repeat(64),
+            diagnostic_sha256: Some("1".repeat(64)),
             source_kind: SourceKind::LiveRun,
             source_session_id: "session".to_owned(),
             capture_generation: 1,
@@ -5709,7 +6654,7 @@ mod tests {
         };
         let session = CaptureSession {
             schema: SESSION_SCHEMA.to_owned(),
-            diagnostic_sha256: "1".repeat(64),
+            diagnostic_sha256: Some("1".repeat(64)),
             source_kind: SourceKind::LiveRun,
             source_session_id: "session".to_owned(),
             capture_generation: 1,
@@ -6016,7 +6961,7 @@ mod tests {
 
         let session = CaptureSession {
             schema: SESSION_SCHEMA.to_owned(),
-            diagnostic_sha256: "2".repeat(64),
+            diagnostic_sha256: Some("2".repeat(64)),
             source_kind: SourceKind::LiveRun,
             source_session_id: "segment-backed".to_owned(),
             capture_generation: 1,
@@ -6221,7 +7166,7 @@ mod tests {
         let draft = ReviewDraft {
             schema: DRAFT_SCHEMA.to_owned(),
             session_sha256: session_sha256.clone(),
-            diagnostic_sha256: "2".repeat(64),
+            diagnostic_sha256: Some("2".repeat(64)),
             source_session_id: "session".to_owned(),
             canonical_frames: vec![ReviewFrame {
                 sequence: 1,
@@ -6259,7 +7204,7 @@ mod tests {
         let draft = ReviewDraft {
             schema: DRAFT_SCHEMA.to_owned(),
             session_sha256: digest.clone(),
-            diagnostic_sha256: "2".repeat(64),
+            diagnostic_sha256: Some("2".repeat(64)),
             source_session_id: "session".to_owned(),
             canonical_frames: vec![ReviewFrame {
                 sequence: 1,

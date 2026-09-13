@@ -9,7 +9,6 @@ use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::diagnostic_control::DiagnosticStoreLease;
 use crate::publish_private_file;
 
 pub const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 100;
@@ -510,7 +509,6 @@ pub struct ActiveDiagnosticRecorder {
 }
 
 enum DiagnosticCapacityLease {
-    Store(DiagnosticStoreLease),
     Isolated {
         managed_bytes: u64,
         maximum_bytes: u64,
@@ -520,7 +518,6 @@ enum DiagnosticCapacityLease {
 impl DiagnosticCapacityLease {
     fn reserve(&mut self, additional_bytes: u64) -> Result<(), DiagnosticErrorType> {
         match self {
-            Self::Store(lease) => lease.reserve(additional_bytes),
             Self::Isolated {
                 managed_bytes,
                 maximum_bytes,
@@ -539,7 +536,6 @@ impl DiagnosticCapacityLease {
 
     fn release(&mut self, bytes: u64) {
         match self {
-            Self::Store(lease) => lease.release(bytes),
             Self::Isolated { managed_bytes, .. } => {
                 *managed_bytes = managed_bytes
                     .checked_sub(bytes)
@@ -713,7 +709,7 @@ impl DiagnosticRecorder {
         directory_name: &str,
         descriptor: &DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
-        managed_store: bool,
+        _managed_store: bool,
     ) -> Self {
         if !policy.enabled {
             return Self::Disabled;
@@ -748,22 +744,9 @@ impl DiagnosticRecorder {
             policy: DiagnosticPolicyArtifact::from(&policy),
         };
         let start_bytes = canonical_json(&start).expect("typed diagnostic run must serialize");
-        let store_lease = if managed_store {
-            match DiagnosticStoreLease::acquire_for_run(
-                root,
-                &descriptor.run_id,
-                start_bytes.len() as u64,
-            ) {
-                Ok(lease) => DiagnosticCapacityLease::Store(lease),
-                Err(error_type) => {
-                    return Self::Degraded(DiagnosticDegradation { error_type });
-                }
-            }
-        } else {
-            DiagnosticCapacityLease::Isolated {
-                managed_bytes: start_bytes.len() as u64,
-                maximum_bytes: policy.maximum_run_bytes,
-            }
+        let store_lease = DiagnosticCapacityLease::Isolated {
+            managed_bytes: start_bytes.len() as u64,
+            maximum_bytes: policy.maximum_run_bytes,
         };
         let directory = root.join(directory_name);
         let mut builder = DirBuilder::new();
@@ -1664,9 +1647,6 @@ mod tests {
         let (header, decoded) = qoi::decode_to_vec(&encoded).unwrap();
         assert_eq!((header.width, header.height), (4, 2));
         assert_eq!(decoded, vec![17_u8; 24]);
-        let runs = crate::diagnostic_control::inspect_store(root.path()).unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_id, "paired-source-run");
     }
 
     #[test]

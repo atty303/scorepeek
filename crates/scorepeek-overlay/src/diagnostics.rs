@@ -1,6 +1,9 @@
 //! Private child-to-parent diagnostics, never the browser display protocol.
 use serde::Serialize;
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn emit(operation: &str, data: &impl Serialize) {
     let timestamp_unix_us = std::time::SystemTime::now()
@@ -8,6 +11,8 @@ pub(crate) fn emit(operation: &str, data: &impl Serialize) {
         .unwrap_or_default()
         .as_micros();
     let record = serde_json::json!({
+        "schema": "scorepeek-overlay-diagnostic-v1",
+        "sequence": NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         "timestamp_unix_us": timestamp_unix_us,
         "process_id": std::process::id(),
         "operation": operation,
@@ -22,6 +27,24 @@ pub(crate) fn emit(operation: &str, data: &impl Serialize) {
 /// # Errors
 /// Returns configuration or overlay errors after emitting the terminal diagnostic.
 pub fn run() -> Result<(), String> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_inner)).unwrap_or_else(
+        |payload| {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown overlay panic");
+            Err(format!("overlay panic: {message}"))
+        },
+    );
+    emit(
+        "child_exit",
+        &serde_json::json!({"success": result.is_ok(), "error": result.as_ref().err()}),
+    );
+    result
+}
+
+fn run_inner() -> Result<(), String> {
     let (config, input) = crate::runtime::read_config()?;
     emit(
         "canvases_loaded",
@@ -31,21 +54,8 @@ pub fn run() -> Result<(), String> {
             "canvas_ids": config.canvases.iter().map(|canvas| canvas.id.as_str()).collect::<Vec<_>>(),
         }),
     );
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match config.backend {
+    match config.backend {
         crate::runtime::Backend::Wayland => crate::native::run(config, input),
         crate::runtime::Backend::Obs => crate::web::run(config, input),
-    }))
-    .unwrap_or_else(|payload| {
-        let message = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or("unknown overlay panic");
-        Err(format!("overlay panic: {message}"))
-    });
-    emit(
-        "child_exit",
-        &serde_json::json!({"success": result.is_ok(), "error": result.as_ref().err()}),
-    );
-    result
+    }
 }

@@ -149,7 +149,7 @@ pub enum CanonicalRecordingCompleteness {
 
 #[derive(Debug)]
 pub struct CanonicalRecordingOutcome {
-    pub manifest_sha256: Option<String>,
+    pub manifest_published: bool,
     pub completeness: CanonicalRecordingCompleteness,
     pub final_health: RecordingHealthSnapshot,
 }
@@ -292,7 +292,7 @@ impl CanonicalRecordingWorker {
         } else {
             memory.mark_degraded();
             CanonicalRecordingOutcome {
-                manifest_sha256: None,
+                manifest_published: false,
                 completeness: CanonicalRecordingCompleteness::Partial,
                 final_health: health_snapshot(&memory, &dropped),
             }
@@ -338,8 +338,6 @@ struct SegmentRecord {
     first_sequence: u64,
     last_sequence: u64,
     frames: usize,
-    raw_rgb24_sha256: String,
-    encoded_sha256: String,
     bytes: u64,
 }
 
@@ -349,14 +347,12 @@ struct Manifest<'a> {
     completeness: CanonicalRecordingCompleteness,
     ffmpeg_sha256: String,
     ffmpeg_version: &'a str,
-    tick_index_sha256: String,
     tick_count: usize,
     segments: &'a [SegmentRecord],
     dropped_frames: u64,
     completeness_reasons: Vec<&'static str>,
     memory_limit_bytes: u64,
     memory_high_water_bytes: u64,
-    integrity_verification: &'static str,
 }
 
 #[allow(
@@ -371,7 +367,6 @@ struct Recorder {
     #[cfg(test)]
     ticks: Vec<TickRecord>,
     tick_index: Option<TickIndexWriter>,
-    tick_index_sha256: Option<String>,
     tick_count: usize,
     tick_index_failure: bool,
     segments: Vec<SegmentRecord>,
@@ -405,7 +400,6 @@ struct ToolIdentity {
 
 struct TickIndexWriter {
     file: File,
-    digest: Sha256,
     count: usize,
 }
 
@@ -417,11 +411,7 @@ impl TickIndexWriter {
             .mode(0o600)
             .open(path)
             .map_err(|error| format!("canonical tick index create failed: {error}"))?;
-        Ok(Self {
-            file,
-            digest: Sha256::new(),
-            count: 0,
-        })
+        Ok(Self { file, count: 0 })
     }
 
     fn write(&mut self, tick: &TickRecord) -> Result<(), String> {
@@ -431,16 +421,15 @@ impl TickIndexWriter {
         self.file
             .write_all(&bytes)
             .map_err(|error| format!("canonical tick index write failed: {error}"))?;
-        self.digest.update(&bytes);
         self.count = self.count.saturating_add(1);
         Ok(())
     }
 
-    fn finish(self) -> Result<(String, usize), String> {
+    fn finish(self) -> Result<usize, String> {
         self.file
             .sync_all()
             .map_err(|error| format!("canonical tick index sync failed: {error}"))?;
-        Ok((hex_digest(self.digest.finalize().as_slice()), self.count))
+        Ok(self.count)
     }
 }
 
@@ -461,7 +450,6 @@ impl Recorder {
             #[cfg(test)]
             ticks: Vec::new(),
             tick_index,
-            tick_index_sha256: None,
             tick_count: 0,
             tick_index_failure: false,
             segments: Vec::new(),
@@ -495,14 +483,14 @@ impl Recorder {
         self.dropped_frames = self
             .dropped_frames
             .saturating_add(self.external_dropped.load(Ordering::Relaxed));
-        let completeness = if self.partial || self.dropped_frames > 0 {
+        let completeness = if self.partial || self.dropped_frames > 0 || self.tick_count == 0 {
             CanonicalRecordingCompleteness::Partial
         } else {
             CanonicalRecordingCompleteness::Complete
         };
-        let manifest_sha256 = self.publish(completeness).ok();
+        let manifest_published = self.publish(completeness).is_ok();
         CanonicalRecordingOutcome {
-            manifest_sha256,
+            manifest_published,
             completeness,
             final_health: health_snapshot(&self.memory, &self.external_dropped),
         }
@@ -692,8 +680,7 @@ impl Recorder {
         let Some(writer) = self.tick_index.take() else {
             return;
         };
-        if let Ok((digest, count)) = writer.finish() {
-            self.tick_index_sha256 = Some(digest);
+        if let Ok(count) = writer.finish() {
             self.tick_count = count;
         } else {
             self.partial = true;
@@ -702,7 +689,7 @@ impl Recorder {
         }
     }
 
-    fn publish(&self, completeness: CanonicalRecordingCompleteness) -> Result<String, String> {
+    fn publish(&self, completeness: CanonicalRecordingCompleteness) -> Result<(), String> {
         let mut completeness_reasons = Vec::new();
         if self.dropped_frames > 0 {
             completeness_reasons.push("frame_loss");
@@ -719,28 +706,29 @@ impl Recorder {
         if self.tick_index_failure {
             completeness_reasons.push("tick_index_failure");
         }
+        if self.tick_count == 0 {
+            completeness_reasons.push("no_canonical_ticks");
+        }
         let manifest = Manifest {
-            schema: "scorepeek-canonical-session-recording-v2",
+            schema: "scorepeek-canonical-session-recording-v3",
             completeness,
             ffmpeg_sha256: self.ffmpeg.sha256.clone(),
             ffmpeg_version: &self.ffmpeg.version,
-            tick_index_sha256: self
-                .tick_index_sha256
-                .clone()
-                .unwrap_or_else(|| "0".repeat(64)),
             tick_count: self.tick_count,
             segments: &self.segments,
             dropped_frames: self.dropped_frames,
             completeness_reasons,
             memory_limit_bytes: self.memory.limit,
             memory_high_water_bytes: self.memory.high_water.load(Ordering::Relaxed),
-            integrity_verification: "deferred_to_import",
         };
         let mut bytes = serde_json::to_vec(&manifest)
             .map_err(|_| "canonical manifest serialization failed".to_owned())?;
         bytes.push(b'\n');
         write_new(&self.directory.join("canonical-manifest.json"), &bytes)?;
-        Ok(digest_bytes(&bytes))
+        File::open(&self.directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("canonical recording directory sync failed: {error}"))?;
+        Ok(())
     }
 }
 
@@ -751,7 +739,6 @@ struct SegmentEncoder {
     first_sequence: u64,
     last_sequence: u64,
     frames: usize,
-    raw_digest: Sha256,
     stderr: JoinHandle<Vec<u8>>,
     _stderr_memory: MemoryReservation,
 }
@@ -860,7 +847,6 @@ impl SegmentEncoder {
             first_sequence,
             last_sequence: first_sequence,
             frames: 0,
-            raw_digest: Sha256::new(),
             stderr,
             _stderr_memory: stderr_memory,
         })
@@ -871,7 +857,6 @@ impl SegmentEncoder {
             .as_ref()
             .ok_or_else(|| "ffmpeg stdin closed".to_owned())?
             .write(Arc::clone(&frame.pixels))?;
-        self.raw_digest.update(frame.pixels.as_ref());
         self.last_sequence = frame.sequence;
         self.frames += 1;
         Ok(())
@@ -911,25 +896,19 @@ impl SegmentEncoder {
                 return Err(error.to_string());
             }
         };
-        let raw_rgb24_sha256 = hex_digest(self.raw_digest.finalize().as_slice());
+        if let Err(error) = File::open(&self.path).and_then(|file| file.sync_all()) {
+            let _ = std::fs::remove_file(&self.path);
+            return Err(format!("canonical segment sync failed: {error}"));
+        }
         let Some(filename) = self.path.file_name().and_then(|name| name.to_str()) else {
             let _ = std::fs::remove_file(&self.path);
             return Err("segment filename invalid".to_owned());
-        };
-        let encoded_sha256 = match digest_file(&self.path) {
-            Ok(digest) => digest,
-            Err(error) => {
-                let _ = std::fs::remove_file(&self.path);
-                return Err(error);
-            }
         };
         Ok(SegmentRecord {
             path: filename.to_owned(),
             first_sequence: self.first_sequence,
             last_sequence: self.last_sequence,
             frames: self.frames,
-            raw_rgb24_sha256,
-            encoded_sha256,
             bytes: metadata.len(),
         })
     }
@@ -1020,6 +999,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("canonical artifact write failed: {error}"))
 }
 
+#[cfg(test)]
 fn digest_bytes(bytes: &[u8]) -> String {
     hex_digest(Sha256::digest(bytes).as_slice())
 }
@@ -1306,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_index_is_streamed_with_a_digest_and_count() {
+    fn tick_index_is_streamed_with_a_count() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ticks.ndjson");
         let mut writer = TickIndexWriter::create(&path).unwrap();
@@ -1319,13 +1299,41 @@ mod tests {
             disposition: "retained",
         };
         writer.write(&tick).unwrap();
-        let (actual_digest, count) = writer.finish().unwrap();
+        let count = writer.finish().unwrap();
         let bytes = std::fs::read(path).unwrap();
 
         assert_eq!(count, 1);
-        assert_eq!(actual_digest, digest_bytes(&bytes));
         assert!(bytes.ends_with(b"\n"));
         assert!(!bytes[..bytes.len() - 1].contains(&b'\n'));
+    }
+
+    #[test]
+    fn session_without_a_canonical_tick_is_partial_and_not_importable() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = CanonicalRecordingWorker::start_named(
+            root.path(),
+            "canonical",
+            RecordingMemoryLimit::default_limit(),
+        )
+        .unwrap();
+        let outcome = worker.finish();
+        assert_eq!(
+            outcome.completeness,
+            CanonicalRecordingCompleteness::Partial
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.path().join("canonical/canonical-manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["tick_count"], 0);
+        assert_eq!(manifest["completeness"], "partial");
+        assert!(
+            manifest["completeness_reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reason| reason == "no_canonical_ticks")
+        );
     }
 
     #[test]
@@ -1355,13 +1363,9 @@ mod tests {
         assert_eq!(segment.frames, 1);
         assert_eq!(segment.first_sequence, 7);
         assert_eq!(segment.last_sequence, 7);
-        assert_eq!(
-            segment.raw_rgb24_sha256,
-            digest_bytes(frame.pixels.as_ref())
-        );
         let (decoded_digest, decoded_frames) =
             decode_segment(&ffmpeg.path, &root.path().join(&segment.path)).unwrap();
-        assert_eq!(decoded_digest, segment.raw_rgb24_sha256);
+        assert_eq!(decoded_digest, digest_bytes(frame.pixels.as_ref()));
         assert_eq!(decoded_frames, segment.frames);
     }
 

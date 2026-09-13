@@ -292,7 +292,7 @@ impl PublicState {
                 | RunEventKind::PlayAttemptChanged { .. }
                 | RunEventKind::RecordingHealthChanged { .. }
                 | RunEventKind::RecordingFinalizing { .. }
-                | RunEventKind::RecordingReady { .. }
+                | RunEventKind::RecordingCompleted { .. }
         )
     }
 
@@ -510,7 +510,7 @@ impl PublicState {
                     self.status.capture.clone(),
                 )
             }
-            RunEventKind::RecordingReady { .. } => {
+            RunEventKind::RecordingCompleted { .. } => {
                 self.status.recording = Some(Readiness::Ready);
                 (
                     EventKind::StatusChanged {

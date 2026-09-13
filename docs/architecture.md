@@ -117,11 +117,9 @@ are in [overlay visual debugging](overlay-visual-debugging.md).
 
 ## Diagnostics and private corpus
 
-`--record` adds bounded structured capture, recognition, event, and canonical
-recording artifacts without changing recognition or event authority. A
-recording failure degrades evidence completeness but does not alter a result.
-Diagnostic store ownership, retention, freeze, delete, export, and recovery are
-defined in [diagnostic controls](diagnostic-controls.md).
+Every `run` writes one invocation-level structured diagnostic stream without changing recognition
+or event authority. `--record` adds canonical video only. The separate live socket, 128 MiB ring,
+disk degradation, and ten-generation policy are defined in [runtime diagnostics](diagnostics.md).
 
 The private corpus imports complete operator-reviewed sessions, retains
 metadata locally, optionally stores canonical Matroska segments in a configured

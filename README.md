@@ -24,8 +24,8 @@ The current Rust runtime:
   supplements in SQLite;
 - renders independent Wayland and OBS overlays from installable Wasm/CSS skin
   packages; and
-- optionally records bounded diagnostics and canonical sessions for private
-  corpus replay.
+- always records bounded structured diagnostics and, with `--record`, adds
+  canonical video sessions for private corpus replay.
 
 The Gamescope runtime, recognition, score persistence, and overlay paths have
 also been exercised on the target machine. Browser integration, fake Wayland,
@@ -160,17 +160,15 @@ for exactly one Gamescope video source and stays alive across sequential source
 lifetimes. It does not start, stop, signal, or restart the operator's ordinary
 Gamescope, Steam, or game processes.
 
-Recording is disabled by default. Add `--record` to retain structured
-capture, recognition, event, and canonical replay artifacts. The shared
-recording-memory limit defaults to 1024 MiB:
+Structured diagnostics are always retained. Add `--record` only to retain lossless canonical
+video. The video recording-memory limit defaults to 1024 MiB:
 
 ```text
 scorepeek run --profile bazzite-4k --record --record-memory-mib 2048
 ```
 
-Recording loss marks evidence degraded but does not change recognition,
-events, or score persistence. See [private corpus](docs/private-corpus.md) and
-[diagnostic controls](docs/diagnostic-controls.md).
+Diagnostic or recording loss does not change recognition, events, or score persistence. See
+[runtime diagnostics](docs/diagnostics.md) and [private corpus](docs/private-corpus.md).
 
 ## Events and scores
 

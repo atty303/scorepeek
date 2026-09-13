@@ -16,9 +16,6 @@ use crate::{calibration_marker, capture_calibration};
 
 const MAX_PROFILE_BYTES: u64 = 64 * 1024;
 const PROFILE_STAGING_SUFFIX: &str = ".scorepeek-staging";
-const MAX_JOINED_SESSION_GENERATIONS: usize = 8;
-const MAX_JOINED_SESSION_AGGREGATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_JOINED_SESSION_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 pub struct SelectedProfile {
     pub path: PathBuf,
@@ -88,17 +85,12 @@ pub fn select_for_run(name: Option<&OsStr>) -> Result<SelectedProfile, String> {
 }
 
 pub struct RoutineStatePaths {
-    pub diagnostic_session_store: PathBuf,
-    recording_staging_store: PathBuf,
     pub recording_enabled: bool,
     _run_lock: File,
 }
 
 pub struct RoutineSessionPaths {
     pub root: PathBuf,
-    pub capture_root: PathBuf,
-    pub capture_directory: PathBuf,
-    pub recognition_directory: PathBuf,
 }
 
 impl RoutineSessionPaths {
@@ -106,12 +98,12 @@ impl RoutineSessionPaths {
         let parent = self
             .root
             .parent()
-            .ok_or_else(|| "recording staging session has no parent".to_owned())?;
+            .ok_or_else(|| "recording session has no parent".to_owned())?;
         fs::remove_dir_all(&self.root)
-            .map_err(|error| format!("recording staging cleanup failed: {error}"))?;
+            .map_err(|error| format!("recording session cleanup failed: {error}"))?;
         File::open(parent)
             .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("recording staging cleanup sync failed: {error}"))
+            .map_err(|error| format!("recording session cleanup sync failed: {error}"))
     }
 }
 
@@ -134,107 +126,26 @@ pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String>
     run_lock
         .try_lock()
         .map_err(|error| format!("ordinary run lock could not be acquired: {error}"))?;
-    let diagnostic_session_store = scorepeek.join("diagnostic-sessions");
-    let recording_staging_store = scorepeek.join("recording-staging");
-    if recording_enabled {
-        ensure_directory_tree(&diagnostic_session_store)?;
-        ensure_directory_tree(&recording_staging_store)?;
-        ensure_session_store_capacity(&diagnostic_session_store, "joined diagnostic")?;
-        ensure_session_store_capacity(&recording_staging_store, "recording staging")?;
-    }
     Ok(RoutineStatePaths {
-        diagnostic_session_store,
-        recording_staging_store,
         recording_enabled,
         _run_lock: run_lock,
     })
 }
 
-fn ensure_session_store_capacity(root: &Path, label: &str) -> Result<(), String> {
-    let mut entries = Vec::new();
-    for entry in
-        fs::read_dir(root).map_err(|error| format!("{label} store could not be read: {error}"))?
-    {
-        let entry = entry.map_err(|error| format!("{label} entry failed: {error}"))?;
-        let metadata = entry
-            .path()
-            .symlink_metadata()
-            .map_err(|error| format!("{label} entry inspection failed: {error}"))?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(format!("{label} store contains an unexpected entry"));
-        }
-        entries.push((
-            metadata
-                .modified()
-                .map_err(|error| format!("{label} mtime failed: {error}"))?,
-            entry.path(),
-            directory_bytes(&entry.path(), label)?,
-        ));
-    }
-    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    let mut bytes = entries.iter().try_fold(0u64, |total, entry| {
-        total
-            .checked_add(entry.2)
-            .ok_or_else(|| format!("{label} byte count overflowed"))
-    })?;
-    while entries.len() >= MAX_JOINED_SESSION_GENERATIONS
-        || bytes > MAX_JOINED_SESSION_AGGREGATE_BYTES - MAX_JOINED_SESSION_BYTES
-    {
-        let (_, oldest, removed_bytes) = entries.remove(0);
-        fs::remove_dir_all(&oldest)
-            .map_err(|error| format!("old {label} removal failed: {error}"))?;
-        File::open(root)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("{label} store sync failed: {error}"))?;
-        bytes = bytes.saturating_sub(removed_bytes);
-    }
-    Ok(())
-}
-
-fn directory_bytes(root: &Path, label: &str) -> Result<u64, String> {
-    let mut total = 0u64;
-    let mut pending = vec![root.to_owned()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| format!("{label} directory could not be read: {error}"))?
-        {
-            let entry = entry.map_err(|error| format!("{label} file failed: {error}"))?;
-            let metadata = entry
-                .path()
-                .symlink_metadata()
-                .map_err(|error| format!("{label} file could not be inspected: {error}"))?;
-            if metadata.file_type().is_symlink() {
-                return Err(format!("{label} session contains a symlink"));
-            }
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else if metadata.is_file() {
-                total = total
-                    .checked_add(metadata.len())
-                    .ok_or_else(|| format!("{label} byte count overflowed"))?;
-            } else {
-                return Err(format!("{label} session contains a special file"));
-            }
-        }
-    }
-    Ok(total)
-}
-
 impl RoutineStatePaths {
-    pub fn recording_staging_store(&self) -> Option<PathBuf> {
-        self.recording_enabled
-            .then(|| self.recording_staging_store.clone())
-    }
-
     pub fn start_recording_session(
         &self,
+        run_root: Option<&Path>,
         session_id: &str,
     ) -> Result<Option<RoutineSessionPaths>, String> {
         if !self.recording_enabled {
             return Ok(None);
         }
-        ensure_session_store_capacity(&self.recording_staging_store, "recording staging")?;
-        create_recording_session(&self.recording_staging_store, session_id).map(Some)
+        let run_root =
+            run_root.ok_or_else(|| "diagnostic run directory is unavailable".to_owned())?;
+        let sessions = run_root.join("sessions");
+        ensure_directory_tree(&sessions)?;
+        create_recording_session(&sessions, session_id).map(Some)
     }
 }
 
@@ -252,7 +163,7 @@ fn create_recording_session_with_sync(
     builder.mode(0o700);
     builder
         .create(&session_root)
-        .map_err(|error| format!("recording staging session creation failed: {error}"))?;
+        .map_err(|error| format!("recording session creation failed: {error}"))?;
     if let Err(error) = sync(&session_root) {
         let _ = fs::remove_dir(&session_root);
         let _ = File::open(root).and_then(|directory| directory.sync_all());
@@ -262,12 +173,7 @@ fn create_recording_session_with_sync(
 }
 
 fn recording_session_paths(root: PathBuf) -> RoutineSessionPaths {
-    RoutineSessionPaths {
-        capture_root: root.clone(),
-        capture_directory: root.join("capture"),
-        recognition_directory: root.join("recognition"),
-        root,
-    }
+    RoutineSessionPaths { root }
 }
 
 fn setup_gamescope(name: &OsStr, arguments: &[OsString], bundle: &Path) -> Result<(), String> {
@@ -507,7 +413,7 @@ fn gamescope_arguments(arguments: &[OsString]) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
-fn ensure_directory_tree(path: &Path) -> Result<(), String> {
+pub(crate) fn ensure_directory_tree(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("capture profile directory must be absolute".to_owned());
     }
@@ -626,10 +532,8 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_JOINED_SESSION_GENERATIONS, create_recording_session,
-        create_recording_session_with_sync, ensure_directory_tree, ensure_session_store_capacity,
+        create_recording_session, create_recording_session_with_sync, ensure_directory_tree,
         gamescope_arguments, load_profiles_from, profile_name, publish_create_only, read_profile,
-        recording_session_paths,
     };
     use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::symlink;
@@ -772,33 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn session_store_reclaims_the_oldest_generation_at_capacity() {
-        let temporary = tempfile::tempdir().unwrap();
-        for index in 0..MAX_JOINED_SESSION_GENERATIONS {
-            let generation = temporary.path().join(format!("run-{index}"));
-            std::fs::create_dir(&generation).unwrap();
-            std::fs::write(generation.join("manifest.json"), b"complete").unwrap();
-        }
-        ensure_session_store_capacity(temporary.path(), "test session").unwrap();
-        assert_eq!(
-            std::fs::read_dir(temporary.path()).unwrap().count(),
-            MAX_JOINED_SESSION_GENERATIONS - 1
-        );
-        assert!(!temporary.path().join("run-0").exists());
-    }
-
-    #[test]
-    fn recording_staging_is_grouped_by_session_then_purpose() {
-        let paths = recording_session_paths(std::path::PathBuf::from(
-            "/state/scorepeek/recording-staging/session-1",
-        ));
-        assert_eq!(paths.capture_root, paths.root);
-        assert_eq!(paths.capture_directory, paths.root.join("capture"));
-        assert_eq!(paths.recognition_directory, paths.root.join("recognition"));
-    }
-
-    #[test]
-    fn recording_staging_cleanup_removes_the_complete_session_tree() {
+    fn recording_cleanup_removes_the_complete_session_tree() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = create_recording_session(temporary.path(), "session-1").unwrap();
         let root = paths.root.clone();
@@ -817,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn recording_staging_creation_rolls_back_after_sync_failure() {
+    fn recording_creation_rolls_back_after_sync_failure() {
         let temporary = tempfile::tempdir().unwrap();
         let Err(error) = create_recording_session_with_sync(temporary.path(), "session-1", |_| {
             Err("injected session sync failure".to_owned())

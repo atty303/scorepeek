@@ -7,11 +7,11 @@ pub mod capture;
 mod capture_calibration;
 pub mod catalog;
 #[allow(dead_code)]
-pub mod diagnostic_control;
-#[allow(dead_code)]
 pub mod diagnostic_live;
 #[allow(dead_code)]
 pub mod diagnostic_recording;
+#[allow(dead_code)]
+pub mod diagnostic_stream;
 #[allow(dead_code)]
 pub mod diagnostic_worker;
 #[allow(dead_code)]
@@ -32,12 +32,6 @@ pub mod recognition_live;
     reason = "offline canonical replay shares the binary's internal run-event reducer"
 )]
 pub mod routine_output;
-#[allow(
-    clippy::must_use_candidate,
-    dead_code,
-    reason = "the shared reducer retains its binary-owned event artifact helper"
-)]
-pub mod run_event_artifact;
 pub mod screen_episode;
 pub mod song_context;
 pub mod temporal_recognition;

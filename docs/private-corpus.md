@@ -7,13 +7,11 @@ objects, or deduplicate frames by pixel content.
 
 ## Recording boundary
 
-`scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
-starts capture diagnostics, recognition observation v22, run-event v12, the canonical session
-recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
-`--record`. Routine capture diagnostics retain structured facts but no QOI pixels. The
-canonical recording is therefore the session's only retained frame authority.
+`scorepeek run` always saves one non-video diagnostic NDJSON stream. `scorepeek run --record` also
+starts the canonical session recorder; it does not enable a second diagnostic format. Runtime QOI
+generation is absent, so canonical video is the session's only retained frame authority.
 
-Recording preflight requires bounded diagnostic-store capacity and a PATH-resolved FFmpeg that exposes
+Recording preflight requires a PATH-resolved FFmpeg that exposes
 `libx264rgb`. The artifact records the executable digest and first version line. The logically
 unbounded recorder uses one shared 1024 MiB memory account by default; use
 `--record-memory-mib MIB` with `--record` to change it. The TUI shows current, limit, high-water,
@@ -21,18 +19,9 @@ and dropped-frame values. A memory-limit admission loss, encoder failure, public
 shutdown timeout marks the recording partial but does not change screen resolution, attempt
 finalization, or domain event emission.
 
-While a session is active, every temporary component is grouped under
-`$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/`:
-
-- `capture/` contains structured capture diagnostics;
-- `recognition/` contains recognition observations;
-- `events/` contains the run-event stream;
-- `canonical/` contains lossless segments and their tick index.
-
-Successful joined-session publication removes the whole staging session. Publication failure keeps
-that one session tree intact for diagnosis. The immutable joined result remains at
-`$XDG_STATE_HOME/scorepeek/diagnostic-sessions/<session-id>/`. No separate watcher-status file is
-written; the TUI, public event socket, and run-event stream are the watcher observation surfaces.
+One invocation lives at `$XDG_STATE_HOME/scorepeek/diagnostics/<run-id>/`. Structured evidence is
+`diagnostics.ndjson`; optional video lives directly at
+`sessions/<capture-session-id>/canonical/`. There is no digest staging or joined-publication step.
 
 The canonical recorder indexes every 10 Hz due tick with original sequence, monotonic time, raw
 screen, active semantic episode ID, and either `retained` or a typed intentional-elision reason.
@@ -42,23 +31,27 @@ exit from `Unknown`. Only stable `Play`, `ModeSelect`, and `Unknown` interiors a
 
 Retained frames are lossless RGB Matroska segments in tick-index order. Intentional sequence gaps
 remain inside a segment; 600 retained frames, chronology reset, or session end closes it. The
-realtime recorder records input and encoded digests without decoding its own output. After semantic
-`session_finished`, the TUI shows `finalizing`; atomic joined-session publication produces
-`recording_ready`, after which the immutable session can be imported while the watcher remains
-running.
+realtime recorder does not hash video content. After semantic `session_finished`, the TUI shows
+`finalizing`; saved manifest publication produces `recording_completed`, after which the session can
+be imported while the invocation remains active.
 
 ## Import and review
 
-Verify and import one complete joined session. This is where every segment is decoded and its RGB24
+Verify and import one completed capture session. This is where every segment is decoded and its
 digest and frame count are checked. Each segment decode has a bounded two-minute deadline; timeout,
 truncated output, or replay-observer failure kills and reaps the FFmpeg child before failing the
 import:
 
 ```text
-scorepeek-corpus diagnostic verify /absolute/recorded-session
-scorepeek-corpus corpus import-diagnostic --store /absolute/private-corpus-v2 --diagnostic /absolute/recorded-session --review-draft /absolute/review.json
+scorepeek-corpus diagnostic verify /absolute/diagnostic-run --capture-session-id SESSION_ID
+scorepeek-corpus corpus import-diagnostic --store /absolute/private-corpus-v2 --diagnostic /absolute/diagnostic-run --capture-session-id SESSION_ID --review-draft /absolute/review.json
 ```
 
+Import requires video and the session's saved `recording_completed` terminal record. A later partial
+invocation does not invalidate a completed session. Import computes video digests while reading,
+normally uploads segments to the configured remote, and removes successfully imported local video;
+the invocation diagnostics remain until rotation. A non-video import receipt makes interrupted
+post-publication video cleanup idempotently resumable. Identity is `run_id + capture_session_id`.
 Import publishes source evidence as immutable digest-addressed objects. Volatile recognition
 artifact and run-event schemas are not corpus storage contracts: import normalizes only the
 sequence, source time, screen, fields, and decision needed by offline analysis into

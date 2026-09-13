@@ -3,11 +3,9 @@ mod canonical_recording;
 mod canonical_source;
 mod capture_calibration;
 mod capture_live;
-pub mod diagnostic_control;
 pub mod diagnostic_live;
 pub mod diagnostic_recording;
-mod diagnostic_reevaluation;
-pub mod diagnostic_replay;
+mod diagnostic_stream;
 pub mod diagnostic_worker;
 mod inventory;
 mod live_control;
@@ -18,8 +16,6 @@ pub mod recognition_live;
 mod recording_simulation;
 mod routine_output;
 mod routine_watcher;
-mod run_event_artifact;
-mod session_artifact;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -71,6 +67,9 @@ fn run_with_model_initializer(
     if args.len() == 1 && args[0] == scorepeek_overlay::children::ENTRYPOINT {
         return scorepeek_overlay::diagnostics::run();
     }
+    if let Some(result) = try_diagnostic_stream_command(args) {
+        return result;
+    }
     if let Some(result) = try_offline_program_information(args)
         .or_else(|| try_numeric_model_install(args))
         .or_else(|| try_skin_command(args))
@@ -79,8 +78,88 @@ fn run_with_model_initializer(
         return result;
     }
     let (override_bundle, args) = parse_global_model_bundle(args)?;
+    if let [run, options @ ..] = args
+        && run == "run"
+    {
+        let options = parse_routine_run_options(options)?;
+        let invocation_id = new_run_id();
+        let diagnostics = diagnostic_stream::RunDiagnostics::start_default(&invocation_id);
+        let bundle = initialize_routine_model(&diagnostics.sink(), override_bundle, initialize)?;
+        return run_routine_live_session(
+            options.profile,
+            if options.recording {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            options.recording_memory_limit,
+            options.scores_db,
+            options.no_scores,
+            options.overlays,
+            &bundle,
+            invocation_id,
+            diagnostics,
+        );
+    }
     let bundle = initialize(override_bundle)?;
     run_command(args, &bundle)
+}
+
+fn initialize_routine_model(
+    diagnostics: &diagnostic_stream::DiagnosticSink,
+    override_bundle: Option<&Path>,
+    initialize: impl FnOnce(Option<&Path>) -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    run_startup_stage(diagnostics, "model_initialization", || {
+        initialize(override_bundle)
+    })
+}
+
+fn new_run_id() -> String {
+    let elapsed = std::time::SystemTime::UNIX_EPOCH
+        .elapsed()
+        .unwrap_or_default();
+    format!(
+        "run-{}-{}-{}",
+        elapsed.as_secs(),
+        elapsed.subsec_nanos(),
+        std::process::id()
+    )
+}
+
+fn try_diagnostic_stream_command(args: &[OsString]) -> Option<Result<(), String>> {
+    let result = match args {
+        [diagnostic, inspect, latest]
+            if diagnostic == "diagnostic" && inspect == "inspect" && latest == "--latest" =>
+        {
+            diagnostic_stream::default_store().and_then(|store| {
+                let status = diagnostic_stream::inspect_latest(&store, None)?;
+                (status == 0)
+                    .then_some(())
+                    .ok_or_else(|| "diagnostic recording is partial".to_owned())
+            })
+        }
+        [diagnostic, inspect, run_id_flag, run_id]
+            if diagnostic == "diagnostic" && inspect == "inspect" && run_id_flag == "--run-id" =>
+        {
+            let run_id = run_id
+                .to_str()
+                .ok_or_else(|| "diagnostic run ID must be UTF-8".to_owned());
+            run_id.and_then(|run_id| {
+                diagnostic_stream::default_store().and_then(|store| {
+                    let status = diagnostic_stream::inspect_latest(&store, Some(run_id))?;
+                    (status == 0)
+                        .then_some(())
+                        .ok_or_else(|| "diagnostic recording is partial".to_owned())
+                })
+            })
+        }
+        [diagnostic, observe] if diagnostic == "diagnostic" && observe == "observe" => {
+            diagnostic_stream::observe()
+        }
+        _ => return None,
+    };
+    Some(result)
 }
 
 fn try_skin_command(args: &[OsString]) -> Option<Result<(), String>> {
@@ -128,11 +207,7 @@ fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsSt
 #[allow(clippy::too_many_lines)]
 fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
     if let Some(result) = local_profiles::try_command(args, bundle)
-        .or_else(|| try_diagnostic_control(args))
-        .or_else(|| try_diagnostic_reevaluation(args, bundle))
-        .or_else(|| try_diagnostic_replay(args))
         .or_else(|| try_recording_simulation(args, bundle))
-        .or_else(|| try_routine_live_session(args, bundle))
         .or_else(|| try_live_session(args, bundle))
         .or_else(|| try_capture_commands(args, bundle))
         .or_else(|| try_provisional_title_candidates(args))
@@ -167,14 +242,6 @@ fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
             && frame_flag == "--frame-id" =>
         {
             inspect_canonical_frame(extraction, digest, frame_id)
-        }
-        [recognition, inspect, frame_flag, frame, digest_flag, digest]
-            if recognition == "recognition"
-                && inspect == "inspect-diagnostic-qoi"
-                && frame_flag == "--frame"
-                && digest_flag == "--frame-sha256" =>
-        {
-            inspect_diagnostic_qoi(frame, digest)
         }
         [
             recognition,
@@ -537,32 +604,6 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
     "--recognition-artifact",
 ];
 
-fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
-    let [run, options @ ..] = args else {
-        return None;
-    };
-    if run != "run" {
-        return None;
-    }
-    let options = match parse_routine_run_options(options) {
-        Ok(options) => options,
-        Err(error) => return Some(Err(error)),
-    };
-    Some(run_routine_live_session(
-        options.profile,
-        if options.recording {
-            "enabled"
-        } else {
-            "disabled"
-        },
-        options.recording_memory_limit,
-        options.scores_db,
-        options.no_scores,
-        options.overlays,
-        bundle,
-    ))
-}
-
 struct RoutineRunOptions<'a> {
     overlays: OverlayOptions,
     profile: Option<&'a OsStr>,
@@ -578,6 +619,31 @@ struct OverlayOptions {
     wayland_edit: bool,
     obs: bool,
     config_path: Option<PathBuf>,
+}
+
+fn run_startup_stage<T>(
+    diagnostics: &diagnostic_stream::DiagnosticSink,
+    stage: &str,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    match operation() {
+        Ok(value) => {
+            diagnostics.record(
+                "run_startup_stage",
+                &serde_json::json!({"stage":stage, "status":"success"}),
+                true,
+            );
+            Ok(value)
+        }
+        Err(error) => {
+            diagnostics.record(
+                "run_startup_stage",
+                &serde_json::json!({"stage":stage, "status":"error", "error":error}),
+                true,
+            );
+            Err(error)
+        }
+    }
 }
 
 fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'_>, String> {
@@ -655,7 +721,11 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
     })
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the admitted run keeps parsed options and its diagnostic ownership explicit"
+)]
 fn run_routine_live_session(
     profile_name: Option<&OsStr>,
     recording: &str,
@@ -664,44 +734,52 @@ fn run_routine_live_session(
     no_scores: bool,
     overlays: OverlayOptions,
     bundle: &Path,
+    invocation_id: String,
+    diagnostics: diagnostic_stream::RunDiagnostics,
 ) -> Result<(), String> {
-    let selected = local_profiles::select_for_run(profile_name)?;
-    let (catalog_root, _) = catalog_paths(
-        env::var_os("XDG_DATA_HOME").as_deref(),
-        env::var_os("XDG_CACHE_HOME").as_deref(),
-        env::var_os("HOME").as_deref(),
-    )?;
-    CatalogStore::new(&catalog_root)
-        .load_active()
-        .map_err(|error| format!("active catalog load failed: {error}"))?
-        .ok_or_else(|| {
-            format!(
-                "catalog store {} has no active catalog; transfer or sync the catalog first",
-                catalog_root.display()
-            )
-        })?;
-    let elapsed = std::time::SystemTime::UNIX_EPOCH
-        .elapsed()
-        .map_err(|_| "system clock is before the Unix epoch".to_owned())?;
-    let invocation_id = format!(
-        "run-{}-{}-{}",
-        elapsed.as_secs(),
-        elapsed.subsec_nanos(),
-        std::process::id()
-    );
     let recording_enabled = recording == "enabled";
+    let diagnostic_sink = diagnostics.sink();
+    let selected = run_startup_stage(&diagnostic_sink, "capture_profile", || {
+        local_profiles::select_for_run(profile_name)
+    })?;
+    let (catalog_root, _) = run_startup_stage(&diagnostic_sink, "catalog_paths", || {
+        catalog_paths(
+            env::var_os("XDG_DATA_HOME").as_deref(),
+            env::var_os("XDG_CACHE_HOME").as_deref(),
+            env::var_os("HOME").as_deref(),
+        )
+    })?;
+    run_startup_stage(&diagnostic_sink, "active_catalog", || {
+        CatalogStore::new(&catalog_root)
+            .load_active()
+            .map_err(|error| format!("active catalog load failed: {error}"))?
+            .ok_or_else(|| {
+                format!(
+                    "catalog store {} has no active catalog; transfer or sync the catalog first",
+                    catalog_root.display()
+                )
+            })
+    })?;
     if recording_enabled {
-        canonical_recording::CanonicalRecordingWorker::preflight()?;
+        run_startup_stage(&diagnostic_sink, "canonical_recorder", || {
+            canonical_recording::CanonicalRecordingWorker::preflight()
+        })?;
     }
-    let state = local_profiles::state_paths(recording_enabled)?;
-    let build_sha256 = current_executable_sha256()?;
-    let monitor = live_control::SignalStopMonitor::start()?;
+    let state = run_startup_stage(&diagnostic_sink, "state", || {
+        local_profiles::state_paths(recording_enabled)
+    })?;
+    let build_sha256 = run_startup_stage(&diagnostic_sink, "executable_identity", || {
+        current_executable_sha256()
+    })?;
+    let monitor = run_startup_stage(&diagnostic_sink, "signal_monitor", || {
+        live_control::SignalStopMonitor::start()
+    })?;
     let stop = monitor.stop_token();
     let mut output = routine_output::RoutineOutput::start(
         invocation_id.clone(),
         selected.binding.capture_profile_sha256().to_owned(),
         recording_enabled,
-        state.recording_staging_store(),
+        diagnostics,
     )?;
     let scores_path = if no_scores {
         None
@@ -804,6 +882,17 @@ fn run_routine_live_session(
                 )
             });
         if let Err(error) = started {
+            output.publish(&routine_output::RunEvent {
+                schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
+                kind: routine_output::RunEventKind::OverlayObserved {
+                    observation: serde_json::json!({
+                        "backend": format!("{backend:?}"),
+                        "operation": "spawn",
+                        "error_type": "start_failed",
+                        "error": error,
+                    }),
+                },
+            })?;
             output.warning(format!("overlay unavailable: {error}"))?;
         }
     }
@@ -871,21 +960,18 @@ fn run_routine_live_session(
                     continue;
                 };
                 let session_id = format!("{invocation_id}-session-{generation}");
-                let session_paths = match state.start_recording_session(&session_id) {
+                let diagnostic_run_root = output.diagnostic_run_root().map(Path::to_path_buf);
+                let session_paths = match state
+                    .start_recording_session(diagnostic_run_root.as_deref(), &session_id)
+                {
                     Ok(paths) => paths,
                     Err(error) => {
-                        output.warning(format!(
-                            "recording staging degraded for this session: {error}"
-                        ))?;
+                        output.warning(format!("recording degraded for this session: {error}"))?;
                         None
                     }
                 };
-                let diagnostic_root = session_paths
-                    .as_ref()
-                    .map_or(Path::new("/"), |paths| paths.capture_root.as_path());
-                let recognition_root = session_paths
-                    .as_ref()
-                    .map(|paths| paths.recognition_directory.as_path());
+                let diagnostic_root = Path::new("/");
+                let recognition_root = None;
                 let values = routine_live_values(
                     &selected,
                     generation,
@@ -894,7 +980,7 @@ fn run_routine_live_session(
                     &session_id,
                     &build_sha256,
                     &active.digest,
-                    recording,
+                    "disabled",
                     recognition_root,
                 );
                 let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
@@ -938,8 +1024,9 @@ fn run_routine_live_session(
                 let report = execute_live_session(
                     &references,
                     bundle,
-                    recognition_root.is_some(),
+                    false,
                     recording_memory_limit,
+                    session_paths.as_ref().map(|paths| paths.root.as_path()),
                     Some(&session_id),
                     Some(node_id),
                     &stop,
@@ -967,127 +1054,21 @@ fn run_routine_live_session(
                             })?,
                         },
                     })?;
-                    let event_artifact = output.take_completed_event_artifact();
-                    let mut recording_published = false;
-                    if let (
-                        Some(session_paths),
-                        Some(recognition_root),
-                        Some(capture_manifest_sha256),
-                        Some(recognition_manifest_sha256),
-                        Some(event_artifact),
-                    ) = (
-                        session_paths.as_ref(),
-                        recognition_root,
-                        report.diagnostic_manifest_sha256(),
-                        report.recognition_artifact_manifest_sha256(),
-                        event_artifact.as_ref(),
-                    ) && let Some(event_manifest_sha256) =
-                        event_artifact.manifest_sha256.as_deref()
-                    {
-                        let (processed_ticks, busy_skips, maximum_consecutive_busy_skips) =
-                            report.recognition_sampling();
-                        let (
-                            field_observation_busy_skips,
-                            maximum_consecutive_field_observation_busy_skips,
-                        ) = report.field_busy_sampling();
-                        let completeness = if report.diagnostic_completeness_name() == "complete"
-                            && event_artifact.complete
-                            && report.canonical_recording_is_complete()
-                        {
-                            "complete"
-                        } else {
-                            "partial"
-                        };
-                        match session_artifact::publish(&session_artifact::PublishRequest {
-                            root: &state.diagnostic_session_store,
-                            session_id: &session_id,
-                            capture_generation: generation,
-                            profile_sha256: selected.binding.capture_profile_sha256(),
-                            catalog_sha256: &active.digest,
-                            processed_ticks,
-                            busy_skips,
-                            maximum_consecutive_busy_skips,
-                            field_observation_busy_skips,
-                            maximum_consecutive_field_observation_busy_skips,
-                            completeness,
-                            capture_directory: &session_paths.capture_directory,
-                            capture_manifest_sha256,
-                            recognition_directory: recognition_root,
-                            recognition_manifest_sha256,
-                            canonical_directory: &session_paths.root.join("canonical"),
-                            event_directory: &event_artifact.root,
-                            event_manifest_sha256,
-                            profile_path: &selected.path,
-                        }) {
-                            Ok(published) => {
-                                if let Err(error) = session_paths.cleanup() {
-                                    output.warning(error)?;
-                                }
-                                if completeness == "complete" {
-                                    recording_published = true;
-                                    output.publish(&routine_output::RunEvent {
-                                        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
-                                        kind: routine_output::RunEventKind::RecordingReady {
-                                            session_id: session_id.clone(),
-                                            directory: published.directory.display().to_string(),
-                                            manifest_sha256: published.manifest_sha256,
-                                        },
-                                    })?;
-                                } else {
-                                    output.status_recording_degraded()?;
-                                    output.warning(format!(
-                                        "partial session was published for diagnosis but is not importable: {}",
-                                        published.directory.display()
-                                    ))?;
-                                }
-                            }
-                            Err(error) => {
-                                output.status_recording_degraded()?;
-                                output.warning(format!(
-                                    "diagnostic session publication degraded: {error}"
-                                ))?;
-                            }
-                        }
-                    }
                     if state.recording_enabled {
-                        if !recording_published {
+                        if report.canonical_recording_is_complete() {
+                            if let Some(session_paths) = session_paths.as_ref() {
+                                output.publish(&routine_output::RunEvent {
+                                    schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
+                                    kind: routine_output::RunEventKind::RecordingCompleted {
+                                        session_id: session_id.clone(),
+                                        directory: session_paths.root.display().to_string(),
+                                    },
+                                })?;
+                            }
+                        } else {
                             output.status_recording_degraded()?;
-                        }
-                        if report.diagnostic_manifest_sha256().is_none() {
-                            output.warning(
-                                "diagnostic session was not published: capture component has no manifest",
-                            )?;
-                        }
-                        if recognition_root.is_some()
-                            && report.recognition_artifact_manifest_sha256().is_none()
-                        {
-                            output.warning(
-                                "diagnostic session was not published: recognition component has no manifest",
-                            )?;
-                        }
-                        if report.canonical_recording_manifest_sha256().is_none() {
-                            output.warning(
-                                "diagnostic session was not published: canonical recording component has no manifest",
-                            )?;
-                        }
-                        match event_artifact.as_ref() {
-                            None => output.warning(
-                                "diagnostic session was not published: run-event component did not finish",
-                            )?,
-                            Some(artifact) if artifact.manifest_sha256.is_none() => output.warning(
-                                format!(
-                                    "diagnostic session was not published: run-event component has no manifest{}",
-                                    artifact
-                                        .error
-                                        .as_deref()
-                                        .map_or_else(String::new, |error| format!(": {error}"))
-                                ),
-                            )?,
-                            Some(artifact) if !artifact.complete => output.warning(format!(
-                                "diagnostic run-event recording is partial: {} events were dropped",
-                                artifact.dropped
-                            ))?,
-                            Some(_) => {}
+                            output
+                                .warning("canonical recording is partial and cannot be imported")?;
                         }
                     }
                 } else {
@@ -1128,7 +1109,9 @@ fn run_routine_live_session(
             invocation_id,
             reason: "signal".to_owned(),
         },
-    })
+    })?;
+    output.finish_diagnostics("cancel");
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1274,6 +1257,7 @@ fn run_live_session(
         canonical_recording::RecordingMemoryLimit::default_limit(),
         None,
         None,
+        None,
         &stop,
         &mut emit,
     )?;
@@ -1292,6 +1276,7 @@ fn execute_live_session(
     bundle_root: &Path,
     persist_recognition: bool,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+    canonical_recording_root: Option<&Path>,
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
     stop: &std::sync::atomic::AtomicBool,
@@ -1336,12 +1321,7 @@ fn execute_live_session(
             replay: None,
         },
     };
-    let mut policy = parse_diagnostic_recording_policy(recording)?;
-    policy.retention = if session_id.is_some() {
-        diagnostic_recording::DiagnosticRetention::FactsOnly
-    } else {
-        diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1
-    };
+    let policy = parse_diagnostic_recording_policy(recording)?;
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
     if session_id.is_none() {
         emit(LiveSessionEmission {
@@ -1371,6 +1351,7 @@ fn execute_live_session(
                 persist_recognition,
                 Path::new(recognition_artifact_root),
             ),
+            canonical_recording_root,
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit,
@@ -1967,6 +1948,7 @@ fn run_capture_field_observation(
             catalog_root: Path::new(catalog_root),
             bundle_root,
             recognition_artifact_root,
+            canonical_recording_root: None,
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit: canonical_recording::RecordingMemoryLimit::default_limit(),
@@ -2045,7 +2027,10 @@ fn parse_diagnostic_recording_policy(
     value: &OsStr,
 ) -> Result<diagnostic_recording::DiagnosticPolicy, String> {
     match value.to_str() {
-        Some("enabled") => Ok(diagnostic_recording::DiagnosticPolicy::default()),
+        Some("enabled") => Ok(diagnostic_recording::DiagnosticPolicy {
+            retention: diagnostic_recording::DiagnosticRetention::FactsOnly,
+            ..diagnostic_recording::DiagnosticPolicy::default()
+        }),
         Some("disabled") => Ok(diagnostic_recording::DiagnosticPolicy {
             enabled: false,
             ..diagnostic_recording::DiagnosticPolicy::default()
@@ -2447,199 +2432,6 @@ fn try_offline_program_information(args: &[OsString]) -> Option<Result<(), Strin
         }
         _ => None,
     }
-}
-
-fn try_diagnostic_control(args: &[OsString]) -> Option<Result<(), String>> {
-    match args {
-        [diagnostic, command, root_flag, root]
-            if diagnostic == "diagnostic" && root_flag == "--root" =>
-        {
-            match command.to_str() {
-                Some("status") => Some(print_diagnostic_summary(
-                    diagnostic_control::diagnostic_store_status(Path::new(root)),
-                )),
-                Some("list") => Some(print_diagnostic_summary(
-                    diagnostic_control::diagnostic_run_list(Path::new(root)),
-                )),
-                _ => None,
-            }
-        }
-        [
-            diagnostic,
-            command,
-            root_flag,
-            root,
-            run_id_flag,
-            run_id,
-            run_digest_flag,
-            run_digest,
-            manifest_flag,
-            manifest_digest,
-        ] if diagnostic == "diagnostic"
-            && (command == "freeze" || command == "delete")
-            && root_flag == "--root"
-            && run_id_flag == "--run-id"
-            && run_digest_flag == "--run-sha256"
-            && manifest_flag == "--manifest-sha256" =>
-        {
-            Some((|| {
-                let run_id = utf8_control_value(run_id, "run ID")?;
-                let run_digest = utf8_control_value(run_digest, "run digest")?;
-                let manifest_digest = utf8_control_value(manifest_digest, "manifest digest")?;
-                let manifest_digest = (manifest_digest != "none").then_some(manifest_digest);
-                if command == "freeze" {
-                    print_diagnostic_summary(diagnostic_control::diagnostic_freeze(
-                        Path::new(root),
-                        run_id,
-                        run_digest,
-                        manifest_digest,
-                    ))
-                } else {
-                    print_diagnostic_summary(diagnostic_control::diagnostic_delete(
-                        Path::new(root),
-                        run_id,
-                        run_digest,
-                        manifest_digest,
-                    ))
-                }
-            })())
-        }
-        [
-            diagnostic,
-            export,
-            root_flag,
-            root,
-            run_id_flag,
-            run_id,
-            run_digest_flag,
-            run_digest,
-            manifest_flag,
-            manifest_digest,
-            destination_flag,
-            destination,
-        ] if diagnostic == "diagnostic"
-            && export == "export"
-            && root_flag == "--root"
-            && run_id_flag == "--run-id"
-            && run_digest_flag == "--run-sha256"
-            && manifest_flag == "--manifest-sha256"
-            && destination_flag == "--destination" =>
-        {
-            Some((|| {
-                print_diagnostic_summary(diagnostic_control::diagnostic_export(
-                    Path::new(root),
-                    utf8_control_value(run_id, "run ID")?,
-                    utf8_control_value(run_digest, "run digest")?,
-                    utf8_control_value(manifest_digest, "manifest digest")?,
-                    Path::new(destination),
-                ))
-            })())
-        }
-        _ => None,
-    }
-}
-
-fn utf8_control_value<'a>(value: &'a OsStr, label: &str) -> Result<&'a str, String> {
-    value
-        .to_str()
-        .ok_or_else(|| format!("diagnostic control {label} must be UTF-8"))
-}
-
-fn print_diagnostic_summary<T: Serialize>(summary: Result<T, String>) -> Result<(), String> {
-    let summary = summary?;
-    println!(
-        "{}",
-        serde_json::to_string(&summary)
-            .map_err(|_| "diagnostic control summary serialization failed".to_owned())?
-    );
-    Ok(())
-}
-
-fn try_diagnostic_replay(args: &[OsString]) -> Option<Result<(), String>> {
-    let [
-        diagnostic,
-        replay,
-        request_flag,
-        request,
-        digest_flag,
-        digest,
-        extraction_flag,
-        extraction,
-        output_flag,
-        output,
-    ] = args
-    else {
-        return None;
-    };
-    (diagnostic == "diagnostic"
-        && replay == "replay"
-        && request_flag == "--request"
-        && digest_flag == "--request-sha256"
-        && extraction_flag == "--extraction"
-        && output_flag == "--output-root")
-        .then(|| {
-            let digest = digest
-                .to_str()
-                .ok_or_else(|| "diagnostic replay request digest must be UTF-8".to_owned())?;
-            let summary = diagnostic_replay::replay_diagnostic_run(
-                Path::new(request),
-                digest,
-                Path::new(extraction),
-                Path::new(output),
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary)
-                    .map_err(|_| "diagnostic replay summary serialization failed".to_owned())?
-            );
-            Ok(())
-        })
-}
-
-fn try_diagnostic_reevaluation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
-    let [
-        diagnostic,
-        reevaluate,
-        session_flag,
-        session,
-        digest_flag,
-        digest,
-        output_flag,
-        output,
-    ] = args
-    else {
-        return None;
-    };
-    (diagnostic == "diagnostic"
-        && reevaluate == "reevaluate"
-        && session_flag == "--session"
-        && digest_flag == "--session-sha256"
-        && output_flag == "--output")
-        .then(|| {
-            let digest = digest
-                .to_str()
-                .ok_or_else(|| "diagnostic session digest must be UTF-8".to_owned())?;
-            let (catalog_root, _) = catalog_paths(
-                env::var_os("XDG_DATA_HOME").as_deref(),
-                env::var_os("XDG_CACHE_HOME").as_deref(),
-                env::var_os("HOME").as_deref(),
-            )?;
-            let summary = diagnostic_reevaluation::reevaluate(
-                Path::new(session),
-                digest,
-                Path::new(output),
-                &catalog_root,
-                bundle,
-                &current_executable_sha256()?,
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary).map_err(|_| {
-                    "diagnostic reevaluation summary serialization failed".to_owned()
-                })?
-            );
-            Ok(())
-        })
 }
 
 fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
@@ -3210,41 +3002,6 @@ fn inspect_canonical_frame(
     Ok(())
 }
 
-fn inspect_diagnostic_qoi(frame: &OsStr, expected_sha256: &OsStr) -> Result<(), String> {
-    const MAX_DIAGNOSTIC_QOI_BYTES: u64 = 16 * 1024 * 1024;
-
-    let path = Path::new(frame);
-    let expected_sha256 = parse_cli_sha256(expected_sha256, "diagnostic QOI SHA-256")?;
-    let metadata = path
-        .metadata()
-        .map_err(|_| "diagnostic QOI is unavailable".to_owned())?;
-    if !path.is_absolute() || !metadata.is_file() || metadata.len() > MAX_DIAGNOSTIC_QOI_BYTES {
-        return Err("diagnostic QOI must be a bounded absolute regular file".to_owned());
-    }
-    let encoded = fs::read(path).map_err(|_| "diagnostic QOI read failed".to_owned())?;
-    if encode_sha256(&encoded) != expected_sha256 {
-        return Err("diagnostic QOI digest mismatch".to_owned());
-    }
-    let (header, pixels) =
-        qoi::decode_to_vec(encoded).map_err(|_| "diagnostic QOI decoding failed".to_owned())?;
-    if header.width != 1_920 || header.height != 1_080 || pixels.len() != 1_920 * 1_080 * 3 {
-        return Err("diagnostic QOI is not canonical RGB8 1920x1080".to_owned());
-    }
-    let observation =
-        recognition::inspect_canonical_rgb8(&pixels).map_err(|error| error.to_string())?;
-    println!(
-        "{}",
-        serde_json::json!({
-            "schema": "scorepeek-diagnostic-qoi-recognition-inspection-v1",
-            "frame_sha256": expected_sha256,
-            "canonical_pixel_sha256": encode_sha256(&pixels),
-            "canonical_layout_sha256": recognition::CanonicalLayout::sha256(),
-            "observation": observation,
-        })
-    );
-    Ok(())
-}
-
 fn crop_canonical_result(
     extraction: &OsStr,
     extraction_sha256: &OsStr,
@@ -3742,16 +3499,13 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe\n  scorepeek catalog sync\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
         env!("CARGO_PKG_VERSION")
     );
     println!(
         "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --catalog-sha256 SHA256"
     );
     println!("  run option: --overlay-wayland-edit (enables Wayland and opens the editor)");
-    println!(
-        "  scorepeek diagnostic reevaluate --session DIRECTORY --session-sha256 SHA256 --output DIRECTORY"
-    );
     println!(
         "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled"
     );
@@ -3775,9 +3529,10 @@ mod tests {
     use super::{
         CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
         LIVE_SESSION_FLAGS, LiveSessionEmission, PrivatePublicationPoint, catalog_paths,
-        catalog_sync_error, command_flag_values, live_session_event_value,
-        optional_recognition_root, parse_routine_run_options, prepare_live_diagnostic_root,
-        publish_private_file, publish_private_file_with, run_event_from_live_emission,
+        catalog_sync_error, command_flag_values, initialize_routine_model,
+        live_session_event_value, optional_recognition_root, parse_diagnostic_recording_policy,
+        parse_routine_run_options, prepare_live_diagnostic_root, publish_private_file,
+        publish_private_file_with, run_event_from_live_emission, run_startup_stage,
         run_with_model_initializer,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
@@ -3795,6 +3550,49 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn failed_startup_stage_is_saved_in_a_zero_session_run() {
+        let root = tempfile::tempdir().unwrap();
+        let run_id = "run-1-0-1";
+        let diagnostics = crate::diagnostic_stream::RunDiagnostics::start(root.path(), run_id);
+        let sink = diagnostics.sink();
+        let error = run_startup_stage::<()>(&sink, "synthetic_preflight", || {
+            Err("synthetic failure".to_owned())
+        })
+        .unwrap_err();
+        assert_eq!(error, "synthetic failure");
+        drop(sink);
+        drop(diagnostics);
+
+        let stream =
+            fs::read_to_string(root.path().join(run_id).join("diagnostics.ndjson")).unwrap();
+        assert!(stream.contains("synthetic_preflight"));
+        assert!(stream.contains("synthetic failure"));
+        assert!(stream.contains("diagnostic_run_finished"));
+        assert!(!stream.contains("session_started"));
+    }
+
+    #[test]
+    fn failed_model_initialization_is_saved_in_a_zero_session_run() {
+        let root = tempfile::tempdir().unwrap();
+        let run_id = "run-1-0-2";
+        let diagnostics = crate::diagnostic_stream::RunDiagnostics::start(root.path(), run_id);
+        let sink = diagnostics.sink();
+        let error =
+            initialize_routine_model(&sink, None, |_| Err("synthetic model failure".to_owned()))
+                .unwrap_err();
+        assert_eq!(error, "synthetic model failure");
+        drop(sink);
+        drop(diagnostics);
+
+        let stream =
+            fs::read_to_string(root.path().join(run_id).join("diagnostics.ndjson")).unwrap();
+        assert!(stream.contains("model_initialization"));
+        assert!(stream.contains("synthetic model failure"));
+        assert!(stream.contains("diagnostic_run_finished"));
+        assert!(!stream.contains("session_started"));
+    }
 
     #[test]
     fn scores_options_are_independent_of_recording_and_reject_conflicts() {
@@ -4171,6 +3969,16 @@ mod tests {
         assert_eq!(preflight.status, "ready");
         assert_eq!(preflight.error_type, None);
         assert!(root.is_dir());
+    }
+
+    #[test]
+    fn internal_capture_cli_never_enables_runtime_frame_artifacts() {
+        let policy = parse_diagnostic_recording_policy(OsStr::new("enabled")).unwrap();
+        assert!(policy.enabled);
+        assert_eq!(
+            policy.retention,
+            crate::diagnostic_recording::DiagnosticRetention::FactsOnly
+        );
     }
 
     #[test]

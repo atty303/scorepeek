@@ -16,13 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::diagnostic_stream::{DiagnosticSink, RunDiagnostics};
 use crate::play_attempt::{
     AcceptedPlayAttempt, PlayAttemptReason, PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState,
 };
 use crate::recognition_live::screen_field_observer::{
     EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
 };
-use crate::run_event_artifact::{FinishOutcome as RunEventArtifactOutcome, RunEventArtifactWorker};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -109,10 +109,9 @@ pub enum RunEventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         capture_generation: Option<u64>,
     },
-    RecordingReady {
+    RecordingCompleted {
         session_id: String,
         directory: String,
-        manifest_sha256: String,
     },
     RawScreenObserved {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -2022,7 +2021,7 @@ impl RunViewState {
                 }
                 "session recording finalizing".clone_into(&mut self.message);
             }
-            RunEventKind::RecordingReady { session_id, .. } => {
+            RunEventKind::RecordingCompleted { session_id, .. } => {
                 self.status_recording = "ready";
                 self.message = format!("session recording ready: {session_id}");
             }
@@ -2280,8 +2279,8 @@ impl EventChannel {
         Ok(channel)
     }
 
-    fn publish(&self, event: QueuedEvent) {
-        try_send_event(&self.sender, &self.health, event);
+    fn publish(&self, event: QueuedEvent) -> &'static str {
+        try_send_event(&self.sender, &self.health, event)
     }
 }
 
@@ -2290,14 +2289,20 @@ struct QueuedEvent {
     bytes: Vec<u8>,
 }
 
-fn try_send_event(sender: &SyncSender<QueuedEvent>, health: &ChannelHealth, event: QueuedEvent) {
+fn try_send_event(
+    sender: &SyncSender<QueuedEvent>,
+    health: &ChannelHealth,
+    event: QueuedEvent,
+) -> &'static str {
     match sender.try_send(event) {
-        Ok(()) => {}
+        Ok(()) => "enqueued",
         Err(TrySendError::Full(_)) => {
             health.dropped_events.fetch_add(1, Ordering::AcqRel);
+            "queue_full"
         }
         Err(TrySendError::Disconnected(_)) => {
             health.server_failed.store(true, Ordering::Release);
+            "worker_unavailable"
         }
     }
 }
@@ -2475,9 +2480,9 @@ fn commit_public_projection(
     events: &[event_api::PublicRecord],
     channel: Option<&EventChannel>,
     scores: Option<&scorepeek_scores::Worker>,
-) {
+) -> Vec<Value> {
     if events.is_empty() {
-        return;
+        return Vec::new();
     }
     *current = projected;
     let records = events
@@ -2494,18 +2499,26 @@ fn commit_public_projection(
             Err(error) => scores.reject("event_encoding", error),
         }
     }
+    let mut observations = Vec::with_capacity(events.len());
     let Some(channel) = channel else {
-        return;
+        for event in events {
+            observations.push(json!({"public_event":event, "public_event_sequence":event.sequence, "enqueue":"channel_unavailable"}));
+        }
+        return observations;
     };
     if channel.health.server_failed.load(Ordering::Acquire) {
-        return;
+        for event in events {
+            observations.push(json!({"public_event":event, "public_event_sequence":event.sequence, "enqueue":"worker_unavailable"}));
+        }
+        return observations;
     }
     if let Ok(records) = records.and_then(|records| event_api::encode(current).map(|_| records)) {
         for (event, bytes) in events.iter().zip(records) {
-            channel.publish(QueuedEvent {
+            let enqueue = channel.publish(QueuedEvent {
                 sequence: event.sequence,
                 bytes,
             });
+            observations.push(json!({"public_event":event, "public_event_sequence":event.sequence, "enqueue":enqueue}));
         }
     } else {
         channel
@@ -2513,7 +2526,11 @@ fn commit_public_projection(
             .oversized_records
             .fetch_add(1, Ordering::AcqRel);
         channel.health.server_failed.store(true, Ordering::Release);
+        for event in events {
+            observations.push(json!({"public_event":event, "public_event_sequence":event.sequence, "enqueue":"encoding_failed"}));
+        }
     }
+    observations
 }
 
 enum Display {
@@ -2604,12 +2621,10 @@ pub struct RoutineOutput {
     resolver_transitions: BTreeMap<ResolverScope, ResolverTransitionIdentity>,
     attempt_started_ms: Option<u64>,
     attempt_phase_started_ms: Option<u64>,
-    event_store: Option<PathBuf>,
-    event_worker: Option<RunEventArtifactWorker>,
-    completed_event_artifact: Option<RunEventArtifactOutcome>,
     timing_active: bool,
     output_us: u64,
     headless_events: Vec<RunEvent>,
+    diagnostics: Option<RunDiagnostics>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2663,6 +2678,16 @@ impl RoutineOutput {
         self.channel
             .as_ref()
             .map(|channel| channel.socket_path.as_path())
+    }
+
+    pub fn diagnostic_run_root(&self) -> Option<&Path> {
+        self.diagnostics.as_ref().and_then(RunDiagnostics::run_root)
+    }
+
+    pub fn finish_diagnostics(&mut self, operation_status: &str) {
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.finish(operation_status);
+        }
     }
 
     fn publish_resolver_transition(
@@ -2737,7 +2762,7 @@ impl RoutineOutput {
         invocation_id: String,
         profile_sha256: String,
         recording_enabled: bool,
-        event_store: Option<PathBuf>,
+        diagnostics: RunDiagnostics,
     ) -> Result<Self, String> {
         let state = Arc::new(Mutex::new(RunViewState::new(
             invocation_id,
@@ -2753,14 +2778,14 @@ impl RoutineOutput {
                 last_line: None,
             }
         };
-        Self::from_channel(state, channel, Some(display), event_store)
+        Self::from_channel(state, channel, Some(display), Some(diagnostics))
     }
 
     fn from_channel(
         state: Arc<Mutex<RunViewState>>,
         channel: Result<EventChannel, String>,
         display: Option<Display>,
-        event_store: Option<PathBuf>,
+        diagnostics: Option<RunDiagnostics>,
     ) -> Result<Self, String> {
         let channel = match channel {
             Ok(channel) => Some(channel),
@@ -2801,12 +2826,10 @@ impl RoutineOutput {
             semantic_episode_suspended: false,
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
-            event_store,
-            event_worker: None,
-            completed_event_artifact: None,
             timing_active: false,
             output_us: 0,
             headless_events: Vec::new(),
+            diagnostics,
         };
         output.refresh()?;
         Ok(output)
@@ -2851,12 +2874,10 @@ impl RoutineOutput {
             semantic_episode_suspended: false,
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
-            event_store: None,
-            event_worker: None,
-            completed_event_artifact: None,
             timing_active: false,
             output_us: 0,
             headless_events: Vec::new(),
+            diagnostics: None,
         }
     }
 
@@ -2869,6 +2890,7 @@ impl RoutineOutput {
     }
 
     pub fn refresh_scores(&mut self) -> Result<(), String> {
+        let diagnostic_sink = self.diagnostics.as_ref().map(RunDiagnostics::sink);
         let completions = self
             .scores
             .as_ref()
@@ -2885,13 +2907,18 @@ impl RoutineOutput {
             if persisted && let Some(chart) = completion.chart {
                 events.push(projected.score_store_changed(chart));
             }
-            commit_public_projection(
+            let observations = commit_public_projection(
                 &mut state.public,
                 projected,
                 &events,
                 self.channel.as_ref(),
                 None,
             );
+            if let Some(sink) = &diagnostic_sink {
+                for observation in observations {
+                    sink.record("public_event", &observation, false);
+                }
+            }
         }
         let persistence_failed = self
             .scores_health()
@@ -2905,7 +2932,7 @@ impl RoutineOutput {
             .scores_health(!persistence_failed)
             .into_iter()
             .collect::<Vec<_>>();
-        commit_public_projection(
+        let observations = commit_public_projection(
             &mut state.public,
             projected,
             &health_events,
@@ -2913,6 +2940,11 @@ impl RoutineOutput {
             None,
         );
         drop(state);
+        if let Some(sink) = &diagnostic_sink {
+            for observation in observations {
+                sink.record("public_event", &observation, false);
+            }
+        }
         self.refresh()
     }
 
@@ -3001,16 +3033,7 @@ impl RoutineOutput {
                 self.attempt_phase_started_ms = None;
                 self.numeric_evidence.clear();
                 self.play_options = PlayOptionsEpisodeAccumulator::default();
-                self.completed_event_artifact = None;
                 self.clear_resolver_field_observation()?;
-                self.event_worker = self.event_store.as_deref().zip(session_id.as_deref()).map(
-                    |(store, session_id)| {
-                        RunEventArtifactWorker::start_at(
-                            store.join(session_id).join("events"),
-                            session_id,
-                        )
-                    },
-                );
                 self.publish_one(event)?;
                 if let Some(session_id) = session_id.clone() {
                     self.publish_result_state(
@@ -3045,7 +3068,7 @@ impl RoutineOutput {
             RunEventKind::WatcherStarted { .. }
             | RunEventKind::RecordingHealthChanged { .. }
             | RunEventKind::RecordingFinalizing { .. }
-            | RunEventKind::RecordingReady { .. }
+            | RunEventKind::RecordingCompleted { .. }
             | RunEventKind::TemporalResultChanged { .. }
             | RunEventKind::TemporalMusicSelectChanged { .. }
             | RunEventKind::NumericResultChanged { .. }
@@ -3223,8 +3246,6 @@ impl RoutineOutput {
         }
         self.refresh_scores()?;
         self.publish_one(event)?;
-        self.completed_event_artifact =
-            self.event_worker.take().map(RunEventArtifactWorker::finish);
         Ok(())
     }
 
@@ -4108,8 +4129,6 @@ impl RoutineOutput {
                 state,
             )?;
         }
-        self.completed_event_artifact =
-            self.event_worker.take().map(RunEventArtifactWorker::finish);
         Ok(())
     }
 
@@ -4396,6 +4415,7 @@ impl RoutineOutput {
         if let Some(object) = value.as_object_mut() {
             object.insert("channel_sequence".to_owned(), sequence.into());
         }
+        let mut public_observations = Vec::new();
         {
             let mut state = self
                 .state
@@ -4406,7 +4426,7 @@ impl RoutineOutput {
             if event_api::PublicState::observes(event) {
                 let mut projected = state.public.clone();
                 let events = projected.project(event);
-                commit_public_projection(
+                public_observations = commit_public_projection(
                     &mut state.public,
                     projected,
                     &events,
@@ -4430,8 +4450,13 @@ impl RoutineOutput {
         if let Some(health) = self.scores_health() {
             value["scores_health"] = serde_json::to_value(health).unwrap_or(Value::Null);
         }
-        if let Some(worker) = &mut self.event_worker {
-            worker.try_record(&value);
+        if let Some(diagnostics) = &self.diagnostics {
+            let sink: DiagnosticSink = diagnostics.sink();
+            for observation in public_observations {
+                sink.record("public_event", &observation, false);
+            }
+            value["diagnostic_health"] = sink.health();
+            sink.record("run_event", &value, important_run_event(event));
         }
         self.headless_events.push(event.clone());
         if self.timing_active {
@@ -4442,10 +4467,6 @@ impl RoutineOutput {
         if refresh { self.refresh() } else { Ok(()) }
     }
 
-    pub fn take_completed_event_artifact(&mut self) -> Option<RunEventArtifactOutcome> {
-        self.completed_event_artifact.take()
-    }
-
     pub fn watcher_state(
         &mut self,
         state_name: &str,
@@ -4453,7 +4474,8 @@ impl RoutineOutput {
         generation: Option<u64>,
         message: &str,
     ) -> Result<(), String> {
-        {
+        let diagnostic_sink = self.diagnostics.as_ref().map(RunDiagnostics::sink);
+        let observations = {
             let mut state = self
                 .state
                 .lock()
@@ -4476,7 +4498,12 @@ impl RoutineOutput {
                 &events,
                 self.channel.as_ref(),
                 self.scores.as_ref(),
-            );
+            )
+        };
+        if let Some(sink) = &diagnostic_sink {
+            for observation in observations {
+                sink.record("public_event", &observation, false);
+            }
         }
         self.refresh()
     }
@@ -4554,6 +4581,19 @@ impl RoutineOutput {
         }
         result
     }
+}
+
+fn important_run_event(event: &RunEvent) -> bool {
+    matches!(
+        event.kind,
+        RunEventKind::WatcherStarted { .. }
+            | RunEventKind::WatcherStopped { .. }
+            | RunEventKind::SessionStarted { .. }
+            | RunEventKind::SessionFinished { .. }
+            | RunEventKind::RecordingHealthChanged { .. }
+            | RunEventKind::RecordingFinalizing { .. }
+            | RunEventKind::RecordingCompleted { .. }
+    )
 }
 
 impl Drop for RoutineOutput {
@@ -5922,12 +5962,10 @@ mod tests {
             resolver_transitions: BTreeMap::new(),
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
-            event_store: None,
-            event_worker: None,
-            completed_event_artifact: None,
             timing_active: false,
             output_us: 0,
             headless_events: Vec::new(),
+            diagnostics: None,
         }
     }
 
@@ -6853,61 +6891,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_artifact_retains_provisional_and_confirmed_lifecycle() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("events");
-        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-        output.event_worker = Some(RunEventArtifactWorker::start_at(
-            root.clone(),
-            "invocation-1-session-1",
-        ));
-        prepare_accepted_attempt(&mut output);
-        output.publish(&accepted_result_event(1)).unwrap();
-        output.publish(&accepted_result_event(2)).unwrap();
-        output
-            .publish(&semantic_episode_event(
-                3,
-                "result",
-                SemanticEpisodePhase::Finalized,
-            ))
-            .unwrap();
-        output.publish(&failed_session_finished_event()).unwrap();
-
-        let outcome = output.take_completed_event_artifact().unwrap();
-        assert!(outcome.complete);
-        let records = fs::read_to_string(root.join("events.ndjson")).unwrap();
-        assert!(records.contains("\"event\":\"result_changed\""));
-        assert!(records.contains("\"status\":\"provisional\""));
-        assert!(records.contains("\"status\":\"confirmed\""));
-    }
-
-    #[test]
-    fn diagnostic_recording_failure_does_not_change_result_resolution() {
-        let temporary = tempfile::tempdir().unwrap();
-        let blocking_file = temporary.path().join("not-a-directory");
-        fs::write(&blocking_file, b"fixture").unwrap();
-        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-        output.event_worker = Some(RunEventArtifactWorker::start_at(
-            blocking_file.join("events"),
-            "invocation-1-session-1",
-        ));
-        prepare_accepted_attempt(&mut output);
-        output.publish(&accepted_result_event(1)).unwrap();
-        output.publish(&accepted_result_event(2)).unwrap();
-        output
-            .publish(&semantic_episode_event(
-                3,
-                "result",
-                SemanticEpisodePhase::Finalized,
-            ))
-            .unwrap();
-        output.publish(&failed_session_finished_event()).unwrap();
-
-        assert_eq!(output.state.lock().unwrap().result_count, 1);
-        assert!(!output.take_completed_event_artifact().unwrap().complete);
-    }
-
-    #[test]
     fn linkage_deficient_attempt_is_provisional_then_withdrawn_on_rejection() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         output.engine.play_attempt.observe_selection_screen();
@@ -7701,10 +7684,9 @@ mod tests {
 
         let ready = RunEvent::from_value(json!({
             "schema": RUN_EVENT_SCHEMA,
-            "event": "recording_ready",
+            "event": "recording_completed",
             "session_id": "session-1",
-            "directory": "/private/session-1",
-            "manifest_sha256": "1".repeat(64)
+            "directory": "/private/session-1"
         }))
         .unwrap();
         state.reduce(&ready, &ready.to_value().unwrap());

@@ -57,7 +57,9 @@ delivery without stopping recognition or the independent score consumer. The run
 a stale socket and removes only the inode it owns.
 
 Raw OCR, candidates, resolver scores, processing timings, paths, and history arrays stay outside the
-public API. Versioned run-event artifacts and bounded health samples retain diagnostic state.
+public API. They are recorded separately in the private runtime diagnostic stream described in
+[runtime diagnostics](diagnostics.md). `diagnostics.sock` does not alter this socket's schema,
+snapshot, queue, reconnect, or delivery contract.
 
 ## SQLite interaction
 
