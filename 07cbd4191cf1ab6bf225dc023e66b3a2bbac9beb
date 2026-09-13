@@ -1,0 +1,32 @@
+Task cycle: Wayland inactive-surface lifecycle, paint scheduling, OBS semantic alignment, and diagnostic replay control.
+
+User report and objective:
+- On infinitas.lan, changing screens left the previous screen canvas visible in the Wayland overlay.
+- Replace paint admission/cadence flags with compositor-driven continuous paint for active Wayland canvases.
+- Unmap inactive surfaces cheaply while retaining their DOM, renderer, and skin runtime; pause inactive presenter and skin schedule.
+- Remove the scorepeek refresh-cap setting and keep skin schedule independent from presenter paint rate.
+- Align OBS semantics: inactive canvas absent from composition with runtime stopped; active canvas recreated/composed. Browser verification is bounded to Playwright Chromium, not a real OBS or target deployment.
+- Make diagnostic observe live-only unless --replay SECONDS is explicitly supplied. A truncated ring streams its available suffix, marks the header, warns on stderr, and remains live.
+- Exclude the 21:16 diagnostic sample from causal analysis because diagnostic observe replayed about 80 MB and may itself have added load.
+
+Implementation decisions and findings:
+- Active native display surfaces render and present on every single-flight compositor frame callback; there is no paint reason, admission flag, steady cadence, or scorepeek refresh cap.
+- Inactive display surfaces attach a null buffer and commit immediately. Skin state and renderer ownership remain allocated, while next skin scheduling is cleared until activation.
+- wlr-layer-shell protocol requires an unmapped surface to remap through bufferless commit, configure/ack, then buffer attachment. The initial immediate-present implementation was rejected in review and replaced with Unmapped/AwaitingConfigure/Mapped lifecycle state.
+- Active transition renders the skin immediately, begins the bufferless remap handshake, ignores configure delivered before that new handshake, and paints only on the new configure. Inactive transitions and delayed configure events invalidate an awaiting handshake with another null-buffer commit.
+- OBS already removed inactive iframes and recreated their browsing context/Wasm runtime on activation; product changes there were limited to removing the refresh setting and preserving that lifecycle.
+- Overlay config schema advanced to v8. Legacy wayland_refresh_hz is accepted as ignored input and omitted on the next save.
+- Diagnostic stream clients first send a bounded request protocol. Live mode starts at the next sequence; replay mode selects records by requested seconds and reports stream_start_sequence, replay availability, and truncation.
+
+Review and verification:
+- Independent review first found the mandatory layer-shell remap configure handshake, then found interrupted-remap/delayed-configure deadlock risk. Both were fixed; final delta review reported no unresolved findings.
+- Complete mise run test passed outside the sandbox, including diagnostic live/replay tests, 485 scorepeek library tests, 284 scorepeek binary tests, 86 native overlay tests, embedded web tests, and Playwright lifecycle coverage.
+- Pinned Playwright Chromium browser gate passed independently (1 test).
+- Fake Wayland regression covers inactive -> active -> inactive -> delayed configure -> active -> configure -> paint.
+- Nested two-output Scroll scenario passed with hide/show lifecycle, composition, callbacks, and virtual-pointer input; final measured input-to-paint latency was 28,932 us. Earlier attempts hit timing-sensitive nested assertions, while a repeated unchanged run passed; no product failure was attributed to those attempts.
+- Native visual-debug scenario generated and manually inspected 33 PNG/layout pairs and a complete manifest; inactive canvases disappeared and returned as expected.
+- cargo clippy --workspace --all-targets -- -D warnings passed.
+- mise run build passed after commit, rebuilding target/debug/scorepeek with the embedded OBS UI.
+
+Environment boundary:
+- Sandbox execution could not write the mise/Git cache in one fix attempt and denied Unix socket operations in targeted diagnostics; the relevant repository commands and integration gates were rerun in the approved target-equivalent environment. No infinitas.lan deployment, real OBS mutation, push, or remote operation was performed.
