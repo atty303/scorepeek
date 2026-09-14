@@ -1,0 +1,92 @@
+Task: Investigate and spike a pre-Gamescope-scale Vulkan capture alternative
+Anchor: 16600fb202a6282c836877047e4ad0aa0a0fe38f
+Base: 69708727c48e9afa13813c4d6fd1595c68502f5b
+Line: main
+Commits: 16600fb feat(capture): spike pre-Gamescope Vulkan readback
+Guidance: repository AGENTS.md; develop-repository; investigate-problem; dig; design-program-observability; maintain-agent-guidance
+Execution: Scorepeek workspace on Bazzite; live Gamescope and GPU operations explicitly authorized; sandbox-visible failures were separated from approved host-equivalent observations; push was not authorized
+Evidence: On AMD Radeon RX 9070 XT with Gamescope 3.16.19, loader diagnostics inserted VK_LAYER_SCOREPEEK_capture_spike and VK_LAYER_OBS_vkcapture_64 in the vkcube instance and device chains. A 640x360 vkcube inside 1280x720 Gamescope completed 10 captures with 10 distinct digests and a visually correct LunarG cube PPM; a final three-frame run completed with zero busy/coalesced drops and both Gamescope and consumer exit 0. Startup swapchain replacement caused the initial failure and was reproduced, diagnosed, fixed, and rechecked. The final integrated mise run test exited 0.
+Authority: Current implementation and operating/promotion contract are in spikes/vulkan-capture and mise.toml; bm2dx.exe play-load assessment remains user-owned.
+Transcript:
+- U1: gamescope pipewire sourceをconsumeすると音飛びが発生する問題が判明した。代替を検討したい
+  - A: Began a read-only investigation, fixed the failure oracle as audio skips while consuming the Gamescope PipeWire source, and compared alternatives. Initially recommended compositor screencopy, with explicit uncertainty about the internal cause.
+- U2: え、まさにwayland overlayでgamescopeのうえにoverlay載せるんだけど？
+  - A: Accepted that output/region capture would include the Scorepeek overlay and withdrew that route, narrowing the capture point to the Gamescope toplevel or game side.
+- U3: wayland portalが使っているのと同じprotoclを使えばいいのでは？ portalが使えることは既に確認できている
+  - A: Agreed that reusing the compositor-facing protocol behind a working Portal window capture was the relevant hypothesis, while briefly checking which backend protocol was actually used.
+- U4: 考えるまでもなくportalはwindowを選択できるだろ？
+  - A: Corrected the over-analysis and described direct foreign-toplevel image capture as the intended no-overlay, no-PipeWire route.
+- U5: ちなみにpipewireが問題ではなく、gamescope pipewire source+scorepeek sinkの組み合わせの問題だ
+  - A: Updated the boundary: Portal window capture transported over PipeWire could remain viable because the known failure was the specific Gamescope-source and Scorepeek-sink pairing, not PipeWire generally.
+- U6: でもportalって絶対に選択dialogが出ないか？
+  - A: Identified chooser behavior as the operational decision and checked restore-token support rather than assuming every start could be silent.
+- U7: 再選択省略の挙動を教えて
+  - A: Explained persist_mode, restore_token, backend support, token invalidation, and fallback-to-chooser behavior, separating the Portal specification from current backend behavior.
+- U8: chooser cmdってなに？
+  - A: Explained that chooser_cmd is a portal-backend-configured external selector command, not an application option, and that it does not itself eliminate the chooser.
+- U9: vulkan layerが実は最も目的に最適かもしれない。gamescopeがscaleする前を捉えられるか？
+  - A: Confirmed that a game-process Vulkan layer can intercept the game swapchain before Gamescope scaling, while distinguishing it from a layer attached to Gamescope itself.
+- U10: vkcaptuteはscale後だ。独自で追加layerを作る前提だ
+  - A: Accepted the correction and reframed the design around a separate custom layer ordered on the game side of Gamescope WSI rather than obs-vkcapture output.
+- U11: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) この方針でspikeする。consumeは10hz copyして非同期workerに渡すところまで実装し、負荷影響をみる。
+  - A: Used dig and began a one-question-at-a-time design tree for a non-production spike: 10 Hz capture, asynchronous consumer, and measured impact.
+- U12: B. ここまでみないと意味がない
+  - A: Recorded that the spike must include the complete cross-process readback and worker handoff path, not stop at an in-process GPU copy.
+- U13: DMA-BUFを使う意味はない？ vkcaptureが使っているのは最終consumerがobsでgpu処理しかないから？
+  - A: Compared CPU readback and DMA-BUF roles, explaining that DMA-BUF still isolates the present path and process boundary even though this consumer ultimately reads on CPU.
+- U14: game 120hzへの負荷を最小限にしたい
+  - A: Made nonblocking 120 Hz present behavior the primary constraint and proposed consumer-driven requests with one GPU-local export image.
+- U15: A
+  - A: Recorded the selected consumer-driven 10 Hz request model.
+- U16: vkcaptureがすでに使えていることで証拠は十分じゃないの？
+  - A: Agreed it was sufficient evidence for layer coexistence feasibility, while retaining a live full-path check for this custom copy and synchronization design.
+- U17: AとBどっちがはやい？
+  - A: Compared implementation speed of direct Vulkan dispatch code and vkroots, identifying vkroots as faster for a C++ layer.
+- U18: B
+  - A: Recorded the vkroots-based route.
+- U19: B
+  - A: Recorded a separate consumer process rather than an in-process worker-only spike.
+- U20: vkcaptureはどれ？
+  - A: Located obs-vkcapture's architecture in the design comparison and clarified which option corresponded to its shared-image/process model.
+- U21: A
+  - A: Recorded full-frame CPU readback in the consumer rather than GPU-only downstream work.
+- U22: A
+  - A: Recorded saving the first successful frame outside the repository for visual validation, then retaining only digests during steady operation.
+- U23: vkcaptureはどうやってる？
+  - A: Explained obs-vkcapture's layer interception, exportable image, DMA-BUF and synchronization flow, and why this spike could simplify for one consumer.
+- U24: ringもいらないや。1枚でいい。
+  - A: Reduced the design to one export image, with busy requests dropped and no catch-up.
+- U25: まだexternal semaphoreが過剰にみえる。本当に未完成bufを読むリスクが現実的にあるのか？
+  - A: Distinguished producer completion from reuse protection, described the remaining cross-process synchronization risk, and offered the simpler fence-plus-control-message experiment as a spike choice.
+- U26: A
+  - A: Recorded no external semaphore: producer local fence before READY, consumer local fence before ACK, and no reuse before ACK.
+- U27: まったくinjectしないときはすでに問題ないことがわかっていて、injectする場合はその経路の曾祖を個別に計測しても最終的に一部無効化したら機能しないから、計測する意味なくね？ 有効にしたうえで最適化のために計測するのはわかるが
+  - A: Agreed that partial-path performance comparisons would not answer acceptance; retained only complete-path operation plus internal timings for later optimization.
+- U28: A
+  - A: Recorded full-path-only performance evaluation.
+- U29: A
+  - A: Recorded that the final load/audio/120 Hz judgment would be the user's real play assessment, with diagnostics not acting as a fixed pass threshold.
+- U30: zigで書けない？
+  - A: Evaluated a Zig implementation, separating consumer suitability from the cost of writing the Vulkan loader/layer ABI and dispatch machinery without mature helpers.
+- U31: zigってcと互換性あるわけじゃないの？
+  - A: Clarified Zig's C ABI/header interoperability and the difference between calling C APIs and implementing a complex C++-oriented layer helper abstraction.
+- U32: c++はtoolchainの再現性が悪いんだよね。zigはmiseで一発だよな. vkrootsを使う価値はどこまである？
+  - A: Compared a pure Zig layer with C++20 plus vkroots compiled by pinned Zig, identifying vkroots' value as loader negotiation, dispatch, object lookup, and chaining rather than toolchain management.
+- U33: pinned zigでc++ビルドするならc++ toolchainはmiseに一切現れずzigが管理するのか？
+  - A: Explained that mise would manage only Zig, whose zig c++ driver supplies Clang, LLD, libc++, ABI/runtime pieces, subject to inspecting final dynamic dependencies.
+- U34: 試しにmise execでzigを実行して依存なしにc++がコンパイルリンクできるか試して
+  - A: Ran a temporary C++20 compile/link experiment with Zig 0.16.0, including a restricted PATH trial, and cleaned the temporary program.
+- U35: どう？
+  - A: Reported success: the program built and ran with only Zig visible, and its ELF needed libc and the dynamic loader but no libstdc++ or libc++ shared runtime.
+- U36: ちなみにzig以外に選択肢ある？ toolchain 再現性を維持して
+  - A: Compared pinned Zig, digest-pinned OCI, Nix, hermetic LLVM/Bazel, and a manually assembled LLVM toolchain, recommending Zig for the smallest management surface.
+- U37: oci imageってpodman依存するってことだよね
+  - A: Confirmed that OCI adds a build-time engine dependency, practically Podman on this host, though not a runtime dependency of the injected layer.
+- U38: A. やっぱc/c++互換でtoolchain依存を軽くするならzig優秀じゃん
+  - A: Finalized pinned Zig 0.16.0 plus C++20 and vkroots, with pinned Vulkan-Headers and output dependency inspection.
+- U39: べつにそこは条件決めなくていい。こっちが体感で決める
+  - A: Removed proposed fixed duration, song-count, and frametime thresholds; kept objective diagnostics only for locating optimization work.
+- U40: A
+  - A: Closed the dig design with shared understanding: pre-scale interception, consumer-driven 10 Hz, one DMA-BUF, local fences plus ACK, separate consumer, first-frame artifact, and pinned Zig/vkroots.
+- U41: vkcubeなど+gamescopeでobs-vkcaptureを有効にして、実際にspikeが機能するところまで検証すること。bm2dx.exeでの確認だけはこちらがやるが、それ以外の検証はすべて完了させておくこと
+  - A: Used design-program-observability and develop-repository to implement the spike. Pinned Zig 0.16.0, vkroots commit 20733b938267dcac60f6ac105dbb757f9cc8df9c, and Vulkan-Headers v1.4.362; implemented the explicit layer, one-image DMA-BUF protocol, consumer readback/async digest, bounded diagnostics, first-frame artifact, build/test tasks, and operating documentation. Initial live testing proved both layers loaded but exposed a startup swapchain replacement disconnect; investigate-problem localized it from the handshake and loader ordering, then layer handoff and consumer reimport were added. A second live run captured ten distinct frames and a visually correct 640x360 LunarG cube before finding a shutdown atomic-wait race; that race and stale swapchain resource retention were fixed. Final live and repository tests passed, temporary frame/log/research artifacts were removed, commit 16600fb was created, and the post-commit debug build passed. No push or bm2dx.exe run was performed.
