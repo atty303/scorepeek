@@ -1,0 +1,22 @@
+.{
+    .name = .scorepeek_vulkan_capture_spike,
+    .version = "0.0.0",
+    .fingerprint = 0x6ec8c23c7d8b6115, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.362.tar.gz",
+            .hash = "N-V-__8AAHhDhwIquH2tnZwoD6C1Lje5OG4Uvm0CHdU-VGy1",
+        },
+        .vkroots = .{
+            .url = "https://github.com/misyltoad/vkroots/archive/20733b938267dcac60f6ac105dbb757f9cc8df9c.tar.gz",
+            .hash = "N-V-__8AAH2DLAAxLgPAOytsHX06boj7NbjEpglEqN7igFq4",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "layer",
+        "src",
+    },
+}
