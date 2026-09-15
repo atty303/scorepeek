@@ -1,0 +1,16 @@
+[package]
+name = "scorepeek-vulkan-capture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ash.workspace = true
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+
+[lints.rust]
+unsafe_code = "allow"

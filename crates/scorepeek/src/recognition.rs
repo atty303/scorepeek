@@ -117,10 +117,6 @@ const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
 const NORMALIZER_FILTER: &str = "scale=1920:1080:flags=bitexact:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24";
-const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
-    "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
-const CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256: &str =
-    "f5f0c5a86b5edba6a8fd014ad85b3873be8f745c0b531d2b5b77f203770b046a";
 const CALIBRATED_FFMPEG_SHA256: &str =
     "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee";
 const FFMPEG_VERSION: &str = "8.1.2";
@@ -132,12 +128,12 @@ const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v4.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v6.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
+#[cfg(test)]
+const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
+    "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
 
 fn calibrated_capture_profile(profile: &str) -> bool {
-    matches!(
-        profile,
-        CALIBRATED_CAPTURE_PROFILE_SHA256 | CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256
-    )
+    profile.len() == 64 && profile.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Debug)]
@@ -4233,16 +4229,16 @@ mod tests {
                 .is_err(),
             "self-reported evidence without the expected extraction digest must fail"
         );
-        let unsupported_manifest_sha256 =
-            write_unsupported_profile_evidence(directory.path(), normalizer.clone(), manifest);
+        let invalid_manifest_sha256 =
+            write_invalid_profile_evidence(directory.path(), normalizer.clone(), manifest);
         assert!(
             CanonicalFrame::read_extraction(
                 directory.path(),
                 "result-001",
-                &unsupported_manifest_sha256,
+                &invalid_manifest_sha256,
             )
             .is_err(),
-            "an uncalibrated capture profile must fail even with self-consistent evidence"
+            "a malformed runtime profile digest must fail even with self-consistent evidence"
         );
         fs::write(directory.path().join("manifest.json"), &manifest_bytes).unwrap();
         fs::write(directory.path().join("normalizer.json"), &normalizer_bytes).unwrap();
@@ -4263,22 +4259,20 @@ mod tests {
     }
 
     #[test]
-    fn canonical_frame_accepts_only_registered_calibrated_profiles() {
+    fn canonical_frame_accepts_runtime_admitted_digest_identity() {
         assert!(calibrated_capture_profile(
             CALIBRATED_CAPTURE_PROFILE_SHA256
         ));
-        assert!(calibrated_capture_profile(
-            CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256
-        ));
-        assert!(!calibrated_capture_profile(&"e".repeat(64)));
+        assert!(calibrated_capture_profile(&"e".repeat(64)));
+        assert!(!calibrated_capture_profile(&"g".repeat(64)));
     }
 
-    fn write_unsupported_profile_evidence(
+    fn write_invalid_profile_evidence(
         directory: &Path,
         normalizer: DomainNormalizerEvidence,
         manifest: CanonicalExtractionEvidence,
     ) -> String {
-        write_profile_evidence(directory, normalizer, manifest, &"e".repeat(64))
+        write_profile_evidence(directory, normalizer, manifest, &"g".repeat(64))
     }
 
     fn write_profile_evidence(

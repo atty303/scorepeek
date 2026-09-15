@@ -5,9 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use scorepeek::capture::{
-    CalibratedGamescopeLease, CaptureDiagnosticDetail, CaptureDiagnosticFact,
+    AuthoredGamescopeProfileBinding, CalibratedGamescopeLease, CalibratedSourceFrameEvidence,
+    CalibratedVulkanLease, CaptureDiagnosticDetail, CaptureDiagnosticFact,
     CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType,
-    CaptureGeneration, GamescopeProfileBinding, acquire_gamescope_source, admit_gamescope_profile,
+    CaptureGeneration, EdgeCrop, GamescopeProfileBinding, NormalizedCanonicalFrame,
+    RuntimeCaptureBackend, acquire_gamescope_source, acquire_pipewire_source,
+    admit_gamescope_profile, admit_runtime_profile, admit_vulkan_session,
     start_uncalibrated_gamescope_receiver,
 };
 use serde::Serialize;
@@ -170,6 +173,8 @@ pub enum GamescopeLiveSessionEvent<'a> {
         capture_generation: u64,
         capture_profile_sha256: &'a str,
         normalizer_artifact_sha256: &'a str,
+        capture_profile_document: Option<&'a str>,
+        normalizer_document: Option<&'a str>,
     },
     RecordingHealth {
         snapshot: crate::canonical_recording::RecordingHealthSnapshot,
@@ -515,10 +520,7 @@ impl GamescopeFieldObservationGateReport {
 
     pub fn startup_failure_summary(&self) -> String {
         self.failure_detail.clone().unwrap_or_else(|| {
-            format!(
-                "Gamescope live session startup failed: {:?}",
-                self.error_type
-            )
+            format!("capture live session startup failed: {:?}", self.error_type)
         })
     }
 
@@ -641,6 +643,103 @@ pub struct GamescopeFieldObservationGateConfig<'a> {
     pub canonical_recording_root: Option<&'a std::path::Path>,
     pub recognition_artifact_retention: RecognitionArtifactRetention,
     pub recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
+    pub runtime_capture: Option<RuntimeCaptureInput<'a>>,
+}
+
+pub enum RuntimeCaptureInput<'a> {
+    Pipewire {
+        node_name: &'a str,
+        crop: EdgeCrop,
+        expected_node_id: Option<u32>,
+    },
+    VulkanLayer {
+        session: scorepeek::capture::vulkan::VulkanSession,
+        crop: EdgeCrop,
+    },
+}
+
+enum CaptureLease {
+    Pipewire(CalibratedGamescopeLease),
+    Vulkan(CalibratedVulkanLease),
+}
+
+enum CaptureObservedFrame {
+    Pipewire(scorepeek::capture::ObservedFrame),
+    Vulkan(scorepeek::capture::ObservedFrame),
+}
+
+impl CaptureLease {
+    fn capture_profile_sha256(&self) -> &str {
+        match self {
+            Self::Pipewire(lease) => lease.capture_profile_sha256(),
+            Self::Vulkan(lease) => lease.capture_profile_sha256(),
+        }
+    }
+
+    fn normalizer_artifact_sha256(&self) -> &str {
+        match self {
+            Self::Pipewire(lease) => lease.normalizer_artifact_sha256(),
+            Self::Vulkan(lease) => lease.normalizer_artifact_sha256(),
+        }
+    }
+
+    fn take_latest_observed_frame(&mut self) -> Option<CaptureObservedFrame> {
+        match self {
+            Self::Pipewire(lease) => lease
+                .take_latest_observed_frame()
+                .map(CaptureObservedFrame::Pipewire),
+            Self::Vulkan(lease) => lease
+                .take_latest_observed_frame()
+                .map(CaptureObservedFrame::Vulkan),
+        }
+    }
+
+    fn normalize_observed_frame_with_source(
+        &mut self,
+        observed: CaptureObservedFrame,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<
+        (NormalizedCanonicalFrame, CalibratedSourceFrameEvidence),
+        scorepeek::capture::CaptureError,
+    > {
+        match (self, observed) {
+            (Self::Pipewire(lease), CaptureObservedFrame::Pipewire(frame)) => {
+                lease.normalize_observed_frame_with_source(frame, sink)
+            }
+            (Self::Vulkan(lease), CaptureObservedFrame::Vulkan(frame)) => {
+                lease.normalize_observed_frame_with_source(frame, sink)
+            }
+            _ => unreachable!("observed frames cannot cross capture leases"),
+        }
+    }
+
+    fn poll(
+        &mut self,
+        timeout: Duration,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(), scorepeek::capture::CaptureError> {
+        match self {
+            Self::Pipewire(lease) => lease.poll(timeout, sink),
+            Self::Vulkan(lease) => lease.poll(timeout, sink),
+        }
+    }
+
+    fn shutdown_with_elapsed(
+        self,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> (Result<(), scorepeek::capture::CaptureError>, u64) {
+        match self {
+            Self::Pipewire(lease) => lease.shutdown_with_elapsed(sink),
+            Self::Vulkan(lease) => lease.shutdown_with_elapsed(sink),
+        }
+    }
+
+    fn shutdown(
+        self,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(), scorepeek::capture::CaptureError> {
+        self.shutdown_with_elapsed(sink).0
+    }
 }
 
 impl HandoffCounters {
@@ -915,6 +1014,8 @@ pub fn run_gamescope_field_observation_gate(
         canonical_recording_start_failed: _,
         recording_memory_limit: _,
         mut sink,
+        capture_profile_document: _,
+        normalizer_document: _,
     } = match start_field_observation_gate(config) {
         Ok(started) => started,
         Err(report) => return *report,
@@ -1016,6 +1117,8 @@ pub fn run_gamescope_live_session(
         canonical_recording_start_failed,
         recording_memory_limit,
         mut sink,
+        capture_profile_document,
+        normalizer_document,
     } = match start_field_observation_gate(config) {
         Ok(started) => started,
         Err(mut report) => {
@@ -1029,6 +1132,8 @@ pub fn run_gamescope_live_session(
         capture_generation: capture_generation.get(),
         capture_profile_sha256: lease.capture_profile_sha256(),
         normalizer_artifact_sha256: lease.normalizer_artifact_sha256(),
+        capture_profile_document: capture_profile_document.as_deref(),
+        normalizer_document: normalizer_document.as_deref(),
     })
     .err()
     .map(|_| (FieldObservationGateErrorType::ResultOutputFailed, None));
@@ -1109,13 +1214,7 @@ pub fn run_gamescope_live_session(
                 .maximum_consecutive_field_observation_busy_skips,
         },
     );
-    let mut source_ended = matches!(
-        terminal,
-        Some((
-            FieldObservationGateErrorType::CaptureFailed,
-            Some(CaptureErrorType::SourceLost)
-        ))
-    );
+    let mut source_ended = is_reconnectable_source_end(terminal);
     let finish_status = if terminal.is_none() || source_ended {
         DiagnosticRunStatus::Success
     } else {
@@ -1162,7 +1261,7 @@ pub fn run_gamescope_live_session(
         LiveSessionStopReason::TerminalFailure
     };
     let (error_type, capture_error_type) = if source_ended {
-        (None, Some(Some(CaptureErrorType::SourceLost)))
+        (None, terminal.and_then(|(_, capture)| capture).map(Some))
     } else {
         terminal.unzip()
     };
@@ -1186,8 +1285,20 @@ pub fn run_gamescope_live_session(
     report
 }
 
+fn is_reconnectable_source_end(
+    terminal: Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)>,
+) -> bool {
+    matches!(
+        terminal,
+        Some((
+            FieldObservationGateErrorType::CaptureFailed,
+            Some(CaptureErrorType::SourceLost | CaptureErrorType::StreamLost)
+        ))
+    )
+}
+
 struct StartedFieldObservationGate {
-    lease: CalibratedGamescopeLease,
+    lease: CaptureLease,
     session: FieldObservationSession<RegisteredScreenFieldObserver>,
     artifact_worker: Option<RecognitionArtifactWorker>,
     artifact_requested: bool,
@@ -1195,6 +1306,8 @@ struct StartedFieldObservationGate {
     canonical_recording_start_failed: bool,
     recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
     sink: BoundedDiagnosticSink,
+    capture_profile_document: Option<String>,
+    normalizer_document: Option<String>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1214,42 +1327,41 @@ fn start_field_observation_gate(
             sink,
         )));
     }
-    let binding = read_diagnostic_handoff_binding(
-        config.handoff.binding_path,
-        config.handoff.expected_binding_sha256,
-    )
-    .map_err(|error| {
-        let error = match error {
-            DiagnosticHandoffGateErrorType::BindingUnavailable => {
-                FieldObservationGateErrorType::BindingUnavailable
-            }
-            _ => FieldObservationGateErrorType::BindingInvalid,
-        };
-        Box::new(empty_field_observation_report(
-            error,
-            None,
-            capture_generation,
-            None,
-            artifact_requested,
-            sink.clone(),
-        ))
-    })?;
-    bind_diagnostic_descriptor(&mut config.handoff.descriptor, &binding);
-    let expected_profile = config
-        .handoff
-        .descriptor
-        .binding
-        .capture_profile_sha256
-        .clone();
-    let expected_normalizer = config.handoff.descriptor.binding.normalizer_sha256.clone();
     let artifact_run_id = config.handoff.descriptor.run_id.clone();
     let mut sink = sink;
-    let lease = match start_diagnostic_handoff_capture(
-        binding,
-        capture_generation,
-        config.handoff.expected_source_node_id,
-        &mut sink,
-    ) {
+    let started_capture = if let Some(runtime) = config.runtime_capture.take() {
+        start_runtime_capture(runtime, capture_generation, &mut sink)
+    } else {
+        let binding = read_diagnostic_handoff_binding(
+            config.handoff.binding_path,
+            config.handoff.expected_binding_sha256,
+        )
+        .map_err(|error| {
+            let error = match error {
+                DiagnosticHandoffGateErrorType::BindingUnavailable => {
+                    FieldObservationGateErrorType::BindingUnavailable
+                }
+                _ => FieldObservationGateErrorType::BindingInvalid,
+            };
+            Box::new(empty_field_observation_report(
+                error,
+                None,
+                capture_generation,
+                None,
+                artifact_requested,
+                sink.clone(),
+            ))
+        })?;
+        bind_diagnostic_descriptor(&mut config.handoff.descriptor, &binding);
+        start_diagnostic_handoff_capture(
+            binding,
+            capture_generation,
+            config.handoff.expected_source_node_id,
+            &mut sink,
+        )
+        .map(|lease| (lease, None))
+    };
+    let (lease, authored) = match started_capture {
         Ok(lease) => lease,
         Err((error, capture_error)) => {
             let error = match error {
@@ -1268,6 +1380,14 @@ fn start_field_observation_gate(
             )));
         }
     };
+    lease
+        .capture_profile_sha256()
+        .clone_into(&mut config.handoff.descriptor.binding.capture_profile_sha256);
+    lease
+        .normalizer_artifact_sha256()
+        .clone_into(&mut config.handoff.descriptor.binding.normalizer_sha256);
+    let expected_profile = lease.capture_profile_sha256().to_owned();
+    let expected_normalizer = lease.normalizer_artifact_sha256().to_owned();
     if expected_profile != lease.capture_profile_sha256()
         || expected_normalizer != lease.normalizer_artifact_sha256()
     {
@@ -1339,12 +1459,24 @@ fn start_field_observation_gate(
                     )
                 }
             });
+    let recording_capture_identity =
+        authored.as_ref().map(
+            |value| crate::canonical_recording::RecordingCaptureIdentity {
+                capture_profile_sha256: value.capture_profile_sha256.clone(),
+                capture_profile_document: String::from_utf8(value.capture_profile_bytes.clone())
+                    .expect("canonical profile JSON is UTF-8"),
+                normalizer_sha256: value.normalizer_sha256.clone(),
+                normalizer_document: String::from_utf8(value.normalizer_bytes.clone())
+                    .expect("canonical normalizer JSON is UTF-8"),
+            },
+        );
     let (canonical_recorder, canonical_recording_start_failed) =
         if let Some(recording_root) = config.canonical_recording_root {
             match CanonicalRecordingWorker::start_named(
                 recording_root,
                 "canonical",
                 config.recording_memory_limit,
+                recording_capture_identity,
             ) {
                 Ok(recorder) => (Some(recorder), false),
                 Err(_) => (None, true),
@@ -1361,7 +1493,82 @@ fn start_field_observation_gate(
         canonical_recording_start_failed,
         recording_memory_limit: config.recording_memory_limit,
         sink,
+        capture_profile_document: authored.as_ref().map(|value| {
+            String::from_utf8(value.capture_profile_bytes.clone())
+                .expect("canonical profile JSON is UTF-8")
+        }),
+        normalizer_document: authored.as_ref().map(|value| {
+            String::from_utf8(value.normalizer_bytes.clone())
+                .expect("canonical normalizer JSON is UTF-8")
+        }),
     })
+}
+
+fn start_runtime_capture(
+    input: RuntimeCaptureInput<'_>,
+    generation: CaptureGeneration,
+    sink: &mut BoundedDiagnosticSink,
+) -> Result<
+    (CaptureLease, Option<AuthoredGamescopeProfileBinding>),
+    (DiagnosticHandoffGateErrorType, Option<CaptureErrorType>),
+> {
+    match input {
+        RuntimeCaptureInput::Pipewire {
+            node_name,
+            crop,
+            expected_node_id,
+        } => {
+            let lease =
+                acquire_pipewire_source(node_name, DISCOVERY_TIMEOUT, sink).map_err(|error| {
+                    (
+                        DiagnosticHandoffGateErrorType::CaptureFailed,
+                        Some(error.error_type()),
+                    )
+                })?;
+            if expected_node_id.is_some_and(|expected| expected != lease.node_id()) {
+                lease.shutdown(sink);
+                return Err((
+                    DiagnosticHandoffGateErrorType::CaptureFailed,
+                    Some(CaptureErrorType::SourceLost),
+                ));
+            }
+            let receiver =
+                start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, sink)
+                    .map_err(|error| {
+                        (
+                            DiagnosticHandoffGateErrorType::CaptureFailed,
+                            Some(error.error_type()),
+                        )
+                    })?;
+            admit_runtime_profile(
+                receiver,
+                RuntimeCaptureBackend::Pipewire,
+                format!("node.name={node_name};media.class=Video/Source"),
+                crop,
+                generation,
+                sink,
+            )
+            .map(|(lease, authored)| (CaptureLease::Pipewire(lease), Some(authored)))
+            .map_err(|failure| {
+                let error = failure.error_type();
+                let _ = failure.shutdown(sink);
+                (
+                    DiagnosticHandoffGateErrorType::AdmissionRejected,
+                    Some(error),
+                )
+            })
+        }
+        RuntimeCaptureInput::VulkanLayer { session, crop } => {
+            admit_vulkan_session(session, crop, generation, sink)
+                .map(|(lease, authored)| (CaptureLease::Vulkan(lease), Some(authored)))
+                .map_err(|error| {
+                    (
+                        DiagnosticHandoffGateErrorType::AdmissionRejected,
+                        Some(error.error_type()),
+                    )
+                })
+        }
+    }
 }
 
 fn empty_field_observation_report(
@@ -1482,7 +1689,7 @@ const fn field_resource_error(
 }
 
 fn offer_field_observation_frames(
-    lease: &mut CalibratedGamescopeLease,
+    lease: &mut CaptureLease,
     session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,
     duration: Duration,
     pending: &mut Vec<PendingSessionFieldObservation<RegisteredFieldOutput>>,
@@ -1583,7 +1790,7 @@ fn offer_field_observation_frames(
     reason = "the live loop keeps screen cadence, field admission, event ordering, and counters in one owner"
 )]
 fn offer_live_field_observation_frames(
-    lease: &mut CalibratedGamescopeLease,
+    lease: &mut CaptureLease,
     session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,
     stop: &AtomicBool,
     pending: &mut Vec<PendingSessionFieldObservation<RegisteredFieldOutput>>,
@@ -1882,7 +2089,7 @@ fn emit_semantic_episode(
 }
 
 struct GamescopeCanonicalFrameSource<'a> {
-    lease: &'a mut CalibratedGamescopeLease,
+    lease: &'a mut CaptureLease,
     counters: &'a mut FieldObservationCounters,
     sink: &'a mut BoundedDiagnosticSink,
 }
@@ -2438,7 +2645,7 @@ fn invalid_handoff_configuration(
 }
 
 fn finish_handoff_gate(
-    lease: CalibratedGamescopeLease,
+    lease: CaptureLease,
     session: HandoffSession,
     terminal: &mut Option<(DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)>,
     capture_generation: CaptureGeneration,
@@ -2515,7 +2722,7 @@ fn start_diagnostic_handoff_capture(
     capture_generation: CaptureGeneration,
     expected_source_node_id: Option<u32>,
     sink: &mut BoundedDiagnosticSink,
-) -> Result<CalibratedGamescopeLease, (DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
+) -> Result<CaptureLease, (DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
     let lease = acquire_gamescope_source(DISCOVERY_TIMEOUT, sink).map_err(|error| {
         (
             DiagnosticHandoffGateErrorType::CaptureFailed,
@@ -2536,18 +2743,20 @@ fn start_diagnostic_handoff_capture(
                 Some(error.error_type()),
             )
         })?;
-    admit_gamescope_profile(receiver, binding, capture_generation, sink).map_err(|failure| {
-        let error_type = failure.error_type();
-        let _ = failure.shutdown(sink);
-        (
-            DiagnosticHandoffGateErrorType::AdmissionRejected,
-            Some(error_type),
-        )
-    })
+    admit_gamescope_profile(receiver, binding, capture_generation, sink)
+        .map(CaptureLease::Pipewire)
+        .map_err(|failure| {
+            let error_type = failure.error_type();
+            let _ = failure.shutdown(sink);
+            (
+                DiagnosticHandoffGateErrorType::AdmissionRejected,
+                Some(error_type),
+            )
+        })
 }
 
 fn offer_diagnostic_handoff_frames(
-    lease: &mut CalibratedGamescopeLease,
+    lease: &mut CaptureLease,
     session: &mut HandoffSession,
     duration: Duration,
     counters: &mut HandoffCounters,
@@ -3168,13 +3377,33 @@ mod tests {
         FieldObservationFinishOutcomes, FieldObservationGateErrorType, GamescopeLiveGateReport,
         LifecycleGateErrorType, LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS,
         RecognitionArtifactFinishOutcome, RecognitionArtifactFinishStatus,
-        field_observation_report, field_resource_error, field_start_error, lifecycle_error_type,
-        parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
-        process_resource_snapshot, read_binding, recognition_artifact_error, result_evidence_error,
-        run_gamescope_binding_admission_gate, run_gamescope_canonical_frame_gate,
-        run_gamescope_diagnostic_handoff_gate, run_gamescope_recognition_handoff_gate,
-        summarize_run,
+        field_observation_report, field_resource_error, field_start_error,
+        is_reconnectable_source_end, lifecycle_error_type, parse_consumer_interval_ms,
+        parse_duration_ms, parse_lifecycle_runs, process_resource_snapshot, read_binding,
+        recognition_artifact_error, result_evidence_error, run_gamescope_binding_admission_gate,
+        run_gamescope_canonical_frame_gate, run_gamescope_diagnostic_handoff_gate,
+        run_gamescope_recognition_handoff_gate, summarize_run,
     };
+
+    #[test]
+    fn only_transport_disappearance_is_a_reconnectable_source_end() {
+        for error in [CaptureErrorType::SourceLost, CaptureErrorType::StreamLost] {
+            assert!(is_reconnectable_source_end(Some((
+                FieldObservationGateErrorType::CaptureFailed,
+                Some(error),
+            ))));
+        }
+        for error in [
+            CaptureErrorType::UnsupportedFormat,
+            CaptureErrorType::UnsupportedMemoryType,
+            CaptureErrorType::ReceiverFailed,
+        ] {
+            assert!(!is_reconnectable_source_end(Some((
+                FieldObservationGateErrorType::CaptureFailed,
+                Some(error),
+            ))));
+        }
+    }
 
     fn diagnostic_descriptor(generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
@@ -3485,7 +3714,7 @@ mod tests {
                     status: CaptureDiagnosticStatus::Success,
                     error_type: None,
                     detail: CaptureDiagnosticDetail::Shutdown {
-                        source: CaptureSourceKind::GamescopeDefaultRemote,
+                        source: CaptureSourceKind::Pipewire,
                     },
                 },
             ],
@@ -3535,7 +3764,7 @@ mod tests {
                 status: CaptureDiagnosticStatus::Success,
                 error_type: None,
                 detail: CaptureDiagnosticDetail::Shutdown {
-                    source: CaptureSourceKind::GamescopeDefaultRemote,
+                    source: CaptureSourceKind::Pipewire,
                 },
             });
         }

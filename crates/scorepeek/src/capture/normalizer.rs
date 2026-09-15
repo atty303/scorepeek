@@ -436,6 +436,25 @@ fn normalize_bgrx(
     observed_height: usize,
     rectangle: FractionalRectangle,
 ) -> Vec<u8> {
+    if observed_width == CANONICAL_WIDTH
+        && observed_height == CANONICAL_HEIGHT
+        && rectangle.left.numerator == 0
+        && rectangle.left.denominator == 1
+        && rectangle.top.numerator == 0
+        && rectangle.top.denominator == 1
+        && rectangle.width.numerator == 1_920
+        && rectangle.width.denominator == 1
+        && rectangle.height.numerator == 1_080
+        && rectangle.height.denominator == 1
+    {
+        let mut output = Vec::with_capacity(CANONICAL_BYTES);
+        for row in source.chunks_exact(stride).take(CANONICAL_HEIGHT) {
+            for pixel in row[..CANONICAL_WIDTH * BGRX_BYTES_PER_PIXEL].chunks_exact(4) {
+                output.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+            }
+        }
+        return output;
+    }
     let horizontal = interpolation_axis(
         rectangle.left,
         rectangle.width,

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/scorepeek", "crates/scorepeek-corpus", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web", "crates/scorepeek-skin-sdk", "skins/guest-core"]
+members = ["crates/scorepeek", "crates/scorepeek-corpus", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/guest-core"]
 resolver = "3"
 
 [workspace.package]
@@ -30,6 +30,8 @@ imageproc = { version = "0.27.0", default-features = false }
 object_store = { version = "0.14.1", default-features = false, features = ["aws"] }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-27"] }
 pipewire = "0.10.0"
+ash = { version = "0.38.0", default-features = false, features = ["loaded"] }
+rustix = { version = "1.1.4", features = ["event", "fs", "net", "time"] }
 qoi = "0.4.1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }

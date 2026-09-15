@@ -15,10 +15,11 @@ use pw::spa::pod::{Pod, Value};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
-    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError, CaptureErrorType,
-    CaptureGeneration, GamescopeProfileBinding, ITERATION_SLICE, NormalizedCanonicalFrame,
-    ObservedContractMismatch, UncalibratedGamescopeSourceLease, elapsed_ms,
+    AuthoredGamescopeProfileBinding, CaptureDiagnosticDetail, CaptureDiagnosticFact,
+    CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError,
+    CaptureErrorType, CaptureGeneration, EdgeCrop, GamescopeProfileBinding, ITERATION_SLICE,
+    NormalizedCanonicalFrame, ObservedContractMismatch, RuntimeCaptureBackend,
+    UncalibratedGamescopeSourceLease, elapsed_ms,
 };
 
 const MAX_WIDTH: u32 = 7_680;
@@ -27,11 +28,6 @@ const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BUFFERS_PER_PROCESS: usize = 64;
 const REQUESTED_FRAMERATE_NUM: u32 = 10;
 const REQUESTED_FRAMERATE_DENOM: u32 = 1;
-// Gamescope-private SPA format key from src/pipewire.cpp. Gamescope preserves the source aspect
-// ratio and bounds the capture to this rectangle; PipeWire itself does not interpret this key.
-const GAMESCOPE_REQUESTED_SIZE_PROPERTY: u32 = 0x7_0000;
-const GAMESCOPE_REQUESTED_WIDTH: u32 = 1_920;
-const GAMESCOPE_REQUESTED_HEIGHT: u32 = 1_080;
 const FRAME_COPY_INTERVAL_NS: u64 =
     1_000_000_000 * REQUESTED_FRAMERATE_DENOM as u64 / REQUESTED_FRAMERATE_NUM as u64;
 const RECEIVER_QUIESCE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -657,6 +653,17 @@ pub struct CalibratedGamescopeLease {
     normalization_failure_recorded: bool,
 }
 
+/// One admitted Vulkan-layer producer lifetime using the same canonical normalizer contract.
+pub struct CalibratedVulkanLease {
+    session: super::vulkan::VulkanSession,
+    capture_profile_sha256: Arc<str>,
+    normalizer_artifact_sha256: Arc<str>,
+    geometry: super::FractionalLinearGeometry,
+    capture_generation: CaptureGeneration,
+    frame_domain: Rc<()>,
+    diagnostic_sequence: u64,
+}
+
 /// One raw receiver frame carrying the identities granted only by calibrated admission.
 pub struct ObservedFrame {
     frame: UncalibratedFrame,
@@ -918,6 +925,215 @@ impl CalibratedGamescopeLease {
     }
 }
 
+impl CalibratedVulkanLease {
+    #[must_use]
+    pub fn capture_profile_sha256(&self) -> &str {
+        &self.capture_profile_sha256
+    }
+
+    #[must_use]
+    pub fn normalizer_artifact_sha256(&self) -> &str {
+        &self.normalizer_artifact_sha256
+    }
+
+    #[must_use]
+    pub fn take_latest_observed_frame(&mut self) -> Option<ObservedFrame> {
+        self.session.take_latest().map(|frame| {
+            let contract = UncalibratedVideoContract {
+                width: frame.width,
+                height: frame.height,
+                framerate_num: REQUESTED_FRAMERATE_NUM,
+                framerate_denom: REQUESTED_FRAMERATE_DENOM,
+                maximum_framerate_num: 0,
+                maximum_framerate_denom: 1,
+                pixel_aspect_num: 1,
+                pixel_aspect_denom: 1,
+                chroma_site: 0,
+                color_range: 0,
+                color_matrix: 0,
+                transfer_function: 0,
+                color_primaries: 0,
+            };
+            ObservedFrame {
+                frame: UncalibratedFrame {
+                    contract,
+                    memory_type: UncalibratedMemoryType::DmaBuf,
+                    stride: frame.width.saturating_mul(4),
+                    sequence: frame.sequence,
+                    received_monotonic_ns: frame.received_monotonic_ns,
+                    bytes: frame.bytes.into_vec(),
+                },
+                capture_generation: self.capture_generation,
+                capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
+                normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
+                frame_domain: Rc::clone(&self.frame_domain),
+            }
+        })
+    }
+
+    /// Normalizes one observed image under this generation's admitted Vulkan contract.
+    ///
+    /// # Errors
+    /// Returns a typed lease or normalization failure when the frame does not belong to this
+    /// generation or cannot satisfy the canonical frame contract.
+    pub fn normalize_observed_frame_with_source(
+        &mut self,
+        observed: ObservedFrame,
+        _sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
+        if !Rc::ptr_eq(&observed.frame_domain, &self.frame_domain)
+            || observed.capture_generation != self.capture_generation
+        {
+            return Err(CaptureError::without_source(
+                CaptureErrorType::FrameLeaseMismatch,
+            ));
+        }
+        let normalized = self.geometry.normalize(&observed.frame).map_err(|_| {
+            CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed)
+        })?;
+        let canonical = NormalizedCanonicalFrame::bind(
+            normalized,
+            self.capture_generation,
+            Arc::clone(&self.capture_profile_sha256),
+            Arc::clone(&self.normalizer_artifact_sha256),
+        );
+        Ok((
+            canonical,
+            CalibratedSourceFrameEvidence {
+                frame: observed.frame,
+            },
+        ))
+    }
+
+    /// Waits for worker progress and publishes a periodic bounded timing summary.
+    ///
+    /// # Errors
+    /// Returns `SourceLost` only when the producer disconnects; import, protocol, and readback
+    /// failures remain terminal receiver failures.
+    pub fn poll(
+        &mut self,
+        timeout: Duration,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(), CaptureError> {
+        thread::sleep(timeout.min(ITERATION_SLICE));
+        if let Some(summary) = self.session.periodic_summary(Duration::from_secs(30)) {
+            sink.record(CaptureDiagnosticFact {
+                sequence: self.diagnostic_sequence,
+                monotonic_start_ms: 0,
+                monotonic_end_ms: 0,
+                operation: CaptureDiagnosticOperation::SteadyReception,
+                status: CaptureDiagnosticStatus::Success,
+                error_type: None,
+                detail: CaptureDiagnosticDetail::PerformanceSummary {
+                    count: summary.count,
+                    p50_ns: summary.p50_ns,
+                    p95_ns: summary.p95_ns,
+                    p99_ns: summary.p99_ns,
+                    max_ns: summary.max_ns,
+                    dropped: summary.dropped,
+                },
+            });
+            self.diagnostic_sequence = self.diagnostic_sequence.saturating_add(1);
+        }
+        self.session.poll().map_err(|failure| {
+            CaptureError::without_source(match failure {
+                scorepeek::capture::vulkan::VulkanSessionFailure::Disconnected => {
+                    CaptureErrorType::SourceLost
+                }
+                scorepeek::capture::vulkan::VulkanSessionFailure::Failed => {
+                    CaptureErrorType::ReceiverFailed
+                }
+            })
+        })
+    }
+
+    pub fn shutdown_with_elapsed(
+        self,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> (Result<(), CaptureError>, u64) {
+        let summary = self.session.final_summary();
+        sink.record(CaptureDiagnosticFact {
+            sequence: self.diagnostic_sequence,
+            monotonic_start_ms: 0,
+            monotonic_end_ms: 0,
+            operation: CaptureDiagnosticOperation::ReceiverShutdown,
+            status: CaptureDiagnosticStatus::Success,
+            error_type: None,
+            detail: CaptureDiagnosticDetail::PerformanceSummary {
+                count: summary.count,
+                p50_ns: summary.p50_ns,
+                p95_ns: summary.p95_ns,
+                p99_ns: summary.p99_ns,
+                max_ns: summary.max_ns,
+                dropped: summary.dropped,
+            },
+        });
+        drop(self);
+        (Ok(()), 0)
+    }
+}
+
+/// Admits a Vulkan producer after its handshake and imported-image contract are complete.
+///
+/// # Errors
+/// Returns a typed normalization failure when the source dimensions and edge crop cannot form the
+/// canonical frame contract.
+pub fn admit_vulkan_session(
+    session: super::vulkan::VulkanSession,
+    crop: EdgeCrop,
+    capture_generation: CaptureGeneration,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<(CalibratedVulkanLease, AuthoredGamescopeProfileBinding), CaptureError> {
+    let (width, height) = session.dimensions();
+    let video = UncalibratedVideoContract {
+        width,
+        height,
+        framerate_num: REQUESTED_FRAMERATE_NUM,
+        framerate_denom: REQUESTED_FRAMERATE_DENOM,
+        maximum_framerate_num: 0,
+        maximum_framerate_denom: 1,
+        pixel_aspect_num: 1,
+        pixel_aspect_denom: 1,
+        chroma_site: 0,
+        color_range: 0,
+        color_matrix: 0,
+        transfer_function: 0,
+        color_primaries: 0,
+    };
+    let authored = GamescopeProfileBinding::author_runtime(
+        RuntimeCaptureBackend::VulkanLayer,
+        "fixed-user-runtime-socket".to_owned(),
+        video,
+        UncalibratedMemoryType::DmaBuf,
+        width.saturating_mul(4),
+        crop,
+    )
+    .map_err(|_| CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed))?;
+    let binding = GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256)
+        .map_err(|_| CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed))?;
+    sink.record(CaptureDiagnosticFact {
+        sequence: 1,
+        monotonic_start_ms: 0,
+        monotonic_end_ms: 0,
+        operation: CaptureDiagnosticOperation::ProfileBindingAdmission,
+        status: CaptureDiagnosticStatus::Success,
+        error_type: None,
+        detail: CaptureDiagnosticDetail::ProfileBindingAdmission,
+    });
+    Ok((
+        CalibratedVulkanLease {
+            session,
+            capture_profile_sha256: Arc::from(binding.capture_profile_sha256()),
+            normalizer_artifact_sha256: Arc::from(binding.normalizer_artifact_sha256()),
+            geometry: binding.geometry(),
+            capture_generation,
+            frame_domain: Rc::new(()),
+            diagnostic_sequence: 2,
+        },
+        authored,
+    ))
+}
+
 /// A rejected admission that retains ownership of the live receiver for explicit shutdown.
 pub struct GamescopeLeaseAdmissionFailure {
     error_type: CaptureErrorType,
@@ -1084,8 +1300,8 @@ impl UncalibratedPipeWireReceiver {
 
     fn flush_observations(&mut self, sink: &mut impl CaptureDiagnosticSink) {
         let state = self.state.borrow();
-        // Gamescope first announces its full output and then replaces it with the requested-size
-        // contract. Publish only the contract which actually produced the first valid frame.
+        // A mutable producer may renegotiate before delivering pixels. Publish only the contract
+        // which actually produced the first valid frame.
         let negotiation = (!self.negotiation_recorded && state.latest.is_some())
             .then_some(state.contract)
             .flatten();
@@ -1319,6 +1535,57 @@ pub fn admit_gamescope_profile(
     })
 }
 
+/// Creates and admits an immutable runtime binding from the negotiated source contract.
+///
+/// # Errors
+/// Returns ownership of the receiver with a typed admission failure when its negotiated contract
+/// is incomplete, the crop is invalid, or the authored identity cannot be admitted.
+pub fn admit_runtime_profile(
+    receiver: UncalibratedPipeWireReceiver,
+    backend: RuntimeCaptureBackend,
+    selector: String,
+    crop: EdgeCrop,
+    capture_generation: CaptureGeneration,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<
+    (CalibratedGamescopeLease, AuthoredGamescopeProfileBinding),
+    Box<GamescopeLeaseAdmissionFailure>,
+> {
+    let observed = {
+        let state = receiver.state.borrow();
+        (state.contract, state.memory_type, state.stride)
+    };
+    let (Some(video), Some(memory_type), Some(stride)) = observed else {
+        return Err(Box::new(GamescopeLeaseAdmissionFailure {
+            error_type: CaptureErrorType::ProfileVideoContractMismatch,
+            receiver,
+        }));
+    };
+    let authored = GamescopeProfileBinding::author_runtime(
+        backend,
+        selector,
+        video,
+        memory_type,
+        stride,
+        crop,
+    );
+    let Ok(authored) = authored else {
+        return Err(Box::new(GamescopeLeaseAdmissionFailure {
+            error_type: CaptureErrorType::FrameNormalizationFailed,
+            receiver,
+        }));
+    };
+    let Ok(binding) = GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256)
+    else {
+        return Err(Box::new(GamescopeLeaseAdmissionFailure {
+            error_type: CaptureErrorType::FrameNormalizationFailed,
+            receiver,
+        }));
+    };
+    admit_gamescope_profile(receiver, binding, capture_generation, sink)
+        .map(|lease| (lease, authored))
+}
+
 fn classify_profile_admission(
     binding: &GamescopeProfileBinding,
     state: &ReceiverState,
@@ -1525,9 +1792,8 @@ fn handle_process(stream: &pw::stream::Stream, state: &mut Arc<Mutex<ReceiverSta
     }
     let chunk = data.chunk();
     if chunk.flags().contains(ChunkFlags::CORRUPTED) {
-        // Gamescope marks the stale full-output buffer CORRUPTED while applying requested_size.
-        // It is safe to return that buffer before startup completes; corruption after an accepted
-        // frame remains a steady-reception failure.
+        // A producer may discard a stale buffer while renegotiating. It is safe to return it before
+        // startup completes; corruption after an accepted frame remains a steady failure.
         if state.borrow().received_frames > 0 {
             fail_frame(state, CaptureErrorType::FrameMalformed);
         }
@@ -1540,7 +1806,6 @@ fn handle_process(stream: &pw::stream::Stream, state: &mut Arc<Mutex<ReceiverSta
     let memory_type = match data.type_() {
         DataType::MemPtr => UncalibratedMemoryType::MemoryPointer,
         DataType::MemFd => UncalibratedMemoryType::MemoryFileDescriptor,
-        DataType::DmaBuf => UncalibratedMemoryType::DmaBuf,
         _ => {
             fail_frame(state, CaptureErrorType::UnsupportedMemoryType);
             return;
@@ -1683,6 +1948,7 @@ fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
     let minimum_size = i32::try_from(minimum_size).ok()?;
     let maximum_size = i32::try_from(MAX_FRAME_BYTES).ok()?;
     let memfd = 1_i32.checked_shl(DataType::MemFd.as_raw())?;
+    let memptr = 1_i32.checked_shl(DataType::MemPtr.as_raw())?;
     let object = spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
         id: spa::param::ParamType::Buffers.as_raw(),
@@ -1727,7 +1993,7 @@ fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
                     spa::utils::ChoiceFlags::empty(),
                     spa::utils::ChoiceEnum::Flags {
                         default: memfd,
-                        flags: vec![memfd],
+                        flags: vec![memfd | memptr],
                     },
                 ))),
             ),
@@ -1739,7 +2005,7 @@ fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
 }
 
 fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
-    let mut object = spa::pod::object!(
+    let object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
         spa::pod::property!(
@@ -1788,13 +2054,6 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
             spa::utils::Fraction { num: 240, denom: 1 }
         ),
     );
-    object.properties.push(spa::pod::Property::new(
-        GAMESCOPE_REQUESTED_SIZE_PROPERTY,
-        Value::Rectangle(spa::utils::Rectangle {
-            width: GAMESCOPE_REQUESTED_WIDTH,
-            height: GAMESCOPE_REQUESTED_HEIGHT,
-        }),
-    ));
     Ok(spa::pod::serialize::PodSerializer::serialize(
         Cursor::new(Vec::new()),
         &Value::Object(object),
@@ -1906,17 +2165,10 @@ mod tests {
         let Value::Object(object) = value else {
             panic!("expected object");
         };
-        let requested_size = object
-            .properties
-            .iter()
-            .find(|property| property.key == GAMESCOPE_REQUESTED_SIZE_PROPERTY)
-            .expect("Gamescope requested size");
         assert_eq!(
-            requested_size.value,
-            Value::Rectangle(spa::utils::Rectangle {
-                width: GAMESCOPE_REQUESTED_WIDTH,
-                height: GAMESCOPE_REQUESTED_HEIGHT,
-            })
+            object.properties.len(),
+            5,
+            "no producer-private property is sent"
         );
         let framerate = object
             .properties
@@ -2027,6 +2279,17 @@ mod tests {
             panic!("expected buffer-count range");
         };
         assert_eq!((*default, *min, *max), (4, 1, 8));
+        let Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+            _,
+            spa::utils::ChoiceEnum::Flags { default, flags },
+        ))) = &property(spa::sys::SPA_PARAM_BUFFERS_dataType).value
+        else {
+            panic!("expected buffer data-type flags");
+        };
+        let memfd = 1_i32 << DataType::MemFd.as_raw();
+        let memptr = 1_i32 << DataType::MemPtr.as_raw();
+        assert_eq!(*default, memfd);
+        assert_eq!(flags, &[memfd | memptr]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 .{
-    .name = .scorepeek_vulkan_capture_spike,
+    .name = .scorepeek_vulkan_capture,
     .version = "0.0.0",
-    .fingerprint = 0x6ec8c23c7d8b6115, // Changing this has security and trust implications.
+    .fingerprint = 0xe54c5e1fbdc58171, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .vulkan_headers = .{

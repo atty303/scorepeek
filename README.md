@@ -12,8 +12,8 @@ The current Rust runtime:
 
 - synchronizes and fail-closed federates Tachi, Textage, and dqn/iidxapi
   catalog data;
-- creates machine-local Gamescope capture profiles and receives Gamescope
-  direct PipeWire frames;
+- consumes either an explicitly selected raw PipeWire video node or the
+  Scorepeek Vulkan layer's pre-compositor-scale frames;
 - normalizes admitted BGRx frames to contiguous RGB8 1920x1080;
 - recognizes semantic screens, song/chart identity, RESULT performance,
   play options, and MUSIC SELECT self-best values with registered text and
@@ -27,7 +27,7 @@ The current Rust runtime:
 - always records bounded structured diagnostics and, with `--record`, adds
   canonical video sessions for private corpus replay.
 
-The Gamescope runtime, recognition, score persistence, and overlay paths have
+The capture runtime, recognition, score persistence, and overlay paths have
 also been exercised on the target machine. Browser integration, fake Wayland,
 and the checked-in nested compositor scenario remain the routine reproducible
 overlay gates.
@@ -40,9 +40,9 @@ preparation, training, and ONNX export tooling.
 - Own the canonical game layout and independently measure every committed
   coordinate from scorepeek captures. Do not copy upstream code, coordinates,
   visual resources, catalogs, or generated artifacts.
-- Calibrate the Gamescope capture profile explicitly. Runtime recognition does
-  not remeasure geometry, relax thresholds, switch profiles, or fall back to a
-  different capture route.
+- Select the capture backend explicitly. Runtime admission derives immutable
+  source and normalizer identities from the actual contract and edge crop; it
+  never switches backends, guesses a crop, or falls back to another route.
 - Preserve source lineage and quarantine ambiguous catalog federation results.
 - Use external catalog strings only as runtime decoder input, not as OCR
   training text.
@@ -81,7 +81,7 @@ scorepeek --version
 scorepeek doctor
 ```
 
-The archive does not contain catalogs, OCR models, capture profiles, frames,
+The archive does not contain catalogs, OCR models, the Vulkan layer, frames,
 scores, or credentials.
 
 ## Catalog and models
@@ -130,41 +130,47 @@ isolated temporary XDG roots and removes its acquired data:
 mise run catalog:schedule:systemd:test:live
 ```
 
-## Gamescope setup and run
+## Capture and run
 
-Create a capture profile on the machine that runs the game. Scorepeek starts
-and stops only a dedicated calibration Gamescope containing its own marker;
-arguments after `--` belong to that calibration process.
-
-```text
-scorepeek setup gamescope --profile bazzite-4k -- -W 3840 -H 2160 -w 1920 -h 1080 -r 120 -S fit -F linear
-scorepeek profile list
-```
-
-Profiles are stored below `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
-`$HOME/.config/scorepeek/profiles`). Setup measures positive axis-aligned X/Y
-scale and translation and stores the observed BGRx dimensions and rational
-source rectangle. Padding, non-centered or fractional offsets, unequal X/Y
-scales, and aspect distortion are accepted when every canonical sample is
-present. Crop, rotation, mirror, shear, perspective, and unreadable marker
-interiors are rejected.
-
-Start scorepeek before or after the ordinary Gamescope/game session:
+Choose exactly one capture backend. The Vulkan layer is the primary route for
+capturing a game before Gamescope scales it:
 
 ```text
-scorepeek run --profile bazzite-4k
+scorepeek run --capture vulkan-layer
 ```
 
-When exactly one profile exists, `--profile` may be omitted. Scorepeek waits
-for exactly one Gamescope video source and stays alive across sequential source
-lifetimes. It does not start, stop, signal, or restart the operator's ordinary
-Gamescope, Steam, or game processes.
+`mise run build` places the development layer and manifest below
+`target/vulkan-capture`. Start Scorepeek first, then activate
+`VK_LAYER_SCOREPEEK_capture` for the game process with the manifest directory
+as `VK_LAYER_PATH`; see [the layer guide](native/vulkan-capture/README.md).
+Scorepeek owns neither Gamescope nor the game lifecycle and reconnects to a
+new layer session after either side restarts.
+
+The peer PipeWire route consumes any exact raw-video node name on the user's
+default PipeWire remote. It accepts only progressive BGRx in a CPU-mappable
+buffer and does not use producer-private Gamescope properties:
+
+```text
+scorepeek run --capture pipewire --node-name gamescope
+```
+
+Both routes accept explicit pixels removed from each edge. Omitted edges are
+zero; an empty or out-of-bounds remainder fails closed. The remainder is
+linearly stretched to canonical RGB8 1920x1080:
+
+```text
+scorepeek run --capture vulkan-layer --crop-left 8 --crop-top 4 --crop-right 8 --crop-bottom 4
+```
+
+Old profile files are ignored and are neither migrated nor deleted. There is
+no automatic backend selection, source fallback, calibration chooser, or
+profile selection.
 
 Structured diagnostics are always retained. Add `--record` only to retain lossless canonical
 video. The video recording-memory limit defaults to 1024 MiB:
 
 ```text
-scorepeek run --profile bazzite-4k --record --record-memory-mib 2048
+scorepeek run --capture vulkan-layer --record --record-memory-mib 2048
 ```
 
 Diagnostic or recording loss does not change recognition, events, or score persistence. See

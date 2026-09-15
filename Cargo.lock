@@ -4502,8 +4502,10 @@ dependencies = [
  "qoi",
  "ratatui",
  "rusqlite",
+ "rustix",
  "scorepeek-overlay",
  "scorepeek-scores",
+ "scorepeek-vulkan-capture",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4619,6 +4621,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "scorepeek-vulkan-capture"
+version = "0.1.0"
+dependencies = [
+ "ash",
 ]
 
 [[package]]

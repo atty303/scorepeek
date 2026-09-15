@@ -79,7 +79,7 @@ exec mise run dist:plan
 [tasks.build]
 description = "Build the runnable debug CLI with the embedded OBS UI"
 depends = ["overlay:web:bundle"]
-run = "cargo build --locked -p scorepeek --features embedded-web"
+run = "mise run capture:vulkan:build && cargo build --locked -p scorepeek --features embedded-web"
 
 [tasks."dist:plan"]
 description = "Inspect the local cargo-dist release plan"
@@ -215,7 +215,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run native:verify
-mise run capture:vulkan:spike:test
+mise run capture:vulkan:test
 mise run overlay:wayland:build:check
 mise run overlay:web:check
 mise run check README.md
@@ -231,108 +231,22 @@ exec mise run overlay:web:test
 description = "Print the local target inventory as versioned JSON"
 run = "cargo run --locked --quiet -p scorepeek -- doctor"
 
-[tasks."capture:gamescope:test:live"]
-description = "Run the bounded uncalibrated Gamescope receiver gate"
+[tasks."capture:vulkan:build"]
+description = "Build the Scorepeek Vulkan capture layer with pinned Zig"
+run = "zig build --build-file native/vulkan-capture/build.zig --cache-dir target/vulkan-capture-cache --global-cache-dir target/vulkan-capture-global-cache --release=fast --prefix target/vulkan-capture"
+
+[tasks."capture:vulkan:test"]
+description = "Verify the layer manifest, ELF boundary, and Rust protocol/import contracts"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-live-gate "$@"
-'''
-
-[tasks."capture:gamescope:test:lifecycle"]
-description = "Repeat the bounded uncalibrated Gamescope receiver lifecycle gate"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-lifecycle-gate "$@"
-'''
-
-[tasks."capture:gamescope:calibration:sample"]
-description = "Capture one private uncalibrated Gamescope BGRx sample"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-calibration-sample "$@"
-'''
-
-[tasks."capture:gamescope:calibration:session-sample"]
-description = "Capture one private Gamescope sample with explicit session provenance"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-calibration-session-sample "$@"
-'''
-
-[tasks."capture:gamescope:binding:author"]
-description = "Author one create-only immutable Gamescope profile binding"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-profile-binding-author "$@"
-'''
-
-[tasks."capture:gamescope:test:binding-admission"]
-description = "Admit one live Gamescope receiver against an immutable profile binding"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-binding-admission-gate "$@"
-'''
-
-[tasks."capture:gamescope:test:canonical-frame"]
-description = "Normalize one admitted live Gamescope frame without retaining pixels"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-canonical-frame-gate "$@"
-'''
-
-[tasks."capture:gamescope:test:diagnostic-handoff"]
-description = "Offer admitted canonical Gamescope frames to one bounded diagnostic run"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-diagnostic-handoff-gate "$@"
-'''
-
-[tasks."capture:gamescope:test:recognition-handoff"]
-description = "Inspect admitted canonical Gamescope frames under one bounded diagnostic run"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-recognition-handoff-gate "$@"
-'''
-
-[tasks."capture:gamescope:test:field-observation"]
-description = "Run registered field inference and full-catalog scoring under one bounded Gamescope run"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-field-observation-gate "$@"
-'''
-
-[tasks."capture:gamescope:test:result-recognition"]
-description = "Retain exact registered result recognition under one bounded Gamescope run"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- capture gamescope-result-recognition-gate "$@"
-'''
-
-[tasks."capture:vulkan:spike:build"]
-description = "Build the pre-Gamescope-scale Vulkan capture spike"
-run = "zig build --build-file spikes/vulkan-capture/build.zig --cache-dir target/vulkan-capture-spike-cache --global-cache-dir target/vulkan-capture-spike-global-cache --release=fast --prefix target/vulkan-capture-spike"
-
-[tasks."capture:vulkan:spike:test"]
-description = "Run reproducible tests for the Vulkan capture spike"
-run = "zig build --build-file spikes/vulkan-capture/build.zig --cache-dir target/vulkan-capture-spike-cache --global-cache-dir target/vulkan-capture-spike-global-cache test --release=fast"
-
-[tasks."run:gamescope"]
-description = "Run one foreground Gamescope recognition session until stdin receives the exact line stop"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- run gamescope "$@"
+mise run capture:vulkan:build
+test -f target/vulkan-capture/lib/libscorepeek_vulkan_capture.so
+test -f target/vulkan-capture/share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json
+readelf -d target/vulkan-capture/lib/libscorepeek_vulkan_capture.so | grep -q 'libc.so'
+! readelf -d target/vulkan-capture/lib/libscorepeek_vulkan_capture.so | grep -Eq 'libstdc\+\+|libc\+\+'
+cargo test --locked -p scorepeek-vulkan-capture
+cargo test --locked -p scorepeek capture::vulkan
 '''
 
 [tasks."native:verify"]

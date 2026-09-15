@@ -235,63 +235,6 @@ fn collect_with(runner: &impl Runner, os_release_path: &str) -> Inventory {
         "gpu",
         probe(runner, "/usr/bin/lspci", &["-Dnnk"], gpu_summary),
     );
-    observations.insert(
-        "gamescope",
-        probe_stderr(
-            runner,
-            "/usr/bin/gamescope",
-            &["--version"],
-            gamescope_version,
-        ),
-    );
-    observations.insert("gamescope_session_flags", Observation::Unavailable);
-    observations.insert(
-        "gstreamer",
-        probe(
-            runner,
-            "/usr/bin/gst-inspect-1.0",
-            &["--version"],
-            gstreamer_version,
-        ),
-    );
-    observations.insert(
-        "pipewire",
-        probe(
-            runner,
-            "/usr/bin/pipewire",
-            &["--version"],
-            pipewire_version,
-        ),
-    );
-    observations.insert(
-        "obs_studio_flatpak",
-        probe(
-            runner,
-            "/usr/bin/flatpak",
-            &["list", "--app", "--columns=application,version"],
-            flatpak_obs_version,
-        ),
-    );
-    observations.insert(
-        "obs_vkcapture",
-        probe(
-            runner,
-            "/usr/bin/rpm",
-            &["-qa", "obs-vkcapture", "--qf", "%{NAME}\\t%{EVR}\\n"],
-            rpm_obs_vkcapture_version,
-        ),
-    );
-    observations.insert("obs_websocket", Observation::Unavailable);
-    observations.insert(
-        "gamescope_pipewire_caps",
-        probe(
-            runner,
-            "/usr/bin/gst-device-monitor-1.0",
-            &["Video/Source"],
-            gamescope_caps_summary,
-        ),
-    );
-
     Inventory {
         os: read_os_release(os_release_path),
         observations,
@@ -305,15 +248,6 @@ fn probe(
     parse: fn(&str) -> Option<String>,
 ) -> Observation {
     probe_stream(runner, program, args, parse, false)
-}
-
-fn probe_stderr(
-    runner: &impl Runner,
-    program: &str,
-    args: &[&str],
-    parse: fn(&str) -> Option<String>,
-) -> Observation {
-    probe_stream(runner, program, args, parse, true)
 }
 
 fn probe_stream(
@@ -372,33 +306,6 @@ fn single_version(output: &str) -> Option<String> {
     lines.next().is_none().then_some(version)
 }
 
-fn gamescope_version(output: &str) -> Option<String> {
-    let output = strip_ansi_sgr(output)?;
-    output.lines().find_map(|line| {
-        let version = line.split_once("gamescope version ")?.1;
-        version.split_whitespace().next().and_then(version_token)
-    })
-}
-
-fn gstreamer_version(output: &str) -> Option<String> {
-    prefixed_version(output, "gst-inspect-1.0 version ")
-}
-
-fn pipewire_version(output: &str) -> Option<String> {
-    output.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("Compiled with libpipewire ")
-            .and_then(version_token)
-    })
-}
-
-fn prefixed_version(output: &str, prefix: &str) -> Option<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .find_map(|line| line.strip_prefix(prefix).and_then(version_token))
-}
-
 fn version_token(value: &str) -> Option<String> {
     (!value.is_empty()
         && value.len() <= 128
@@ -406,47 +313,6 @@ fn version_token(value: &str) -> Option<String> {
             byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'~' | b':' | b'-')
         }))
     .then(|| value.to_owned())
-}
-
-fn strip_ansi_sgr(value: &str) -> Option<String> {
-    let mut output = String::new();
-    let mut characters = value.chars().peekable();
-    while let Some(character) = characters.next() {
-        if character != '\u{1b}' {
-            output.push(character);
-            continue;
-        }
-        if characters.next()? != '[' {
-            return None;
-        }
-        loop {
-            let parameter = characters.next()?;
-            if parameter == 'm' {
-                break;
-            }
-            if !parameter.is_ascii_digit() && parameter != ';' {
-                return None;
-            }
-        }
-    }
-    Some(output)
-}
-
-fn flatpak_obs_version(output: &str) -> Option<String> {
-    listed_version(output, "com.obsproject.Studio")
-}
-
-fn rpm_obs_vkcapture_version(output: &str) -> Option<String> {
-    listed_version(output, "obs-vkcapture")
-}
-
-fn listed_version(output: &str, expected_id: &str) -> Option<String> {
-    output.lines().find_map(|line| {
-        let (id, version) = line.split_once('\t')?;
-        (id == expected_id)
-            .then(|| version_token(version))
-            .flatten()
-    })
 }
 
 fn gpu_summary(output: &str) -> Option<String> {
@@ -474,169 +340,6 @@ fn gpu_summary(output: &str) -> Option<String> {
 
     let summary = summary.join(" | ");
     (!summary.is_empty()).then_some(summary)
-}
-
-fn gamescope_caps_summary(output: &str) -> Option<String> {
-    let devices = output
-        .split("Device found:")
-        .filter(|device| is_gamescope_video_source(device))
-        .collect::<Vec<_>>();
-    let [device] = devices.as_slice() else {
-        return None;
-    };
-
-    let mut summary = vec![
-        "node.name=gamescope".to_owned(),
-        "media.class=Video/Source".to_owned(),
-    ];
-    let caps = collect_caps(device)?;
-    for structure in caps {
-        summary.extend(parse_caps(structure)?);
-    }
-
-    let summary = summary.join(" | ");
-    (!summary.is_empty()).then_some(summary)
-}
-
-fn collect_caps(device: &str) -> Option<Vec<&str>> {
-    let mut caps = Vec::new();
-    let mut reading_caps = false;
-    for line in device.lines().map(str::trim) {
-        if let Some((key, value)) = line.split_once(':')
-            && key.trim() == "caps"
-        {
-            let value = value.trim();
-            if value.is_empty() {
-                return None;
-            }
-            caps.push(value);
-            reading_caps = true;
-            continue;
-        }
-        if reading_caps {
-            if line == "properties:" {
-                break;
-            }
-            if line.is_empty() {
-                continue;
-            }
-            if !line.starts_with("video/") {
-                return None;
-            }
-            caps.push(line);
-        }
-    }
-    (!caps.is_empty()).then_some(caps)
-}
-
-fn parse_caps(caps: &str) -> Option<Vec<String>> {
-    let mut parsed = Vec::new();
-    for structure in split_top_level(caps, ';') {
-        let fields = split_top_level(structure, ',');
-        let (media_type, memory) = parse_media_type(fields.first()?.trim())?;
-        let mut values = BTreeMap::new();
-        for field in fields.iter().skip(1) {
-            let Some((key, value)) = field.split_once('=') else {
-                continue;
-            };
-            let key = key.trim();
-            if matches!(key, "format" | "width" | "height" | "framerate") {
-                values.insert(key, caps_value(strip_caps_type(value.trim()))?);
-            }
-        }
-        if !["format", "width", "height", "framerate"]
-            .into_iter()
-            .all(|key| values.contains_key(key))
-        {
-            return None;
-        }
-        parsed.push(format!("media_type={media_type}"));
-        parsed.push(format!("memory={memory}"));
-        for key in ["format", "width", "height", "framerate"] {
-            parsed.push(format!("{key}={}", values[key]));
-        }
-    }
-    (!parsed.is_empty()).then_some(parsed)
-}
-
-fn split_top_level(value: &str, separator: char) -> Vec<&str> {
-    let mut depth = 0_u32;
-    let mut start = 0;
-    let mut fields = Vec::new();
-    for (index, character) in value.char_indices() {
-        match character {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            character if character == separator && depth == 0 => {
-                fields.push(&value[start..index]);
-                start = index + character.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    fields.push(&value[start..]);
-    fields
-}
-
-fn parse_media_type(value: &str) -> Option<(&'static str, String)> {
-    if value == "video/x-raw" {
-        return Some(("video/x-raw", "SystemMemory".to_owned()));
-    }
-    let feature = value
-        .strip_prefix("video/x-raw(memory:")?
-        .strip_suffix(')')?;
-    Some(("video/x-raw", caps_value(feature)?))
-}
-
-fn strip_caps_type(value: &str) -> &str {
-    value
-        .strip_prefix("(string)")
-        .or_else(|| value.strip_prefix("(int)"))
-        .or_else(|| value.strip_prefix("(fraction)"))
-        .unwrap_or(value)
-        .trim()
-}
-
-fn is_gamescope_video_source(device: &str) -> bool {
-    let mut name = false;
-    let mut media_class = false;
-    for line in device.lines().map(str::trim) {
-        if let Some((key, value)) = line.split_once(':') {
-            name |= key.trim() == "name" && unquote(value.trim()) == "gamescope";
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            name |= key.trim() == "node.name" && unquote(value.trim()) == "gamescope";
-            media_class |= key.trim() == "media.class" && unquote(value.trim()) == "Video/Source";
-        }
-    }
-    name && media_class
-}
-
-fn unquote(value: &str) -> &str {
-    value.trim_matches('"')
-}
-
-fn caps_value(value: &str) -> Option<String> {
-    (!value.is_empty()
-        && value.len() <= 128
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(
-                    byte,
-                    b'/' | b'['
-                        | b']'
-                        | b'{'
-                        | b'}'
-                        | b'('
-                        | b')'
-                        | b','
-                        | b'.'
-                        | b'_'
-                        | b'-'
-                        | b' '
-                )
-        }))
-    .then(|| value.to_owned())
 }
 
 fn safe_line(value: &str) -> Option<String> {
@@ -752,49 +455,19 @@ mod tests {
                     "/usr/bin/lspci -Dnnk",
                     "0000:01:00.0 Ethernet controller: Private NIC\n\tKernel driver in use: secret_driver\n0000:03:00.0 VGA compatible controller: Example GPU [1234:5678]\n\tSubsystem: private\n\tKernel driver in use: amdgpu\n",
                 ),
-                success_streams(
-                    "/usr/bin/gamescope --version",
-                    "diagnostic path /run/user/1000/private\n",
-                    "[gamescope] [\u{1b}[0;34mInfo\u{1b}[0m] console: gamescope version 3.16.19-128-g7282613+ (gcc 16.1.1)\n",
-                ),
-                success(
-                    "/usr/bin/gst-inspect-1.0 --version",
-                    "gst-inspect-1.0 version 1.26.0\n",
-                ),
-                success(
-                    "/usr/bin/pipewire --version",
-                    "pipewire\nCompiled with libpipewire 1.4.0\n",
-                ),
-                success(
-                    "/usr/bin/flatpak list --app --columns=application,version",
-                    "org.example.Other\t1.0\ncom.obsproject.Studio\t31.0.0\n",
-                ),
-                success(
-                    "/usr/bin/rpm -qa obs-vkcapture --qf %{NAME}\\t%{EVR}\\n",
-                    "obs-vkcapture\t1.5.0-1.fc42\n",
-                ),
-                success(
-                    "/usr/bin/gst-device-monitor-1.0 Video/Source",
-                    "Device found:\nname: private camera\nmedia.class = Video/Source\ncaps : video/x-raw, format=(string)YUY2, width=(int)1280, height=(int)720, framerate=(fraction)30/1\nDevice found:\nname: gamescope\ncaps : video/x-raw, format=(string)BGRx, width=(int)3840, height=(int)2160, framerate=(fraction)60/1\n       video/x-raw(memory:DMABuf), format=(string)NV12, width=(int)3840, height=(int)2160, framerate=(fraction)60/1\nproperties:\n  media.class = Video/Source\n",
-                ),
             ]),
         };
 
         let inventory = collect_with(&runner, "/path/that/does/not/exist").to_json();
 
         assert!(inventory.contains("\"schema\":\"scorepeek-target-inventory-v1\""));
-        assert!(inventory.contains("3.16.19-128-g7282613+"));
         assert!(inventory.contains("Example GPU [1234:5678] | Kernel driver in use: amdgpu"));
-        assert!(inventory.contains("node.name=gamescope | media.class=Video/Source"));
-        assert!(inventory.contains("memory=SystemMemory | format=BGRx | width=3840"));
-        assert!(inventory.contains("memory=DMABuf | format=NV12 | width=3840"));
-        assert!(!inventory.contains("YUY2"));
-        assert!(!inventory.contains("/run/user/1000/private"));
         assert!(!inventory.contains("Subsystem: private"));
         assert!(!inventory.contains("secret_driver"));
         assert!(!inventory.contains("secret from stderr"));
-        assert!(inventory.contains("\"obs_websocket\":{\"status\":\"unavailable\"}"));
-        assert!(inventory.contains("\"gamescope_session_flags\":{\"status\":\"unavailable\"}"));
+        assert!(!inventory.contains("gamescope"));
+        assert!(!inventory.contains("pipewire"));
+        assert!(!inventory.contains("obs_"));
     }
 
     #[test]
@@ -803,12 +476,6 @@ mod tests {
             outputs: HashMap::from([
                 failed("/usr/bin/uname -r", 7, "secret from stderr"),
                 missing("/usr/bin/lspci -Dnnk"),
-                missing("/usr/bin/gamescope --version"),
-                missing("/usr/bin/gst-inspect-1.0 --version"),
-                missing("/usr/bin/pipewire --version"),
-                missing("/usr/bin/flatpak list --app --columns=application,version"),
-                missing("/usr/bin/rpm -qa obs-vkcapture --qf %{NAME}\\t%{EVR}\\n"),
-                missing("/usr/bin/gst-device-monitor-1.0 Video/Source"),
             ]),
         };
 
@@ -817,41 +484,6 @@ mod tests {
         assert!(inventory.contains("\"kernel\":{\"status\":\"failed\",\"exit_code\":7}"));
         assert!(inventory.contains("\"gpu\":{\"status\":\"unavailable\"}"));
         assert!(!inventory.contains("secret from stderr"));
-    }
-
-    #[test]
-    fn absent_app_and_package_are_unavailable() {
-        let runner = FakeRunner {
-            outputs: HashMap::from([
-                success(
-                    "/usr/bin/flatpak list --app --columns=application,version",
-                    "org.example.Other\t1.0\n",
-                ),
-                success(
-                    "/usr/bin/rpm -qa obs-vkcapture --qf %{NAME}\\t%{EVR}\\n",
-                    "",
-                ),
-            ]),
-        };
-
-        assert!(matches!(
-            probe(
-                &runner,
-                "/usr/bin/flatpak",
-                &["list", "--app", "--columns=application,version"],
-                flatpak_obs_version,
-            ),
-            Observation::Unavailable
-        ));
-        assert!(matches!(
-            probe(
-                &runner,
-                "/usr/bin/rpm",
-                &["-qa", "obs-vkcapture", "--qf", "%{NAME}\\t%{EVR}\\n"],
-                rpm_obs_vkcapture_version,
-            ),
-            Observation::Unavailable
-        ));
     }
 
     #[test]
@@ -870,23 +502,6 @@ mod tests {
         assert_eq!(os.len(), 4);
         assert_eq!(os["id"], "bazzite");
         assert!(!os.values().any(|value| value == "private-host-label"));
-    }
-
-    #[test]
-    fn multiple_gamescope_sources_are_rejected() {
-        let device = "Device found:\nname: gamescope\nmedia.class = Video/Source\ncaps : video/x-raw, format=(string)BGRx, width=(int)3840, height=(int)2160, framerate=(fraction)60/1\n";
-        assert!(gamescope_caps_summary(&format!("{device}{device}")).is_none());
-    }
-
-    #[test]
-    fn caps_require_all_allowlisted_fields_and_record_memory() {
-        let dmabuf = parse_caps(
-            "video/x-raw(memory:DMABuf), format=(string)NV12, width=(int)3840, height=(int)2160, framerate=(fraction)60/1",
-        )
-        .expect("complete caps must parse");
-
-        assert!(dmabuf.contains(&"memory=DMABuf".to_owned()));
-        assert!(parse_caps("video/x-raw, width=(int)3840, height=(int)2160").is_none());
     }
 
     #[test]
@@ -920,17 +535,6 @@ mod tests {
         (
             key.to_owned(),
             Ok((0, stdout.to_owned(), "secret from stderr".to_owned())),
-        )
-    }
-
-    fn success_streams(
-        key: &str,
-        stdout: &str,
-        stderr: &str,
-    ) -> (String, Result<(i32, String, String), io::ErrorKind>) {
-        (
-            key.to_owned(),
-            Ok((0, stdout.to_owned(), stderr.to_owned())),
         )
     }
 

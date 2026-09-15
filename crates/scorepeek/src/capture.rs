@@ -11,22 +11,24 @@ use serde::{Deserialize, Serialize};
 mod binding;
 mod normalizer;
 mod receiver;
+pub mod vulkan;
 
 pub use binding::{
-    AuthoredGamescopeProfileBinding, GamescopeProfileBinding,
+    AuthoredGamescopeProfileBinding, EdgeCrop, GamescopeProfileBinding,
     GamescopeProfileBindingAuthoringInput, GamescopeProfileBindingError,
     GamescopeSessionProvenance, GamescopeSessionProvenanceInput,
     GamescopeSessionProvenanceMismatch, MeasuredGamescopeProfileBindingAuthoringInput,
-    ObservedContractMismatch,
+    ObservedContractMismatch, RuntimeCaptureBackend,
 };
 pub use normalizer::{
     CanonicalRegion, FractionalLinearGeometry, FractionalRectangle, NormalizedCanonicalFrame,
     RationalCoordinate, UnboundCanonicalFrame, UnboundNormalizationError,
 };
 pub use receiver::{
-    CalibratedGamescopeLease, CalibratedSourceFrameEvidence, GamescopeLeaseAdmissionFailure,
-    ObservedFrame, UncalibratedFrame, UncalibratedMemoryType, UncalibratedPipeWireReceiver,
-    UncalibratedVideoContract, admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
+    CalibratedGamescopeLease, CalibratedSourceFrameEvidence, CalibratedVulkanLease,
+    GamescopeLeaseAdmissionFailure, ObservedFrame, UncalibratedFrame, UncalibratedMemoryType,
+    UncalibratedPipeWireReceiver, UncalibratedVideoContract, admit_gamescope_profile,
+    admit_runtime_profile, admit_vulkan_session, start_uncalibrated_gamescope_receiver,
 };
 
 const MAX_REGISTRY_GLOBALS: u32 = 4_096;
@@ -35,7 +37,8 @@ const ITERATION_SLICE: Duration = Duration::from_millis(25);
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSourceKind {
-    GamescopeDefaultRemote,
+    Pipewire,
+    VulkanLayer,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -147,6 +150,14 @@ pub enum CaptureDiagnosticDetail {
         last_sequence: Option<u64>,
         maximum_gap_ns: u64,
     },
+    PerformanceSummary {
+        count: u64,
+        p50_ns: u64,
+        p95_ns: u64,
+        p99_ns: u64,
+        max_ns: u64,
+        dropped: u64,
+    },
     ReceiverShutdown {
         received_frames: u64,
         overwritten_frames: u64,
@@ -213,25 +224,31 @@ impl CaptureDiagnosticSink for () {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub struct GamescopeSourceProbe {
+pub struct PipewireSourceProbe {
     pub node_id: u32,
     pub registry_global_count: u32,
 }
 
 /// One bounded observation of Gamescope video sources on the default `PipeWire` remote.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GamescopeSourceSnapshot {
+pub enum PipewireSourceSnapshot {
     Absent,
     Unique { node_id: u32 },
     Ambiguous { candidate_count: u32 },
 }
+
+/// Legacy names retained only for the hardware-gate commands while they are removed from the
+/// ordinary runtime surface.
+pub type GamescopeSourceProbe = PipewireSourceProbe;
+pub type GamescopeSourceSnapshot = PipewireSourceSnapshot;
+pub type UncalibratedGamescopeSourceLease = UncalibratedPipewireSourceLease;
 
 /// A default-remote Gamescope source whose lifetime remains bound to the selected node.
 ///
 /// This lease is deliberately uncalibrated: it contains no capture-profile identifier and cannot
 /// produce an `ObservedFrame`. A later calibration boundary must bind an opaque profile explicitly;
 /// negotiated caps are not profile identity.
-pub struct UncalibratedGamescopeSourceLease {
+pub struct UncalibratedPipewireSourceLease {
     runtime: Option<DefaultRemoteRuntime>,
     node_id: u32,
     registry_global_count: u32,
@@ -240,10 +257,10 @@ pub struct UncalibratedGamescopeSourceLease {
     terminal_recorded: bool,
 }
 
-impl fmt::Debug for UncalibratedGamescopeSourceLease {
+impl fmt::Debug for UncalibratedPipewireSourceLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("UncalibratedGamescopeSourceLease")
+            .debug_struct("UncalibratedPipewireSourceLease")
             .field("node_id", &self.node_id)
             .field("registry_global_count", &self.registry_global_count)
             .field("is_active", &self.runtime.is_some())
@@ -251,7 +268,7 @@ impl fmt::Debug for UncalibratedGamescopeSourceLease {
     }
 }
 
-impl UncalibratedGamescopeSourceLease {
+impl UncalibratedPipewireSourceLease {
     #[must_use]
     pub const fn node_id(&self) -> u32 {
         self.node_id
@@ -385,16 +402,16 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::RegistryUnavailable => "PipeWire registry is unavailable",
             CaptureErrorType::RegistryTimedOut => "PipeWire registry discovery timed out",
             CaptureErrorType::RegistryLimitExceeded => "PipeWire registry exceeded the probe limit",
-            CaptureErrorType::SourceUnavailable => "Gamescope PipeWire source is unavailable",
-            CaptureErrorType::SourceAmbiguous => "Gamescope PipeWire source is ambiguous",
-            CaptureErrorType::SourceLost => "Gamescope PipeWire source was lost",
+            CaptureErrorType::SourceUnavailable => "PipeWire source is unavailable",
+            CaptureErrorType::SourceAmbiguous => "PipeWire source is ambiguous",
+            CaptureErrorType::SourceLost => "capture source was lost",
             CaptureErrorType::NegotiationTimedOut => "PipeWire stream negotiation timed out",
             CaptureErrorType::FirstFrameTimedOut => "PipeWire first frame timed out",
             CaptureErrorType::UnsupportedFormat => "PipeWire stream format is unsupported",
             CaptureErrorType::UnsupportedMemoryType => "PipeWire stream memory type is unsupported",
             CaptureErrorType::FrameMalformed => "PipeWire frame is malformed",
             CaptureErrorType::StreamLost => "PipeWire stream was lost",
-            CaptureErrorType::ReceiverFailed => "PipeWire receiver failed",
+            CaptureErrorType::ReceiverFailed => "capture receiver failed",
             CaptureErrorType::ProfileSessionProvenanceMissing => {
                 "Gamescope session provenance is missing"
             }
@@ -556,7 +573,20 @@ pub fn probe_gamescope_source(
 pub fn snapshot_gamescope_sources(
     timeout: Duration,
 ) -> Result<GamescopeSourceSnapshot, CaptureError> {
-    let (_runtime, snapshot) = acquire_default_remote(timeout).map_err(|failure| failure.error)?;
+    snapshot_pipewire_sources("gamescope", timeout)
+}
+
+/// Observes exact `node.name` matches among default-remote `Video/Source` nodes.
+///
+/// # Errors
+/// Returns a typed transport or registry failure when the bounded default-remote observation does
+/// not complete.
+pub fn snapshot_pipewire_sources(
+    node_name: &str,
+    timeout: Duration,
+) -> Result<PipewireSourceSnapshot, CaptureError> {
+    let (_runtime, snapshot) =
+        acquire_default_remote(node_name, timeout).map_err(|failure| failure.error)?;
     Ok(match (snapshot.candidate_count, snapshot.first_candidate) {
         (0, None) => GamescopeSourceSnapshot::Absent,
         (1, Some(node_id)) => GamescopeSourceSnapshot::Unique { node_id },
@@ -579,8 +609,21 @@ pub fn acquire_gamescope_source(
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
+    acquire_pipewire_source("gamescope", timeout, sink)
+}
+
+/// Acquires exactly one default-remote raw-video source by exact node name.
+///
+/// # Errors
+/// Returns a typed discovery or cardinality error when the default remote is unavailable or does
+/// not expose exactly one matching `Video/Source` node.
+pub fn acquire_pipewire_source(
+    node_name: &str,
+    timeout: Duration,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<UncalibratedPipewireSourceLease, CaptureError> {
     let started = Instant::now();
-    let (runtime, snapshot) = match acquire_default_remote(timeout) {
+    let (runtime, snapshot) = match acquire_default_remote(node_name, timeout) {
         Ok(value) => value,
         Err(failure) => {
             record_discovery_failure(started, &failure, sink);
@@ -619,7 +662,7 @@ pub fn acquire_gamescope_source(
         None,
         Some(selected),
     ));
-    Ok(UncalibratedGamescopeSourceLease {
+    Ok(UncalibratedPipewireSourceLease {
         runtime: Some(runtime),
         node_id: selected,
         registry_global_count: snapshot.global_count,
@@ -760,6 +803,7 @@ fn select_gamescope_source(snapshot: RegistrySnapshot) -> Result<u32, CaptureErr
 }
 
 fn acquire_default_remote(
+    node_name: &str,
     timeout: Duration,
 ) -> Result<(DefaultRemoteRuntime, RegistrySnapshot), RegistryFailure> {
     pw::init();
@@ -794,6 +838,7 @@ fn acquire_default_remote(
 
     let registry_listener = register_registry_listener(
         &registry,
+        node_name.to_owned(),
         Rc::clone(&state),
         Rc::clone(&terminal_error),
         Rc::clone(&selected_node_id),
@@ -848,6 +893,7 @@ fn acquire_default_remote(
 
 fn register_registry_listener(
     registry: &pw::registry::RegistryRc,
+    node_name: String,
     state: Rc<RefCell<RegistryState>>,
     terminal_error: Rc<Cell<Option<TerminalError>>>,
     selected_node_id: Rc<Cell<Option<u32>>>,
@@ -871,7 +917,7 @@ fn register_registry_listener(
             let Some(properties) = global.props.as_ref() else {
                 return;
             };
-            if properties.get(*pw::keys::NODE_NAME) == Some("gamescope")
+            if properties.get(*pw::keys::NODE_NAME) == Some(node_name.as_str())
                 && properties.get(*pw::keys::MEDIA_CLASS) == Some("Video/Source")
             {
                 state.add_candidate(global.id);
@@ -1005,7 +1051,7 @@ fn acquisition_fact(
         status,
         error_type,
         detail: CaptureDiagnosticDetail::SourceAcquisition {
-            source: CaptureSourceKind::GamescopeDefaultRemote,
+            source: CaptureSourceKind::Pipewire,
             candidate_count: snapshot.candidate_count,
             selected_node_id,
         },
@@ -1028,7 +1074,7 @@ fn lifetime_fact(
         status,
         error_type,
         detail: CaptureDiagnosticDetail::SourceLifetime {
-            source: CaptureSourceKind::GamescopeDefaultRemote,
+            source: CaptureSourceKind::Pipewire,
             selected_node_id,
             failure_origin,
         },
@@ -1044,7 +1090,7 @@ fn shutdown_fact(sequence: u64, monotonic_end_ms: u64) -> CaptureDiagnosticFact 
         status: CaptureDiagnosticStatus::Success,
         error_type: None,
         detail: CaptureDiagnosticDetail::Shutdown {
-            source: CaptureSourceKind::GamescopeDefaultRemote,
+            source: CaptureSourceKind::Pipewire,
         },
     }
 }
@@ -1110,7 +1156,7 @@ mod tests {
         assert_eq!(
             facts.0[1].detail,
             CaptureDiagnosticDetail::SourceAcquisition {
-                source: CaptureSourceKind::GamescopeDefaultRemote,
+                source: CaptureSourceKind::Pipewire,
                 candidate_count: 1,
                 selected_node_id: Some(42),
             }
@@ -1292,7 +1338,7 @@ mod tests {
                 status: CaptureDiagnosticStatus::Error,
                 error_type: Some(CaptureErrorType::RemoteConnectionFailed),
                 detail: CaptureDiagnosticDetail::SourceLifetime {
-                    source: CaptureSourceKind::GamescopeDefaultRemote,
+                    source: CaptureSourceKind::Pipewire,
                     selected_node_id: 10,
                     failure_origin: CaptureDiagnosticOperation::SourceAcquisition,
                 },
@@ -1312,7 +1358,7 @@ mod tests {
                 status: CaptureDiagnosticStatus::Success,
                 error_type: None,
                 detail: CaptureDiagnosticDetail::Shutdown {
-                    source: CaptureSourceKind::GamescopeDefaultRemote,
+                    source: CaptureSourceKind::Pipewire,
                 },
             }
         );

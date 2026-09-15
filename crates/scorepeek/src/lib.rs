@@ -1,10 +1,8 @@
 extern crate self as scorepeek;
 
 #[allow(dead_code)]
-mod calibration_marker;
 pub mod capture;
 #[allow(dead_code)]
-mod capture_calibration;
 pub mod catalog;
 #[allow(dead_code)]
 pub mod diagnostic_live;

@@ -1,7 +1,5 @@
-mod calibration_marker;
 mod canonical_recording;
 mod canonical_source;
-mod capture_calibration;
 mod capture_live;
 pub mod diagnostic_live;
 pub mod diagnostic_recording;
@@ -86,7 +84,8 @@ fn run_with_model_initializer(
         let diagnostics = diagnostic_stream::RunDiagnostics::start_default(&invocation_id);
         let bundle = initialize_routine_model(&diagnostics.sink(), override_bundle, initialize)?;
         return run_routine_live_session(
-            options.profile,
+            options.capture,
+            options.crop,
             if options.recording {
                 "enabled"
             } else {
@@ -223,8 +222,7 @@ fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsSt
 
 #[allow(clippy::too_many_lines)]
 fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
-    if let Some(result) = local_profiles::try_command(args, bundle)
-        .or_else(|| try_recording_simulation(args, bundle))
+    if let Some(result) = try_recording_simulation(args, bundle)
         .or_else(|| try_live_session(args, bundle))
         .or_else(|| try_capture_commands(args, bundle))
         .or_else(|| try_provisional_title_candidates(args))
@@ -559,9 +557,6 @@ fn try_capture_commands(args: &[OsString], bundle: &Path) -> Option<Result<(), S
         .or_else(|| try_capture_diagnostic_handoff(args))
         .or_else(|| try_capture_canonical_frame(args))
         .or_else(|| try_capture_binding_admission(args))
-        .or_else(|| try_capture_session_calibration(args))
-        .or_else(|| try_capture_binding_author(args))
-        .or_else(|| try_capture_calibration(args))
         .or_else(|| try_capture_live_gate(args))
 }
 
@@ -623,11 +618,18 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
 
 struct RoutineRunOptions<'a> {
     overlays: OverlayOptions,
-    profile: Option<&'a OsStr>,
+    capture: RoutineCapture<'a>,
+    crop: scorepeek::capture::EdgeCrop,
     scores_db: Option<&'a OsStr>,
     no_scores: bool,
     recording: bool,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+}
+
+#[derive(Clone, Copy)]
+enum RoutineCapture<'a> {
+    Pipewire { node_name: &'a str },
+    VulkanLayer,
 }
 
 #[derive(Default)]
@@ -663,8 +665,17 @@ fn run_startup_stage<T>(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'_>, String> {
-    let mut profile = None;
+    let mut capture = None;
+    let mut node_name = None;
+    let mut crop = scorepeek::capture::EdgeCrop {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let mut crop_seen = [false; 4];
     let mut recording = false;
     let mut scores_db = None;
     let mut no_scores = false;
@@ -697,12 +708,48 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
                 };
                 scores_db = Some(value.as_os_str());
             }
-            Some("--profile") if profile.is_none() => {
+            Some("--capture") if capture.is_none() => {
                 index += 1;
-                let Some(value) = options.get(index) else {
-                    return Err("--profile requires a profile name".to_owned());
+                let Some(value) = options.get(index).and_then(|value| value.to_str()) else {
+                    return Err("--capture requires pipewire or vulkan-layer".to_owned());
                 };
-                profile = Some(value.as_os_str());
+                capture = Some(value);
+            }
+            Some("--node-name") if node_name.is_none() => {
+                index += 1;
+                let Some(value) = options
+                    .get(index)
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Err("--node-name requires a non-empty UTF-8 value".to_owned());
+                };
+                node_name = Some(value);
+            }
+            Some(option @ ("--crop-left" | "--crop-top" | "--crop-right" | "--crop-bottom")) => {
+                let crop_index = match option {
+                    "--crop-left" => 0,
+                    "--crop-top" => 1,
+                    "--crop-right" => 2,
+                    _ => 3,
+                };
+                if crop_seen[crop_index] {
+                    return Err(format!("duplicate run option: {option}"));
+                }
+                crop_seen[crop_index] = true;
+                index += 1;
+                let Some(value) = options.get(index).and_then(|value| value.to_str()) else {
+                    return Err(format!("{option} requires a pixel count"));
+                };
+                let value = value
+                    .parse::<u32>()
+                    .map_err(|_| format!("{option} requires a non-negative integer"))?;
+                match crop_index {
+                    0 => crop.left = value,
+                    1 => crop.top = value,
+                    2 => crop.right = value,
+                    _ => crop.bottom = value,
+                }
             }
             Some("--record-memory-mib") if recording_memory_mib.is_none() => {
                 index += 1;
@@ -728,9 +775,26 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
     let recording_memory_limit = canonical_recording::RecordingMemoryLimit::from_mib(
         recording_memory_mib.unwrap_or(canonical_recording::DEFAULT_RECORDING_MEMORY_MIB),
     )?;
+    let capture = match (capture, node_name) {
+        (Some("pipewire"), Some(node_name)) => RoutineCapture::Pipewire { node_name },
+        (Some("pipewire"), None) => {
+            return Err("--capture pipewire requires --node-name".to_owned());
+        }
+        (Some("vulkan-layer"), None) => RoutineCapture::VulkanLayer,
+        (Some("vulkan-layer"), Some(_)) => {
+            return Err("--node-name is only valid with --capture pipewire".to_owned());
+        }
+        (Some(value), _) => return Err(format!("unsupported capture backend: {value}")),
+        (None, _) => {
+            return Err(
+                "scorepeek run requires --capture pipewire or --capture vulkan-layer".to_owned(),
+            );
+        }
+    };
     Ok(RoutineRunOptions {
         overlays,
-        profile,
+        capture,
+        crop,
         scores_db,
         no_scores,
         recording,
@@ -744,7 +808,8 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
     reason = "the admitted run keeps parsed options and its diagnostic ownership explicit"
 )]
 fn run_routine_live_session(
-    profile_name: Option<&OsStr>,
+    capture: RoutineCapture<'_>,
+    crop: scorepeek::capture::EdgeCrop,
     recording: &str,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
     scores_db: Option<&OsStr>,
@@ -756,9 +821,6 @@ fn run_routine_live_session(
 ) -> Result<(), String> {
     let recording_enabled = recording == "enabled";
     let diagnostic_sink = diagnostics.sink();
-    let selected = run_startup_stage(&diagnostic_sink, "capture_profile", || {
-        local_profiles::select_for_run(profile_name)
-    })?;
     let (catalog_root, _) = run_startup_stage(&diagnostic_sink, "catalog_paths", || {
         catalog_paths(
             env::var_os("XDG_DATA_HOME").as_deref(),
@@ -794,7 +856,7 @@ fn run_routine_live_session(
     let stop = monitor.stop_token();
     let mut output = routine_output::RoutineOutput::start(
         invocation_id.clone(),
-        selected.binding.capture_profile_sha256().to_owned(),
+        "0".repeat(64),
         recording_enabled,
         diagnostics,
     )?;
@@ -916,38 +978,73 @@ fn run_routine_live_session(
         schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
-            profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
         },
     })?;
 
     let mut lifetimes = routine_watcher::SourceLifetimes::new();
+    let vulkan_listener = match capture {
+        RoutineCapture::VulkanLayer => Some(run_startup_stage(
+            &diagnostic_sink,
+            "vulkan_capture_socket",
+            scorepeek::capture::vulkan::VulkanListener::bind_default,
+        )?),
+        RoutineCapture::Pipewire { .. } => None,
+    };
+    let mut vulkan_generation = 0_u64;
     let mut announced = None;
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         output.refresh_scores()?;
         output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
-        let Ok(snapshot) =
-            scorepeek::capture::snapshot_gamescope_sources(std::time::Duration::from_millis(500))
-        else {
-            announce_watcher_state(
-                &mut announced,
-                routine_watcher::WatcherState::RemoteUnavailable,
-                "PipeWire is unavailable; scorepeek will keep waiting",
-                &mut output,
-            )?;
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            continue;
+        let mut vulkan_session = None;
+        let decision = match capture {
+            RoutineCapture::Pipewire { node_name } => {
+                let Ok(snapshot) = scorepeek::capture::snapshot_pipewire_sources(
+                    node_name,
+                    std::time::Duration::from_millis(500),
+                ) else {
+                    announce_watcher_state(
+                        &mut announced,
+                        routine_watcher::WatcherState::RemoteUnavailable,
+                        "PipeWire is unavailable; scorepeek will keep waiting",
+                        &mut output,
+                    )?;
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                };
+                lifetimes.observe(snapshot)
+            }
+            RoutineCapture::VulkanLayer => {
+                let Some(session) = vulkan_listener
+                    .as_ref()
+                    .expect("Vulkan listener exists")
+                    .accept(std::time::Duration::from_millis(500))?
+                else {
+                    announce_watcher_state(
+                        &mut announced,
+                        routine_watcher::WatcherState::WaitingForSource,
+                        "waiting for a Vulkan-layer producer",
+                        &mut output,
+                    )?;
+                    continue;
+                };
+                vulkan_generation = vulkan_generation.saturating_add(1);
+                vulkan_session = Some(session);
+                routine_watcher::WatchDecision::Admit {
+                    node_id: 0,
+                    generation: vulkan_generation,
+                }
+            }
         };
         if stop.load(std::sync::atomic::Ordering::Acquire) {
             break;
         }
-        let decision = lifetimes.observe(snapshot);
         match decision {
             routine_watcher::WatchDecision::WaitAbsent
             | routine_watcher::WatchDecision::WaitConsumed => {
                 announce_watcher_state(
                     &mut announced,
                     routine_watcher::WatcherState::WaitingForSource,
-                    "waiting for a Gamescope PipeWire source",
+                    "waiting for the selected capture source",
                     &mut output,
                 )?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -956,7 +1053,7 @@ fn run_routine_live_session(
                 announce_watcher_state(
                     &mut announced,
                     routine_watcher::WatcherState::AmbiguousSources,
-                    "multiple Gamescope sources are present; waiting for exactly one",
+                    "multiple matching PipeWire sources are present; waiting for exactly one",
                     &mut output,
                 )?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -989,7 +1086,6 @@ fn run_routine_live_session(
                 let diagnostic_root = Path::new("/");
                 let recognition_root = None;
                 let values = routine_live_values(
-                    &selected,
                     generation,
                     diagnostic_root,
                     &catalog_root,
@@ -1000,6 +1096,19 @@ fn run_routine_live_session(
                     recognition_root,
                 );
                 let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+                let runtime_capture = match capture {
+                    RoutineCapture::Pipewire { node_name } => {
+                        capture_live::RuntimeCaptureInput::Pipewire {
+                            node_name,
+                            crop,
+                            expected_node_id: Some(node_id),
+                        }
+                    }
+                    RoutineCapture::VulkanLayer => capture_live::RuntimeCaptureInput::VulkanLayer {
+                        session: vulkan_session.take().expect("admitted Vulkan session"),
+                        crop,
+                    },
+                };
                 if stop.load(std::sync::atomic::Ordering::Acquire) {
                     if let Some(paths) = session_paths.as_ref()
                         && let Err(error) = paths.cleanup()
@@ -1015,6 +1124,9 @@ fn run_routine_live_session(
                     let output_started = std::time::Instant::now();
                     if let Some(binding) = emission.public_binding.clone() {
                         output.bind_public_session(binding);
+                    }
+                    if let Some(identity) = emission.diagnostic_identity.as_ref() {
+                        output.record_diagnostic("capture_generation_identity", identity, true);
                     }
                     let event = run_event_from_live_emission(emission)?;
                     if matches!(
@@ -1045,6 +1157,7 @@ fn run_routine_live_session(
                     session_paths.as_ref().map(|paths| paths.root.as_path()),
                     Some(&session_id),
                     Some(node_id),
+                    Some(runtime_capture),
                     &stop,
                     &mut emit,
                 )?;
@@ -1052,7 +1165,9 @@ fn run_routine_live_session(
                     return Err("live result output failed".to_owned());
                 }
                 if started {
-                    lifetimes.admitted(node_id);
+                    if matches!(capture, RoutineCapture::Pipewire { .. }) {
+                        lifetimes.admitted(node_id);
+                    }
                     announced = None;
                     let outcome = match report.stop_reason() {
                         Some(capture_live::LiveSessionStopReason::RequestedSignal) => "stopped",
@@ -1095,12 +1210,7 @@ fn run_routine_live_session(
                     }
                     match report.startup_retry() {
                         Some(capture_live::LiveSessionStartupRetry::Admission) => {
-                            announce_watcher_state(
-                                &mut announced,
-                                routine_watcher::WatcherState::AdmissionRejected,
-                                "Gamescope source is not ready; scorepeek will keep waiting",
-                                &mut output,
-                            )?;
+                            return Err(report.startup_failure_summary());
                         }
                         Some(capture_live::LiveSessionStartupRetry::Catalog) => {
                             announce_watcher_state(
@@ -1132,7 +1242,6 @@ fn run_routine_live_session(
 
 #[allow(clippy::too_many_arguments)]
 fn routine_live_values(
-    selected: &local_profiles::SelectedProfile,
     generation: u64,
     diagnostic_root: &Path,
     catalog_root: &Path,
@@ -1143,8 +1252,8 @@ fn routine_live_values(
     recognition_root: Option<&Path>,
 ) -> Vec<OsString> {
     vec![
-        selected.path.clone().into_os_string(),
-        selected.digest.clone().into(),
+        Path::new("/").as_os_str().to_owned(),
+        "0".repeat(64).into(),
         generation.to_string().into(),
         diagnostic_root.as_os_str().to_owned(),
         catalog_root.as_os_str().to_owned(),
@@ -1274,6 +1383,7 @@ fn run_live_session(
         None,
         None,
         None,
+        None,
         &stop,
         &mut emit,
     )?;
@@ -1295,6 +1405,7 @@ fn execute_live_session(
     canonical_recording_root: Option<&Path>,
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
+    runtime_capture: Option<capture_live::RuntimeCaptureInput<'_>>,
     stop: &std::sync::atomic::AtomicBool,
     emit: &mut impl FnMut(
         LiveSessionEmission,
@@ -1345,6 +1456,7 @@ fn execute_live_session(
             value: serde_json::to_value(&diagnostic_preflight)
                 .map_err(|error| format!("live result serialization failed: {error}"))?,
             authority_joint_evidence: None,
+            diagnostic_identity: None,
         })?;
     }
     let public_binding = descriptor.binding.clone();
@@ -1371,10 +1483,27 @@ fn execute_live_session(
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit,
+            runtime_capture,
         },
         stop,
         &mut |event| {
             let started = std::time::Instant::now();
+            let diagnostic_identity = match event {
+                capture_live::GamescopeLiveSessionEvent::Started {
+                    capture_generation,
+                    capture_profile_sha256,
+                    normalizer_artifact_sha256,
+                    capture_profile_document,
+                    normalizer_document,
+                } => Some(serde_json::json!({
+                    "capture_generation": capture_generation,
+                    "capture_profile_sha256": capture_profile_sha256,
+                    "capture_profile": capture_profile_document,
+                    "normalizer_sha256": normalizer_artifact_sha256,
+                    "normalizer": normalizer_document,
+                })),
+                _ => None,
+            };
             let authority_joint_evidence = if session_id.is_some() {
                 match &event {
                     capture_live::GamescopeLiveSessionEvent::Observation { output, .. } => {
@@ -1407,6 +1536,7 @@ fn execute_live_session(
                 public_binding: binding,
                 value,
                 authority_joint_evidence,
+                diagnostic_identity,
             })?;
             timing.add(capture_live::LiveEventProcessingTiming {
                 screen_resolver_us: None,
@@ -1424,6 +1554,7 @@ struct LiveSessionEmission {
     value: serde_json::Value,
     authority_joint_evidence:
         Option<recognition_live::screen_field_observer::JointEvidenceObservation>,
+    diagnostic_identity: Option<serde_json::Value>,
 }
 
 fn run_event_from_live_emission(
@@ -1536,6 +1667,7 @@ fn live_session_event_value(
             capture_generation,
             capture_profile_sha256,
             normalizer_artifact_sha256,
+            ..
         } => {
             let mut value = serde_json::json!({
                 "schema": schema,
@@ -1968,6 +2100,7 @@ fn run_capture_field_observation(
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit: canonical_recording::RecordingMemoryLimit::default_limit(),
+            runtime_capture: None,
         },
     );
     println!(
@@ -2135,203 +2268,6 @@ fn try_capture_binding_admission(args: &[OsString]) -> Option<Result<(), String>
                 .succeeded()
                 .then_some(())
                 .ok_or_else(|| "Gamescope profile binding admission failed".to_owned())
-        })
-}
-
-fn try_capture_binding_author(args: &[OsString]) -> Option<Result<(), String>> {
-    let [
-        capture,
-        command,
-        calibration_flag,
-        calibration,
-        calibration_digest_flag,
-        calibration_digest,
-        output_flag,
-        output,
-        left_numerator_flag,
-        left_numerator,
-        left_denominator_flag,
-        left_denominator,
-        top_numerator_flag,
-        top_numerator,
-        top_denominator_flag,
-        top_denominator,
-        width_numerator_flag,
-        width_numerator,
-        width_denominator_flag,
-        width_denominator,
-        height_numerator_flag,
-        height_numerator,
-        height_denominator_flag,
-        height_denominator,
-    ] = args
-    else {
-        return None;
-    };
-    (capture == "capture"
-        && command == "gamescope-profile-binding-author"
-        && calibration_flag == "--calibration"
-        && calibration_digest_flag == "--calibration-sha256"
-        && output_flag == "--output"
-        && left_numerator_flag == "--left-numerator"
-        && left_denominator_flag == "--left-denominator"
-        && top_numerator_flag == "--top-numerator"
-        && top_denominator_flag == "--top-denominator"
-        && width_numerator_flag == "--width-numerator"
-        && width_denominator_flag == "--width-denominator"
-        && height_numerator_flag == "--height-numerator"
-        && height_denominator_flag == "--height-denominator")
-        .then(|| {
-            let expected_digest = calibration_digest
-                .to_str()
-                .ok_or_else(|| "calibration digest must be UTF-8".to_owned())?;
-            let geometry = capture_calibration::parse_fractional_geometry(
-                left_numerator,
-                left_denominator,
-                top_numerator,
-                top_denominator,
-                width_numerator,
-                width_denominator,
-                height_numerator,
-                height_denominator,
-            )?;
-            let report = capture_calibration::author_gamescope_profile_binding(
-                Path::new(calibration),
-                expected_digest,
-                Path::new(output),
-                geometry,
-            );
-            println!(
-                "{}",
-                serde_json::to_string(&report)
-                    .map_err(|_| "binding author report serialization failed".to_owned())?
-            );
-            report
-                .succeeded()
-                .then_some(())
-                .ok_or_else(|| "Gamescope profile binding author failed".to_owned())
-        })
-}
-
-fn try_capture_session_calibration(args: &[OsString]) -> Option<Result<(), String>> {
-    let [
-        capture,
-        command,
-        output_flag,
-        output,
-        environment_flag,
-        environment,
-        version_flag,
-        version,
-        backend_flag,
-        backend,
-        output_width_flag,
-        output_width,
-        output_height_flag,
-        output_height,
-        width_flag,
-        width,
-        height_flag,
-        height,
-        refresh_flag,
-        refresh,
-        scaler_flag,
-        scaler,
-        filter_flag,
-        filter,
-    ] = args
-    else {
-        return None;
-    };
-    (capture == "capture"
-        && command == "gamescope-calibration-session-sample"
-        && output_flag == "--output"
-        && environment_flag == "--environment-id"
-        && version_flag == "--gamescope-version"
-        && backend_flag == "--backend"
-        && output_width_flag == "--output-width"
-        && output_height_flag == "--output-height"
-        && width_flag == "--nested-width"
-        && height_flag == "--nested-height"
-        && refresh_flag == "--nested-refresh"
-        && scaler_flag == "--scaler"
-        && filter_flag == "--filter")
-        .then(|| {
-            let configuration = capture_calibration::parse_session_configuration(
-                environment,
-                version,
-                backend,
-                output_width,
-                output_height,
-                width,
-                height,
-                refresh,
-                scaler,
-                filter,
-            )?;
-            let report = capture_calibration::capture_gamescope_calibration_session_sample(
-                Path::new(output),
-                &configuration,
-            );
-            println!(
-                "{}",
-                serde_json::to_string(&report).map_err(|_| {
-                    "Gamescope calibration session report serialization failed".to_owned()
-                })?
-            );
-            report
-                .succeeded()
-                .then_some(())
-                .ok_or_else(|| "Gamescope calibration session sample failed".to_owned())
-        })
-}
-
-fn try_capture_calibration(args: &[OsString]) -> Option<Result<(), String>> {
-    let [
-        capture,
-        command,
-        output_flag,
-        output,
-        width_flag,
-        width,
-        height_flag,
-        height,
-        refresh_flag,
-        refresh,
-        scaler_flag,
-        scaler,
-        filter_flag,
-        filter,
-    ] = args
-    else {
-        return None;
-    };
-    (capture == "capture"
-        && command == "gamescope-calibration-sample"
-        && output_flag == "--output"
-        && width_flag == "--nested-width"
-        && height_flag == "--nested-height"
-        && refresh_flag == "--nested-refresh"
-        && scaler_flag == "--scaler"
-        && filter_flag == "--filter")
-        .then(|| {
-            let configuration = capture_calibration::parse_scaling_configuration(
-                width, height, refresh, scaler, filter,
-            )?;
-            let report = capture_calibration::capture_gamescope_calibration_sample(
-                Path::new(output),
-                configuration,
-            );
-            println!(
-                "{}",
-                serde_json::to_string(&report).map_err(|_| {
-                    "Gamescope calibration sample report serialization failed".to_owned()
-                })?
-            );
-            report
-                .succeeded()
-                .then_some(())
-                .ok_or_else(|| "Gamescope calibration sample failed".to_owned())
         })
 }
 
@@ -3515,28 +3451,13 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek catalog sync\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek catalog sync\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
         env!("CARGO_PKG_VERSION")
     );
     println!(
         "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --catalog-sha256 SHA256"
     );
     println!("  run option: --overlay-wayland-edit (enables Wayland and opens the editor)");
-    println!(
-        "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled"
-    );
-    println!(
-        "  scorepeek capture gamescope-recognition-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled"
-    );
-    println!(
-        "  scorepeek capture gamescope-field-observation-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled"
-    );
-    println!(
-        "  scorepeek capture gamescope-result-recognition-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --recognition-artifact DIRECTORY"
-    );
-    println!(
-        "  scorepeek run gamescope --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --recognition-artifact DIRECTORY"
-    );
     println!("  scorepeek numeric-model install --bundle DIRECTORY");
 }
 
@@ -3612,19 +3533,20 @@ mod tests {
 
     #[test]
     fn scores_options_are_independent_of_recording_and_reject_conflicts() {
-        let options = [
-            OsString::from("--scores-db"),
-            OsString::from("guest.sqlite3"),
-        ];
+        let options =
+            ["--capture", "vulkan-layer", "--scores-db", "guest.sqlite3"].map(OsString::from);
         let parsed = parse_routine_run_options(&options).unwrap();
         assert_eq!(parsed.scores_db, Some(OsStr::new("guest.sqlite3")));
         assert!(!parsed.recording);
         assert!(!parsed.no_scores);
-        assert!(!parse_routine_run_options(&[]).unwrap().no_scores);
+        let base = ["--capture", "vulkan-layer"].map(OsString::from);
+        assert!(!parse_routine_run_options(&base).unwrap().no_scores);
         assert!(
-            parse_routine_run_options(&[OsString::from("--no-scores")])
-                .unwrap()
-                .no_scores
+            parse_routine_run_options(
+                &["--capture", "vulkan-layer", "--no-scores"].map(OsString::from)
+            )
+            .unwrap()
+            .no_scores
         );
         for options in [
             vec!["--scores-db"],
@@ -3632,7 +3554,11 @@ mod tests {
             vec!["--no-scores", "--scores-db", "guest.db"],
             vec!["--no-scores", "--no-scores"],
         ] {
-            let options = options.into_iter().map(OsString::from).collect::<Vec<_>>();
+            let options = ["--capture", "vulkan-layer"]
+                .into_iter()
+                .chain(options)
+                .map(OsString::from)
+                .collect::<Vec<_>>();
             assert!(parse_routine_run_options(&options).is_err());
         }
     }
@@ -3658,7 +3584,11 @@ mod tests {
                 "--no-scores",
             ],
         ] {
-            let values = options.iter().map(OsString::from).collect::<Vec<_>>();
+            let values = ["--capture", "vulkan-layer"]
+                .into_iter()
+                .chain(options)
+                .map(OsString::from)
+                .collect::<Vec<_>>();
             assert!(parse_routine_run_options(&values).is_ok());
         }
         for options in [
@@ -3667,19 +3597,31 @@ mod tests {
             vec!["--overlay-config"],
             vec!["--overlay-config", "a", "--overlay-config", "b"],
         ] {
-            let values = options.iter().map(OsString::from).collect::<Vec<_>>();
+            let values = ["--capture", "vulkan-layer"]
+                .into_iter()
+                .chain(options)
+                .map(OsString::from)
+                .collect::<Vec<_>>();
             assert!(parse_routine_run_options(&values).is_err());
         }
-        let parsed = parse_routine_run_options(&[]).unwrap();
+        let base = ["--capture", "vulkan-layer"].map(OsString::from);
+        let parsed = parse_routine_run_options(&base).unwrap();
         assert!(!parsed.overlays.wayland && !parsed.overlays.obs);
-        let edit_args = [OsString::from("--overlay-wayland-edit")];
+        let edit_args = ["--capture", "vulkan-layer", "--overlay-wayland-edit"].map(OsString::from);
         let edit = parse_routine_run_options(&edit_args).unwrap();
         assert!(edit.overlays.wayland && edit.overlays.wayland_edit);
     }
 
     #[test]
     fn overlay_config_path_is_preserved() {
-        let args = ["--overlay-obs", "--overlay-config", "custom.toml"].map(OsString::from);
+        let args = [
+            "--capture",
+            "vulkan-layer",
+            "--overlay-obs",
+            "--overlay-config",
+            "custom.toml",
+        ]
+        .map(OsString::from);
         let parsed = parse_routine_run_options(&args).unwrap();
         assert_eq!(
             parsed.overlays.config_path.as_deref(),
@@ -3689,33 +3631,20 @@ mod tests {
 
     #[test]
     fn ordinary_run_options_are_order_independent_and_record_is_opt_in() {
-        let empty: [OsString; 0] = [];
-        let parsed = parse_routine_run_options(&empty).unwrap();
-        assert_eq!(parsed.profile, None);
+        assert!(parse_routine_run_options(&[]).is_err());
+        let base = ["--capture", "vulkan-layer"].map(OsString::from);
+        let parsed = parse_routine_run_options(&base).unwrap();
         assert!(!parsed.recording);
-        let record = [OsString::from("--record")];
+        let record = ["--capture", "vulkan-layer", "--record"].map(OsString::from);
         let parsed = parse_routine_run_options(&record).unwrap();
-        assert_eq!(parsed.profile, None);
         assert!(parsed.recording);
         assert_eq!(
             parsed.recording_memory_limit.bytes(),
             1024_u64 * 1024 * 1024
         );
-        let profile_then_record = [
-            OsString::from("--profile"),
-            OsString::from("target"),
-            OsString::from("--record"),
-        ];
-        let parsed = parse_routine_run_options(&profile_then_record).unwrap();
-        assert_eq!(parsed.profile, Some(OsStr::new("target")));
-        assert!(parsed.recording);
-        let record_then_profile = [
-            OsString::from("--record"),
-            OsString::from("--profile"),
-            OsString::from("target"),
-        ];
-        assert!(parse_routine_run_options(&record_then_profile).is_ok());
         let configured = [
+            OsString::from("--capture"),
+            OsString::from("vulkan-layer"),
             OsString::from("--record-memory-mib"),
             OsString::from("2048"),
             OsString::from("--record"),
@@ -4006,6 +3935,8 @@ mod tests {
                 capture_generation: 1,
                 capture_profile_sha256: "profile",
                 normalizer_artifact_sha256: "normalizer",
+                capture_profile_document: None,
+                normalizer_document: None,
             },
             GamescopeLiveSessionEvent::SemanticScreenEpisode {
                 screen_episode_id: 1,
@@ -4197,6 +4128,7 @@ mod tests {
             public_binding: None,
             value,
             authority_joint_evidence: Some(authority.clone()),
+            diagnostic_identity: None,
         })
         .unwrap();
         let crate::routine_output::RunEventKind::FieldObservation { joint_evidence, .. } =

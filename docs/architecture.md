@@ -8,9 +8,11 @@ and tests that implement them.
 
 ```mermaid
 flowchart LR
-  GS["Gamescope PipeWire source"] --> RX["Bounded PipeWire receiver"]
+  PW["Exact PipeWire Video/Source"] --> RX["Bounded BGRx receiver"]
+  VK["Injected Vulkan layer"] --> DM["One GPU-local DMA-BUF"]
+  DM --> RX
   RX --> OF["Observed BGRx frame"]
-  PF["Machine-local capture profile"] --> NM["Versioned normalizer"]
+  RC["Admitted source contract and edge crop"] --> NM["Versioned normalizer"]
   OF --> NM
   NM --> CF["Canonical RGB8 1920x1080"]
   CF --> SE["10 Hz screen episodes"]
@@ -34,30 +36,35 @@ flowchart LR
 
 The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the installed private numeric bundle,
-and one capture profile before admitting recognition work. Python is restricted
+and one explicitly selected capture backend before admitting recognition work. Python is restricted
 to reproducible offline OCR preparation, training, and export tooling.
 
 The runtime does not start, stop, signal, or restart the operator's ordinary
-Gamescope, Steam, or game processes. It waits for exactly one eligible
-Gamescope video source, treats each source lifetime as a distinct capture
+Gamescope, Steam, or game processes. It waits for exactly one eligible source,
+treats each producer lifetime as a distinct capture
 generation, and performs bounded ordered teardown on source loss or process
 termination.
 
 ## Capture and canonical frame
 
-Gamescope direct PipeWire is the current capture route. Source acquisition and
-frame reception are separate owners. The receiver returns producer buffers
-promptly, retains only the newest application-owned frame, and samples it at
-the independent 10 Hz recognition cadence.
+PipeWire and the Vulkan layer are opaque peer capture backends. PipeWire uses
+the user's default remote and requires exactly one exact `node.name` with
+`media.class=Video/Source`; it negotiates only progressive BGRx and
+CPU-mappable buffers. The Vulkan producer allocates capture resources only
+while Scorepeek is connected. Scorepeek requests at 10 Hz and imports one
+GPU-local DMA-BUF, then performs a fenced readback on an asynchronous worker.
+The image is not reused before ACK; there is no frame ring, catch-up queue, or
+external semaphore.
 
-A machine-local profile contains the observed BGRx dimensions, a measured
-axis-aligned source rectangle, and the normalizer identity. It is created by
-`scorepeek setup gamescope` from the scorepeek-owned marker. Runtime
-admission validates the actual format, dimensions, byte layout, and saved
-geometry. It never remeasures geometry, changes profiles, relaxes thresholds,
-or falls back to another capture route during a session.
+For every admitted generation, runtime creates a canonical capture-profile
+document from backend, selector, and actual source contract, plus a separate
+normalizer document from source dimensions, explicit per-edge crop, the fixed
+half-pixel linear sampler, and the canonical contract. Both documents and
+digests enter structured diagnostics and optional recording manifests. Public
+events retain digests only. Invalid crop, format, memory, ambiguity, or source
+contract fails closed; no backend or source fallback exists.
 
-Only the selected profile normalizer may create a contiguous canonical RGB8
+Only the admitted generation normalizer may create a contiguous canonical RGB8
 1920x1080 frame. Capture generation, profile, normalizer, layout, catalog, and
 model identities remain bound through recognition and diagnostics.
 
@@ -141,8 +148,8 @@ player data, and credentials stay outside Git. See
 | --- | --- |
 | External catalog bytes | Private source cache on each operator host |
 | Catalog parsing, federation, quarantine, activation | `scorepeek::catalog` |
-| Gamescope source lifetime and frame reception | Capture provider and receiver |
-| Profile geometry and canonical normalization | Versioned profile and normalizer |
+| PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
+| Runtime source identity, edge crop, and canonical normalization | Versioned capture profile and normalizer documents |
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek/src` |
 | OCR preprocessing, models, and thresholds | Registered text and numeric bundles |
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |

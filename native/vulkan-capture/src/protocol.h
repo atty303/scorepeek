@@ -9,7 +9,7 @@ extern "C" {
 
 enum {
     SPVK_MAGIC = 0x4b565053u,
-    SPVK_VERSION = 1u,
+    SPVK_VERSION = 2u,
     SPVK_MAX_PLANES = 4u,
 };
 
@@ -20,6 +20,8 @@ typedef enum SpvkMessageType {
     SPVK_MESSAGE_READY = 4,
     SPVK_MESSAGE_ACK = 5,
     SPVK_MESSAGE_ERROR = 6,
+    SPVK_MESSAGE_ADMIT = 7,
+    SPVK_MESSAGE_ADMIT_ACK = 8,
 } SpvkMessageType;
 
 typedef enum SpvkErrorType {
@@ -32,6 +34,7 @@ typedef enum SpvkErrorType {
     SPVK_ERROR_IMPORT_FAILED = 6,
     SPVK_ERROR_READBACK_FAILED = 7,
     SPVK_ERROR_RECORDING_DEGRADED = 8,
+    SPVK_ERROR_SOURCE_BUSY = 9,
 } SpvkErrorType;
 
 typedef struct SpvkPlaneLayout {

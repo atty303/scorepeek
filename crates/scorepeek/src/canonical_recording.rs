@@ -154,6 +154,14 @@ pub struct CanonicalRecordingOutcome {
     pub final_health: RecordingHealthSnapshot,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct RecordingCaptureIdentity {
+    pub capture_profile_sha256: String,
+    pub capture_profile_document: String,
+    pub normalizer_sha256: String,
+    pub normalizer_document: String,
+}
+
 #[derive(Clone)]
 struct RecordedFrame {
     sequence: u64,
@@ -194,6 +202,7 @@ impl CanonicalRecordingWorker {
         root: &Path,
         directory_name: &str,
         memory_limit: RecordingMemoryLimit,
+        capture_identity: Option<RecordingCaptureIdentity>,
     ) -> Result<Self, String> {
         let ffmpeg = inspect_ffmpeg()?;
         let directory = root.join(directory_name);
@@ -225,6 +234,7 @@ impl CanonicalRecordingWorker {
                     worker_memory,
                     Some(tick_index),
                     metadata_memory,
+                    capture_identity,
                 )
                 .run(&receiver)
             })
@@ -353,6 +363,7 @@ struct Manifest<'a> {
     completeness_reasons: Vec<&'static str>,
     memory_limit_bytes: u64,
     memory_high_water_bytes: u64,
+    capture_identity: Option<&'a RecordingCaptureIdentity>,
 }
 
 #[allow(
@@ -385,6 +396,7 @@ struct Recorder {
     dry_run: bool,
     memory: Arc<RecordingMemoryAccount>,
     _metadata_memory: MemoryReservation,
+    capture_identity: Option<RecordingCaptureIdentity>,
 }
 
 struct PendingFrame {
@@ -441,6 +453,7 @@ impl Recorder {
         memory: Arc<RecordingMemoryAccount>,
         tick_index: Option<TickIndexWriter>,
         metadata_memory: MemoryReservation,
+        capture_identity: Option<RecordingCaptureIdentity>,
     ) -> Self {
         Self {
             directory,
@@ -468,6 +481,7 @@ impl Recorder {
             dry_run: false,
             memory,
             _metadata_memory: metadata_memory,
+            capture_identity,
         }
     }
 
@@ -720,6 +734,7 @@ impl Recorder {
             completeness_reasons,
             memory_limit_bytes: self.memory.limit,
             memory_high_water_bytes: self.memory.high_water.load(Ordering::Relaxed),
+            capture_identity: self.capture_identity.as_ref(),
         };
         let mut bytes = serde_json::to_vec(&manifest)
             .map_err(|_| "canonical manifest serialization failed".to_owned())?;
@@ -1173,6 +1188,7 @@ mod tests {
             memory,
             None,
             metadata_memory,
+            None,
         );
         recorder.dry_run = true;
         recorder
@@ -1314,6 +1330,7 @@ mod tests {
             root.path(),
             "canonical",
             RecordingMemoryLimit::default_limit(),
+            None,
         )
         .unwrap();
         let outcome = worker.finish();

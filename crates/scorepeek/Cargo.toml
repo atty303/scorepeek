@@ -11,10 +11,12 @@ dist = true
 [dependencies]
 scorepeek-overlay = { path = "../scorepeek-overlay" }
 scorepeek-scores = { path = "../scorepeek-scores" }
+scorepeek-vulkan-capture = { path = "../scorepeek-vulkan-capture" }
 encoding_rs.workspace = true
 imageproc.workspace = true
 ort.workspace = true
 pipewire.workspace = true
+rustix.workspace = true
 qoi.workspace = true
 ratatui.workspace = true
 rusqlite.workspace = true

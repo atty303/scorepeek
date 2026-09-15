@@ -51,7 +51,6 @@ pub enum WatcherState {
     AmbiguousSources,
     RemoteUnavailable,
     CatalogUnavailable,
-    AdmissionRejected,
 }
 
 impl WatcherState {
@@ -61,7 +60,6 @@ impl WatcherState {
             Self::AmbiguousSources => "ambiguous_sources",
             Self::RemoteUnavailable => "remote_unavailable",
             Self::CatalogUnavailable => "catalog_unavailable",
-            Self::AdmissionRejected => "admission_rejected",
         }
     }
 }

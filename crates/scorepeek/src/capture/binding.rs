@@ -10,6 +10,8 @@ const BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v1";
 const LOCAL_BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v2";
 const MEASURED_BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v3";
 const MEASURED_PROFILE_SCHEMA: &str = "scorepeek-gamescope-capture-profile-v2";
+const RUNTIME_BINDING_SCHEMA: &str = "scorepeek-runtime-capture-binding-v1";
+const RUNTIME_PROFILE_SCHEMA: &str = "scorepeek-runtime-capture-profile-v1";
 const PROFILE_SCHEMA: &str = "scorepeek-gamescope-capture-profile-v1";
 const NORMALIZER_SCHEMA: &str = "scorepeek-fractional-linear-normalizer-v1";
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
@@ -140,6 +142,24 @@ pub struct AuthoredGamescopeProfileBinding {
     pub bytes: Vec<u8>,
     pub artifact_sha256: String,
     pub capture_profile_sha256: String,
+    pub capture_profile_bytes: Vec<u8>,
+    pub normalizer_bytes: Vec<u8>,
+    pub normalizer_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCaptureBackend {
+    Pipewire,
+    VulkanLayer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EdgeCrop {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
 }
 
 /// An immutable, digest-pinned Gamescope capture-profile and normalizer binding.
@@ -162,6 +182,87 @@ pub struct GamescopeProfileBinding {
 }
 
 impl GamescopeProfileBinding {
+    /// Authors the complete runtime identity from the admitted source contract and explicit crop.
+    ///
+    /// # Errors
+    /// Returns a typed profile or normalizer error when the selector, observed contract, or crop
+    /// cannot form the fixed canonical contract.
+    pub fn author_runtime(
+        backend: RuntimeCaptureBackend,
+        selector: String,
+        video: UncalibratedVideoContract,
+        memory_type: UncalibratedMemoryType,
+        stride: u32,
+        crop: EdgeCrop,
+    ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
+        if selector.is_empty() || selector.len() > MAX_TOKEN_BYTES {
+            return Err(GamescopeProfileBindingError::InvalidProfile);
+        }
+        let remaining_width = video
+            .width
+            .checked_sub(crop.left)
+            .and_then(|value| value.checked_sub(crop.right))
+            .filter(|value| *value > 0)
+            .ok_or(GamescopeProfileBindingError::InvalidNormalizer)?;
+        let remaining_height = video
+            .height
+            .checked_sub(crop.top)
+            .and_then(|value| value.checked_sub(crop.bottom))
+            .filter(|value| *value > 0)
+            .ok_or(GamescopeProfileBindingError::InvalidNormalizer)?;
+        let geometry = FractionalRectangle::new(
+            RationalCoordinate::new(i64::from(crop.left), 1)
+                .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?,
+            RationalCoordinate::new(i64::from(crop.top), 1)
+                .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?,
+            RationalCoordinate::new(i64::from(remaining_width), 1)
+                .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?,
+            RationalCoordinate::new(i64::from(remaining_height), 1)
+                .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?,
+        );
+        FractionalLinearGeometry::new(video.width, video.height, geometry)
+            .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?;
+        let capture_profile = RuntimeCaptureProfileArtifact {
+            schema: RUNTIME_PROFILE_SCHEMA.to_owned(),
+            backend,
+            selector,
+            pixel_format: PixelFormat::Bgrx,
+            video,
+            memory_type,
+            stride,
+        };
+        let capture_profile_bytes = canonical_json(&capture_profile)
+            .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+        let capture_profile_sha256 = sha256(&capture_profile_bytes);
+        let normalizer = NormalizerArtifact {
+            schema: NORMALIZER_SCHEMA.to_owned(),
+            capture_profile_sha256: capture_profile_sha256.clone(),
+            canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
+            implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
+            source: FractionalRectangleArtifact::from_rectangle(geometry),
+        };
+        let normalizer_bytes = canonical_json(&normalizer)
+            .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+        let normalizer_sha256 = sha256(&normalizer_bytes);
+        let artifact = RuntimeBindingArtifact {
+            schema: RUNTIME_BINDING_SCHEMA.to_owned(),
+            capture_profile,
+            normalizer,
+        };
+        let bytes =
+            canonical_json(&artifact).map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+        let artifact_sha256 = sha256(&bytes);
+        Self::parse(&bytes, &artifact_sha256)?;
+        Ok(AuthoredGamescopeProfileBinding {
+            bytes,
+            artifact_sha256,
+            capture_profile_sha256,
+            capture_profile_bytes,
+            normalizer_bytes,
+            normalizer_sha256,
+        })
+    }
+
     /// Authors the minimal machine-local profile produced by marker measurement.
     ///
     /// # Errors
@@ -201,6 +302,13 @@ impl GamescopeProfileBinding {
             bytes,
             artifact_sha256,
             capture_profile_sha256,
+            capture_profile_bytes,
+            normalizer_bytes: canonical_json(&artifact.normalizer)
+                .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?,
+            normalizer_sha256: sha256(
+                &canonical_json(&artifact.normalizer)
+                    .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?,
+            ),
         })
     }
     /// Authors canonical binding bytes from separately verified calibration evidence.
@@ -289,6 +397,13 @@ impl GamescopeProfileBinding {
             bytes,
             artifact_sha256,
             capture_profile_sha256,
+            capture_profile_bytes,
+            normalizer_bytes: canonical_json(&artifact.normalizer)
+                .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?,
+            normalizer_sha256: sha256(
+                &canonical_json(&artifact.normalizer)
+                    .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?,
+            ),
         })
     }
 
@@ -297,6 +412,7 @@ impl GamescopeProfileBinding {
     /// # Errors
     /// Returns a stable typed error for an over-capacity artifact, invalid digest, non-canonical or
     /// unsupported document, invalid profile provenance/contract, or invalid normalizer binding.
+    #[allow(clippy::too_many_lines)]
     pub fn parse(
         bytes: &[u8],
         expected_sha256: &str,
@@ -315,6 +431,49 @@ impl GamescopeProfileBinding {
         }
         let document: serde_json::Value = serde_json::from_slice(bytes)
             .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+        if document.get("schema").and_then(serde_json::Value::as_str)
+            == Some(RUNTIME_BINDING_SCHEMA)
+        {
+            let artifact: RuntimeBindingArtifact = serde_json::from_value(document)
+                .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+            let canonical = canonical_json(&artifact)
+                .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+            if canonical != bytes || artifact.capture_profile.schema != RUNTIME_PROFILE_SCHEMA {
+                return Err(GamescopeProfileBindingError::NonCanonicalDocument);
+            }
+            let profile_bytes = canonical_json(&artifact.capture_profile)
+                .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+            let capture_profile_sha256 = sha256(&profile_bytes);
+            if artifact.normalizer.capture_profile_sha256 != capture_profile_sha256 {
+                return Err(GamescopeProfileBindingError::InvalidNormalizer);
+            }
+            let observed = ObservedContract {
+                pixel_format: artifact.capture_profile.pixel_format,
+                video: artifact.capture_profile.video,
+                memory_type: artifact.capture_profile.memory_type,
+                stride: artifact.capture_profile.stride,
+            };
+            observed.validate()?;
+            let geometry = artifact.normalizer.geometry(&observed)?;
+            return Ok(Self {
+                capture_profile_sha256,
+                normalizer_artifact_sha256: sha256(
+                    &canonical_json(&artifact.normalizer)
+                        .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?,
+                ),
+                environment_id: String::new(),
+                gamescope_version: String::new(),
+                backend_id: format!("{:?}", artifact.capture_profile.backend),
+                scaling_configuration: ScalingConfiguration::measured(
+                    observed.video.width,
+                    observed.video.height,
+                ),
+                observed,
+                geometry,
+                gamescope_arguments: None,
+                measured: true,
+            });
+        }
         if document.get("schema").and_then(serde_json::Value::as_str)
             == Some(MEASURED_BINDING_SCHEMA)
         {
@@ -554,6 +713,26 @@ struct MeasuredBindingArtifact {
     schema: String,
     capture_profile: MeasuredCaptureProfileArtifact,
     normalizer: NormalizerArtifact,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeBindingArtifact {
+    schema: String,
+    capture_profile: RuntimeCaptureProfileArtifact,
+    normalizer: NormalizerArtifact,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeCaptureProfileArtifact {
+    schema: String,
+    backend: RuntimeCaptureBackend,
+    selector: String,
+    pixel_format: PixelFormat,
+    video: UncalibratedVideoContract,
+    memory_type: UncalibratedMemoryType,
+    stride: u32,
 }
 
 impl MeasuredBindingArtifact {
@@ -1202,6 +1381,76 @@ mod tests {
                 20_000,
             ),
             Err(ObservedContractMismatch::Video)
+        );
+    }
+
+    #[test]
+    fn runtime_identity_records_backend_selector_contract_and_edge_crop() {
+        let video = video_contract();
+        let authored = GamescopeProfileBinding::author_runtime(
+            RuntimeCaptureBackend::Pipewire,
+            "scorepeek-test".to_owned(),
+            video,
+            UncalibratedMemoryType::MemoryFileDescriptor,
+            10_224,
+            EdgeCrop {
+                left: 11,
+                top: 22,
+                right: 33,
+                bottom: 44,
+            },
+        )
+        .unwrap();
+        let binding =
+            GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap();
+        let profile: serde_json::Value =
+            serde_json::from_slice(&authored.capture_profile_bytes).unwrap();
+        let normalizer: serde_json::Value =
+            serde_json::from_slice(&authored.normalizer_bytes).unwrap();
+
+        assert_eq!(profile["backend"], "pipewire");
+        assert_eq!(profile["selector"], "scorepeek-test");
+        assert_eq!(profile["video"]["width"], video.width);
+        assert_eq!(profile["memory_type"], "memory_file_descriptor");
+        assert_eq!(profile["stride"], 10_224);
+        assert_eq!(normalizer["source"]["left"]["numerator"], 11);
+        assert_eq!(normalizer["source"]["top"]["numerator"], 22);
+        assert_eq!(normalizer["source"]["width"]["numerator"], video.width - 44);
+        assert_eq!(
+            normalizer["source"]["height"]["numerator"],
+            video.height - 66
+        );
+        assert_eq!(binding.geometry().source_rectangle().left().numerator(), 11);
+        assert_eq!(binding.geometry().source_rectangle().top().numerator(), 22);
+        assert_eq!(
+            authored.capture_profile_sha256,
+            binding.capture_profile_sha256()
+        );
+        assert_eq!(
+            authored.normalizer_sha256,
+            binding.normalizer_artifact_sha256()
+        );
+    }
+
+    #[test]
+    fn runtime_identity_rejects_empty_crop_remainder() {
+        let video = video_contract();
+        assert_eq!(
+            GamescopeProfileBinding::author_runtime(
+                RuntimeCaptureBackend::VulkanLayer,
+                "fixed-runtime-socket".to_owned(),
+                video,
+                UncalibratedMemoryType::DmaBuf,
+                video.width * 4,
+                EdgeCrop {
+                    left: video.width,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+            )
+            .unwrap_err(),
+            GamescopeProfileBindingError::InvalidNormalizer
         );
     }
 

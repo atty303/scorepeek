@@ -83,7 +83,6 @@ pub enum RunEventKind {
     },
     WatcherStarted {
         invocation_id: String,
-        profile_sha256: String,
     },
     SessionStarted {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1995,7 +1994,7 @@ impl RunViewState {
                 if self.recording == "enabled" && self.status_recording != "degraded" {
                     self.status_recording = "armed";
                 }
-                "Gamescope session admitted".clone_into(&mut self.message);
+                "capture session admitted".clone_into(&mut self.message);
             }
             RunEventKind::RecordingHealthChanged {
                 state,
@@ -2687,6 +2686,12 @@ impl RoutineOutput {
     pub fn finish_diagnostics(&mut self, operation_status: &str) {
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.finish(operation_status);
+        }
+    }
+
+    pub fn record_diagnostic(&self, resource: &str, detail: &Value, critical: bool) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.sink().record(resource, detail, critical);
         }
     }
 
@@ -6266,7 +6271,6 @@ mod tests {
                 schema: RUN_EVENT_SCHEMA.into(),
                 kind: RunEventKind::WatcherStarted {
                     invocation_id: "invocation-1".into(),
-                    profile_sha256: "a".repeat(64),
                 },
             })
             .pop()
@@ -7399,7 +7403,6 @@ mod tests {
                 schema: RUN_EVENT_SCHEMA.into(),
                 kind: RunEventKind::WatcherStarted {
                     invocation_id: "invocation-1".into(),
-                    profile_sha256: "a".repeat(64),
                 },
             })
             .unwrap();
