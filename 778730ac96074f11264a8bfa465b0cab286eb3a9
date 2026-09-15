@@ -1,0 +1,103 @@
+Task cycle: explicit capture backends and Vulkan layer integration
+
+Start commit: 16600fb202a6282c836877047e4ad0aa0a0fe38f
+Working line: main
+Commits:
+- 778730ac96074f11264a8bfa465b0cab286eb3a9 feat: integrate explicit Vulkan and PipeWire capture backends
+
+Guidance and skills:
+- Repository AGENTS.md and the living README.md/docs/architecture.md were authoritative.
+- Used dig to reach the design contract, develop-repository for implementation/VCS, design-program-observability for runtime identity/lifecycle/performance semantics, review for an independent fresh review, and maintain-agent-guidance for the completion audit.
+
+Environment and authority:
+- Durable repository implementation was authorized; push, release, deployment, and release-install UX were not authorized.
+- GPU/Wayland/PipeWire live validation was authorized. bm2dx.exe subjective validation remained operator-owned.
+- Sandbox Unix socket/GPU checks and the post-commit mise state write were unavailable in the restricted environment, so the same scoped commands were rerun in the approved host-equivalent environment.
+- infinitas.lan SSH remained unresponsive during this cycle; live automated validation ran on the current AMD RADV Wayland host. The preceding spike had already been run on infinitas.lan and its bm2dx.exe feel was operator-confirmed OK.
+
+Transcript
+
+U: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) scorepeekに統合する。既存のgamescope captureはgamescope依存を取り除き、pipewire consumerとして汎用化して残す。vklayer captureをprofileとして統合する。
+A: Started a decision tree over profile compatibility, capture selection, normalization, runtime identity, lifecycle, installation, diagnostics, tests, and release scope.
+U: A
+A: Selected removal of the ordinary saved named-profile UX rather than retaining compatibility aliases; old files are ignored.
+U: A
+A: Selected an explicit capture backend on every ordinary run with no implicit fallback.
+U: profileは大幅にシンプル化する。
+A: Narrowed profile semantics to runtime-derived capture and normalizer identity rather than a large authored configuration object.
+U: B
+A: Kept both explicit built-in backend choices, Vulkan layer and generic PipeWire.
+U: Bで手動overrideもできる
+A: Retained explicit operator overrides where they materially define runtime normalization.
+U: B. 1920x1080scaleは固定、cropは手動指定のみ
+A: Fixed canonical output at contiguous RGB8 1920x1080 and made crop purely manual.
+U: A
+A: Selected edge crop values rather than an authored rectangle.
+U: A
+A: Selected integer pixel crop values and rejection of invalid geometry.
+U: A
+A: Selected one shared CPU normalizer for both backends.
+U: B
+A: Selected backend-specific admission followed by a common normalization/recognition pipeline.
+U: A
+A: Selected an identity fast path for exact 1920x1080 with zero crop.
+U: A
+A: Selected effective runtime values, not requested values, as profile identity inputs.
+U: 辺ごとのcrop pixel数
+A: Fixed the CLI contract to left, right, top, and bottom crop pixel counts.
+U: zig consumerはvkroots依存ないよな。rustで実装
+A: Confirmed vkroots belongs only to the C++ Vulkan layer and selected a direct Rust ash/rustix consumer.
+U: A
+A: Selected pinned Zig as the reproducible C++ layer toolchain and repository mise tasks as the build/test entrypoint.
+U: 初回releaseまで保留
+A: Deferred installed-layer discovery, packaging, and release UX until the first release.
+U: A
+A: Selected a fixed private per-user runtime socket and operator-enabled Vulkan layer.
+U: A
+A: Selected lazy layer connection and capture fail-open behavior so optional capture cannot break game presentation.
+U: A
+A: Selected first-wins process admission and the latest compatible swapchain within the admitted process.
+U: a. identity digestだけでなく実体の値も保存する
+A: Asked which surfaces should store the canonical documents as well as their identities.
+U: A
+A: Selected canonical capture/normalizer documents in generation diagnostics and recording manifests, while the public Event API remains digest-only.
+U: A
+A: Limited generic PipeWire to producer-independent raw progressive BGRx and CPU-mappable buffers.
+U: A
+A: Removed automatic PPM output; pixels persist only under explicit recording.
+U: A
+A: Selected bounded rolling timing summaries with count, p50, p95, p99, maximum, and drop counts.
+U: A
+A: Selected source absence as waiting, normal source end as reconnectable, and post-admission incompatibility as terminal.
+U: A
+A: Deleted old live profile CLI/readers without a compatibility shim or migration; existing files remain untouched and ignored.
+U: A
+A: Required the layer to reconnect after Scorepeek restart with a new DMA-BUF and a new capture generation.
+U: A
+A: Selected lazy layer resources only after consumer admission.
+U: A
+A: Selected contract/dimension changes as drained new generations, with crop revalidated.
+U: A
+A: Approved ash 0.38 and rustix 1.1 as direct Rust consumer dependencies.
+U: A
+A: Integrated the pinned-Zig layer build and hardware-independent validation into normal mise build/test gates.
+U: A
+A: Required agent-owned integrated GPU, generic PipeWire, reconnect, and contract-change live gates; bm2dx.exe feel remains operator-owned.
+U: A
+A: Limited PipeWire connection to the user-session default remote with exact node name selection.
+U: A
+A: Selected first-admitted process ownership through the generation; later producers receive busy.
+U: C
+A: Removed all capture inventory from doctor and made actual run diagnostics authoritative.
+U: A
+A: Approved GStreamer videotestsrc to BGRx pipewiresink as a live-test-only generic PipeWire producer.
+U: A
+A: Preserved replay of verified historical canonical recordings and corpus identities without preserving old live profile UX.
+U: A
+A: Confirmed the complete Q50 design summary as shared understanding and the implementation plan.
+U: 実装して。これを計画として、完了前にフレッシュレビューで計画と達成度を確認し、達成するまで継続すること
+A: Implemented the plan. Removed ordinary named profile/setup/calibration UX and Gamescope-specific PipeWire assumptions. Added explicit run backend selection, generic PipeWire acquisition, runtime-authored profile/normalizer documents and digests, common crop/scale normalization, recording identity documents, the Rust Vulkan DMA-BUF consumer, and the pinned-Zig vkroots C++ layer under native/vulkan-capture.
+A: Added protocol v2 two-stage producer admission before DMA-BUF allocation, one-buffer 10 Hz READY/ACK capture, source lifecycle generations, typed terminal failures, bounded timing summaries, private fixed socket lifecycle, and build/test integration.
+A: Live-tested generic GStreamer PipeWire BGRx MemFd sources at 640x360 and 800x450 across disappearance/reappearance, observing generation and identity changes. Live-tested Gamescope plus vkcube with obs-vkcapture concurrently, different dimensions, source end/reconnect, Scorepeek-only restart while the game continued, and a second competing Vulkan producer while the first capture stream continued.
+A: A fresh independent review found nine reachable issues: unsupported swapchain usage mutation, device-wide idle, exception escape, pre-admission GPU churn, erased terminal errors, non-coherent invalidation order, missing MemPtr offer, directory fsync regression, and old backend-specific messages. All were fixed. Delta review found four remaining lifecycle/UX issues; these were fixed by retaining queue synchronization resources until final swapchain lifecycle, resetting reconnect phase before the fence thread, falling back to original vkCreateDevice on preparation exceptions, and neutralizing remaining messages. Final delta review reported no important findings.
+A: Final validation succeeded: mise run check; cargo clippy --locked --workspace --all-targets -- -D warnings; pinned Zig Vulkan layer build/test; 464 scorepeek library tests and 256 binary tests within the complete suite; browser and fake/nested Wayland suites; and final mise run test in 87.79 seconds. A formatting-only first final-test attempt stopped at rustfmt, was fixed deterministically, and the complete suite was rerun successfully. Post-commit mise run build succeeded in the host-equivalent environment.
