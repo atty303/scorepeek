@@ -53,8 +53,12 @@ the user's default remote and requires exactly one exact `node.name` with
 CPU-mappable buffers. The Vulkan producer allocates capture resources only
 while Scorepeek is connected. Scorepeek requests at 10 Hz and imports one
 GPU-local DMA-BUF, then performs a fenced readback on an asynchronous worker.
-The image is not reused before ACK; there is no frame ring, catch-up queue, or
-external semaphore.
+CPU normalization also runs on a capture-owned worker before recognition. The
+image is not reused before ACK; there is no frame ring, catch-up queue, or
+external semaphore. A supported PipeWire contract change drains the current
+generation and readmits the same node as a new generation. Unsupported
+contracts, invalid crops, import failures, and other terminal capture failures
+finish diagnostics and terminate `scorepeek run` with an error.
 
 For every admitted generation, runtime creates a canonical capture-profile
 document from backend, selector, and actual source contract, plus a separate

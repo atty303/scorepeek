@@ -67,6 +67,16 @@ enum WorkerTerminal {
     Failed(String),
 }
 
+trait CaptureImage: Send {
+    fn readback(&mut self) -> Result<scorepeek_vulkan_capture::Readback, String>;
+}
+
+impl CaptureImage for ImportedImage {
+    fn readback(&mut self) -> Result<scorepeek_vulkan_capture::Readback, String> {
+        ImportedImage::readback(self)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VulkanSessionFailure {
     Disconnected,
@@ -198,8 +208,7 @@ impl Drop for VulkanListener {
 }
 
 pub struct VulkanSession {
-    width: u32,
-    height: u32,
+    contract: ImageContract,
     state: Arc<Mutex<SessionState>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -208,6 +217,17 @@ pub struct VulkanSession {
 
 impl VulkanSession {
     fn start(socket: OwnedFd, admission_listener: OwnedFd) -> Result<Self, String> {
+        Self::start_with_importer(socket, admission_listener, |contract, dma_buf| {
+            ImportedImage::import(contract, dma_buf)
+                .map(|image| Box::new(image) as Box<dyn CaptureImage>)
+        })
+    }
+
+    fn start_with_importer(
+        socket: OwnedFd,
+        admission_listener: OwnedFd,
+        importer: impl FnOnce(ImageContract, OwnedFd) -> Result<Box<dyn CaptureImage>, String>,
+    ) -> Result<Self, String> {
         if !wait_readable(&socket, Duration::from_secs(2))? {
             return Err("Vulkan producer admission timed out".to_owned());
         }
@@ -229,7 +249,7 @@ impl VulkanSession {
         let (contract, order, dma_buf) = receive_hello(&socket)?;
         let width = contract.width;
         let height = contract.height;
-        let imported = ImportedImage::import(contract, dma_buf)?;
+        let capture_image = importer(contract, dma_buf)?;
         send_packet(
             &socket,
             Packet {
@@ -247,7 +267,7 @@ impl VulkanSession {
                 run_worker(
                     socket,
                     admission_listener,
-                    imported,
+                    capture_image,
                     order,
                     width,
                     height,
@@ -257,8 +277,7 @@ impl VulkanSession {
             })
             .map_err(|error| format!("start Vulkan capture worker: {error}"))?;
         Ok(Self {
-            width,
-            height,
+            contract,
             state,
             stop,
             worker: Some(worker),
@@ -268,7 +287,12 @@ impl VulkanSession {
 
     #[must_use]
     pub const fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        (self.contract.width, self.contract.height)
+    }
+
+    #[must_use]
+    pub const fn contract(&self) -> ImageContract {
+        self.contract
     }
 
     pub fn take_latest(&mut self) -> Option<VulkanFrameData> {
@@ -337,7 +361,7 @@ impl Drop for VulkanSession {
 fn run_worker(
     socket: OwnedFd,
     admission_listener: OwnedFd,
-    mut imported: ImportedImage,
+    mut imported: Box<dyn CaptureImage>,
     order: VulkanPixelOrder,
     width: u32,
     height: u32,
@@ -479,6 +503,16 @@ fn receive_hello(socket: &OwnedFd) -> Result<(ImageContract, VulkanPixelOrder, O
     let mut control = RecvAncillaryBuffer::new(&mut control_space);
     let received = recvmsg(socket, &mut io, &mut control, RecvFlags::CMSG_CLOEXEC)
         .map_err(|error| format!("receive Vulkan hello: {error}"))?;
+    if received.bytes == PACKET_BYTES
+        && u32_at(&bytes, 0) == MAGIC
+        && u16_at(&bytes, 4) == VERSION
+        && u16_at(&bytes, 6) == ERROR
+    {
+        return Err(format!(
+            "Vulkan producer capture error {}",
+            i32::from_ne_bytes(bytes[88..92].try_into().expect("fixed slice"))
+        ));
+    }
     if received.bytes != HELLO_BYTES
         || u32_at(&bytes, 0) != MAGIC
         || u16_at(&bytes, 4) != VERSION
@@ -522,7 +556,9 @@ fn receive_hello(socket: &OwnedFd) -> Result<(ImageContract, VulkanPixelOrder, O
             width: u32_at(&bytes, 12),
             height: u32_at(&bytes, 16),
             vk_format,
+            drm_fourcc: u32_at(&bytes, 24),
             modifier: u64_at(&bytes, 40),
+            allocation_size: u64_at(&bytes, 48),
             plane_count,
             device_uuid,
             planes,
@@ -669,7 +705,22 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, sendmsg, socketpair};
+    use std::io::IoSlice;
+    use std::os::fd::AsFd as _;
     use std::os::unix::fs::PermissionsExt as _;
+
+    struct FakeImage;
+
+    impl CaptureImage for FakeImage {
+        fn readback(&mut self) -> Result<scorepeek_vulkan_capture::Readback, String> {
+            Ok(scorepeek_vulkan_capture::Readback {
+                bytes: vec![1; 8].into_boxed_slice(),
+                submit_ns: 1,
+                fence_ns: 2,
+            })
+        }
+    }
 
     #[test]
     fn packet_wire_size_and_offsets_match_layer_contract() {
@@ -693,6 +744,22 @@ mod tests {
     }
 
     #[test]
+    fn explicit_layer_manifest_is_valid_and_points_to_the_installed_library() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../native/vulkan-capture/layer/VkLayer_SCOREPEEK_capture.json"
+        ))
+        .unwrap();
+        assert_eq!(manifest["file_format_version"], "1.2.0");
+        assert_eq!(manifest["layer"]["name"], "VK_LAYER_SCOREPEEK_capture");
+        assert_eq!(manifest["layer"]["type"], "GLOBAL");
+        assert_eq!(
+            manifest["layer"]["library_path"],
+            "../../../lib/libscorepeek_vulkan_capture.so"
+        );
+        assert_eq!(manifest["layer"]["implementation_version"], "1");
+    }
+
+    #[test]
     fn disappearing_pre_admission_producer_is_not_an_incompatible_contract() {
         assert!(source_ended_during_handshake(
             "send Vulkan packet: Broken pipe (os error 32)"
@@ -706,6 +773,30 @@ mod tests {
     }
 
     #[test]
+    fn producer_error_before_hello_remains_typed() {
+        let (consumer, producer) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        send_packet(
+            &producer,
+            Packet {
+                message_type: ERROR,
+                status: 6,
+                ..Packet::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            receive_hello(&consumer).unwrap_err(),
+            "Vulkan producer capture error 6"
+        );
+    }
+
+    #[test]
     fn fixed_socket_is_private_and_recreated() {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("scorepeek/vulkan-capture.sock");
@@ -714,5 +805,116 @@ mod tests {
         assert_eq!(mode.mode() & 0o777, 0o600);
         drop(listener);
         assert!(!path.exists());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn hardware_independent_session_exercises_handshake_request_ready_and_ack() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let listener = VulkanListener::bind_at(root.path().join("capture.sock")).unwrap();
+        let admission_listener = dup(&listener.fd).unwrap();
+        let (consumer, producer) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let producer_thread = thread::spawn(move || {
+            send_packet(
+                &producer,
+                Packet {
+                    message_type: ADMIT,
+                    ..Packet::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                receive_packet(&producer, Duration::from_secs(1))
+                    .unwrap()
+                    .unwrap()
+                    .message_type,
+                ADMIT_ACK
+            );
+
+            let mut hello = [0_u8; HELLO_BYTES];
+            put(&mut hello, 0, &MAGIC.to_ne_bytes());
+            put(&mut hello, 4, &VERSION.to_ne_bytes());
+            put(&mut hello, 6, &HELLO.to_ne_bytes());
+            put(
+                &mut hello,
+                8,
+                &u32::try_from(HELLO_BYTES).unwrap().to_ne_bytes(),
+            );
+            put(&mut hello, 12, &2_u32.to_ne_bytes());
+            put(&mut hello, 16, &1_u32.to_ne_bytes());
+            put(&mut hello, 20, &44_u32.to_ne_bytes());
+            put(&mut hello, 24, &0x3432_5241_u32.to_ne_bytes());
+            put(&mut hello, 28, &1_u32.to_ne_bytes());
+            put(&mut hello, 48, &8_u64.to_ne_bytes());
+            put(&mut hello, 80, &8_u64.to_ne_bytes());
+            put(&mut hello, 88, &8_u64.to_ne_bytes());
+            let file = tempfile::tempfile().unwrap();
+            let rights = [file.as_fd()];
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+            let mut ancillary = SendAncillaryBuffer::new(&mut space);
+            assert!(ancillary.push(SendAncillaryMessage::ScmRights(&rights)));
+            assert_eq!(
+                sendmsg(
+                    &producer,
+                    &[IoSlice::new(&hello)],
+                    &mut ancillary,
+                    SendFlags::NOSIGNAL,
+                )
+                .unwrap(),
+                HELLO_BYTES
+            );
+            assert_eq!(
+                receive_packet(&producer, Duration::from_secs(1))
+                    .unwrap()
+                    .unwrap()
+                    .message_type,
+                HELLO_ACK
+            );
+            let request = receive_packet(&producer, Duration::from_secs(1))
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.message_type, REQUEST);
+            send_packet(
+                &producer,
+                Packet {
+                    message_type: READY,
+                    sequence: request.sequence,
+                    request_ns: request.request_ns,
+                    ..Packet::default()
+                },
+            )
+            .unwrap();
+            let ack = receive_packet(&producer, Duration::from_secs(1))
+                .unwrap()
+                .unwrap();
+            assert_eq!(ack.message_type, ACK);
+            assert_eq!(ack.sequence, request.sequence);
+        });
+
+        let mut session =
+            VulkanSession::start_with_importer(consumer, admission_listener, |contract, _| {
+                assert_eq!(contract.width, 2);
+                assert_eq!(contract.drm_fourcc, 0x3432_5241);
+                assert_eq!(contract.allocation_size, 8);
+                Ok(Box::new(FakeImage))
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let frame = loop {
+            if let Some(frame) = session.take_latest() {
+                break frame;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(frame.bytes.as_ref(), &[1; 8]);
+        drop(session);
+        producer_thread.join().unwrap();
     }
 }

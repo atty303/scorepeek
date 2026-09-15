@@ -25,10 +25,11 @@ pub use normalizer::{
     RationalCoordinate, UnboundCanonicalFrame, UnboundNormalizationError,
 };
 pub use receiver::{
-    CalibratedGamescopeLease, CalibratedSourceFrameEvidence, CalibratedVulkanLease,
-    GamescopeLeaseAdmissionFailure, ObservedFrame, UncalibratedFrame, UncalibratedMemoryType,
-    UncalibratedPipeWireReceiver, UncalibratedVideoContract, admit_gamescope_profile,
-    admit_runtime_profile, admit_vulkan_session, start_uncalibrated_gamescope_receiver,
+    AdmittedFrameNormalizer, CalibratedGamescopeLease, CalibratedSourceFrameEvidence,
+    CalibratedVulkanLease, GamescopeLeaseAdmissionFailure, ObservedFrame, UncalibratedFrame,
+    UncalibratedMemoryType, UncalibratedPipeWireReceiver, UncalibratedVideoContract,
+    admit_gamescope_profile, admit_runtime_profile, admit_vulkan_session,
+    start_uncalibrated_gamescope_receiver,
 };
 
 const MAX_REGISTRY_GLOBALS: u32 = 4_096;
@@ -77,6 +78,7 @@ pub enum CaptureErrorType {
     NegotiationTimedOut,
     FirstFrameTimedOut,
     UnsupportedFormat,
+    SourceContractChanged,
     UnsupportedMemoryType,
     FrameMalformed,
     StreamLost,
@@ -408,6 +410,7 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::NegotiationTimedOut => "PipeWire stream negotiation timed out",
             CaptureErrorType::FirstFrameTimedOut => "PipeWire first frame timed out",
             CaptureErrorType::UnsupportedFormat => "PipeWire stream format is unsupported",
+            CaptureErrorType::SourceContractChanged => "capture source contract changed",
             CaptureErrorType::UnsupportedMemoryType => "PipeWire stream memory type is unsupported",
             CaptureErrorType::FrameMalformed => "PipeWire frame is malformed",
             CaptureErrorType::StreamLost => "PipeWire stream was lost",

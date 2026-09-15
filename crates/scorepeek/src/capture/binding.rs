@@ -1,3 +1,4 @@
+use scorepeek_vulkan_capture::ImageContract;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -11,11 +12,13 @@ const LOCAL_BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v2";
 const MEASURED_BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v3";
 const MEASURED_PROFILE_SCHEMA: &str = "scorepeek-gamescope-capture-profile-v2";
 const RUNTIME_BINDING_SCHEMA: &str = "scorepeek-runtime-capture-binding-v1";
-const RUNTIME_PROFILE_SCHEMA: &str = "scorepeek-runtime-capture-profile-v1";
+const RUNTIME_PROFILE_SCHEMA_V1: &str = "scorepeek-runtime-capture-profile-v1";
+const RUNTIME_PROFILE_SCHEMA: &str = "scorepeek-runtime-capture-profile-v2";
 const PROFILE_SCHEMA: &str = "scorepeek-gamescope-capture-profile-v1";
 const NORMALIZER_SCHEMA: &str = "scorepeek-fractional-linear-normalizer-v1";
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
-const NORMALIZER_IMPLEMENTATION: &str = "scorepeek-fractional-linear-half-pixel-q11-v1";
+const LEGACY_NORMALIZER_IMPLEMENTATION: &str = "scorepeek-fractional-linear-half-pixel-q11-v1";
+const EDGE_CROP_NORMALIZER_IMPLEMENTATION: &str = "scorepeek-edge-crop-linear-half-pixel-q11-v2";
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024;
 const MAX_FRAME_BYTES: u64 = 128 * 1024 * 1024;
 const BGRX_BYTES_PER_PIXEL: u64 = 4;
@@ -154,7 +157,7 @@ pub enum RuntimeCaptureBackend {
     VulkanLayer,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EdgeCrop {
     pub left: u32,
     pub top: u32,
@@ -195,6 +198,41 @@ impl GamescopeProfileBinding {
         stride: u32,
         crop: EdgeCrop,
     ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
+        Self::author_runtime_inner(backend, selector, video, memory_type, stride, crop, None)
+    }
+
+    /// Authors a Vulkan runtime identity which retains the complete admitted HELLO contract.
+    ///
+    /// # Errors
+    /// Returns a typed profile or normalizer error when the admitted Vulkan contract or crop
+    /// cannot form the fixed canonical contract.
+    pub fn author_runtime_vulkan(
+        selector: String,
+        video: UncalibratedVideoContract,
+        stride: u32,
+        crop: EdgeCrop,
+        source: ImageContract,
+    ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
+        Self::author_runtime_inner(
+            RuntimeCaptureBackend::VulkanLayer,
+            selector,
+            video,
+            UncalibratedMemoryType::DmaBuf,
+            stride,
+            crop,
+            Some(VulkanSourceContractArtifact::from(source)),
+        )
+    }
+
+    fn author_runtime_inner(
+        backend: RuntimeCaptureBackend,
+        selector: String,
+        video: UncalibratedVideoContract,
+        memory_type: UncalibratedMemoryType,
+        stride: u32,
+        crop: EdgeCrop,
+        vulkan_source: Option<VulkanSourceContractArtifact>,
+    ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
         if selector.is_empty() || selector.len() > MAX_TOKEN_BYTES {
             return Err(GamescopeProfileBindingError::InvalidProfile);
         }
@@ -220,7 +258,7 @@ impl GamescopeProfileBinding {
             RationalCoordinate::new(i64::from(remaining_height), 1)
                 .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?,
         );
-        FractionalLinearGeometry::new(video.width, video.height, geometry)
+        FractionalLinearGeometry::new_edge_crop(video.width, video.height, geometry)
             .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)?;
         let capture_profile = RuntimeCaptureProfileArtifact {
             schema: RUNTIME_PROFILE_SCHEMA.to_owned(),
@@ -230,6 +268,7 @@ impl GamescopeProfileBinding {
             video,
             memory_type,
             stride,
+            vulkan_source,
         };
         let capture_profile_bytes = canonical_json(&capture_profile)
             .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
@@ -238,7 +277,7 @@ impl GamescopeProfileBinding {
             schema: NORMALIZER_SCHEMA.to_owned(),
             capture_profile_sha256: capture_profile_sha256.clone(),
             canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
-            implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
+            implementation: EDGE_CROP_NORMALIZER_IMPLEMENTATION.to_owned(),
             source: FractionalRectangleArtifact::from_rectangle(geometry),
         };
         let normalizer_bytes = canonical_json(&normalizer)
@@ -289,7 +328,7 @@ impl GamescopeProfileBinding {
                 schema: NORMALIZER_SCHEMA.to_owned(),
                 capture_profile_sha256: capture_profile_sha256.clone(),
                 canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
-                implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
+                implementation: LEGACY_NORMALIZER_IMPLEMENTATION.to_owned(),
                 source: FractionalRectangleArtifact::from_rectangle(input.geometry),
             },
         };
@@ -380,7 +419,7 @@ impl GamescopeProfileBinding {
                 schema: NORMALIZER_SCHEMA.to_owned(),
                 capture_profile_sha256: capture_profile_sha256.clone(),
                 canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
-                implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
+                implementation: LEGACY_NORMALIZER_IMPLEMENTATION.to_owned(),
                 source,
             },
             gamescope_arguments,
@@ -438,7 +477,13 @@ impl GamescopeProfileBinding {
                 .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
             let canonical = canonical_json(&artifact)
                 .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
-            if canonical != bytes || artifact.capture_profile.schema != RUNTIME_PROFILE_SCHEMA {
+            if canonical != bytes
+                || !matches!(
+                    artifact.capture_profile.schema.as_str(),
+                    RUNTIME_PROFILE_SCHEMA | RUNTIME_PROFILE_SCHEMA_V1
+                )
+                || !artifact.capture_profile.valid_backend_contract()
+            {
                 return Err(GamescopeProfileBindingError::NonCanonicalDocument);
             }
             let profile_bytes = canonical_json(&artifact.capture_profile)
@@ -733,6 +778,84 @@ struct RuntimeCaptureProfileArtifact {
     video: UncalibratedVideoContract,
     memory_type: UncalibratedMemoryType,
     stride: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vulkan_source: Option<VulkanSourceContractArtifact>,
+}
+
+impl RuntimeCaptureProfileArtifact {
+    fn valid_backend_contract(&self) -> bool {
+        match (self.schema.as_str(), self.backend, &self.vulkan_source) {
+            (RUNTIME_PROFILE_SCHEMA_V1, _, None)
+            | (RUNTIME_PROFILE_SCHEMA, RuntimeCaptureBackend::Pipewire, None) => true,
+            (RUNTIME_PROFILE_SCHEMA, RuntimeCaptureBackend::VulkanLayer, Some(source)) => {
+                source.valid()
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VulkanSourceContractArtifact {
+    vk_format: u32,
+    drm_fourcc: u32,
+    modifier: u64,
+    allocation_size: u64,
+    plane_count: u32,
+    device_uuid: [u8; 16],
+    planes: Vec<VulkanPlaneLayoutArtifact>,
+}
+
+impl VulkanSourceContractArtifact {
+    fn valid(&self) -> bool {
+        matches!(self.vk_format, 37 | 43 | 44 | 50)
+            && self.plane_count > 0
+            && usize::try_from(self.plane_count).ok() == Some(self.planes.len())
+            && self.planes.len() <= scorepeek_vulkan_capture::MAX_PLANES
+            && self.allocation_size > 0
+    }
+}
+
+impl From<ImageContract> for VulkanSourceContractArtifact {
+    fn from(source: ImageContract) -> Self {
+        Self {
+            vk_format: source.vk_format,
+            drm_fourcc: source.drm_fourcc,
+            modifier: source.modifier,
+            allocation_size: source.allocation_size,
+            plane_count: source.plane_count,
+            device_uuid: source.device_uuid,
+            planes: source
+                .planes
+                .into_iter()
+                .take(source.plane_count as usize)
+                .map(VulkanPlaneLayoutArtifact::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct VulkanPlaneLayoutArtifact {
+    offset: u64,
+    size: u64,
+    row_pitch: u64,
+    array_pitch: u64,
+    depth_pitch: u64,
+}
+
+impl From<scorepeek_vulkan_capture::PlaneLayout> for VulkanPlaneLayoutArtifact {
+    fn from(plane: scorepeek_vulkan_capture::PlaneLayout) -> Self {
+        Self {
+            offset: plane.offset,
+            size: plane.size,
+            row_pitch: plane.row_pitch,
+            array_pitch: plane.array_pitch,
+            depth_pitch: plane.depth_pitch,
+        }
+    }
 }
 
 impl MeasuredBindingArtifact {
@@ -1004,7 +1127,8 @@ impl NormalizerArtifact {
     fn validate(&self) -> Result<(), GamescopeProfileBindingError> {
         if self.schema != NORMALIZER_SCHEMA
             || self.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
-            || self.implementation != NORMALIZER_IMPLEMENTATION
+            || (self.implementation != LEGACY_NORMALIZER_IMPLEMENTATION
+                && self.implementation != EDGE_CROP_NORMALIZER_IMPLEMENTATION)
             || !valid_sha256(&self.capture_profile_sha256)
         {
             return Err(GamescopeProfileBindingError::InvalidNormalizer);
@@ -1017,8 +1141,16 @@ impl NormalizerArtifact {
         observed: &ObservedContract,
     ) -> Result<FractionalLinearGeometry, GamescopeProfileBindingError> {
         let rectangle = self.source.rectangle()?;
-        FractionalLinearGeometry::new(observed.video.width, observed.video.height, rectangle)
-            .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)
+        let geometry = if self.implementation == EDGE_CROP_NORMALIZER_IMPLEMENTATION {
+            FractionalLinearGeometry::new_edge_crop(
+                observed.video.width,
+                observed.video.height,
+                rectangle,
+            )
+        } else {
+            FractionalLinearGeometry::new(observed.video.width, observed.video.height, rectangle)
+        };
+        geometry.map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)
     }
 }
 
@@ -1180,7 +1312,7 @@ mod tests {
                 schema: NORMALIZER_SCHEMA.to_owned(),
                 capture_profile_sha256,
                 canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
-                implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
+                implementation: LEGACY_NORMALIZER_IMPLEMENTATION.to_owned(),
                 source: FractionalRectangleArtifact {
                     left: RationalArtifact {
                         numerator: 26,
@@ -1429,6 +1561,61 @@ mod tests {
         assert_eq!(
             authored.normalizer_sha256,
             binding.normalizer_artifact_sha256()
+        );
+    }
+
+    #[test]
+    fn vulkan_runtime_identity_retains_the_admitted_hello_contract() {
+        let video = video_contract();
+        let mut planes = [scorepeek_vulkan_capture::PlaneLayout::default(); 4];
+        planes[0] = scorepeek_vulkan_capture::PlaneLayout {
+            offset: 64,
+            size: 8_294_400,
+            row_pitch: 7_680,
+            array_pitch: 8_294_400,
+            depth_pitch: 8_294_400,
+        };
+        let source = ImageContract {
+            width: video.width,
+            height: video.height,
+            vk_format: 50,
+            drm_fourcc: 0x3432_5241,
+            modifier: 17,
+            allocation_size: 8_294_464,
+            plane_count: 1,
+            device_uuid: [7; 16],
+            planes,
+        };
+        let authored = GamescopeProfileBinding::author_runtime_vulkan(
+            "fixed-user-runtime-socket".to_owned(),
+            video,
+            video.width * 4,
+            EdgeCrop::default(),
+            source,
+        )
+        .unwrap();
+        let profile: serde_json::Value =
+            serde_json::from_slice(&authored.capture_profile_bytes).unwrap();
+        assert_eq!(profile["schema"], RUNTIME_PROFILE_SCHEMA);
+        assert_eq!(profile["vulkan_source"]["vk_format"], 50);
+        assert_eq!(profile["vulkan_source"]["drm_fourcc"], 0x3432_5241_u64);
+        assert_eq!(profile["vulkan_source"]["modifier"], 17);
+        assert_eq!(profile["vulkan_source"]["device_uuid"][0], 7);
+        assert_eq!(profile["vulkan_source"]["planes"][0]["row_pitch"], 7_680);
+
+        let mut changed = source;
+        changed.modifier = 18;
+        let changed = GamescopeProfileBinding::author_runtime_vulkan(
+            "fixed-user-runtime-socket".to_owned(),
+            video,
+            video.width * 4,
+            EdgeCrop::default(),
+            changed,
+        )
+        .unwrap();
+        assert_ne!(
+            authored.capture_profile_sha256,
+            changed.capture_profile_sha256
         );
     }
 

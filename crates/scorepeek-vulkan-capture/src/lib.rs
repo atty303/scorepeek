@@ -24,7 +24,9 @@ pub struct ImageContract {
     pub width: u32,
     pub height: u32,
     pub vk_format: u32,
+    pub drm_fourcc: u32,
     pub modifier: u64,
+    pub allocation_size: u64,
     pub plane_count: u32,
     pub device_uuid: [u8; vk::UUID_SIZE],
     pub planes: [PlaneLayout; MAX_PLANES],
@@ -132,7 +134,7 @@ impl ImportedImage {
             // SAFETY: the requested queue exists by device creation above.
             let queue = unsafe { device.get_device_queue(queue_family, 0) };
             create_resources(
-                entry,
+                entry.clone(),
                 instance.clone(),
                 physical,
                 device,
@@ -584,7 +586,9 @@ mod tests {
             width: 0,
             height: 1,
             vk_format: vk::Format::B8G8R8A8_UNORM.as_raw().cast_unsigned(),
+            drm_fourcc: 0,
             modifier: 0,
+            allocation_size: 0,
             plane_count: 1,
             device_uuid: [0; vk::UUID_SIZE],
             planes: [PlaneLayout::default(); MAX_PLANES],

@@ -1,6 +1,6 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::io::Cursor;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
@@ -33,6 +33,8 @@ const FRAME_COPY_INTERVAL_NS: u64 =
 const RECEIVER_QUIESCE_TIMEOUT: Duration = Duration::from_millis(100);
 const RECEIVER_IN_FLIGHT_GRACE: Duration = Duration::from_millis(25);
 const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+const PERFORMANCE_SUMMARY_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_PERFORMANCE_SAMPLES: usize = 600;
 static RECEIVER_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -179,6 +181,8 @@ struct ReceiverState {
     next_frame_copy_ns: Option<u64>,
     shutting_down: bool,
     terminal: Option<ReceiverTerminal>,
+    copy_latencies_ns: VecDeque<u64>,
+    dropped_timing_samples: u64,
 }
 
 impl ReceiverState {
@@ -201,6 +205,8 @@ impl ReceiverState {
             next_frame_copy_ns: None,
             shutting_down: false,
             terminal: None,
+            copy_latencies_ns: VecDeque::with_capacity(MAX_PERFORMANCE_SAMPLES),
+            dropped_timing_samples: 0,
         }
     }
 
@@ -258,7 +264,7 @@ impl ReceiverState {
         }
     }
 
-    fn validated_contract(&self, info: VideoInfoRaw) -> Result<UncalibratedVideoContract, ()> {
+    fn validated_contract(info: VideoInfoRaw) -> Result<UncalibratedVideoContract, ()> {
         let size = info.size();
         let framerate = info.framerate();
         let maximum_framerate = info.max_framerate();
@@ -293,9 +299,6 @@ impl ReceiverState {
             transfer_function: info.transfer_function(),
             color_primaries: info.color_primaries(),
         };
-        if self.received_frames > 0 && self.contract.is_some_and(|existing| existing != contract) {
-            return Err(());
-        }
         Ok(contract)
     }
 
@@ -312,8 +315,15 @@ impl ReceiverState {
         if self.terminal.is_some() {
             return;
         }
-        if let Ok(contract) = self.validated_contract(info) {
-            self.commit_contract(contract);
+        if let Ok(contract) = Self::validated_contract(info) {
+            if self.received_frames > 0
+                && self.contract.is_some_and(|existing| existing != contract)
+            {
+                let operation = self.reception_operation();
+                self.fail(CaptureErrorType::SourceContractChanged, operation);
+            } else {
+                self.commit_contract(contract);
+            }
         } else {
             let operation = self.reception_operation();
             self.fail(CaptureErrorType::UnsupportedFormat, operation);
@@ -373,6 +383,7 @@ impl ReceiverState {
             return;
         }
 
+        let copy_started = Instant::now();
         let required_bytes = required_bytes.expect("validated frame size");
         let previous = self.latest.take();
         let replaced_latest = previous.is_some();
@@ -412,6 +423,12 @@ impl ReceiverState {
             received_monotonic_ns: received_ns,
             bytes: owned,
         });
+        if self.copy_latencies_ns.len() == MAX_PERFORMANCE_SAMPLES {
+            self.copy_latencies_ns.pop_front();
+            self.dropped_timing_samples = self.dropped_timing_samples.saturating_add(1);
+        }
+        self.copy_latencies_ns
+            .push_back(u64::try_from(copy_started.elapsed().as_nanos()).unwrap_or(u64::MAX));
     }
 
     fn frame_copy_is_due(&mut self, received_ns: u64) -> bool {
@@ -449,6 +466,7 @@ pub struct UncalibratedPipeWireReceiver {
     negotiation_recorded: bool,
     first_frame_recorded: bool,
     terminal_recorded: Option<CaptureDiagnosticOperation>,
+    last_performance_summary: Instant,
 }
 
 enum ReceiverCommand {
@@ -648,7 +666,7 @@ pub struct CalibratedGamescopeLease {
     normalizer_artifact_sha256: Arc<str>,
     geometry: super::FractionalLinearGeometry,
     capture_generation: CaptureGeneration,
-    frame_domain: Rc<()>,
+    frame_domain: Arc<()>,
     normalization_success_recorded: bool,
     normalization_failure_recorded: bool,
 }
@@ -660,8 +678,10 @@ pub struct CalibratedVulkanLease {
     normalizer_artifact_sha256: Arc<str>,
     geometry: super::FractionalLinearGeometry,
     capture_generation: CaptureGeneration,
-    frame_domain: Rc<()>,
+    frame_domain: Arc<()>,
     diagnostic_sequence: u64,
+    normalization_success_recorded: bool,
+    normalization_failure_recorded: bool,
 }
 
 /// One raw receiver frame carrying the identities granted only by calibrated admission.
@@ -670,7 +690,7 @@ pub struct ObservedFrame {
     capture_generation: CaptureGeneration,
     capture_profile_sha256: Arc<str>,
     normalizer_artifact_sha256: Arc<str>,
-    frame_domain: Rc<()>,
+    frame_domain: Arc<()>,
 }
 
 /// Exact raw `BGRx` source bytes paired with a successfully normalized live frame.
@@ -679,6 +699,52 @@ pub struct ObservedFrame {
 /// replay the bound source-to-canonical transform without another game session.
 pub struct CalibratedSourceFrameEvidence {
     frame: UncalibratedFrame,
+}
+
+/// Sendable immutable normalization authority for one admitted capture generation.
+#[derive(Clone)]
+pub struct AdmittedFrameNormalizer {
+    geometry: super::FractionalLinearGeometry,
+    capture_generation: CaptureGeneration,
+    capture_profile_sha256: Arc<str>,
+    normalizer_artifact_sha256: Arc<str>,
+    frame_domain: Arc<()>,
+}
+
+impl AdmittedFrameNormalizer {
+    /// Normalizes one frame on a capture-owned worker without weakening generation identity.
+    ///
+    /// # Errors
+    /// Returns a typed capture error when the frame is from another generation or cannot be
+    /// normalized under this generation's admitted geometry.
+    pub fn normalize_with_source(
+        &self,
+        observed: ObservedFrame,
+    ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
+        if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain)
+            || observed.capture_generation != self.capture_generation
+            || observed.capture_profile_sha256 != self.capture_profile_sha256
+            || observed.normalizer_artifact_sha256 != self.normalizer_artifact_sha256
+        {
+            return Err(CaptureError::without_source(
+                CaptureErrorType::FrameLeaseMismatch,
+            ));
+        }
+        let normalized = self.geometry.normalize(&observed.frame).map_err(|_| {
+            CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed)
+        })?;
+        Ok((
+            NormalizedCanonicalFrame::bind(
+                normalized,
+                self.capture_generation,
+                Arc::clone(&self.capture_profile_sha256),
+                Arc::clone(&self.normalizer_artifact_sha256),
+            ),
+            CalibratedSourceFrameEvidence {
+                frame: observed.frame,
+            },
+        ))
+    }
 }
 
 impl CalibratedSourceFrameEvidence {
@@ -772,6 +838,46 @@ impl fmt::Debug for CalibratedGamescopeLease {
 
 impl CalibratedGamescopeLease {
     #[must_use]
+    pub fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
+        AdmittedFrameNormalizer {
+            geometry: self.geometry,
+            capture_generation: self.capture_generation,
+            capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
+            normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
+            frame_domain: Arc::clone(&self.frame_domain),
+        }
+    }
+
+    pub fn record_worker_normalization(
+        &mut self,
+        source_sequence: u64,
+        error_type: Option<CaptureErrorType>,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) {
+        let recorded = if error_type.is_some() {
+            &mut self.normalization_failure_recorded
+        } else {
+            &mut self.normalization_success_recorded
+        };
+        if std::mem::replace(recorded, true) {
+            return;
+        }
+        let now = self.receiver.elapsed_ms();
+        self.receiver.record_with_bounds(
+            sink,
+            CaptureDiagnosticOperation::FrameNormalization,
+            if error_type.is_some() {
+                CaptureDiagnosticStatus::Error
+            } else {
+                CaptureDiagnosticStatus::Success
+            },
+            error_type,
+            CaptureDiagnosticDetail::FrameNormalization { source_sequence },
+            (now, now),
+        );
+    }
+
+    #[must_use]
     pub fn capture_profile_sha256(&self) -> &str {
         &self.capture_profile_sha256
     }
@@ -796,7 +902,7 @@ impl CalibratedGamescopeLease {
                 capture_generation: self.capture_generation,
                 capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
                 normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
-                frame_domain: Rc::clone(&self.frame_domain),
+                frame_domain: Arc::clone(&self.frame_domain),
             })
     }
 
@@ -845,7 +951,7 @@ impl CalibratedGamescopeLease {
     ) -> Result<(NormalizedCanonicalFrame, ObservedFrame), CaptureError> {
         let started_ms = self.receiver.elapsed_ms();
         let source_sequence = observed.source_sequence();
-        let result = if !Rc::ptr_eq(&observed.frame_domain, &self.frame_domain) {
+        let result = if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain) {
             Err(CaptureErrorType::FrameLeaseMismatch)
         } else if observed.capture_generation != self.capture_generation {
             Err(CaptureErrorType::FrameGenerationMismatch)
@@ -927,6 +1033,47 @@ impl CalibratedGamescopeLease {
 
 impl CalibratedVulkanLease {
     #[must_use]
+    pub fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
+        AdmittedFrameNormalizer {
+            geometry: self.geometry,
+            capture_generation: self.capture_generation,
+            capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
+            normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
+            frame_domain: Arc::clone(&self.frame_domain),
+        }
+    }
+
+    pub fn record_worker_normalization(
+        &mut self,
+        source_sequence: u64,
+        error_type: Option<CaptureErrorType>,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) {
+        let recorded = if error_type.is_some() {
+            &mut self.normalization_failure_recorded
+        } else {
+            &mut self.normalization_success_recorded
+        };
+        if std::mem::replace(recorded, true) {
+            return;
+        }
+        sink.record(CaptureDiagnosticFact {
+            sequence: self.diagnostic_sequence,
+            monotonic_start_ms: 0,
+            monotonic_end_ms: 0,
+            operation: CaptureDiagnosticOperation::FrameNormalization,
+            status: if error_type.is_some() {
+                CaptureDiagnosticStatus::Error
+            } else {
+                CaptureDiagnosticStatus::Success
+            },
+            error_type,
+            detail: CaptureDiagnosticDetail::FrameNormalization { source_sequence },
+        });
+        self.diagnostic_sequence = self.diagnostic_sequence.saturating_add(1);
+    }
+
+    #[must_use]
     pub fn capture_profile_sha256(&self) -> &str {
         &self.capture_profile_sha256
     }
@@ -966,7 +1113,7 @@ impl CalibratedVulkanLease {
                 capture_generation: self.capture_generation,
                 capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
                 normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
-                frame_domain: Rc::clone(&self.frame_domain),
+                frame_domain: Arc::clone(&self.frame_domain),
             }
         })
     }
@@ -981,7 +1128,7 @@ impl CalibratedVulkanLease {
         observed: ObservedFrame,
         _sink: &mut impl CaptureDiagnosticSink,
     ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
-        if !Rc::ptr_eq(&observed.frame_domain, &self.frame_domain)
+        if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain)
             || observed.capture_generation != self.capture_generation
         {
             return Err(CaptureError::without_source(
@@ -1084,6 +1231,7 @@ pub fn admit_vulkan_session(
     capture_generation: CaptureGeneration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<(CalibratedVulkanLease, AuthoredGamescopeProfileBinding), CaptureError> {
+    let source_contract = session.contract();
     let (width, height) = session.dimensions();
     let video = UncalibratedVideoContract {
         width,
@@ -1100,13 +1248,12 @@ pub fn admit_vulkan_session(
         transfer_function: 0,
         color_primaries: 0,
     };
-    let authored = GamescopeProfileBinding::author_runtime(
-        RuntimeCaptureBackend::VulkanLayer,
+    let authored = GamescopeProfileBinding::author_runtime_vulkan(
         "fixed-user-runtime-socket".to_owned(),
         video,
-        UncalibratedMemoryType::DmaBuf,
         width.saturating_mul(4),
         crop,
+        source_contract,
     )
     .map_err(|_| CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed))?;
     let binding = GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256)
@@ -1127,8 +1274,10 @@ pub fn admit_vulkan_session(
             normalizer_artifact_sha256: Arc::from(binding.normalizer_artifact_sha256()),
             geometry: binding.geometry(),
             capture_generation,
-            frame_domain: Rc::new(()),
+            frame_domain: Arc::new(()),
             diagnostic_sequence: 2,
+            normalization_success_recorded: false,
+            normalization_failure_recorded: false,
         },
         authored,
     ))
@@ -1201,6 +1350,10 @@ impl UncalibratedPipeWireReceiver {
         };
         lease.poll(timeout.min(ITERATION_SLICE), sink)?;
         self.flush_observations(sink);
+        if self.last_performance_summary.elapsed() >= PERFORMANCE_SUMMARY_INTERVAL {
+            self.record_performance_summary(sink);
+            self.last_performance_summary = Instant::now();
+        }
         let terminal = self.state.borrow().terminal;
         if let Some(terminal) = terminal {
             self.record_terminal(terminal, CaptureDiagnosticStatus::Error, sink);
@@ -1246,6 +1399,7 @@ impl UncalibratedPipeWireReceiver {
             .take()
             .is_some_and(|worker| worker.shutdown().is_err());
         self.flush_observations(sink);
+        self.record_performance_summary(sink);
         let terminal = self.state.borrow().terminal;
         if let Some(terminal) = terminal {
             if terminal.operation == CaptureDiagnosticOperation::SourceLifetime {
@@ -1420,6 +1574,31 @@ impl UncalibratedPipeWireReceiver {
         }
     }
 
+    fn record_performance_summary(&mut self, sink: &mut impl CaptureDiagnosticSink) {
+        let detail = {
+            let state = self.state.borrow();
+            let mut samples = state.copy_latencies_ns.iter().copied().collect::<Vec<_>>();
+            samples.sort_unstable();
+            CaptureDiagnosticDetail::PerformanceSummary {
+                count: samples.len() as u64,
+                p50_ns: percentile(&samples, 50),
+                p95_ns: percentile(&samples, 95),
+                p99_ns: percentile(&samples, 99),
+                max_ns: samples.last().copied().unwrap_or(0),
+                dropped: state
+                    .dropped_timing_samples
+                    .saturating_add(state.overwritten_frames),
+            }
+        };
+        self.record(
+            sink,
+            CaptureDiagnosticOperation::SteadyReception,
+            CaptureDiagnosticStatus::Success,
+            None,
+            detail,
+        );
+    }
+
     fn record(
         &mut self,
         sink: &mut impl CaptureDiagnosticSink,
@@ -1487,6 +1666,14 @@ impl UncalibratedPipeWireReceiver {
     }
 }
 
+fn percentile(samples: &[u64], percentile: usize) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let index = (samples.len() - 1).saturating_mul(percentile).div_ceil(100);
+    samples[index.min(samples.len() - 1)]
+}
+
 /// Admits a started receiver only when its explicit session and negotiated contract match.
 ///
 /// Exactly one value-free admission fact is offered to the host sink. Sink absence or capacity does
@@ -1529,7 +1716,7 @@ pub fn admit_gamescope_profile(
         normalizer_artifact_sha256,
         geometry,
         capture_generation,
-        frame_domain: Rc::new(()),
+        frame_domain: Arc::new(()),
         normalization_success_recorded: false,
         normalization_failure_recorded: false,
     })
@@ -1676,6 +1863,7 @@ pub fn start_uncalibrated_gamescope_receiver(
         negotiation_recorded: false,
         first_frame_recorded: false,
         terminal_recorded: None,
+        last_performance_summary: Instant::now(),
     };
     wait_for_first_frame(receiver, timeout, sink)
 }
@@ -1902,7 +2090,14 @@ fn negotiate_format(
         if state.terminal.is_some() {
             return;
         }
-        if let Ok(contract) = state.validated_contract(info) {
+        if let Ok(contract) = ReceiverState::validated_contract(info) {
+            if state.received_frames > 0
+                && state.contract.is_some_and(|existing| existing != contract)
+            {
+                let operation = state.reception_operation();
+                state.fail(CaptureErrorType::SourceContractChanged, operation);
+                return;
+            }
             contract
         } else {
             let operation = state.reception_operation();
@@ -2133,6 +2328,7 @@ mod tests {
             negotiation_recorded: false,
             first_frame_recorded: false,
             terminal_recorded: None,
+            last_performance_summary: Instant::now(),
         }
     }
 
@@ -2225,7 +2421,7 @@ mod tests {
         assert_eq!(
             state.terminal,
             Some(ReceiverTerminal {
-                error_type: CaptureErrorType::UnsupportedFormat,
+                error_type: CaptureErrorType::SourceContractChanged,
                 operation: CaptureDiagnosticOperation::SteadyReception,
             })
         );
@@ -2560,7 +2756,7 @@ mod tests {
             let mut observed = admitted.take_latest_observed_frame().unwrap();
             match expected {
                 CaptureErrorType::FrameLeaseMismatch => {
-                    observed.frame_domain = Rc::new(());
+                    observed.frame_domain = Arc::new(());
                 }
                 CaptureErrorType::FrameGenerationMismatch => {
                     observed.capture_generation = CaptureGeneration::new(2).unwrap();
@@ -2667,7 +2863,7 @@ mod tests {
         caps.negotiate(changed);
         assert_eq!(
             caps.terminal.map(|terminal| terminal.error_type),
-            Some(CaptureErrorType::UnsupportedFormat)
+            Some(CaptureErrorType::SourceContractChanged)
         );
     }
 
@@ -2735,7 +2931,7 @@ mod tests {
         assert_eq!(
             drift.terminal,
             Some(ReceiverTerminal {
-                error_type: CaptureErrorType::UnsupportedFormat,
+                error_type: CaptureErrorType::SourceContractChanged,
                 operation: CaptureDiagnosticOperation::SteadyReception,
             })
         );
@@ -2792,6 +2988,28 @@ mod tests {
             fact.operation == CaptureDiagnosticOperation::SteadyReception
                 && fact.status == CaptureDiagnosticStatus::Error
                 && fact.error_type == Some(CaptureErrorType::StreamLost)
+        }));
+    }
+
+    #[test]
+    fn pipewire_shutdown_records_bounded_percentile_summary() {
+        let receiver = receiver_for_admission();
+        let mut facts = Facts::default();
+
+        receiver.shutdown(&mut facts).unwrap();
+
+        assert!(facts.0.iter().any(|fact| {
+            matches!(
+                fact.detail,
+                CaptureDiagnosticDetail::PerformanceSummary {
+                    count: 1,
+                    p50_ns: _,
+                    p95_ns: _,
+                    p99_ns: _,
+                    max_ns: _,
+                    dropped: 0,
+                }
+            )
         }));
     }
 

@@ -19,7 +19,9 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, BufWriter, Read as _, Write as _};
+#[cfg(test)]
+use std::io::BufWriter;
+use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -223,8 +225,6 @@ fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsSt
 #[allow(clippy::too_many_lines)]
 fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
     if let Some(result) = try_recording_simulation(args, bundle)
-        .or_else(|| try_live_session(args, bundle))
-        .or_else(|| try_capture_commands(args, bundle))
         .or_else(|| try_provisional_title_candidates(args))
         .or_else(|| try_integrated_context_crop(args))
         .or_else(|| try_integrated_context_observe(args, bundle))
@@ -550,6 +550,8 @@ fn print_registered_resource_gate_report(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn try_capture_commands(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     try_capture_result_recognition(args, bundle)
         .or_else(|| try_capture_field_observation(args, bundle))
@@ -560,6 +562,7 @@ fn try_capture_commands(args: &[OsString], bundle: &Path) -> Option<Result<(), S
         .or_else(|| try_capture_live_gate(args))
 }
 
+#[cfg(test)]
 const CAPTURE_HANDOFF_FLAGS: &[&str] = &[
     "--binding",
     "--binding-sha256",
@@ -573,6 +576,7 @@ const CAPTURE_HANDOFF_FLAGS: &[&str] = &[
     "--recording",
 ];
 
+#[cfg(test)]
 const CAPTURE_FIELD_OBSERVATION_FLAGS: &[&str] = &[
     "--binding",
     "--binding-sha256",
@@ -587,6 +591,7 @@ const CAPTURE_FIELD_OBSERVATION_FLAGS: &[&str] = &[
     "--recording",
 ];
 
+#[cfg(test)]
 const CAPTURE_RESULT_RECOGNITION_FLAGS: &[&str] = &[
     "--binding",
     "--binding-sha256",
@@ -602,6 +607,7 @@ const CAPTURE_RESULT_RECOGNITION_FLAGS: &[&str] = &[
     "--recognition-artifact",
 ];
 
+#[cfg(test)]
 const LIVE_SESSION_FLAGS: &[&str] = &[
     "--binding",
     "--binding-sha256",
@@ -1105,7 +1111,7 @@ fn run_routine_live_session(
                         }
                     }
                     RoutineCapture::VulkanLayer => capture_live::RuntimeCaptureInput::VulkanLayer {
-                        session: vulkan_session.take().expect("admitted Vulkan session"),
+                        session: Box::new(vulkan_session.take().expect("admitted Vulkan session")),
                         crop,
                     },
                 };
@@ -1127,6 +1133,10 @@ fn run_routine_live_session(
                     }
                     if let Some(identity) = emission.diagnostic_identity.as_ref() {
                         output.record_diagnostic("capture_generation_identity", identity, true);
+                    }
+                    if let Some(fact) = emission.diagnostic_capture_fact.as_ref() {
+                        output.record_diagnostic("capture", fact, true);
+                        return Ok(capture_live::LiveEventProcessingTiming::default());
                     }
                     let event = run_event_from_live_emission(emission)?;
                     if matches!(
@@ -1165,15 +1175,13 @@ fn run_routine_live_session(
                     return Err("live result output failed".to_owned());
                 }
                 if started {
+                    let stop_reason = report.stop_reason();
+                    let (outcome, readmit_same_node, fatal) =
+                        routine_session_disposition(stop_reason);
                     if matches!(capture, RoutineCapture::Pipewire { .. }) {
-                        lifetimes.admitted(node_id);
+                        lifetimes.generation_ended(node_id, readmit_same_node);
                     }
                     announced = None;
-                    let outcome = match report.stop_reason() {
-                        Some(capture_live::LiveSessionStopReason::RequestedSignal) => "stopped",
-                        Some(capture_live::LiveSessionStopReason::SourceEnded) => "source_ended",
-                        _ => "error",
-                    };
                     output.publish(&routine_output::RunEvent {
                         schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
                         kind: routine_output::RunEventKind::SessionFinished {
@@ -1202,7 +1210,17 @@ fn run_routine_live_session(
                                 .warning("canonical recording is partial and cannot be imported")?;
                         }
                     }
+                    if fatal {
+                        return Err(report
+                            .failure_detail()
+                            .unwrap_or("capture generation failed")
+                            .to_owned());
+                    }
                 } else {
+                    let startup_report = serde_json::to_value(&report).map_err(|error| {
+                        format!("capture startup report serialization failed: {error}")
+                    })?;
+                    output.record_diagnostic("capture_startup_failure", &startup_report, true);
                     if let Some(paths) = session_paths.as_ref()
                         && let Err(error) = paths.cleanup()
                     {
@@ -1238,6 +1256,19 @@ fn run_routine_live_session(
     })?;
     output.finish_diagnostics("cancel");
     Ok(())
+}
+
+fn routine_session_disposition(
+    reason: Option<capture_live::LiveSessionStopReason>,
+) -> (&'static str, bool, bool) {
+    match reason {
+        Some(capture_live::LiveSessionStopReason::RequestedSignal) => ("stopped", false, false),
+        Some(capture_live::LiveSessionStopReason::SourceEnded) => ("source_ended", false, false),
+        Some(capture_live::LiveSessionStopReason::SourceContractChanged) => {
+            ("source_ended", true, false)
+        }
+        Some(capture_live::LiveSessionStopReason::TerminalFailure) | None => ("error", false, true),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1282,11 +1313,14 @@ fn announce_watcher_state(
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn try_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = command_flag_values(args, "run", "gamescope", LIVE_SESSION_FLAGS)?;
     Some(run_live_session(&values, bundle, true))
 }
 
+#[cfg(test)]
 fn try_capture_result_recognition(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
@@ -1303,6 +1337,7 @@ fn try_capture_result_recognition(args: &[OsString], bundle: &Path) -> Option<Re
     ))
 }
 
+#[cfg(test)]
 fn try_capture_field_observation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
@@ -1312,6 +1347,7 @@ fn try_capture_field_observation(args: &[OsString], bundle: &Path) -> Option<Res
     Some(run_capture_field_observation(&values, bundle, None))
 }
 
+#[cfg(test)]
 fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
@@ -1321,6 +1357,7 @@ fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), Strin
     Some(run_capture_handoff(&values, true))
 }
 
+#[cfg(test)]
 fn try_capture_diagnostic_handoff(args: &[OsString]) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
@@ -1330,6 +1367,7 @@ fn try_capture_diagnostic_handoff(args: &[OsString]) -> Option<Result<(), String
     Some(run_capture_handoff(&values, false))
 }
 
+#[cfg(test)]
 fn capture_flag_values<'a>(
     args: &'a [OsString],
     command: &str,
@@ -1338,6 +1376,7 @@ fn capture_flag_values<'a>(
     command_flag_values(args, "capture", command, flags)
 }
 
+#[cfg(test)]
 fn command_flag_values<'a>(
     args: &'a [OsString],
     namespace: &str,
@@ -1357,6 +1396,7 @@ fn command_flag_values<'a>(
     Some(values)
 }
 
+#[cfg(test)]
 fn run_live_session(
     values: &[&OsStr],
     bundle_root: &Path,
@@ -1457,6 +1497,7 @@ fn execute_live_session(
                 .map_err(|error| format!("live result serialization failed: {error}"))?,
             authority_joint_evidence: None,
             diagnostic_identity: None,
+            diagnostic_capture_fact: None,
         })?;
     }
     let public_binding = descriptor.binding.clone();
@@ -1504,6 +1545,14 @@ fn execute_live_session(
                 })),
                 _ => None,
             };
+            let diagnostic_capture_fact = match event {
+                capture_live::GamescopeLiveSessionEvent::CaptureDiagnostic { fact } => {
+                    Some(serde_json::to_value(fact).map_err(|error| {
+                        format!("capture diagnostic serialization failed: {error}")
+                    })?)
+                }
+                _ => None,
+            };
             let authority_joint_evidence = if session_id.is_some() {
                 match &event {
                     capture_live::GamescopeLiveSessionEvent::Observation { output, .. } => {
@@ -1537,6 +1586,7 @@ fn execute_live_session(
                 value,
                 authority_joint_evidence,
                 diagnostic_identity,
+                diagnostic_capture_fact,
             })?;
             timing.add(capture_live::LiveEventProcessingTiming {
                 screen_resolver_us: None,
@@ -1555,6 +1605,7 @@ struct LiveSessionEmission {
     authority_joint_evidence:
         Option<recognition_live::screen_field_observer::JointEvidenceObservation>,
     diagnostic_identity: Option<serde_json::Value>,
+    diagnostic_capture_fact: Option<serde_json::Value>,
 }
 
 fn run_event_from_live_emission(
@@ -1706,6 +1757,20 @@ fn live_session_event_value(
             let mut value = serde_json::json!({
                 "schema": schema,
                 "event": "recording_finalizing",
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+            }
+            if let Some(capture_generation) = routine_generation {
+                value["capture_generation"] = capture_generation.into();
+            }
+            value
+        }
+        capture_live::GamescopeLiveSessionEvent::CaptureDiagnostic { fact } => {
+            let mut value = serde_json::json!({
+                "schema": "scorepeek-capture-diagnostic-v1",
+                "event": "capture_diagnostic",
+                "fact": fact,
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
@@ -1957,6 +2022,7 @@ fn song_presentation(
     })
 }
 
+#[cfg(test)]
 fn write_ndjson(output: &mut impl io::Write, value: &impl Serialize) -> Result<(), String> {
     serde_json::to_writer(&mut *output, value)
         .map_err(|error| format!("live result serialization failed: {error}"))?;
@@ -1966,6 +2032,7 @@ fn write_ndjson(output: &mut impl io::Write, value: &impl Serialize) -> Result<(
         .map_err(|error| format!("live result output failed: {error}"))
 }
 
+#[cfg(test)]
 fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), String> {
     let [
         binding,
@@ -2034,6 +2101,7 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
     }
 }
 
+#[cfg(test)]
 fn run_capture_field_observation(
     values: &[&OsStr],
     bundle_root: &Path,
@@ -2116,6 +2184,7 @@ fn run_capture_field_observation(
     })
 }
 
+#[cfg(test)]
 fn print_capture_handoff_report(
     report: &impl Serialize,
     succeeded: bool,
@@ -2188,6 +2257,7 @@ fn parse_diagnostic_recording_policy(
     }
 }
 
+#[cfg(test)]
 fn try_capture_canonical_frame(args: &[OsString]) -> Option<Result<(), String>> {
     let [
         capture,
@@ -2235,6 +2305,7 @@ fn try_capture_canonical_frame(args: &[OsString]) -> Option<Result<(), String>> 
         })
 }
 
+#[cfg(test)]
 fn try_capture_binding_admission(args: &[OsString]) -> Option<Result<(), String>> {
     let [
         capture,
@@ -2271,6 +2342,7 @@ fn try_capture_binding_admission(args: &[OsString]) -> Option<Result<(), String>
         })
 }
 
+#[cfg(test)]
 fn try_capture_live_gate(args: &[OsString]) -> Option<Result<(), String>> {
     match args {
         [capture, command, duration_flag, duration]
@@ -2346,6 +2418,7 @@ fn try_capture_live_gate(args: &[OsString]) -> Option<Result<(), String>> {
     }
 }
 
+#[cfg(test)]
 fn print_capture_gate_report(report: &capture_live::GamescopeLiveGateReport) -> Result<(), String> {
     println!(
         "{}",
@@ -3469,8 +3542,8 @@ mod tests {
         catalog_sync_error, command_flag_values, initialize_routine_model,
         live_session_event_value, optional_recognition_root, parse_diagnostic_recording_policy,
         parse_routine_run_options, prepare_live_diagnostic_root, publish_private_file,
-        publish_private_file_with, run_event_from_live_emission, run_startup_stage,
-        run_with_model_initializer,
+        publish_private_file_with, routine_session_disposition, run_command,
+        run_event_from_live_emission, run_startup_stage, run_with_model_initializer,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
@@ -3927,6 +4000,41 @@ mod tests {
     }
 
     #[test]
+    fn removed_gamescope_capture_commands_are_not_dispatched() {
+        for args in [
+            vec!["run", "gamescope"],
+            vec!["capture", "gamescope-live-gate", "--duration-ms", "100"],
+            vec![
+                "capture",
+                "gamescope-binding-admission-gate",
+                "--binding",
+                "/tmp/ignored",
+                "--binding-sha256",
+                "0",
+            ],
+        ] {
+            let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
+            assert!(run_command(&args, Path::new("/tmp/unused-model-bundle")).is_err());
+        }
+    }
+
+    #[test]
+    fn capture_terminal_failure_is_fatal_but_contract_change_is_readmitted() {
+        assert_eq!(
+            routine_session_disposition(Some(
+                crate::capture_live::LiveSessionStopReason::TerminalFailure
+            )),
+            ("error", false, true)
+        );
+        assert_eq!(
+            routine_session_disposition(Some(
+                crate::capture_live::LiveSessionStopReason::SourceContractChanged
+            )),
+            ("source_ended", true, false)
+        );
+    }
+
+    #[test]
     fn live_serializer_and_reducer_keep_one_recording_schema() {
         use crate::routine_output::{RoutineOutput, RunEvent};
         let mut output = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
@@ -4129,6 +4237,7 @@ mod tests {
             value,
             authority_joint_evidence: Some(authority.clone()),
             diagnostic_identity: None,
+            diagnostic_capture_fact: None,
         })
         .unwrap();
         let crate::routine_output::RunEventKind::FieldObservation { joint_evidence, .. } =

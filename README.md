@@ -146,6 +146,11 @@ as `VK_LAYER_PATH`; see [the layer guide](native/vulkan-capture/README.md).
 Scorepeek owns neither Gamescope nor the game lifecycle and reconnects to a
 new layer session after either side restarts.
 
+The Vulkan capture-profile document retains the admitted Vulkan format, DRM
+fourcc/modifier, allocation and plane layout, and device UUID in addition to
+the source dimensions. DMA-BUF readback and canonical CPU normalization stay
+off the game present thread.
+
 The peer PipeWire route consumes any exact raw-video node name on the user's
 default PipeWire remote. It accepts only progressive BGRx in a CPU-mappable
 buffer and does not use producer-private Gamescope properties:
@@ -165,6 +170,21 @@ scorepeek run --capture vulkan-layer --crop-left 8 --crop-top 4 --crop-right 8 -
 Old profile files are ignored and are neither migrated nor deleted. There is
 no automatic backend selection, source fallback, calibration chooser, or
 profile selection.
+
+The explicit live gates are separate from the hardware-independent test suite:
+
+```text
+mise run capture:pipewire:test:live
+mise run capture:vulkan:test:live
+```
+
+The PipeWire gate requires GStreamer with `videotestsrc` and `pipewiresink`.
+The Vulkan gate requires Gamescope, `vkcube`, and `obs-vkcapture`; it verifies
+layer coexistence and reconnects a still-running producer after restarting
+Scorepeek. Both gates require `SCOREPEEK_NUMERIC_MODEL_BUNDLE` to name the
+registered private numeric-model bundle; they install it only into an
+agent-owned temporary XDG data root. Neither dependency set is required by
+ordinary `mise run test`.
 
 Structured diagnostics are always retained. Add `--record` only to retain lossless canonical
 video. The video recording-memory limit defaults to 1024 MiB:

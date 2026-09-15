@@ -102,6 +102,8 @@ pub struct FractionalLinearGeometry {
     observed_width: u32,
     observed_height: u32,
     source: FractionalRectangle,
+    #[serde(skip)]
+    clamp_to_source_rectangle: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,7 +142,30 @@ impl FractionalLinearGeometry {
             observed_width,
             observed_height,
             source,
+            clamp_to_source_rectangle: false,
         })
+    }
+
+    /// Creates the integer edge-crop geometry used by runtime capture. Linear sampling is clamped
+    /// to the retained rectangle so excluded border pixels can never re-enter through filtering.
+    ///
+    /// # Errors
+    /// Returns an error unless all rectangle coordinates are integral and valid for the source.
+    pub fn new_edge_crop(
+        observed_width: u32,
+        observed_height: u32,
+        source: FractionalRectangle,
+    ) -> Result<Self, UnboundNormalizationError> {
+        if source.left.denominator != 1
+            || source.top.denominator != 1
+            || source.width.denominator != 1
+            || source.height.denominator != 1
+        {
+            return Err(UnboundNormalizationError::InvalidGeometry);
+        }
+        let mut geometry = Self::new(observed_width, observed_height, source)?;
+        geometry.clamp_to_source_rectangle = true;
+        Ok(geometry)
     }
 
     /// Applies the explicit linear transform without creating a profile-bound `CanonicalFrame`.
@@ -180,6 +205,7 @@ impl FractionalLinearGeometry {
             observed_width,
             observed_height,
             self.source,
+            self.clamp_to_source_rectangle,
         );
         Ok(UnboundCanonicalFrame {
             pixels: pixels.into_boxed_slice(),
@@ -217,10 +243,15 @@ impl FractionalLinearGeometry {
         {
             return Err(UnboundNormalizationError::FrameLengthMismatch);
         }
-        Ok(
-            normalize_bgrx(bytes, stride, observed_width, observed_height, self.source)
-                .into_boxed_slice(),
+        Ok(normalize_bgrx(
+            bytes,
+            stride,
+            observed_width,
+            observed_height,
+            self.source,
+            self.clamp_to_source_rectangle,
         )
+        .into_boxed_slice())
     }
 
     /// Applies the production transform only within one canonical rectangle.
@@ -269,6 +300,7 @@ impl FractionalLinearGeometry {
             observed_width,
             observed_height,
             self.source,
+            self.clamp_to_source_rectangle,
             region,
         )
         .into_boxed_slice())
@@ -435,6 +467,7 @@ fn normalize_bgrx(
     observed_width: usize,
     observed_height: usize,
     rectangle: FractionalRectangle,
+    clamp_to_source_rectangle: bool,
 ) -> Vec<u8> {
     if observed_width == CANONICAL_WIDTH
         && observed_height == CANONICAL_HEIGHT
@@ -455,17 +488,23 @@ fn normalize_bgrx(
         }
         return output;
     }
+    let horizontal_bounds =
+        sampling_bounds(rectangle.left, rectangle.width, clamp_to_source_rectangle);
+    let vertical_bounds =
+        sampling_bounds(rectangle.top, rectangle.height, clamp_to_source_rectangle);
     let horizontal = interpolation_axis(
         rectangle.left,
         rectangle.width,
         CANONICAL_WIDTH,
         observed_width,
+        horizontal_bounds,
     );
     let vertical = interpolation_axis(
         rectangle.top,
         rectangle.height,
         CANONICAL_HEIGHT,
         observed_height,
+        vertical_bounds,
     );
     let mut output = vec![0; CANONICAL_BYTES];
     for (target_y, &(source_y, vertical_weights)) in vertical.iter().enumerate() {
@@ -502,19 +541,26 @@ fn normalize_bgrx_region(
     observed_width: usize,
     observed_height: usize,
     rectangle: FractionalRectangle,
+    clamp_to_source_rectangle: bool,
     region: CanonicalRegion,
 ) -> Vec<u8> {
+    let horizontal_bounds =
+        sampling_bounds(rectangle.left, rectangle.width, clamp_to_source_rectangle);
+    let vertical_bounds =
+        sampling_bounds(rectangle.top, rectangle.height, clamp_to_source_rectangle);
     let horizontal = interpolation_axis(
         rectangle.left,
         rectangle.width,
         CANONICAL_WIDTH,
         observed_width,
+        horizontal_bounds,
     );
     let vertical = interpolation_axis(
         rectangle.top,
         rectangle.height,
         CANONICAL_HEIGHT,
         observed_height,
+        vertical_bounds,
     );
     let mut output = Vec::with_capacity(region.width as usize * region.height as usize * 3);
     for &(source_y, vertical_weights) in vertical
@@ -564,6 +610,7 @@ fn interpolation_axis(
     extent: RationalCoordinate,
     target_size: usize,
     source_size: usize,
+    bounds: Option<(usize, usize)>,
 ) -> Vec<(usize, [i32; 2])> {
     let start = start.as_f64();
     let extent = extent.as_f64();
@@ -577,17 +624,33 @@ fn interpolation_axis(
                 ((1.0 - fraction) * COEFFICIENT_SCALE).round_ties_even() as i32,
                 (fraction * COEFFICIENT_SCALE).round_ties_even() as i32,
             ];
+            let (minimum, maximum) = bounds.unwrap_or((0, source_size - 1));
             let Ok(base) = usize::try_from(base) else {
-                return (0, [2_048, 0]);
+                return (minimum, [2_048, 0]);
             };
-            let base = base.min(source_size - 1);
-            if base == source_size - 1 {
+            if base < minimum {
+                return (minimum, [2_048, 0]);
+            }
+            let base = base.min(maximum);
+            if base == maximum {
                 (base, [2_048, 0])
             } else {
                 (base, weights)
             }
         })
         .collect()
+}
+
+fn sampling_bounds(
+    start: RationalCoordinate,
+    extent: RationalCoordinate,
+    enabled: bool,
+) -> Option<(usize, usize)> {
+    enabled.then(|| {
+        let first = usize::try_from(start.numerator).expect("validated crop start fits usize");
+        let extent = usize::try_from(extent.numerator).expect("validated crop extent fits usize");
+        (first, first + extent - 1)
+    })
 }
 
 #[cfg(test)]
@@ -733,10 +796,20 @@ mod tests {
 
     #[test]
     fn gamescope_fit_coordinates_retain_fractional_sampling_phase() {
-        let horizontal =
-            interpolation_axis(rational(26, 3), rational(7_616, 3), CANONICAL_WIDTH, 2_556);
-        let vertical =
-            interpolation_axis(rational(0, 1), rational(1_428, 1), CANONICAL_HEIGHT, 1_428);
+        let horizontal = interpolation_axis(
+            rational(26, 3),
+            rational(7_616, 3),
+            CANONICAL_WIDTH,
+            2_556,
+            None,
+        );
+        let vertical = interpolation_axis(
+            rational(0, 1),
+            rational(1_428, 1),
+            CANONICAL_HEIGHT,
+            1_428,
+            None,
+        );
         assert_eq!(horizontal[0], (8, [353, 1_695]));
         assert_eq!(horizontal[CANONICAL_WIDTH - 1], (2_546, [1_696, 352]));
         assert_eq!(vertical[0], (0, [1_718, 330]));
@@ -818,8 +891,31 @@ mod tests {
         bgrx[..4].copy_from_slice(&[11, 22, 33, 0]);
         bgrx[4..8].copy_from_slice(&[101, 102, 103, 0]);
         bgrx[stride..stride + 4].copy_from_slice(&[201, 202, 203, 0]);
-        let pixels = normalize_bgrx(&bgrx, stride, 1_920, 1_080, geometry.source);
+        let pixels = normalize_bgrx(&bgrx, stride, 1_920, 1_080, geometry.source, false);
         assert_eq!(&pixels[..3], &[33, 22, 11]);
+    }
+
+    #[test]
+    fn edge_crop_never_samples_excluded_border_pixels() {
+        let geometry = FractionalLinearGeometry::new_edge_crop(
+            4,
+            2,
+            FractionalRectangle::new(
+                rational(1, 1),
+                rational(0, 1),
+                rational(2, 1),
+                rational(2, 1),
+            ),
+        )
+        .unwrap();
+        let mut bgrx = vec![0_u8; 4 * 2 * 4];
+        for row in bgrx.chunks_exact_mut(4 * 4) {
+            row[..4].copy_from_slice(&[255, 255, 255, 0]);
+            row[12..16].copy_from_slice(&[255, 255, 255, 0]);
+        }
+        let pixels = normalize_bgrx(&bgrx, 4 * 4, 4, 2, geometry.source, true);
+        assert_eq!(&pixels[..3], &[0, 0, 0]);
+        assert_eq!(&pixels[pixels.len() - 3..], &[0, 0, 0]);
     }
 
     #[test]

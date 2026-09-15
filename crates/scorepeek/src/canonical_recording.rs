@@ -45,6 +45,7 @@ impl RecordingMemoryLimit {
         Ok(Self { bytes })
     }
 
+    #[cfg(test)]
     pub fn default_limit() -> Self {
         Self::from_mib(DEFAULT_RECORDING_MEMORY_MIB)
             .expect("the registered recording memory default is valid")

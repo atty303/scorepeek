@@ -12,6 +12,12 @@ flush immediately, and sync on important transitions and short intervals. Persis
 degrades diagnostics only: the run continues, the in-memory ring remains available, and disk
 writing is not retried in that invocation.
 
+Capture lifecycle and error facts are written when they occur rather than being deferred until
+generation shutdown. Each backend also writes bounded rolling frame-timing summaries every 30
+seconds and at generation end with count, p50, p95, p99, maximum, and drop counters. Generation
+identity records contain both canonical capture/normalizer documents and their digests; public
+events continue to expose only the digests.
+
 `$XDG_RUNTIME_DIR/scorepeek/diagnostics.sock` is independent of public `events.sock`. An observer
 requests either live-only delivery or an explicit replay window before the server sends data.
 Live-only delivery starts with the first record produced after the request. A replay receives the

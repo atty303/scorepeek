@@ -213,6 +213,25 @@ struct DeviceState {
     std::vector<std::unique_ptr<SwapchainCapture>> captures;
 };
 
+std::mutex process_active_mutex;
+SwapchainCapture* process_active = nullptr;
+
+void clear_process_active(SwapchainCapture* capture) {
+    std::lock_guard lock(process_active_mutex);
+    if (process_active == capture) {
+        process_active = nullptr;
+    }
+}
+
+void select_process_active(SwapchainCapture* capture) {
+    std::lock_guard lock(process_active_mutex);
+    SwapchainCapture* previous = process_active;
+    process_active = capture;
+    if (previous != nullptr && previous != capture) {
+        previous->disable();
+    }
+}
+
 std::shared_ptr<DeviceState> get_device_state(const vkroots::VkDeviceDispatch& dispatch) {
     if (!dispatch.UserData.has()) {
         return {};
@@ -830,6 +849,7 @@ void SwapchainCapture::socket_loop() {
             reset_capture_resources(false);
         }
         if (!initialize_export_image()) {
+            record_error(0, SPVK_ERROR_IMPORT_FAILED);
             close_socket();
             phase_.store(CapturePhase::disabled, std::memory_order_release);
             return;
@@ -1086,6 +1106,7 @@ public:
         if (previous != nullptr) {
             previous->disable();
         }
+        select_process_active(pointer);
         } catch (...) {
             // Capture bookkeeping is optional after a successful application swapchain.
         }
@@ -1103,6 +1124,7 @@ public:
             SwapchainCapture* active = state->active.load(std::memory_order_acquire);
             if (active != nullptr && active->swapchain() == swapchain) {
                 state->active.store(nullptr, std::memory_order_release);
+                clear_process_active(active);
                 active->disable();
             }
             std::lock_guard lock(state->captures_mutex);
@@ -1159,6 +1181,7 @@ public:
             state->active.store(nullptr, std::memory_order_release);
             std::lock_guard lock(state->captures_mutex);
             for (const auto& capture : state->captures) {
+                clear_process_active(capture.get());
                 capture->disable();
             }
             state->captures.clear();

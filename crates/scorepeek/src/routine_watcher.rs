@@ -39,8 +39,8 @@ impl SourceLifetimes {
         }
     }
 
-    pub fn admitted(&mut self, node_id: u32) {
-        self.consumed_node = Some(node_id);
+    pub fn generation_ended(&mut self, node_id: u32, readmit_same_node: bool) {
+        self.consumed_node = (!readmit_same_node).then_some(node_id);
         self.next_generation = self.next_generation.saturating_add(1);
     }
 }
@@ -80,7 +80,7 @@ mod tests {
                 generation: 1
             }
         );
-        lifetimes.admitted(41);
+        lifetimes.generation_ended(41, false);
         assert_eq!(
             lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 41 }),
             WatchDecision::WaitConsumed
@@ -121,6 +121,27 @@ mod tests {
         assert_eq!(
             lifetimes.observe(GamescopeSourceSnapshot::Ambiguous { candidate_count: 2 }),
             WatchDecision::WaitAmbiguous
+        );
+    }
+
+    #[test]
+    fn contract_change_readmits_the_same_node_as_a_new_generation() {
+        let mut lifetimes = SourceLifetimes::new();
+        let snapshot = GamescopeSourceSnapshot::Unique { node_id: 41 };
+        assert_eq!(
+            lifetimes.observe(snapshot),
+            WatchDecision::Admit {
+                node_id: 41,
+                generation: 1,
+            }
+        );
+        lifetimes.generation_ended(41, true);
+        assert_eq!(
+            lifetimes.observe(snapshot),
+            WatchDecision::Admit {
+                node_id: 41,
+                generation: 2,
+            }
         );
     }
 }

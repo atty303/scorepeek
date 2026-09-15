@@ -1,17 +1,27 @@
+#![cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "legacy capture gates are compiled only as private test harness support"
+    )
+)]
+
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use scorepeek::capture::{
-    AuthoredGamescopeProfileBinding, CalibratedGamescopeLease, CalibratedSourceFrameEvidence,
-    CalibratedVulkanLease, CaptureDiagnosticDetail, CaptureDiagnosticFact,
-    CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType,
-    CaptureGeneration, EdgeCrop, GamescopeProfileBinding, NormalizedCanonicalFrame,
-    RuntimeCaptureBackend, acquire_gamescope_source, acquire_pipewire_source,
-    admit_gamescope_profile, admit_runtime_profile, admit_vulkan_session,
-    start_uncalibrated_gamescope_receiver,
+    AdmittedFrameNormalizer, AuthoredGamescopeProfileBinding, CalibratedGamescopeLease,
+    CalibratedSourceFrameEvidence, CalibratedVulkanLease, CaptureDiagnosticDetail,
+    CaptureDiagnosticFact, CaptureDiagnosticOperation, CaptureDiagnosticSink,
+    CaptureDiagnosticStatus, CaptureErrorType, CaptureGeneration, EdgeCrop,
+    GamescopeProfileBinding, NormalizedCanonicalFrame, RuntimeCaptureBackend,
+    acquire_gamescope_source, acquire_pipewire_source, admit_gamescope_profile,
+    admit_runtime_profile, admit_vulkan_session, start_uncalibrated_gamescope_receiver,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -148,6 +158,7 @@ enum FieldObservationGateErrorType {
 pub enum LiveSessionStopReason {
     RequestedSignal,
     SourceEnded,
+    SourceContractChanged,
     TerminalFailure,
 }
 
@@ -180,6 +191,9 @@ pub enum GamescopeLiveSessionEvent<'a> {
         snapshot: crate::canonical_recording::RecordingHealthSnapshot,
     },
     RecordingFinalizing,
+    CaptureDiagnostic {
+        fact: &'a CaptureDiagnosticFact,
+    },
     RawScreenObserved {
         semantic_episode_id: Option<u64>,
         sequence: u64,
@@ -653,7 +667,7 @@ pub enum RuntimeCaptureInput<'a> {
         expected_node_id: Option<u32>,
     },
     VulkanLayer {
-        session: scorepeek::capture::vulkan::VulkanSession,
+        session: Box<scorepeek::capture::vulkan::VulkanSession>,
         crop: EdgeCrop,
     },
 }
@@ -661,11 +675,6 @@ pub enum RuntimeCaptureInput<'a> {
 enum CaptureLease {
     Pipewire(CalibratedGamescopeLease),
     Vulkan(CalibratedVulkanLease),
-}
-
-enum CaptureObservedFrame {
-    Pipewire(scorepeek::capture::ObservedFrame),
-    Vulkan(scorepeek::capture::ObservedFrame),
 }
 
 impl CaptureLease {
@@ -683,33 +692,47 @@ impl CaptureLease {
         }
     }
 
-    fn take_latest_observed_frame(&mut self) -> Option<CaptureObservedFrame> {
+    fn take_latest_observed_frame(&mut self) -> Option<scorepeek::capture::ObservedFrame> {
         match self {
-            Self::Pipewire(lease) => lease
-                .take_latest_observed_frame()
-                .map(CaptureObservedFrame::Pipewire),
-            Self::Vulkan(lease) => lease
-                .take_latest_observed_frame()
-                .map(CaptureObservedFrame::Vulkan),
+            Self::Pipewire(lease) => lease.take_latest_observed_frame(),
+            Self::Vulkan(lease) => lease.take_latest_observed_frame(),
+        }
+    }
+
+    fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
+        match self {
+            Self::Pipewire(lease) => lease.frame_normalizer(),
+            Self::Vulkan(lease) => lease.frame_normalizer(),
+        }
+    }
+
+    fn record_worker_normalization(
+        &mut self,
+        source_sequence: u64,
+        error_type: Option<CaptureErrorType>,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) {
+        match self {
+            Self::Pipewire(lease) => {
+                lease.record_worker_normalization(source_sequence, error_type, sink);
+            }
+            Self::Vulkan(lease) => {
+                lease.record_worker_normalization(source_sequence, error_type, sink);
+            }
         }
     }
 
     fn normalize_observed_frame_with_source(
         &mut self,
-        observed: CaptureObservedFrame,
+        observed: scorepeek::capture::ObservedFrame,
         sink: &mut impl CaptureDiagnosticSink,
     ) -> Result<
         (NormalizedCanonicalFrame, CalibratedSourceFrameEvidence),
         scorepeek::capture::CaptureError,
     > {
-        match (self, observed) {
-            (Self::Pipewire(lease), CaptureObservedFrame::Pipewire(frame)) => {
-                lease.normalize_observed_frame_with_source(frame, sink)
-            }
-            (Self::Vulkan(lease), CaptureObservedFrame::Vulkan(frame)) => {
-                lease.normalize_observed_frame_with_source(frame, sink)
-            }
-            _ => unreachable!("observed frames cannot cross capture leases"),
+        match self {
+            Self::Pipewire(lease) => lease.normalize_observed_frame_with_source(observed, sink),
+            Self::Vulkan(lease) => lease.normalize_observed_frame_with_source(observed, sink),
         }
     }
 
@@ -773,17 +796,38 @@ impl EnqueueOutcomeCounters {
 #[derive(Clone, Default)]
 struct BoundedDiagnosticSink {
     facts: Vec<CaptureDiagnosticFact>,
+    pending: Vec<CaptureDiagnosticFact>,
     dropped: u64,
 }
 
 impl CaptureDiagnosticSink for BoundedDiagnosticSink {
     fn record(&mut self, fact: CaptureDiagnosticFact) {
+        if self.pending.len() < MAX_DIAGNOSTIC_FACTS {
+            self.pending.push(fact.clone());
+        }
         if self.facts.len() < MAX_DIAGNOSTIC_FACTS {
             self.facts.push(fact);
         } else {
             self.dropped = self.dropped.saturating_add(1);
         }
     }
+}
+
+impl BoundedDiagnosticSink {
+    fn take_pending(&mut self) -> Vec<CaptureDiagnosticFact> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+fn emit_capture_diagnostics(
+    sink: &mut BoundedDiagnosticSink,
+    emit: &mut LiveEventEmitter<'_>,
+) -> Result<(), FieldObservationGateErrorType> {
+    for fact in sink.take_pending() {
+        emit(GamescopeLiveSessionEvent::CaptureDiagnostic { fact: &fact })
+            .map_err(|_| FieldObservationGateErrorType::ResultOutputFailed)?;
+    }
+    Ok(())
 }
 
 pub fn parse_duration_ms(value: &OsStr) -> Result<u64, String> {
@@ -1137,6 +1181,13 @@ pub fn run_gamescope_live_session(
     })
     .err()
     .map(|_| (FieldObservationGateErrorType::ResultOutputFailed, None));
+    if !matches!(
+        terminal,
+        Some((FieldObservationGateErrorType::ResultOutputFailed, _))
+    ) && let Err(error) = emit_capture_diagnostics(&mut sink, emit)
+    {
+        terminal = Some((error, None));
+    }
     if terminal.is_none()
         && canonical_recording_start_failed
         && emit(GamescopeLiveSessionEvent::RecordingHealth {
@@ -1170,6 +1221,13 @@ pub fn run_gamescope_live_session(
         );
     }
     let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
+    if !matches!(
+        terminal,
+        Some((FieldObservationGateErrorType::ResultOutputFailed, _))
+    ) && let Err(error) = emit_capture_diagnostics(&mut sink, emit)
+    {
+        terminal = Some((error, None));
+    }
     let post_capture_started = Instant::now();
     if let Err(error) = shutdown {
         terminal.get_or_insert((
@@ -1190,13 +1248,7 @@ pub fn run_gamescope_live_session(
         minimum_event_sequence,
     );
     if let Some(error) = drain_error {
-        if matches!(
-            terminal,
-            Some((
-                FieldObservationGateErrorType::CaptureFailed,
-                Some(CaptureErrorType::SourceLost)
-            ))
-        ) {
+        if reconnectable_stop_reason(terminal).is_some() {
             terminal = Some(error);
         } else {
             terminal.get_or_insert(error);
@@ -1214,8 +1266,8 @@ pub fn run_gamescope_live_session(
                 .maximum_consecutive_field_observation_busy_skips,
         },
     );
-    let mut source_ended = is_reconnectable_source_end(terminal);
-    let finish_status = if terminal.is_none() || source_ended {
+    let mut reconnectable = reconnectable_stop_reason(terminal);
+    let finish_status = if terminal.is_none() || reconnectable.is_some() {
         DiagnosticRunStatus::Success
     } else {
         DiagnosticRunStatus::Error
@@ -1231,10 +1283,10 @@ pub fn run_gamescope_live_session(
             FieldObservationGateErrorType::FieldObserverFinishFailed,
             None,
         ));
-        source_ended = false;
+        reconnectable = None;
     }
     let artifact_outcome =
-        artifact_worker.map(|worker| worker.finish(terminal.is_none() || source_ended));
+        artifact_worker.map(|worker| worker.finish(terminal.is_none() || reconnectable.is_some()));
     let mut canonical_recording_completeness =
         canonical_recording_start_failed.then_some(CanonicalRecordingCompleteness::Partial);
     let mut canonical_recording_manifest_published = false;
@@ -1253,14 +1305,14 @@ pub fn run_gamescope_live_session(
         canonical_recording_completeness = Some(outcome.completeness);
         canonical_recording_manifest_published = outcome.manifest_published;
     }
-    let stop_reason = if source_ended {
-        LiveSessionStopReason::SourceEnded
+    let stop_reason = if let Some(reason) = reconnectable {
+        reason
     } else if terminal.is_none() {
         LiveSessionStopReason::RequestedSignal
     } else {
         LiveSessionStopReason::TerminalFailure
     };
-    let (error_type, capture_error_type) = if source_ended {
+    let (error_type, capture_error_type) = if reconnectable.is_some() {
         (None, terminal.and_then(|(_, capture)| capture).map(Some))
     } else {
         terminal.unzip()
@@ -1285,16 +1337,20 @@ pub fn run_gamescope_live_session(
     report
 }
 
-fn is_reconnectable_source_end(
+fn reconnectable_stop_reason(
     terminal: Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)>,
-) -> bool {
-    matches!(
-        terminal,
+) -> Option<LiveSessionStopReason> {
+    match terminal {
         Some((
             FieldObservationGateErrorType::CaptureFailed,
-            Some(CaptureErrorType::SourceLost | CaptureErrorType::StreamLost)
-        ))
-    )
+            Some(CaptureErrorType::SourceLost | CaptureErrorType::StreamLost),
+        )) => Some(LiveSessionStopReason::SourceEnded),
+        Some((
+            FieldObservationGateErrorType::CaptureFailed,
+            Some(CaptureErrorType::SourceContractChanged),
+        )) => Some(LiveSessionStopReason::SourceContractChanged),
+        _ => None,
+    }
 }
 
 struct StartedFieldObservationGate {
@@ -1559,7 +1615,7 @@ fn start_runtime_capture(
             })
         }
         RuntimeCaptureInput::VulkanLayer { session, crop } => {
-            admit_vulkan_session(session, crop, generation, sink)
+            admit_vulkan_session(*session, crop, generation, sink)
                 .map(|(lease, authored)| (CaptureLease::Vulkan(lease), Some(authored)))
                 .map_err(|error| {
                     (
@@ -1697,10 +1753,15 @@ fn offer_field_observation_frames(
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     sink: &mut BoundedDiagnosticSink,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let normalizer = match NormalizationWorker::start(lease.frame_normalizer()) {
+        Ok(worker) => worker,
+        Err(error) => return Some(error),
+    };
     let mut source = GamescopeCanonicalFrameSource {
         lease,
         counters,
         sink,
+        normalizer,
     };
     let started = Instant::now();
     loop {
@@ -1803,10 +1864,15 @@ fn offer_live_field_observation_frames(
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let mut cadence = RecognitionCadence::default();
     let mut episodes = TimelineDriver::default();
+    let normalizer = match NormalizationWorker::start(lease.frame_normalizer()) {
+        Ok(worker) => worker,
+        Err(error) => return Some(error),
+    };
     let mut source = GamescopeCanonicalFrameSource {
         lease,
         counters,
         sink,
+        normalizer,
     };
     let mut terminal = None;
     let mut semantic_close_failed = false;
@@ -1846,7 +1912,12 @@ fn offer_live_field_observation_frames(
             }
             last_recording_health = Some(snapshot);
         }
-        let frame = match source.next_frame(LIVE_SESSION_POLL_INTERVAL) {
+        let next_frame = source.next_frame(LIVE_SESSION_POLL_INTERVAL);
+        if let Err(error) = emit_capture_diagnostics(source.sink, emit) {
+            terminal = Some((error, None));
+            break 'capture;
+        }
+        let frame = match next_frame {
             Ok(frame) => frame,
             Err(error) => {
                 terminal = Some(error);
@@ -2092,6 +2163,106 @@ struct GamescopeCanonicalFrameSource<'a> {
     lease: &'a mut CaptureLease,
     counters: &'a mut FieldObservationCounters,
     sink: &'a mut BoundedDiagnosticSink,
+    normalizer: NormalizationWorker,
+}
+
+type NormalizationResult = Result<
+    (NormalizedCanonicalFrame, CalibratedSourceFrameEvidence),
+    scorepeek::capture::CaptureError,
+>;
+
+struct NormalizationCompletion {
+    source_sequence: u64,
+    result: NormalizationResult,
+}
+
+struct NormalizationWorker {
+    input: Option<SyncSender<scorepeek::capture::ObservedFrame>>,
+    output: Receiver<NormalizationCompletion>,
+    worker: Option<JoinHandle<()>>,
+    pending: bool,
+}
+
+impl NormalizationWorker {
+    fn start(
+        normalizer: AdmittedFrameNormalizer,
+    ) -> Result<Self, (FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+        let (input, frames) = mpsc::sync_channel::<scorepeek::capture::ObservedFrame>(1);
+        let (results, output) = mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name("scorepeek-capture-normalizer".to_owned())
+            .spawn(move || {
+                while let Ok(frame) = frames.recv() {
+                    let source_sequence = frame.source_sequence();
+                    if results
+                        .send(NormalizationCompletion {
+                            source_sequence,
+                            result: normalizer.normalize_with_source(frame),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|_| {
+                (
+                    FieldObservationGateErrorType::NormalizationFailed,
+                    Some(CaptureErrorType::ReceiverFailed),
+                )
+            })?;
+        Ok(Self {
+            input: Some(input),
+            output,
+            worker: Some(worker),
+            pending: false,
+        })
+    }
+
+    fn take_ready(&mut self) -> Option<NormalizationCompletion> {
+        match self.output.try_recv() {
+            Ok(result) => {
+                self.pending = false;
+                Some(result)
+            }
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
+        }
+    }
+
+    fn submit(&mut self, frame: scorepeek::capture::ObservedFrame) -> Result<(), ()> {
+        if self.pending {
+            return Err(());
+        }
+        self.input
+            .as_ref()
+            .ok_or(())?
+            .try_send(frame)
+            .map_err(|_| ())?;
+        self.pending = true;
+        Ok(())
+    }
+
+    fn wait_ready(&mut self, timeout: Duration) -> Option<NormalizationCompletion> {
+        if !self.pending {
+            return None;
+        }
+        match self.output.recv_timeout(timeout) {
+            Ok(result) => {
+                self.pending = false;
+                Some(result)
+            }
+            Err(_) => None,
+        }
+    }
+}
+
+impl Drop for NormalizationWorker {
+    fn drop(&mut self) {
+        self.input.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
@@ -2101,23 +2272,67 @@ impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
         &mut self,
         maximum_wait: Duration,
     ) -> Result<Option<BoundCanonicalFrame>, Self::Error> {
-        if let Some(observed) = self.lease.take_latest_observed_frame() {
-            self.counters.observed_frames = self.counters.observed_frames.saturating_add(1);
-            let (normalized, source) = self
-                .lease
-                .normalize_observed_frame_with_source(observed, self.sink)
-                .map_err(|error| {
-                    (
-                        FieldObservationGateErrorType::NormalizationFailed,
-                        Some(error.error_type()),
-                    )
-                })?;
+        if let Some(completion) = self.normalizer.take_ready() {
+            let error_type = completion
+                .result
+                .as_ref()
+                .err()
+                .map(scorepeek::capture::CaptureError::error_type);
+            self.lease.record_worker_normalization(
+                completion.source_sequence,
+                error_type,
+                self.sink,
+            );
+            let (normalized, source) = completion.result.map_err(|error| {
+                (
+                    FieldObservationGateErrorType::NormalizationFailed,
+                    Some(error.error_type()),
+                )
+            })?;
             self.counters.normalized_frames = self.counters.normalized_frames.saturating_add(1);
             return Ok(Some(BoundCanonicalFrame::from_normalized_with_source(
                 normalized, source,
             )));
         }
-        self.lease.poll(maximum_wait, self.sink).map_err(|error| {
+        if !self.normalizer.pending
+            && let Some(observed) = self.lease.take_latest_observed_frame()
+        {
+            self.counters.observed_frames = self.counters.observed_frames.saturating_add(1);
+            self.normalizer.submit(observed).map_err(|()| {
+                (
+                    FieldObservationGateErrorType::NormalizationFailed,
+                    Some(CaptureErrorType::ReceiverFailed),
+                )
+            })?;
+        }
+        if let Some(completion) = self.normalizer.wait_ready(maximum_wait) {
+            let error_type = completion
+                .result
+                .as_ref()
+                .err()
+                .map(scorepeek::capture::CaptureError::error_type);
+            self.lease.record_worker_normalization(
+                completion.source_sequence,
+                error_type,
+                self.sink,
+            );
+            let (normalized, source) = completion.result.map_err(|error| {
+                (
+                    FieldObservationGateErrorType::NormalizationFailed,
+                    Some(error.error_type()),
+                )
+            })?;
+            self.counters.normalized_frames = self.counters.normalized_frames.saturating_add(1);
+            return Ok(Some(BoundCanonicalFrame::from_normalized_with_source(
+                normalized, source,
+            )));
+        }
+        let poll_timeout = if self.normalizer.pending {
+            Duration::ZERO
+        } else {
+            maximum_wait
+        };
+        self.lease.poll(poll_timeout, self.sink).map_err(|error| {
             (
                 FieldObservationGateErrorType::CaptureFailed,
                 Some(error.error_type()),
@@ -3377,31 +3592,44 @@ mod tests {
         FieldObservationFinishOutcomes, FieldObservationGateErrorType, GamescopeLiveGateReport,
         LifecycleGateErrorType, LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS,
         RecognitionArtifactFinishOutcome, RecognitionArtifactFinishStatus,
-        field_observation_report, field_resource_error, field_start_error,
-        is_reconnectable_source_end, lifecycle_error_type, parse_consumer_interval_ms,
-        parse_duration_ms, parse_lifecycle_runs, process_resource_snapshot, read_binding,
-        recognition_artifact_error, result_evidence_error, run_gamescope_binding_admission_gate,
+        field_observation_report, field_resource_error, field_start_error, lifecycle_error_type,
+        parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
+        process_resource_snapshot, read_binding, recognition_artifact_error,
+        reconnectable_stop_reason, result_evidence_error, run_gamescope_binding_admission_gate,
         run_gamescope_canonical_frame_gate, run_gamescope_diagnostic_handoff_gate,
         run_gamescope_recognition_handoff_gate, summarize_run,
     };
 
     #[test]
-    fn only_transport_disappearance_is_a_reconnectable_source_end() {
+    fn transport_disappearance_and_contract_change_are_reconnectable() {
         for error in [CaptureErrorType::SourceLost, CaptureErrorType::StreamLost] {
-            assert!(is_reconnectable_source_end(Some((
-                FieldObservationGateErrorType::CaptureFailed,
-                Some(error),
-            ))));
+            assert_eq!(
+                reconnectable_stop_reason(Some((
+                    FieldObservationGateErrorType::CaptureFailed,
+                    Some(error),
+                ))),
+                Some(super::LiveSessionStopReason::SourceEnded)
+            );
         }
+        assert_eq!(
+            reconnectable_stop_reason(Some((
+                FieldObservationGateErrorType::CaptureFailed,
+                Some(CaptureErrorType::SourceContractChanged),
+            ))),
+            Some(super::LiveSessionStopReason::SourceContractChanged)
+        );
         for error in [
             CaptureErrorType::UnsupportedFormat,
             CaptureErrorType::UnsupportedMemoryType,
             CaptureErrorType::ReceiverFailed,
         ] {
-            assert!(!is_reconnectable_source_end(Some((
-                FieldObservationGateErrorType::CaptureFailed,
-                Some(error),
-            ))));
+            assert!(
+                reconnectable_stop_reason(Some((
+                    FieldObservationGateErrorType::CaptureFailed,
+                    Some(error),
+                )))
+                .is_none()
+            );
         }
     }
 
@@ -3770,6 +3998,9 @@ mod tests {
         }
         assert_eq!(sink.facts.len(), MAX_DIAGNOSTIC_FACTS);
         assert_eq!(sink.dropped, 1);
+        assert_eq!(sink.take_pending().len(), MAX_DIAGNOSTIC_FACTS);
+        assert!(sink.take_pending().is_empty());
+        assert_eq!(sink.facts.len(), MAX_DIAGNOSTIC_FACTS);
     }
 
     #[test]
