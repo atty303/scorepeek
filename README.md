@@ -146,13 +146,17 @@ as `VK_LAYER_PATH`; see [the layer guide](native/vulkan-capture/README.md).
 Scorepeek owns neither Gamescope nor the game lifecycle and reconnects to a
 new layer session after either side restarts.
 
+When the game runs inside Pressure Vessel, expose the fixed socket directory with
+`PRESSURE_VESSEL_FILESYSTEMS_RW="$XDG_RUNTIME_DIR/scorepeek"` on the `umu-run`
+environment.
+
 The Vulkan capture-profile document retains the admitted Vulkan format, DRM
 fourcc/modifier, allocation and plane layout, and device UUID in addition to
 the source dimensions. DMA-BUF readback and canonical CPU normalization stay
-off the game present thread. The layer requires swapchain-maintenance present
-fences so session cleanup can prove the presentation engine has released its
-local chaining semaphore; unsupported devices keep capture disabled without
-changing the game's device-creation result.
+off the game present thread. The layer uses an application's existing
+swapchain-maintenance present fence when supplied, or adds its own otherwise, so session cleanup
+can prove the presentation engine has released its local chaining semaphore. Unsupported devices
+keep capture disabled without changing the game's device-creation result.
 
 The peer PipeWire route consumes any exact raw-video node name on the user's
 default PipeWire remote. It accepts only progressive BGRx in a CPU-mappable

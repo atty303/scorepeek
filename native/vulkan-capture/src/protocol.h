@@ -9,7 +9,7 @@ extern "C" {
 
 enum {
     SPVK_MAGIC = 0x4b565053u,
-    SPVK_VERSION = 3u,
+    SPVK_VERSION = 4u,
     SPVK_MAX_PLANES = 4u,
 };
 
@@ -22,6 +22,7 @@ typedef enum SpvkMessageType {
     SPVK_MESSAGE_ERROR = 6,
     SPVK_MESSAGE_ADMIT = 7,
     SPVK_MESSAGE_ADMIT_ACK = 8,
+    SPVK_MESSAGE_STATUS = 9,
 } SpvkMessageType;
 
 typedef enum SpvkErrorType {

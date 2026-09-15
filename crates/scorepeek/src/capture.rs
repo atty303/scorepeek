@@ -160,6 +160,18 @@ pub enum CaptureDiagnosticDetail {
         max_ns: u64,
         dropped: u64,
     },
+    VulkanPerformanceSummary {
+        count: u64,
+        p50_ns: u64,
+        p95_ns: u64,
+        p99_ns: u64,
+        max_ns: u64,
+        dropped: u64,
+        requests: u64,
+        captures: u64,
+        busy_drops: u64,
+        coalesced_drops: u64,
+    },
     VulkanFailure {
         category: &'static str,
         producer_status: Option<i32>,

@@ -55,9 +55,12 @@ while Scorepeek is connected. Scorepeek requests at 10 Hz and imports one
 GPU-local DMA-BUF, then performs a fenced readback on an asynchronous worker.
 CPU normalization also runs on a capture-owned worker before recognition. The
 image is not reused before ACK; there is no frame ring, catch-up queue, or
-external semaphore. A swapchain-maintenance per-present fence proves that the
+external semaphore. A swapchain-maintenance present fence proves that the
 presentation engine has released the layer's local chaining semaphore before
-disconnect cleanup destroys it. A supported PipeWire contract change drains the current
+disconnect cleanup destroys it. The layer borrows an application-owned present fence when one is
+already attached and tracks its reset or destruction without taking ownership; externally shareable
+or imported fences fail capture because another handle can replace their payload. Otherwise the layer adds and
+owns the fence. A supported PipeWire contract change drains the current
 generation and readmits the same node as a new generation. Unsupported
 contracts, invalid crops, import failures, and other terminal capture failures
 finish diagnostics and terminate `scorepeek run` with an error.

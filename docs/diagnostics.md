@@ -14,7 +14,9 @@ writing is not retried in that invocation.
 
 Capture lifecycle and error facts are written when they occur rather than being deferred until
 generation shutdown. Each backend also writes bounded rolling frame-timing summaries every 30
-seconds and at generation end with count, p50, p95, p99, maximum, and drop counters. Generation
+seconds and at generation end with count, p50, p95, p99, maximum, and drop counters. Vulkan
+summaries additionally retain producer request, capture, busy-drop, and coalesced-drop counters,
+including before the first completed frame. Generation
 identity records contain both canonical capture/normalizer documents and their digests; public
 events continue to expose only the digests.
 

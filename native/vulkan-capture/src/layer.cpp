@@ -20,6 +20,7 @@
 #include <sys/un.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -45,6 +46,22 @@ bool supported_format(VkFormat format) {
         format == VK_FORMAT_B8G8R8A8_SRGB ||
         format == VK_FORMAT_R8G8B8A8_UNORM ||
         format == VK_FORMAT_R8G8B8A8_SRGB;
+}
+
+bool present_operations_enqueued(VkResult result) {
+    switch (result) {
+    case VK_SUCCESS:
+    case VK_SUBOPTIMAL_KHR:
+    case VK_ERROR_OUT_OF_DATE_KHR:
+    case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
+    case VK_ERROR_SURFACE_LOST_KHR:
+#ifdef VK_EXT_present_timing
+    case VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT:
+#endif
+        return true;
+    default:
+        return false;
+    }
 }
 
 uint32_t drm_format(VkFormat format) {
@@ -128,6 +145,7 @@ public:
         uint32_t image_index,
         const VkPresentInfoKHR* present_info);
     void disable();
+    void retire_application_fences(uint32_t fence_count, const VkFence* fences);
 
     VkSwapchainKHR swapchain() const { return swapchain_; }
 
@@ -136,6 +154,7 @@ private:
     bool initialize_queue(const vkroots::VkQueueDispatch& dispatch, VkQueue queue);
     bool send_hello(int socket_fd);
     bool send_packet(const SpvkPacket& packet);
+    bool send_status(uint64_t sequence);
     void socket_loop();
     void fence_loop();
     void close_socket();
@@ -165,6 +184,7 @@ private:
     VkQueue queue_ = VK_NULL_HANDLE;
     uint32_t queue_family_ = UINT32_MAX;
     bool first_export_ = true;
+    VkFence application_present_fence_ = VK_NULL_HANDLE;
 
     std::atomic<CapturePhase> phase_{CapturePhase::disconnected};
     std::atomic<bool> stop_{false};
@@ -209,6 +229,9 @@ struct DeviceState {
     std::atomic<SwapchainCapture*> active{nullptr};
     std::mutex captures_mutex;
     std::vector<std::unique_ptr<SwapchainCapture>> captures;
+    std::mutex external_fences_mutex;
+    std::unordered_set<VkFence> external_fences;
+    std::atomic<bool> external_fence_tracking_failed{false};
 };
 
 std::mutex process_active_mutex;
@@ -274,8 +297,13 @@ void SwapchainCapture::reset_capture_resources() {
         fence_ != VK_NULL_HANDLE) {
         dispatch->WaitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
     }
-    if (present_in_flight_ && present_fence_ != VK_NULL_HANDLE) {
-        dispatch->WaitForFences(device, 1, &present_fence_, VK_TRUE, UINT64_MAX);
+    if (present_in_flight_) {
+        const VkFence completion_fence = application_present_fence_ != VK_NULL_HANDLE
+            ? application_present_fence_
+            : present_fence_;
+        if (completion_fence != VK_NULL_HANDLE) {
+            dispatch->WaitForFences(device, 1, &completion_fence, VK_TRUE, UINT64_MAX);
+        }
     }
     if (present_semaphore_ != VK_NULL_HANDLE) {
         dispatch->DestroySemaphore(device, present_semaphore_, nullptr);
@@ -310,6 +338,7 @@ void SwapchainCapture::reset_capture_resources() {
     export_fd_ = -1;
     first_export_ = true;
     present_in_flight_ = false;
+    application_present_fence_ = VK_NULL_HANDLE;
 }
 
 bool SwapchainCapture::initialize() {
@@ -558,13 +587,44 @@ std::optional<VkResult> SwapchainCapture::capture_and_present(
     if (!pending_.exchange(false, std::memory_order_acq_rel)) {
         return std::nullopt;
     }
-    // A present may contain only one fence-info structure, and the application owns any fence
-    // already supplied there. Leave that present untouched instead of racing its fence lifecycle.
+    const uint64_t sequence = pending_sequence_.load(std::memory_order_acquire);
+    VkFence application_present_fence = VK_NULL_HANDLE;
+    bool has_application_fence_info = false;
     for (const auto* chain = static_cast<const VkBaseInStructure*>(present_info->pNext);
          chain != nullptr;
          chain = chain->pNext) {
         if (chain->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT) {
-            busy_drops_.fetch_add(1, std::memory_order_relaxed);
+            has_application_fence_info = true;
+            const auto* fence_info = reinterpret_cast<
+                const VkSwapchainPresentFenceInfoEXT*>(chain);
+            if (fence_info->swapchainCount == present_info->swapchainCount &&
+                fence_info->pFences != nullptr && present_info->swapchainCount == 1) {
+                application_present_fence = fence_info->pFences[0];
+            }
+            break;
+        }
+    }
+    if (has_application_fence_info && application_present_fence == VK_NULL_HANDLE) {
+        busy_drops_.fetch_add(1, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+    if (application_present_fence != VK_NULL_HANDLE) {
+        if (device_state_->external_fence_tracking_failed.load(std::memory_order_acquire)) {
+            phase_.store(CapturePhase::disabled, std::memory_order_release);
+            record_error(sequence, SPVK_ERROR_FENCE_FAILED);
+            close_socket();
+            return std::nullopt;
+        }
+        bool externally_shareable = false;
+        {
+            std::lock_guard external_fences_lock(device_state_->external_fences_mutex);
+            externally_shareable =
+                device_state_->external_fences.contains(application_present_fence);
+        }
+        if (externally_shareable) {
+            phase_.store(CapturePhase::disabled, std::memory_order_release);
+            record_error(sequence, SPVK_ERROR_FENCE_FAILED);
+            close_socket();
             return std::nullopt;
         }
     }
@@ -575,7 +635,6 @@ std::optional<VkResult> SwapchainCapture::capture_and_present(
         busy_drops_.fetch_add(1, std::memory_order_relaxed);
         return std::nullopt;
     }
-    const uint64_t sequence = pending_sequence_.load(std::memory_order_acquire);
     const uint64_t request_ns = pending_request_ns_.load(std::memory_order_acquire);
     const uint64_t present_ns = monotonic_ns();
     if (image_index >= images_.size() || present_info->swapchainCount != 1 ||
@@ -589,19 +648,24 @@ std::optional<VkResult> SwapchainCapture::capture_and_present(
     const auto* dispatch = queue_dispatch.pDeviceDispatch;
     const VkDevice device = dispatch->Device;
     if (present_in_flight_) {
-        const VkResult present_status = dispatch->GetFenceStatus(device, present_fence_);
+        const VkFence completion_fence = application_present_fence_ != VK_NULL_HANDLE
+            ? application_present_fence_
+            : present_fence_;
+        const VkResult present_status = dispatch->GetFenceStatus(device, completion_fence);
         if (present_status == VK_NOT_READY) {
             phase_.store(CapturePhase::idle, std::memory_order_release);
             busy_drops_.fetch_add(1, std::memory_order_relaxed);
             return std::nullopt;
         }
         if (present_status != VK_SUCCESS ||
-            dispatch->ResetFences(device, 1, &present_fence_) != VK_SUCCESS) {
+            (application_present_fence_ == VK_NULL_HANDLE &&
+             dispatch->ResetFences(device, 1, &present_fence_) != VK_SUCCESS)) {
             phase_.store(CapturePhase::idle, std::memory_order_release);
             record_error(sequence, SPVK_ERROR_FENCE_FAILED);
             return std::nullopt;
         }
         present_in_flight_ = false;
+        application_present_fence_ = VK_NULL_HANDLE;
     }
     if (dispatch->ResetFences(device, 1, &fence_) != VK_SUCCESS ||
         dispatch->ResetCommandPool(device, command_pool_, 0) != VK_SUCCESS) {
@@ -760,13 +824,17 @@ std::optional<VkResult> SwapchainCapture::capture_and_present(
         .pFences = &present_fence_,
     };
     VkPresentInfoKHR replacement = *present_info;
-    replacement.pNext = &present_fence_info;
+    replacement.pNext = application_present_fence == VK_NULL_HANDLE
+        ? &present_fence_info
+        : present_info->pNext;
     replacement.waitSemaphoreCount = 1;
     replacement.pWaitSemaphores = &present_semaphore_;
     const VkResult present_result = queue_dispatch.QueuePresentKHR(queue, &replacement);
-    present_in_flight_ =
-        present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR;
-    if (!present_in_flight_) {
+    present_in_flight_ = present_operations_enqueued(present_result);
+    application_present_fence_ = present_in_flight_
+        ? application_present_fence
+        : VK_NULL_HANDLE;
+    if (present_result != VK_SUCCESS && present_result != VK_SUBOPTIMAL_KHR) {
         phase_.store(CapturePhase::disabled, std::memory_order_release);
         record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
         close_socket();
@@ -779,6 +847,25 @@ void SwapchainCapture::disable() {
     phase_.store(CapturePhase::disabled, std::memory_order_release);
     phase_.notify_all();
     close_socket();
+}
+
+void SwapchainCapture::retire_application_fences(
+    uint32_t fence_count,
+    const VkFence* fences) {
+    if (fences == nullptr) {
+        return;
+    }
+    std::lock_guard resources_lock(resources_mutex_);
+    if (application_present_fence_ == VK_NULL_HANDLE) {
+        return;
+    }
+    for (uint32_t index = 0; index != fence_count; ++index) {
+        if (fences[index] == application_present_fence_) {
+            present_in_flight_ = false;
+            application_present_fence_ = VK_NULL_HANDLE;
+            return;
+        }
+    }
 }
 
 void SwapchainCapture::close_socket() {
@@ -827,6 +914,19 @@ bool SwapchainCapture::send_packet(const SpvkPacket& packet) {
     const int fd = socket_fd_.load(std::memory_order_acquire);
     return fd >= 0 && ::send(fd, &packet, sizeof(packet), MSG_NOSIGNAL) ==
         static_cast<ssize_t>(sizeof(packet));
+}
+
+bool SwapchainCapture::send_status(uint64_t sequence) {
+    return send_packet(SpvkPacket{
+        .magic = SPVK_MAGIC,
+        .version = SPVK_VERSION,
+        .type = SPVK_MESSAGE_STATUS,
+        .sequence = sequence,
+        .requests = requests_.load(std::memory_order_relaxed),
+        .captures = captures_.load(std::memory_order_relaxed),
+        .busy_drops = busy_drops_.load(std::memory_order_relaxed),
+        .coalesced_drops = coalesced_drops_.load(std::memory_order_relaxed),
+    });
 }
 
 void SwapchainCapture::record_error(uint64_t sequence, SpvkErrorType error_type) {
@@ -935,10 +1035,16 @@ void SwapchainCapture::socket_loop() {
                 requests_.fetch_add(1, std::memory_order_relaxed);
                 if (phase_.load(std::memory_order_acquire) != CapturePhase::idle) {
                     busy_drops_.fetch_add(1, std::memory_order_relaxed);
+                    if (!send_status(packet.sequence)) {
+                        break;
+                    }
                     continue;
                 }
                 if (pending_.load(std::memory_order_acquire)) {
                     coalesced_drops_.fetch_add(1, std::memory_order_relaxed);
+                    if (!send_status(packet.sequence)) {
+                        break;
+                    }
                     continue;
                 }
                 pending_sequence_.store(packet.sequence, std::memory_order_relaxed);
@@ -948,6 +1054,9 @@ void SwapchainCapture::socket_loop() {
                         expected, true, std::memory_order_release,
                         std::memory_order_relaxed)) {
                     coalesced_drops_.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (!send_status(packet.sequence)) {
+                    break;
                 }
             } else if (packet.type == SPVK_MESSAGE_ACK) {
                 if (phase_.load(std::memory_order_acquire) == CapturePhase::awaiting_ack &&
@@ -1113,6 +1222,110 @@ public:
 
 class DeviceOverrides {
 public:
+    static VkResult CreateFence(
+        const vkroots::VkDeviceDispatch& dispatch,
+        VkDevice device,
+        const VkFenceCreateInfo* create_info,
+        const VkAllocationCallbacks* allocator,
+        VkFence* fence) {
+        const VkResult result = dispatch.CreateFence(device, create_info, allocator, fence);
+        if (result != VK_SUCCESS || create_info == nullptr || fence == nullptr) {
+            return result;
+        }
+        const auto state = get_device_state(dispatch);
+        if (!state) {
+            return result;
+        }
+        try {
+            for (const auto* chain = static_cast<const VkBaseInStructure*>(create_info->pNext);
+                 chain != nullptr;
+                 chain = chain->pNext) {
+                if (chain->sType == VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO) {
+                    const auto* export_info =
+                        reinterpret_cast<const VkExportFenceCreateInfo*>(chain);
+                    if (export_info->handleTypes != 0) {
+                        std::lock_guard lock(state->external_fences_mutex);
+                        state->external_fences.insert(*fence);
+                    }
+                    break;
+                }
+            }
+        } catch (...) {
+            state->external_fence_tracking_failed.store(true, std::memory_order_release);
+        }
+        return result;
+    }
+
+    static VkResult ImportFenceFdKHR(
+        const vkroots::VkDeviceDispatch& dispatch,
+        VkDevice device,
+        const VkImportFenceFdInfoKHR* import_info) {
+        const auto state = get_device_state(dispatch);
+        if (state && import_info != nullptr) {
+            try {
+                std::lock_guard lock(state->captures_mutex);
+                for (const auto& capture : state->captures) {
+                    capture->retire_application_fences(1, &import_info->fence);
+                }
+            } catch (...) {
+                state->external_fence_tracking_failed.store(true, std::memory_order_release);
+            }
+        }
+        const VkResult result = dispatch.ImportFenceFdKHR(device, import_info);
+        if (result != VK_SUCCESS || !state || import_info == nullptr) {
+            return result;
+        }
+        try {
+            std::lock_guard lock(state->external_fences_mutex);
+            state->external_fences.insert(import_info->fence);
+        } catch (...) {
+            state->external_fence_tracking_failed.store(true, std::memory_order_release);
+        }
+        return result;
+    }
+
+    static VkResult ResetFences(
+        const vkroots::VkDeviceDispatch& dispatch,
+        VkDevice device,
+        uint32_t fence_count,
+        const VkFence* fences) {
+        try {
+            const auto state = get_device_state(dispatch);
+            if (state) {
+                std::lock_guard lock(state->captures_mutex);
+                for (const auto& capture : state->captures) {
+                    capture->retire_application_fences(fence_count, fences);
+                }
+            }
+        } catch (...) {
+            // Fence tracking is optional; preserve the application's reset operation.
+        }
+        return dispatch.ResetFences(device, fence_count, fences);
+    }
+
+    static void DestroyFence(
+        const vkroots::VkDeviceDispatch& dispatch,
+        VkDevice device,
+        VkFence fence,
+        const VkAllocationCallbacks* allocator) {
+        try {
+            const auto state = get_device_state(dispatch);
+            if (state) {
+                {
+                    std::lock_guard lock(state->captures_mutex);
+                    for (const auto& capture : state->captures) {
+                        capture->retire_application_fences(1, &fence);
+                    }
+                }
+                std::lock_guard external_fences_lock(state->external_fences_mutex);
+                state->external_fences.erase(fence);
+            }
+        } catch (...) {
+            // Fence tracking is optional; preserve the application's destroy operation.
+        }
+        dispatch.DestroyFence(device, fence, allocator);
+    }
+
     static VkResult CreateSwapchainKHR(
         const vkroots::VkDeviceDispatch& dispatch,
         VkDevice device,

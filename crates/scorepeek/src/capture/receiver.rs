@@ -1172,13 +1172,17 @@ impl CalibratedVulkanLease {
                 operation: CaptureDiagnosticOperation::SteadyReception,
                 status: CaptureDiagnosticStatus::Success,
                 error_type: None,
-                detail: CaptureDiagnosticDetail::PerformanceSummary {
+                detail: CaptureDiagnosticDetail::VulkanPerformanceSummary {
                     count: summary.count,
                     p50_ns: summary.p50_ns,
                     p95_ns: summary.p95_ns,
                     p99_ns: summary.p99_ns,
                     max_ns: summary.max_ns,
                     dropped: summary.dropped,
+                    requests: summary.requests,
+                    captures: summary.captures,
+                    busy_drops: summary.busy_drops,
+                    coalesced_drops: summary.coalesced_drops,
                 },
             });
             self.diagnostic_sequence = self.diagnostic_sequence.saturating_add(1);
@@ -1237,13 +1241,17 @@ impl CalibratedVulkanLease {
             operation: CaptureDiagnosticOperation::ReceiverShutdown,
             status: CaptureDiagnosticStatus::Success,
             error_type: None,
-            detail: CaptureDiagnosticDetail::PerformanceSummary {
+            detail: CaptureDiagnosticDetail::VulkanPerformanceSummary {
                 count: summary.count,
                 p50_ns: summary.p50_ns,
                 p95_ns: summary.p95_ns,
                 p99_ns: summary.p99_ns,
                 max_ns: summary.max_ns,
                 dropped: summary.dropped,
+                requests: summary.requests,
+                captures: summary.captures,
+                busy_drops: summary.busy_drops,
+                coalesced_drops: summary.coalesced_drops,
             },
         });
         drop(self);

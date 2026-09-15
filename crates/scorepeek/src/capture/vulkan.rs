@@ -20,7 +20,7 @@ use rustix::time::{ClockId, Timespec, clock_gettime};
 use scorepeek_vulkan_capture::{ImageContract, ImportedImage, MAX_PLANES, PlaneLayout};
 
 const MAGIC: u32 = 0x4b56_5053;
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const HELLO: u16 = 1;
 const HELLO_ACK: u16 = 2;
 const REQUEST: u16 = 3;
@@ -29,6 +29,7 @@ const ACK: u16 = 5;
 const ERROR: u16 = 6;
 const ADMIT: u16 = 7;
 const ADMIT_ACK: u16 = 8;
+const STATUS: u16 = 9;
 const HELLO_BYTES: usize = 232;
 const PACKET_BYTES: usize = 88;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);
@@ -133,6 +134,10 @@ pub struct VulkanPerformanceSummary {
     pub p99_ns: u64,
     pub max_ns: u64,
     pub dropped: u64,
+    pub requests: u64,
+    pub captures: u64,
+    pub busy_drops: u64,
+    pub coalesced_drops: u64,
 }
 
 pub struct VulkanListener {
@@ -452,6 +457,12 @@ fn run_worker(
                 return;
             }
             Ok(Some(packet)) if packet.message_type == READY => {
+                {
+                    let mut current = state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    merge_producer_counters(&mut current.timing, packet);
+                }
                 let Ok(readback) = imported.readback() else {
                     set_terminal(&state, WorkerTerminal::Readback);
                     return;
@@ -467,6 +478,11 @@ fn run_worker(
                     let mut current = state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let requests = current.timing.requests.max(packet.requests);
+                    let captures = current.timing.captures.max(packet.captures);
+                    let busy_drops = current.timing.busy_drops.max(packet.busy_drops);
+                    let coalesced_drops =
+                        current.timing.coalesced_drops.max(packet.coalesced_drops);
                     current.latest = Some(VulkanFrameData {
                         width,
                         height,
@@ -475,10 +491,10 @@ fn run_worker(
                         bytes,
                     });
                     current.timing = VulkanTimingStats {
-                        requests: packet.requests,
-                        captures: packet.captures,
-                        busy_drops: packet.busy_drops,
-                        coalesced_drops: packet.coalesced_drops,
+                        requests,
+                        captures,
+                        busy_drops,
+                        coalesced_drops,
                         request_to_present_ns: packet.present_ns.saturating_sub(packet.request_ns),
                         producer_submit_ns: packet.submit_done_ns.saturating_sub(packet.present_ns),
                         producer_fence_ns: packet
@@ -517,7 +533,18 @@ fn run_worker(
                     return;
                 }
             }
+            Ok(Some(packet)) if packet.message_type == STATUS => {
+                let mut current = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                merge_producer_counters(&mut current.timing, packet);
+            }
             Ok(Some(packet)) if packet.message_type == ERROR => {
+                let mut current = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                merge_producer_counters(&mut current.timing, packet);
+                drop(current);
                 set_terminal(
                     &state,
                     WorkerTerminal::Producer {
@@ -541,6 +568,13 @@ fn run_worker(
             }
         }
     }
+}
+
+fn merge_producer_counters(timing: &mut VulkanTimingStats, packet: Packet) {
+    timing.requests = timing.requests.max(packet.requests);
+    timing.captures = timing.captures.max(packet.captures);
+    timing.busy_drops = timing.busy_drops.max(packet.busy_drops);
+    timing.coalesced_drops = timing.coalesced_drops.max(packet.coalesced_drops);
 }
 
 fn reject_busy_producers(listener: &OwnedFd) -> Result<(), String> {
@@ -710,6 +744,10 @@ fn performance_summary(state: &Mutex<SessionState>) -> VulkanPerformanceSummary 
             .dropped_samples
             .saturating_add(current.timing.busy_drops)
             .saturating_add(current.timing.coalesced_drops),
+        requests: current.timing.requests,
+        captures: current.timing.captures,
+        busy_drops: current.timing.busy_drops,
+        coalesced_drops: current.timing.coalesced_drops,
     }
 }
 
@@ -743,6 +781,13 @@ fn encode_packet(packet: Packet) -> [u8; PACKET_BYTES] {
     put(&mut bytes, 6, &packet.message_type.to_ne_bytes());
     put(&mut bytes, 8, &packet.sequence.to_ne_bytes());
     put(&mut bytes, 16, &packet.request_ns.to_ne_bytes());
+    put(&mut bytes, 24, &packet.present_ns.to_ne_bytes());
+    put(&mut bytes, 32, &packet.submit_done_ns.to_ne_bytes());
+    put(&mut bytes, 40, &packet.fence_done_ns.to_ne_bytes());
+    put(&mut bytes, 48, &packet.requests.to_ne_bytes());
+    put(&mut bytes, 56, &packet.captures.to_ne_bytes());
+    put(&mut bytes, 64, &packet.busy_drops.to_ne_bytes());
+    put(&mut bytes, 72, &packet.coalesced_drops.to_ne_bytes());
     put(&mut bytes, 80, &packet.status.to_ne_bytes());
     bytes
 }
@@ -811,19 +856,42 @@ mod tests {
         }
     }
 
+    struct FailingImage;
+
+    impl CaptureImage for FailingImage {
+        fn readback(&mut self) -> Result<scorepeek_vulkan_capture::Readback, String> {
+            Err("readback failed".to_owned())
+        }
+    }
+
     #[test]
     fn packet_wire_size_and_offsets_match_layer_contract() {
         let bytes = encode_packet(Packet {
             message_type: REQUEST,
             sequence: 42,
             request_ns: 99,
-            ..Packet::default()
+            present_ns: 100,
+            submit_done_ns: 101,
+            fence_done_ns: 102,
+            requests: 103,
+            captures: 104,
+            busy_drops: 105,
+            coalesced_drops: 106,
+            status: 107,
         });
         assert_eq!(bytes.len(), 88);
         assert_eq!(u16_at(&bytes, 4), VERSION);
         assert_eq!(u16_at(&bytes, 6), REQUEST);
         assert_eq!(u64_at(&bytes, 8), 42);
         assert_eq!(u64_at(&bytes, 16), 99);
+        assert_eq!(u64_at(&bytes, 24), 100);
+        assert_eq!(u64_at(&bytes, 32), 101);
+        assert_eq!(u64_at(&bytes, 40), 102);
+        assert_eq!(u64_at(&bytes, 48), 103);
+        assert_eq!(u64_at(&bytes, 56), 104);
+        assert_eq!(u64_at(&bytes, 64), 105);
+        assert_eq!(u64_at(&bytes, 72), 106);
+        assert_eq!(i32::from_ne_bytes(bytes[80..84].try_into().unwrap()), 107);
 
         let admission = encode_packet(Packet {
             message_type: ADMIT,
@@ -944,9 +1012,45 @@ mod tests {
         send_packet(
             &producer,
             Packet {
+                message_type: STATUS,
+                sequence: request.sequence,
+                requests: 1,
+                captures: 0,
+                busy_drops: 0,
+                coalesced_drops: 0,
+                ..Packet::default()
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let timing = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .timing;
+            if timing.requests == 1 {
+                assert_eq!(timing.captures, 0);
+                break;
+            }
+            if Instant::now() >= deadline {
+                let terminal = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .terminal
+                    .as_ref()
+                    .map(|value| format!("{value:?}"));
+                panic!("producer status was not observed; terminal={terminal:?}");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        send_packet(
+            &producer,
+            Packet {
                 message_type: ERROR,
                 status: 6,
                 sequence: request.sequence,
+                requests: 1,
+                captures: 1,
                 ..Packet::default()
             },
         )
@@ -960,6 +1064,58 @@ mod tests {
                 .as_ref(),
             Some(WorkerTerminal::Producer { status: 6 })
         ));
+        assert_eq!(performance_summary(&state).captures, 1);
+    }
+
+    #[test]
+    fn worker_preserves_ready_counters_when_readback_fails() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let listener = VulkanListener::bind_at(root.path().join("capture.sock")).unwrap();
+        let admission_listener = dup(&listener.fd).unwrap();
+        let (consumer, producer) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let state = Arc::new(Mutex::new(SessionState::default()));
+        let worker_state = Arc::clone(&state);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            run_worker(
+                consumer,
+                admission_listener,
+                Box::new(FailingImage),
+                VulkanPixelOrder::Bgra,
+                2,
+                1,
+                worker_state,
+                worker_stop,
+            );
+        });
+        let request = receive_packet(&producer, Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        send_packet(
+            &producer,
+            Packet {
+                message_type: READY,
+                sequence: request.sequence,
+                requests: 1,
+                captures: 1,
+                ..Packet::default()
+            },
+        )
+        .unwrap();
+        worker.join().unwrap();
+        let current = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(matches!(current.terminal, Some(WorkerTerminal::Readback)));
+        assert_eq!(current.timing.requests, 1);
+        assert_eq!(current.timing.captures, 1);
     }
 
     #[test]
@@ -1049,6 +1205,19 @@ mod tests {
             send_packet(
                 &producer,
                 Packet {
+                    message_type: STATUS,
+                    sequence: request.sequence,
+                    requests: 3,
+                    captures: 2,
+                    busy_drops: 1,
+                    coalesced_drops: 4,
+                    ..Packet::default()
+                },
+            )
+            .unwrap();
+            send_packet(
+                &producer,
+                Packet {
                     message_type: READY,
                     sequence: request.sequence,
                     request_ns: request.request_ns,
@@ -1061,6 +1230,15 @@ mod tests {
                 .unwrap();
             assert_eq!(ack.message_type, ACK);
             assert_eq!(ack.sequence, request.sequence);
+            send_packet(
+                &producer,
+                Packet {
+                    message_type: STATUS,
+                    sequence: request.sequence,
+                    ..Packet::default()
+                },
+            )
+            .unwrap();
         });
 
         let mut session =
@@ -1080,6 +1258,21 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         };
         assert_eq!(frame.bytes.as_ref(), &[1; 8]);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match session.poll() {
+                Err(VulkanSessionFailure::Disconnected) => break,
+                Ok(()) => {}
+                Err(error) => panic!("unexpected session terminal: {error:?}"),
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        let timing = session.timing();
+        assert_eq!(timing.requests, 3);
+        assert_eq!(timing.captures, 2);
+        assert_eq!(timing.busy_drops, 1);
+        assert_eq!(timing.coalesced_drops, 4);
         drop(session);
         producer_thread.join().unwrap();
     }
