@@ -9,7 +9,11 @@ The disconnected present hook is a pointer check. Capture resources are created 
 Scorepeek consumer connects. A request records one GPU-local image copy, a producer-local fence
 guards `READY`, and a consumer-local fence guards CPU readback. Scorepeek sends `ACK` only after
 the asynchronous worker has taken ownership of the copied bytes; the single shared image is not
-reused before that ACK. There is no external semaphore and no frame ring or catch-up queue.
+reused before that ACK. The layer enables `VK_EXT_swapchain_maintenance1` and attaches a
+per-present fence, so disconnect cleanup does not destroy the local present semaphore until the
+presentation engine has released it. If that feature cannot be enabled, capture stays disabled
+without changing the application's device-creation result. There is no external semaphore and no
+frame ring or catch-up queue.
 
 `mise run build` builds both Scorepeek and the layer with pinned Zig. Development artifacts live
 under `target/vulkan-capture`; release installation layout is intentionally deferred until the

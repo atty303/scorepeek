@@ -1020,11 +1020,37 @@ fn run_routine_live_session(
                 lifetimes.observe(snapshot)
             }
             RoutineCapture::VulkanLayer => {
-                let Some(session) = vulkan_listener
+                let accepted = vulkan_listener
                     .as_ref()
                     .expect("Vulkan listener exists")
-                    .accept(std::time::Duration::from_millis(500))?
-                else {
+                    .accept(std::time::Duration::from_millis(500));
+                let Some(session) = (match accepted {
+                    Ok(session) => session,
+                    Err(failure) => {
+                        let (category, producer_status) = failure.diagnostic();
+                        let fact = serde_json::to_value(
+                            scorepeek::capture::CaptureDiagnosticFact {
+                                sequence: 0,
+                                monotonic_start_ms: 0,
+                                monotonic_end_ms: 0,
+                                operation:
+                                    scorepeek::capture::CaptureDiagnosticOperation::SourceAcquisition,
+                                status: scorepeek::capture::CaptureDiagnosticStatus::Error,
+                                error_type: Some(
+                                    scorepeek::capture::CaptureErrorType::ReceiverFailed,
+                                ),
+                                detail:
+                                    scorepeek::capture::CaptureDiagnosticDetail::VulkanFailure {
+                                        category,
+                                        producer_status,
+                                    },
+                            },
+                        )
+                        .map_err(|error| format!("serialize Vulkan admission failure: {error}"))?;
+                        output.record_diagnostic("capture", &fact, true);
+                        return Err(format!("Vulkan producer admission failed ({category})"));
+                    }
+                }) else {
                     announce_watcher_state(
                         &mut announced,
                         routine_watcher::WatcherState::WaitingForSource,
@@ -1167,7 +1193,7 @@ fn run_routine_live_session(
                     session_paths.as_ref().map(|paths| paths.root.as_path()),
                     Some(&session_id),
                     Some(node_id),
-                    Some(runtime_capture),
+                    runtime_capture,
                     &stop,
                     &mut emit,
                 )?;
@@ -1438,6 +1464,13 @@ fn run_live_session(
             output_us: Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)),
         })
     };
+    let legacy_capture = capture_live::RuntimeCaptureInput::LegacyGamescope {
+        binding_path: Path::new(&values[0]),
+        expected_binding_sha256: values[1]
+            .to_str()
+            .ok_or_else(|| "binding digest must be UTF-8".to_owned())?,
+        expected_source_node_id: None,
+    };
     let report = execute_live_session(
         values,
         bundle_root,
@@ -1446,7 +1479,7 @@ fn run_live_session(
         None,
         None,
         None,
-        None,
+        legacy_capture,
         &stop,
         &mut emit,
     )?;
@@ -1468,7 +1501,7 @@ fn execute_live_session(
     canonical_recording_root: Option<&Path>,
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
-    runtime_capture: Option<capture_live::RuntimeCaptureInput<'_>>,
+    runtime_capture: capture_live::RuntimeCaptureInput<'_>,
     stop: &std::sync::atomic::AtomicBool,
     emit: &mut impl FnMut(
         LiveSessionEmission,
@@ -1524,7 +1557,7 @@ fn execute_live_session(
         })?;
     }
     let public_binding = descriptor.binding.clone();
-    let report = capture_live::run_gamescope_live_session(
+    let report = capture_live::run_runtime_live_session(
         capture_live::GamescopeFieldObservationGateConfig {
             handoff: capture_live::GamescopeDiagnosticHandoffGateConfig {
                 binding_path: Path::new(binding),
@@ -2191,7 +2224,11 @@ fn run_capture_field_observation(
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit: canonical_recording::RecordingMemoryLimit::default_limit(),
-            runtime_capture: None,
+            runtime_capture: capture_live::RuntimeCaptureInput::LegacyGamescope {
+                binding_path: Path::new(binding),
+                expected_binding_sha256: &binding_digest,
+                expected_source_node_id: None,
+            },
         },
     );
     println!(

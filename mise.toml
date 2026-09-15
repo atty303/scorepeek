@@ -180,7 +180,7 @@ depends = ["overlay:web:bundle"]
 run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay --features embedded-web --example visual_obs -- "$@"'
 
 [tasks."overlay:test:live"]
-description = "Explicit live overlay run; supply a dedicated --scores-db instance and profile"
+description = "Explicit live overlay run; supply capture selection and a dedicated scores database"
 depends = ["overlay:web:bundle"]
 run = '''
 #!/usr/bin/env bash
@@ -189,7 +189,11 @@ case " $* " in
   *" --scores-db "*) ;;
   *) echo 'Supply --scores-db with a dedicated verification instance.' >&2; exit 2 ;;
 esac
-exec cargo run --locked -p scorepeek --features embedded-web -- run --overlay wayland --overlay obs "$@"
+case " $* " in
+  *" --capture "*) ;;
+  *) echo 'Supply --capture pipewire or --capture vulkan-layer and its required selector.' >&2; exit 2 ;;
+esac
+exec cargo run --locked -p scorepeek --features embedded-web -- run --overlay-wayland --overlay-obs "$@"
 '''
 
 [tasks."dist:test"]

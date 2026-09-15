@@ -14,6 +14,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -59,10 +60,11 @@ bool has_name(const std::vector<const char*>& names, const char* name) {
     });
 }
 
+template <size_t N>
 bool physical_device_has_extensions(
     const vkroots::VkPhysicalDeviceDispatch& dispatch,
     VkPhysicalDevice physical_device,
-    const std::array<const char*, 3>& required) {
+    const std::array<const char*, N>& required) {
     uint32_t count = 0;
     if (dispatch.EnumerateDeviceExtensionProperties(
             physical_device, nullptr, &count, nullptr) != VK_SUCCESS) {
@@ -120,13 +122,11 @@ public:
     SwapchainCapture& operator=(const SwapchainCapture&) = delete;
 
     bool initialize();
-    bool capture(
+    std::optional<VkResult> capture_and_present(
         const vkroots::VkQueueDispatch& queue_dispatch,
         VkQueue queue,
         uint32_t image_index,
-        const VkPresentInfoKHR* present_info,
-        VkPresentInfoKHR* replacement,
-        VkSemaphore* replacement_wait);
+        const VkPresentInfoKHR* present_info);
     void disable();
 
     VkSwapchainKHR swapchain() const { return swapchain_; }
@@ -160,6 +160,7 @@ private:
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
+    VkFence present_fence_ = VK_NULL_HANDLE;
     VkSemaphore present_semaphore_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     uint32_t queue_family_ = UINT32_MAX;
@@ -169,7 +170,6 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<bool> pending_{false};
     std::atomic<int> socket_fd_{-1};
-    std::atomic<uint64_t> run_id_{0};
     std::atomic<uint64_t> pending_sequence_{0};
     std::atomic<uint64_t> pending_request_ns_{0};
     std::atomic<uint64_t> requests_{0};
@@ -181,6 +181,7 @@ private:
     std::atomic<uint64_t> submitted_present_ns_{0};
     std::atomic<uint64_t> submitted_done_ns_{0};
     std::atomic<bool> submission_in_flight_{false};
+    bool present_in_flight_ = false;
     std::mutex send_mutex_;
     std::mutex resources_mutex_;
     std::thread socket_thread_;
@@ -273,11 +274,17 @@ void SwapchainCapture::reset_capture_resources() {
         fence_ != VK_NULL_HANDLE) {
         dispatch->WaitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
     }
+    if (present_in_flight_ && present_fence_ != VK_NULL_HANDLE) {
+        dispatch->WaitForFences(device, 1, &present_fence_, VK_TRUE, UINT64_MAX);
+    }
     if (present_semaphore_ != VK_NULL_HANDLE) {
         dispatch->DestroySemaphore(device, present_semaphore_, nullptr);
     }
     if (fence_ != VK_NULL_HANDLE) {
         dispatch->DestroyFence(device, fence_, nullptr);
+    }
+    if (present_fence_ != VK_NULL_HANDLE) {
+        dispatch->DestroyFence(device, present_fence_, nullptr);
     }
     if (command_pool_ != VK_NULL_HANDLE) {
         dispatch->DestroyCommandPool(device, command_pool_, nullptr);
@@ -293,6 +300,7 @@ void SwapchainCapture::reset_capture_resources() {
     }
     present_semaphore_ = VK_NULL_HANDLE;
     fence_ = VK_NULL_HANDLE;
+    present_fence_ = VK_NULL_HANDLE;
     command_pool_ = VK_NULL_HANDLE;
     command_buffer_ = VK_NULL_HANDLE;
     queue_family_ = UINT32_MAX;
@@ -301,6 +309,7 @@ void SwapchainCapture::reset_capture_resources() {
     export_memory_ = VK_NULL_HANDLE;
     export_fd_ = -1;
     first_export_ = true;
+    present_in_flight_ = false;
 }
 
 bool SwapchainCapture::initialize() {
@@ -526,6 +535,10 @@ bool SwapchainCapture::initialize_queue(
             dispatch->Device, &fence_info, nullptr, &fence_) != VK_SUCCESS) {
         return false;
     }
+    if (dispatch->CreateFence(
+            dispatch->Device, &fence_info, nullptr, &present_fence_) != VK_SUCCESS) {
+        return false;
+    }
     VkSemaphoreCreateInfo semaphore_info{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
@@ -537,41 +550,64 @@ bool SwapchainCapture::initialize_queue(
     return true;
 }
 
-bool SwapchainCapture::capture(
+std::optional<VkResult> SwapchainCapture::capture_and_present(
     const vkroots::VkQueueDispatch& queue_dispatch,
     VkQueue queue,
     uint32_t image_index,
-    const VkPresentInfoKHR* present_info,
-    VkPresentInfoKHR* replacement,
-    VkSemaphore* replacement_wait) {
+    const VkPresentInfoKHR* present_info) {
     if (!pending_.exchange(false, std::memory_order_acq_rel)) {
-        return false;
+        return std::nullopt;
+    }
+    // A present may contain only one fence-info structure, and the application owns any fence
+    // already supplied there. Leave that present untouched instead of racing its fence lifecycle.
+    for (const auto* chain = static_cast<const VkBaseInStructure*>(present_info->pNext);
+         chain != nullptr;
+         chain = chain->pNext) {
+        if (chain->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT) {
+            busy_drops_.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
     }
     std::lock_guard resources_lock(resources_mutex_);
     CapturePhase expected = CapturePhase::idle;
     if (!phase_.compare_exchange_strong(
             expected, CapturePhase::recording, std::memory_order_acq_rel)) {
         busy_drops_.fetch_add(1, std::memory_order_relaxed);
-        return false;
+        return std::nullopt;
     }
     const uint64_t sequence = pending_sequence_.load(std::memory_order_acquire);
     const uint64_t request_ns = pending_request_ns_.load(std::memory_order_acquire);
     const uint64_t present_ns = monotonic_ns();
-    if (image_index >= images_.size() ||
+    if (image_index >= images_.size() || present_info->swapchainCount != 1 ||
         present_info->waitSemaphoreCount > MAX_PRESENT_SEMAPHORES ||
         !initialize_queue(queue_dispatch, queue)) {
         phase_.store(CapturePhase::idle, std::memory_order_release);
         record_error(sequence, SPVK_ERROR_QUEUE_UNSUPPORTED);
-        return false;
+        return std::nullopt;
     }
 
     const auto* dispatch = queue_dispatch.pDeviceDispatch;
     const VkDevice device = dispatch->Device;
+    if (present_in_flight_) {
+        const VkResult present_status = dispatch->GetFenceStatus(device, present_fence_);
+        if (present_status == VK_NOT_READY) {
+            phase_.store(CapturePhase::idle, std::memory_order_release);
+            busy_drops_.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
+        if (present_status != VK_SUCCESS ||
+            dispatch->ResetFences(device, 1, &present_fence_) != VK_SUCCESS) {
+            phase_.store(CapturePhase::idle, std::memory_order_release);
+            record_error(sequence, SPVK_ERROR_FENCE_FAILED);
+            return std::nullopt;
+        }
+        present_in_flight_ = false;
+    }
     if (dispatch->ResetFences(device, 1, &fence_) != VK_SUCCESS ||
         dispatch->ResetCommandPool(device, command_pool_, 0) != VK_SUCCESS) {
         phase_.store(CapturePhase::idle, std::memory_order_release);
         record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
-        return false;
+        return std::nullopt;
     }
     VkCommandBufferBeginInfo begin_info{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -580,7 +616,7 @@ bool SwapchainCapture::capture(
     if (dispatch->BeginCommandBuffer(command_buffer_, &begin_info) != VK_SUCCESS) {
         phase_.store(CapturePhase::idle, std::memory_order_release);
         record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
-        return false;
+        return std::nullopt;
     }
 
     VkImageMemoryBarrier source{
@@ -681,7 +717,7 @@ bool SwapchainCapture::capture(
     if (dispatch->EndCommandBuffer(command_buffer_) != VK_SUCCESS) {
         phase_.store(CapturePhase::idle, std::memory_order_release);
         record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
-        return false;
+        return std::nullopt;
     }
 
     std::array<VkPipelineStageFlags, MAX_PRESENT_SEMAPHORES> wait_stages{};
@@ -704,7 +740,7 @@ bool SwapchainCapture::capture(
     if (result != VK_SUCCESS) {
         phase_.store(CapturePhase::idle, std::memory_order_release);
         record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
-        return false;
+        return std::nullopt;
     }
 
     submission_in_flight_.store(true, std::memory_order_release);
@@ -717,11 +753,25 @@ bool SwapchainCapture::capture(
     phase_.store(CapturePhase::submitted, std::memory_order_release);
     phase_.notify_one();
 
-    *replacement = *present_info;
-    *replacement_wait = present_semaphore_;
-    replacement->waitSemaphoreCount = 1;
-    replacement->pWaitSemaphores = replacement_wait;
-    return true;
+    VkSwapchainPresentFenceInfoEXT present_fence_info{
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+        .pNext = present_info->pNext,
+        .swapchainCount = 1,
+        .pFences = &present_fence_,
+    };
+    VkPresentInfoKHR replacement = *present_info;
+    replacement.pNext = &present_fence_info;
+    replacement.waitSemaphoreCount = 1;
+    replacement.pWaitSemaphores = &present_semaphore_;
+    const VkResult present_result = queue_dispatch.QueuePresentKHR(queue, &replacement);
+    present_in_flight_ =
+        present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR;
+    if (!present_in_flight_) {
+        phase_.store(CapturePhase::disabled, std::memory_order_release);
+        record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
+        close_socket();
+    }
+    return present_result;
 }
 
 void SwapchainCapture::disable() {
@@ -784,7 +834,6 @@ void SwapchainCapture::record_error(uint64_t sequence, SpvkErrorType error_type)
         .magic = SPVK_MAGIC,
         .version = SPVK_VERSION,
         .type = SPVK_MESSAGE_ERROR,
-        .run_id = run_id_.load(std::memory_order_acquire),
         .sequence = sequence,
         .requests = requests_.load(std::memory_order_relaxed),
         .captures = captures_.load(std::memory_order_relaxed),
@@ -873,15 +922,13 @@ void SwapchainCapture::socket_loop() {
             reset_capture_resources();
             continue;
         }
-        run_id_.store(acknowledgement.run_id, std::memory_order_release);
         phase_.store(CapturePhase::idle, std::memory_order_release);
 
         while (!stop_.load(std::memory_order_acquire)) {
             SpvkPacket packet{};
             const ssize_t packet_size = ::recv(fd, &packet, sizeof(packet), 0);
             if (packet_size != static_cast<ssize_t>(sizeof(packet)) ||
-                packet.magic != SPVK_MAGIC || packet.version != SPVK_VERSION ||
-                packet.run_id != run_id_.load(std::memory_order_acquire)) {
+                packet.magic != SPVK_MAGIC || packet.version != SPVK_VERSION) {
                 break;
             }
             if (packet.type == SPVK_MESSAGE_REQUEST) {
@@ -952,7 +999,6 @@ void SwapchainCapture::fence_loop() {
             .magic = SPVK_MAGIC,
             .version = SPVK_VERSION,
             .type = SPVK_MESSAGE_READY,
-            .run_id = run_id_.load(std::memory_order_acquire),
             .sequence = submitted_sequence_.load(std::memory_order_acquire),
             .request_ns = submitted_request_ns_.load(std::memory_order_acquire),
             .present_ns = submitted_present_ns_.load(std::memory_order_acquire),
@@ -989,6 +1035,7 @@ public:
                 VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
                 VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
                 VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+                VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
             };
             VkPhysicalDeviceProperties properties{};
             dispatch.GetPhysicalDeviceProperties(physical_device, &properties);
@@ -996,26 +1043,48 @@ public:
                 properties.apiVersion >= VK_API_VERSION_1_1 &&
                 physical_device_has_extensions(dispatch, physical_device, required_extensions);
             std::vector<const char*> extensions;
-            bool added_extension = false;
             if (create_info->enabledExtensionCount != 0) {
                 extensions.assign(create_info->ppEnabledExtensionNames,
                                   create_info->ppEnabledExtensionNames +
                                       create_info->enabledExtensionCount);
             }
+            const auto* chain = static_cast<const VkBaseInStructure*>(create_info->pNext);
+            const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT* existing_maintenance = nullptr;
+            while (chain != nullptr) {
+                if (chain->sType ==
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT) {
+                    existing_maintenance = reinterpret_cast<
+                        const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT*>(chain);
+                    break;
+                }
+                chain = chain->pNext;
+            }
+            if (existing_maintenance != nullptr &&
+                existing_maintenance->swapchainMaintenance1 != VK_TRUE) {
+                enabled = false;
+            }
             if (enabled) {
                 for (const char* required : required_extensions) {
                     if (!has_name(extensions, required)) {
                         extensions.push_back(required);
-                        added_extension = true;
                     }
                 }
             }
             VkDeviceCreateInfo replacement = *create_info;
+            VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance_feature{
+                .sType =
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
+                .pNext = const_cast<void*>(create_info->pNext),
+                .swapchainMaintenance1 = VK_TRUE,
+            };
+            if (enabled && existing_maintenance == nullptr) {
+                replacement.pNext = &maintenance_feature;
+            }
             replacement.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
             replacement.ppEnabledExtensionNames = extensions.data();
             VkResult result = dispatch.CreateDevice(
                 physical_device, &replacement, allocator, device);
-            if (result != VK_SUCCESS && added_extension) {
+            if (result != VK_SUCCESS && enabled) {
                 enabled = false;
                 result = dispatch.CreateDevice(physical_device, create_info, allocator, device);
             }
@@ -1148,16 +1217,9 @@ public:
                     if (present_info->pSwapchains[index] != active->swapchain()) {
                         continue;
                     }
-                    VkPresentInfoKHR replacement{};
-                    VkSemaphore replacement_wait = VK_NULL_HANDLE;
-                    if (active->capture(
-                            dispatch,
-                            queue,
-                            present_info->pImageIndices[index],
-                            present_info,
-                            &replacement,
-                            &replacement_wait)) {
-                        return dispatch.QueuePresentKHR(queue, &replacement);
+                    if (auto result = active->capture_and_present(
+                            dispatch, queue, present_info->pImageIndices[index], present_info)) {
+                        return *result;
                     }
                     break;
                 }

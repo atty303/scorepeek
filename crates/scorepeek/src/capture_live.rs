@@ -124,8 +124,6 @@ enum DiagnosticHandoffGateErrorType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum FieldObservationGateErrorType {
-    BindingUnavailable,
-    BindingInvalid,
     CaptureFailed,
     AdmissionRejected,
     DiagnosticBindingMismatch,
@@ -661,7 +659,7 @@ pub struct GamescopeFieldObservationGateConfig<'a> {
     pub canonical_recording_root: Option<&'a std::path::Path>,
     pub recognition_artifact_retention: RecognitionArtifactRetention,
     pub recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
-    pub runtime_capture: Option<RuntimeCaptureInput<'a>>,
+    pub runtime_capture: RuntimeCaptureInput<'a>,
 }
 
 pub enum RuntimeCaptureInput<'a> {
@@ -673,6 +671,12 @@ pub enum RuntimeCaptureInput<'a> {
     VulkanLayer {
         session: Box<scorepeek::capture::vulkan::VulkanSession>,
         crop: EdgeCrop,
+    },
+    #[cfg(test)]
+    LegacyGamescope {
+        binding_path: &'a std::path::Path,
+        expected_binding_sha256: &'a str,
+        expected_source_node_id: Option<u32>,
     },
 }
 
@@ -854,6 +858,7 @@ pub fn parse_consumer_interval_ms(value: &OsStr) -> Result<u64, String> {
     Ok(interval)
 }
 
+#[cfg(test)]
 pub fn run_gamescope_binding_admission_gate(
     binding_path: &std::path::Path,
     expected_binding_sha256: &str,
@@ -927,6 +932,7 @@ pub fn run_gamescope_binding_admission_gate(
     }
 }
 
+#[cfg(test)]
 pub fn run_gamescope_canonical_frame_gate(
     binding_path: &std::path::Path,
     expected_binding_sha256: &str,
@@ -1033,12 +1039,14 @@ pub fn run_gamescope_canonical_frame_gate(
     )
 }
 
+#[cfg(test)]
 pub fn run_gamescope_diagnostic_handoff_gate(
     config: GamescopeDiagnosticHandoffGateConfig<'_>,
 ) -> GamescopeDiagnosticHandoffGateReport {
     run_gamescope_handoff_gate(config, false).diagnostic
 }
 
+#[cfg(test)]
 pub fn run_gamescope_recognition_handoff_gate(
     config: GamescopeDiagnosticHandoffGateConfig<'_>,
 ) -> GamescopeRecognitionHandoffGateReport {
@@ -1048,6 +1056,7 @@ pub fn run_gamescope_recognition_handoff_gate(
 type RegisteredFieldOutput =
     Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 
+#[cfg(test)]
 pub fn run_gamescope_field_observation_gate(
     config: GamescopeFieldObservationGateConfig<'_>,
 ) -> GamescopeFieldObservationGateReport {
@@ -1150,7 +1159,7 @@ pub fn run_gamescope_field_observation_gate(
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn run_gamescope_live_session(
+pub fn run_runtime_live_session(
     config: GamescopeFieldObservationGateConfig<'_>,
     stop: &AtomicBool,
     emit: &mut LiveEventEmitter<'_>,
@@ -1389,38 +1398,8 @@ fn start_field_observation_gate(
     }
     let artifact_run_id = config.handoff.descriptor.run_id.clone();
     let mut sink = sink;
-    let started_capture = if let Some(runtime) = config.runtime_capture.take() {
-        start_runtime_capture(runtime, capture_generation, &mut sink)
-    } else {
-        let binding = read_diagnostic_handoff_binding(
-            config.handoff.binding_path,
-            config.handoff.expected_binding_sha256,
-        )
-        .map_err(|error| {
-            let error = match error {
-                DiagnosticHandoffGateErrorType::BindingUnavailable => {
-                    FieldObservationGateErrorType::BindingUnavailable
-                }
-                _ => FieldObservationGateErrorType::BindingInvalid,
-            };
-            Box::new(empty_field_observation_report(
-                error,
-                None,
-                capture_generation,
-                None,
-                artifact_requested,
-                sink.clone(),
-            ))
-        })?;
-        bind_diagnostic_descriptor(&mut config.handoff.descriptor, &binding);
-        start_diagnostic_handoff_capture(
-            binding,
-            capture_generation,
-            config.handoff.expected_source_node_id,
-            &mut sink,
-        )
-        .map(|lease| (lease, None))
-    };
+    let started_capture =
+        start_runtime_capture(config.runtime_capture, capture_generation, &mut sink);
     let (lease, authored) = match started_capture {
         Ok(lease) => lease,
         Err((error, capture_error)) => {
@@ -1627,6 +1606,17 @@ fn start_runtime_capture(
                         Some(error.error_type()),
                     )
                 })
+        }
+        #[cfg(test)]
+        RuntimeCaptureInput::LegacyGamescope {
+            binding_path,
+            expected_binding_sha256,
+            expected_source_node_id,
+        } => {
+            let binding = read_diagnostic_handoff_binding(binding_path, expected_binding_sha256)
+                .map_err(|error| (error, None))?;
+            start_diagnostic_handoff_capture(binding, generation, expected_source_node_id, sink)
+                .map(|lease| (lease, None))
         }
     }
 }
@@ -3274,10 +3264,12 @@ fn parse_u64(value: &OsStr, label: &str) -> Result<u64, String> {
         .map_err(|_| format!("{label} must be an integer"))
 }
 
+#[cfg(test)]
 pub fn run_gamescope_live_gate(duration_ms: u64) -> GamescopeLiveGateReport {
     run_gamescope_live_gate_with_interval(duration_ms, 0)
 }
 
+#[cfg(test)]
 pub fn run_gamescope_live_gate_with_interval(
     duration_ms: u64,
     consumer_interval_ms: u64,
@@ -3366,6 +3358,7 @@ pub fn run_gamescope_live_gate_with_interval(
     )
 }
 
+#[cfg(test)]
 pub fn run_gamescope_lifecycle_gate(
     duration_ms: u64,
     requested_runs: u32,

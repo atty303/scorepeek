@@ -149,7 +149,10 @@ new layer session after either side restarts.
 The Vulkan capture-profile document retains the admitted Vulkan format, DRM
 fourcc/modifier, allocation and plane layout, and device UUID in addition to
 the source dimensions. DMA-BUF readback and canonical CPU normalization stay
-off the game present thread.
+off the game present thread. The layer requires swapchain-maintenance present
+fences so session cleanup can prove the presentation engine has released its
+local chaining semaphore; unsupported devices keep capture disabled without
+changing the game's device-creation result.
 
 The peer PipeWire route consumes any exact raw-video node name on the user's
 default PipeWire remote. It accepts only progressive BGRx in a CPU-mappable
