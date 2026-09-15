@@ -83,15 +83,12 @@ bool physical_device_has_extensions(
 uint32_t choose_device_local_memory(
     const VkPhysicalDeviceMemoryProperties& properties,
     uint32_t allowed) {
-    for (uint32_t pass = 0; pass != 2; ++pass) {
-        for (uint32_t index = 0; index != properties.memoryTypeCount; ++index) {
-            if ((allowed & (1u << index)) == 0) {
-                continue;
-            }
-            const auto flags = properties.memoryTypes[index].propertyFlags;
-            if (pass == 0 && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0) {
-                continue;
-            }
+    for (uint32_t index = 0; index != properties.memoryTypeCount; ++index) {
+        if ((allowed & (1u << index)) == 0) {
+            continue;
+        }
+        const auto flags = properties.memoryTypes[index].propertyFlags;
+        if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
             return index;
         }
     }
@@ -142,7 +139,7 @@ private:
     void socket_loop();
     void fence_loop();
     void close_socket();
-    void reset_capture_resources(bool final_cleanup);
+    void reset_capture_resources();
     void record_error(uint64_t sequence, SpvkErrorType error_type);
 
     std::shared_ptr<DeviceState> device_state_;
@@ -257,13 +254,13 @@ SwapchainCapture::~SwapchainCapture() {
         if (socket_thread_.joinable()) {
             socket_thread_.join();
         }
-        reset_capture_resources(true);
+        reset_capture_resources();
     } catch (...) {
         // Destruction runs from intercepted Vulkan calls and must never terminate the game.
     }
 }
 
-void SwapchainCapture::reset_capture_resources(bool final_cleanup) {
+void SwapchainCapture::reset_capture_resources() {
     std::lock_guard resources_lock(resources_mutex_);
     phase_.store(CapturePhase::disabled, std::memory_order_release);
     phase_.notify_all();
@@ -276,16 +273,14 @@ void SwapchainCapture::reset_capture_resources(bool final_cleanup) {
         fence_ != VK_NULL_HANDLE) {
         dispatch->WaitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
     }
-    if (final_cleanup) {
-        if (present_semaphore_ != VK_NULL_HANDLE) {
-            dispatch->DestroySemaphore(device, present_semaphore_, nullptr);
-        }
-        if (fence_ != VK_NULL_HANDLE) {
-            dispatch->DestroyFence(device, fence_, nullptr);
-        }
-        if (command_pool_ != VK_NULL_HANDLE) {
-            dispatch->DestroyCommandPool(device, command_pool_, nullptr);
-        }
+    if (present_semaphore_ != VK_NULL_HANDLE) {
+        dispatch->DestroySemaphore(device, present_semaphore_, nullptr);
+    }
+    if (fence_ != VK_NULL_HANDLE) {
+        dispatch->DestroyFence(device, fence_, nullptr);
+    }
+    if (command_pool_ != VK_NULL_HANDLE) {
+        dispatch->DestroyCommandPool(device, command_pool_, nullptr);
     }
     if (export_image_ != VK_NULL_HANDLE) {
         dispatch->DestroyImage(device, export_image_, nullptr);
@@ -296,14 +291,12 @@ void SwapchainCapture::reset_capture_resources(bool final_cleanup) {
     if (export_fd_ >= 0) {
         ::close(export_fd_);
     }
-    if (final_cleanup) {
-        present_semaphore_ = VK_NULL_HANDLE;
-        fence_ = VK_NULL_HANDLE;
-        command_pool_ = VK_NULL_HANDLE;
-        command_buffer_ = VK_NULL_HANDLE;
-        queue_family_ = UINT32_MAX;
-        queue_ = VK_NULL_HANDLE;
-    }
+    present_semaphore_ = VK_NULL_HANDLE;
+    fence_ = VK_NULL_HANDLE;
+    command_pool_ = VK_NULL_HANDLE;
+    command_buffer_ = VK_NULL_HANDLE;
+    queue_family_ = UINT32_MAX;
+    queue_ = VK_NULL_HANDLE;
     export_image_ = VK_NULL_HANDLE;
     export_memory_ = VK_NULL_HANDLE;
     export_fd_ = -1;
@@ -846,11 +839,12 @@ void SwapchainCapture::socket_loop() {
             continue;
         }
         if (export_image_ != VK_NULL_HANDLE) {
-            reset_capture_resources(false);
+            reset_capture_resources();
         }
         if (!initialize_export_image()) {
             record_error(0, SPVK_ERROR_IMPORT_FAILED);
             close_socket();
+            reset_capture_resources();
             phase_.store(CapturePhase::disabled, std::memory_order_release);
             return;
         }
@@ -866,6 +860,7 @@ void SwapchainCapture::socket_loop() {
         });
         if (!send_hello(fd)) {
             close_socket();
+            reset_capture_resources();
             continue;
         }
         SpvkPacket acknowledgement{};
@@ -875,6 +870,7 @@ void SwapchainCapture::socket_loop() {
             acknowledgement.version != SPVK_VERSION ||
             acknowledgement.type != SPVK_MESSAGE_HELLO_ACK) {
             close_socket();
+            reset_capture_resources();
             continue;
         }
         run_id_.store(acknowledgement.run_id, std::memory_order_release);
@@ -915,6 +911,7 @@ void SwapchainCapture::socket_loop() {
         }
         close_socket();
         pending_.store(false, std::memory_order_release);
+        reset_capture_resources();
         if (stop_.load(std::memory_order_acquire)) {
             phase_.store(CapturePhase::disabled, std::memory_order_release);
             phase_.notify_all();

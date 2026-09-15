@@ -682,6 +682,7 @@ pub struct CalibratedVulkanLease {
     diagnostic_sequence: u64,
     normalization_success_recorded: bool,
     normalization_failure_recorded: bool,
+    terminal_failure_recorded: bool,
 }
 
 /// One raw receiver frame carrying the identities granted only by calibrated admission.
@@ -1182,16 +1183,46 @@ impl CalibratedVulkanLease {
             });
             self.diagnostic_sequence = self.diagnostic_sequence.saturating_add(1);
         }
-        self.session.poll().map_err(|failure| {
-            CaptureError::without_source(match failure {
-                scorepeek::capture::vulkan::VulkanSessionFailure::Disconnected => {
-                    CaptureErrorType::SourceLost
+        match self.session.poll() {
+            Ok(()) => Ok(()),
+            Err(scorepeek::capture::vulkan::VulkanSessionFailure::Disconnected) => {
+                Err(CaptureError::without_source(CaptureErrorType::SourceLost))
+            }
+            Err(failure) => {
+                let (category, producer_status) = match failure {
+                    scorepeek::capture::vulkan::VulkanSessionFailure::Producer { status } => {
+                        ("producer", Some(status))
+                    }
+                    scorepeek::capture::vulkan::VulkanSessionFailure::Readback => {
+                        ("readback", None)
+                    }
+                    scorepeek::capture::vulkan::VulkanSessionFailure::Protocol => {
+                        ("protocol", None)
+                    }
+                    scorepeek::capture::vulkan::VulkanSessionFailure::Disconnected => {
+                        unreachable!("disconnect handled above")
+                    }
+                };
+                if !std::mem::replace(&mut self.terminal_failure_recorded, true) {
+                    sink.record(CaptureDiagnosticFact {
+                        sequence: self.diagnostic_sequence,
+                        monotonic_start_ms: 0,
+                        monotonic_end_ms: 0,
+                        operation: CaptureDiagnosticOperation::SteadyReception,
+                        status: CaptureDiagnosticStatus::Error,
+                        error_type: Some(CaptureErrorType::ReceiverFailed),
+                        detail: CaptureDiagnosticDetail::VulkanFailure {
+                            category,
+                            producer_status,
+                        },
+                    });
+                    self.diagnostic_sequence = self.diagnostic_sequence.saturating_add(1);
                 }
-                scorepeek::capture::vulkan::VulkanSessionFailure::Failed => {
-                    CaptureErrorType::ReceiverFailed
-                }
-            })
-        })
+                Err(CaptureError::without_source(
+                    CaptureErrorType::ReceiverFailed,
+                ))
+            }
+        }
     }
 
     pub fn shutdown_with_elapsed(
@@ -1278,6 +1309,7 @@ pub fn admit_vulkan_session(
             diagnostic_sequence: 2,
             normalization_success_recorded: false,
             normalization_failure_recorded: false,
+            terminal_failure_recorded: false,
         },
         authored,
     ))

@@ -64,6 +64,14 @@ pub struct VulkanTimingStats {
 #[derive(Debug)]
 enum WorkerTerminal {
     Disconnected,
+    Producer { status: i32 },
+    Readback,
+    Protocol,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum TransportError {
+    Disconnected,
     Failed(String),
 }
 
@@ -80,7 +88,9 @@ impl CaptureImage for ImportedImage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VulkanSessionFailure {
     Disconnected,
-    Failed,
+    Producer { status: i32 },
+    Readback,
+    Protocol,
 }
 
 #[derive(Debug, Default)]
@@ -167,8 +177,8 @@ impl VulkanListener {
             dup(&self.fd).map_err(|error| format!("duplicate Vulkan admission socket: {error}"))?;
         match VulkanSession::start(socket, admission_listener) {
             Ok(session) => Ok(Some(session)),
-            Err(error) if source_ended_during_handshake(&error) => Ok(None),
-            Err(error) => Err(error),
+            Err(TransportError::Disconnected) => Ok(None),
+            Err(TransportError::Failed(error)) => Err(error),
         }
     }
 
@@ -197,10 +207,6 @@ impl VulkanListener {
     }
 }
 
-fn source_ended_during_handshake(error: &str) -> bool {
-    error.contains("Broken pipe") || error.contains("disconnected")
-}
-
 impl Drop for VulkanListener {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
@@ -216,7 +222,7 @@ pub struct VulkanSession {
 }
 
 impl VulkanSession {
-    fn start(socket: OwnedFd, admission_listener: OwnedFd) -> Result<Self, String> {
+    fn start(socket: OwnedFd, admission_listener: OwnedFd) -> Result<Self, TransportError> {
         Self::start_with_importer(socket, admission_listener, |contract, dma_buf| {
             ImportedImage::import(contract, dma_buf)
                 .map(|image| Box::new(image) as Box<dyn CaptureImage>)
@@ -227,14 +233,19 @@ impl VulkanSession {
         socket: OwnedFd,
         admission_listener: OwnedFd,
         importer: impl FnOnce(ImageContract, OwnedFd) -> Result<Box<dyn CaptureImage>, String>,
-    ) -> Result<Self, String> {
-        if !wait_readable(&socket, Duration::from_secs(2))? {
-            return Err("Vulkan producer admission timed out".to_owned());
+    ) -> Result<Self, TransportError> {
+        if !wait_readable(&socket, Duration::from_secs(2)).map_err(TransportError::Failed)? {
+            return Err(TransportError::Failed(
+                "Vulkan producer admission timed out".to_owned(),
+            ));
         }
-        let admission = receive_packet(&socket, Duration::ZERO)?
-            .ok_or_else(|| "Vulkan producer disconnected during admission".to_owned())?;
+        let admission = receive_packet(&socket, Duration::ZERO)?.ok_or_else(|| {
+            TransportError::Failed("Vulkan producer admission packet missing".to_owned())
+        })?;
         if admission.message_type != ADMIT {
-            return Err("invalid Vulkan admission request".to_owned());
+            return Err(TransportError::Failed(
+                "invalid Vulkan admission request".to_owned(),
+            ));
         }
         send_packet(
             &socket,
@@ -243,13 +254,15 @@ impl VulkanSession {
                 ..Packet::default()
             },
         )?;
-        if !wait_readable(&socket, Duration::from_secs(2))? {
-            return Err("Vulkan producer handshake timed out".to_owned());
+        if !wait_readable(&socket, Duration::from_secs(2)).map_err(TransportError::Failed)? {
+            return Err(TransportError::Failed(
+                "Vulkan producer handshake timed out".to_owned(),
+            ));
         }
         let (contract, order, dma_buf) = receive_hello(&socket)?;
         let width = contract.width;
         let height = contract.height;
-        let capture_image = importer(contract, dma_buf)?;
+        let capture_image = importer(contract, dma_buf).map_err(TransportError::Failed)?;
         send_packet(
             &socket,
             Packet {
@@ -275,7 +288,9 @@ impl VulkanSession {
                     worker_stop,
                 );
             })
-            .map_err(|error| format!("start Vulkan capture worker: {error}"))?;
+            .map_err(|error| {
+                TransportError::Failed(format!("start Vulkan capture worker: {error}"))
+            })?;
         Ok(Self {
             contract,
             state,
@@ -325,7 +340,11 @@ impl VulkanSession {
         {
             None => Ok(()),
             Some(WorkerTerminal::Disconnected) => Err(VulkanSessionFailure::Disconnected),
-            Some(WorkerTerminal::Failed(_)) => Err(VulkanSessionFailure::Failed),
+            Some(WorkerTerminal::Producer { status }) => {
+                Err(VulkanSessionFailure::Producer { status: *status })
+            }
+            Some(WorkerTerminal::Readback) => Err(VulkanSessionFailure::Readback),
+            Some(WorkerTerminal::Protocol) => Err(VulkanSessionFailure::Protocol),
         }
     }
 
@@ -371,8 +390,8 @@ fn run_worker(
     let mut next_request = Instant::now();
     let mut sequence = 0_u64;
     while !stop.load(Ordering::Acquire) {
-        if let Err(error) = reject_busy_producers(&admission_listener) {
-            set_terminal(&state, WorkerTerminal::Failed(error));
+        if reject_busy_producers(&admission_listener).is_err() {
+            set_terminal(&state, WorkerTerminal::Protocol);
             return;
         }
         let now = Instant::now();
@@ -385,28 +404,27 @@ fn run_worker(
                 ..Packet::default()
             };
             if let Err(error) = send_packet(&socket, request) {
-                set_terminal(&state, WorkerTerminal::Failed(error));
+                set_terminal(
+                    &state,
+                    match error {
+                        TransportError::Disconnected => WorkerTerminal::Disconnected,
+                        TransportError::Failed(_) => WorkerTerminal::Protocol,
+                    },
+                );
                 return;
             }
             next_request = now + REQUEST_INTERVAL;
         }
         match receive_packet(&socket, Duration::from_millis(10)) {
             Ok(None) => {}
-            Err(error) if error.contains("disconnected") => {
+            Err(TransportError::Disconnected) => {
                 set_terminal(&state, WorkerTerminal::Disconnected);
                 return;
             }
-            Err(error) => {
-                set_terminal(&state, WorkerTerminal::Failed(error));
-                return;
-            }
             Ok(Some(packet)) if packet.message_type == READY => {
-                let readback = match imported.readback() {
-                    Ok(value) => value,
-                    Err(error) => {
-                        set_terminal(&state, WorkerTerminal::Failed(error));
-                        return;
-                    }
+                let Ok(readback) = imported.readback() else {
+                    set_terminal(&state, WorkerTerminal::Readback);
+                    return;
                 };
                 let consumer_done_ns = monotonic_ns();
                 let mut bytes = readback.bytes;
@@ -454,25 +472,27 @@ fn run_worker(
                         ..Packet::default()
                     },
                 ) {
-                    set_terminal(&state, WorkerTerminal::Failed(error));
+                    set_terminal(
+                        &state,
+                        match error {
+                            TransportError::Disconnected => WorkerTerminal::Disconnected,
+                            TransportError::Failed(_) => WorkerTerminal::Protocol,
+                        },
+                    );
                     return;
                 }
             }
             Ok(Some(packet)) if packet.message_type == ERROR => {
                 set_terminal(
                     &state,
-                    WorkerTerminal::Failed(format!(
-                        "Vulkan producer capture error {}",
-                        packet.status
-                    )),
+                    WorkerTerminal::Producer {
+                        status: packet.status,
+                    },
                 );
                 return;
             }
-            Ok(Some(_)) => {
-                set_terminal(
-                    &state,
-                    WorkerTerminal::Failed("invalid Vulkan packet".to_owned()),
-                );
+            Err(TransportError::Failed(_)) | Ok(Some(_)) => {
+                set_terminal(&state, WorkerTerminal::Protocol);
                 return;
             }
         }
@@ -496,22 +516,27 @@ fn reject_busy_producers(listener: &OwnedFd) -> Result<(), String> {
     }
 }
 
-fn receive_hello(socket: &OwnedFd) -> Result<(ImageContract, VulkanPixelOrder, OwnedFd), String> {
+fn receive_hello(
+    socket: &OwnedFd,
+) -> Result<(ImageContract, VulkanPixelOrder, OwnedFd), TransportError> {
     let mut bytes = [0_u8; HELLO_BYTES];
     let mut io = [IoSliceMut::new(&mut bytes)];
     let mut control_space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
     let mut control = RecvAncillaryBuffer::new(&mut control_space);
     let received = recvmsg(socket, &mut io, &mut control, RecvFlags::CMSG_CLOEXEC)
-        .map_err(|error| format!("receive Vulkan hello: {error}"))?;
+        .map_err(|error| transport_error("receive Vulkan hello", error))?;
+    if received.bytes == 0 {
+        return Err(TransportError::Disconnected);
+    }
     if received.bytes == PACKET_BYTES
         && u32_at(&bytes, 0) == MAGIC
         && u16_at(&bytes, 4) == VERSION
         && u16_at(&bytes, 6) == ERROR
     {
-        return Err(format!(
+        return Err(TransportError::Failed(format!(
             "Vulkan producer capture error {}",
             i32::from_ne_bytes(bytes[88..92].try_into().expect("fixed slice"))
-        ));
+        )));
     }
     if received.bytes != HELLO_BYTES
         || u32_at(&bytes, 0) != MAGIC
@@ -519,7 +544,7 @@ fn receive_hello(socket: &OwnedFd) -> Result<(ImageContract, VulkanPixelOrder, O
         || u16_at(&bytes, 6) != HELLO
         || u32_at(&bytes, 8) as usize != HELLO_BYTES
     {
-        return Err("invalid Vulkan hello".to_owned());
+        return Err(TransportError::Failed("invalid Vulkan hello".to_owned()));
     }
     let dma_buf = control
         .drain()
@@ -527,16 +552,24 @@ fn receive_hello(socket: &OwnedFd) -> Result<(ImageContract, VulkanPixelOrder, O
             RecvAncillaryMessage::ScmRights(mut rights) => rights.next(),
             _ => None,
         })
-        .ok_or_else(|| "Vulkan hello did not include one DMA-BUF".to_owned())?;
+        .ok_or_else(|| {
+            TransportError::Failed("Vulkan hello did not include one DMA-BUF".to_owned())
+        })?;
     let plane_count = u32_at(&bytes, 28);
     if plane_count == 0 || plane_count as usize > MAX_PLANES {
-        return Err("invalid Vulkan plane count".to_owned());
+        return Err(TransportError::Failed(
+            "invalid Vulkan plane count".to_owned(),
+        ));
     }
     let vk_format = u32_at(&bytes, 20);
     let order = match vk_format {
         37 | 43 => VulkanPixelOrder::Rgba,
         44 | 50 => VulkanPixelOrder::Bgra,
-        _ => return Err(format!("unsupported Vulkan format {vk_format}")),
+        _ => {
+            return Err(TransportError::Failed(format!(
+                "unsupported Vulkan format {vk_format}"
+            )));
+        }
     };
     let mut device_uuid = [0_u8; 16];
     device_uuid.copy_from_slice(&bytes[56..72]);
@@ -583,18 +616,18 @@ struct Packet {
     status: i32,
 }
 
-fn receive_packet(socket: &OwnedFd, timeout: Duration) -> Result<Option<Packet>, String> {
-    if !wait_readable(socket, timeout)? {
+fn receive_packet(socket: &OwnedFd, timeout: Duration) -> Result<Option<Packet>, TransportError> {
+    if !wait_readable(socket, timeout).map_err(TransportError::Failed)? {
         return Ok(None);
     }
     let mut bytes = [0_u8; PACKET_BYTES];
     let (count, _) = recv(socket, &mut bytes, RecvFlags::empty())
-        .map_err(|error| format!("receive Vulkan packet: {error}"))?;
+        .map_err(|error| transport_error("receive Vulkan packet", error))?;
     if count == 0 {
-        return Err("Vulkan producer disconnected".to_owned());
+        return Err(TransportError::Disconnected);
     }
     if count != PACKET_BYTES || u32_at(&bytes, 0) != MAGIC || u16_at(&bytes, 4) != VERSION {
-        return Err("invalid Vulkan packet".to_owned());
+        return Err(TransportError::Failed("invalid Vulkan packet".to_owned()));
     }
     Ok(Some(Packet {
         message_type: u16_at(&bytes, 6),
@@ -637,14 +670,27 @@ fn performance_summary(state: &Mutex<SessionState>) -> VulkanPerformanceSummary 
     }
 }
 
-fn send_packet(socket: &OwnedFd, packet: Packet) -> Result<(), String> {
+fn send_packet(socket: &OwnedFd, packet: Packet) -> Result<(), TransportError> {
     let bytes = encode_packet(packet);
     let count = send(socket, &bytes, SendFlags::NOSIGNAL)
-        .map_err(|error| format!("send Vulkan packet: {error}"))?;
+        .map_err(|error| transport_error("send Vulkan packet", error))?;
     if count != PACKET_BYTES {
-        return Err("short Vulkan packet send".to_owned());
+        return Err(TransportError::Failed(
+            "short Vulkan packet send".to_owned(),
+        ));
     }
     Ok(())
+}
+
+fn transport_error(operation: &str, error: rustix::io::Errno) -> TransportError {
+    if matches!(
+        error,
+        rustix::io::Errno::PIPE | rustix::io::Errno::CONNRESET | rustix::io::Errno::NOTCONN
+    ) {
+        TransportError::Disconnected
+    } else {
+        TransportError::Failed(format!("{operation}: {error}"))
+    }
 }
 
 fn encode_packet(packet: Packet) -> [u8; PACKET_BYTES] {
@@ -760,15 +806,18 @@ mod tests {
     }
 
     #[test]
-    fn disappearing_pre_admission_producer_is_not_an_incompatible_contract() {
-        assert!(source_ended_during_handshake(
-            "send Vulkan packet: Broken pipe (os error 32)"
-        ));
-        assert!(source_ended_during_handshake(
-            "Vulkan producer disconnected"
-        ));
-        assert!(!source_ended_during_handshake(
-            "unsupported Vulkan format 99"
+    fn disconnect_errno_is_typed_without_string_matching() {
+        assert_eq!(
+            transport_error("send Vulkan packet", rustix::io::Errno::PIPE),
+            TransportError::Disconnected
+        );
+        assert_eq!(
+            transport_error("receive Vulkan packet", rustix::io::Errno::CONNRESET),
+            TransportError::Disconnected
+        );
+        assert!(matches!(
+            transport_error("receive Vulkan packet", rustix::io::Errno::INVAL),
+            TransportError::Failed(_)
         ));
     }
 
@@ -792,8 +841,82 @@ mod tests {
         .unwrap();
         assert_eq!(
             receive_hello(&consumer).unwrap_err(),
-            "Vulkan producer capture error 6"
+            TransportError::Failed("Vulkan producer capture error 6".to_owned())
         );
+    }
+
+    #[test]
+    fn send_after_peer_exit_is_a_normal_disconnect() {
+        let (consumer, producer) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        drop(producer);
+        assert_eq!(
+            send_packet(
+                &consumer,
+                Packet {
+                    message_type: REQUEST,
+                    ..Packet::default()
+                }
+            ),
+            Err(TransportError::Disconnected)
+        );
+    }
+
+    #[test]
+    fn worker_preserves_producer_error_status() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let listener = VulkanListener::bind_at(root.path().join("capture.sock")).unwrap();
+        let admission_listener = dup(&listener.fd).unwrap();
+        let (consumer, producer) = socketpair(
+            AddressFamily::UNIX,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let state = Arc::new(Mutex::new(SessionState::default()));
+        let worker_state = Arc::clone(&state);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            run_worker(
+                consumer,
+                admission_listener,
+                Box::new(FakeImage),
+                VulkanPixelOrder::Bgra,
+                2,
+                1,
+                worker_state,
+                worker_stop,
+            );
+        });
+        let request = receive_packet(&producer, Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        send_packet(
+            &producer,
+            Packet {
+                message_type: ERROR,
+                status: 6,
+                sequence: request.sequence,
+                ..Packet::default()
+            },
+        )
+        .unwrap();
+        worker.join().unwrap();
+        assert!(matches!(
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .terminal
+                .as_ref(),
+            Some(WorkerTerminal::Producer { status: 6 })
+        ));
     }
 
     #[test]

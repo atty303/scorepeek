@@ -1227,6 +1227,18 @@ fn run_routine_live_session(
                         output.warning(error)?;
                     }
                     match report.startup_retry() {
+                        Some(capture_live::LiveSessionStartupRetry::Admission)
+                            if report
+                                .capture_error_type()
+                                .is_some_and(transient_admission_capture_error) =>
+                        {
+                            announce_watcher_state(
+                                &mut announced,
+                                routine_watcher::WatcherState::WaitingForSource,
+                                "capture source disappeared during admission; scorepeek will keep waiting",
+                                &mut output,
+                            )?;
+                        }
                         Some(capture_live::LiveSessionStartupRetry::Admission) => {
                             return Err(report.startup_failure_summary());
                         }
@@ -1263,12 +1275,23 @@ fn routine_session_disposition(
 ) -> (&'static str, bool, bool) {
     match reason {
         Some(capture_live::LiveSessionStopReason::RequestedSignal) => ("stopped", false, false),
-        Some(capture_live::LiveSessionStopReason::SourceEnded) => ("source_ended", false, false),
-        Some(capture_live::LiveSessionStopReason::SourceContractChanged) => {
-            ("source_ended", true, false)
-        }
+        Some(
+            capture_live::LiveSessionStopReason::SourceEnded
+            | capture_live::LiveSessionStopReason::SourceContractChanged,
+        ) => ("source_ended", true, false),
         Some(capture_live::LiveSessionStopReason::TerminalFailure) | None => ("error", false, true),
     }
+}
+
+const fn transient_admission_capture_error(
+    error_type: scorepeek::capture::CaptureErrorType,
+) -> bool {
+    matches!(
+        error_type,
+        scorepeek::capture::CaptureErrorType::SourceUnavailable
+            | scorepeek::capture::CaptureErrorType::SourceLost
+            | scorepeek::capture::CaptureErrorType::StreamLost
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4019,7 +4042,13 @@ mod tests {
     }
 
     #[test]
-    fn capture_terminal_failure_is_fatal_but_contract_change_is_readmitted() {
+    fn capture_terminal_failure_is_fatal_but_source_endings_are_readmitted() {
+        assert_eq!(
+            routine_session_disposition(Some(
+                crate::capture_live::LiveSessionStopReason::SourceEnded
+            )),
+            ("source_ended", true, false)
+        );
         assert_eq!(
             routine_session_disposition(Some(
                 crate::capture_live::LiveSessionStopReason::TerminalFailure
@@ -4032,6 +4061,22 @@ mod tests {
             )),
             ("source_ended", true, false)
         );
+    }
+
+    #[test]
+    fn only_source_disappearance_is_retried_during_admission() {
+        assert!(crate::transient_admission_capture_error(
+            scorepeek::capture::CaptureErrorType::SourceLost
+        ));
+        assert!(crate::transient_admission_capture_error(
+            scorepeek::capture::CaptureErrorType::StreamLost
+        ));
+        assert!(!crate::transient_admission_capture_error(
+            scorepeek::capture::CaptureErrorType::UnsupportedFormat
+        ));
+        assert!(!crate::transient_admission_capture_error(
+            scorepeek::capture::CaptureErrorType::FrameNormalizationFailed
+        ));
     }
 
     #[test]

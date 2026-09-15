@@ -179,6 +179,8 @@ mise run capture:vulkan:test:live
 ```
 
 The PipeWire gate requires GStreamer with `videotestsrc` and `pipewiresink`.
+It also builds a temporary producer with the pinned Zig and PipeWire SDK to
+renegotiate one live node from 640x480 to 800x600 without replacing the node.
 The Vulkan gate requires Gamescope, `vkcube`, and `obs-vkcapture`; it verifies
 layer coexistence and reconnects a still-running producer after restarting
 Scorepeek. Both gates require `SCOREPEEK_NUMERIC_MODEL_BUNDLE` to name the

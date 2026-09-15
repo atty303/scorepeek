@@ -160,6 +160,10 @@ pub enum CaptureDiagnosticDetail {
         max_ns: u64,
         dropped: u64,
     },
+    VulkanFailure {
+        category: &'static str,
+        producer_status: Option<i32>,
+    },
     ReceiverShutdown {
         received_frames: u64,
         overwritten_frames: u64,

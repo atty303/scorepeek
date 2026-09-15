@@ -532,6 +532,10 @@ impl GamescopeFieldObservationGateReport {
         }
     }
 
+    pub const fn capture_error_type(&self) -> Option<CaptureErrorType> {
+        self.capture_error_type
+    }
+
     pub fn startup_failure_summary(&self) -> String {
         self.failure_detail.clone().unwrap_or_else(|| {
             format!("capture live session startup failed: {:?}", self.error_type)
