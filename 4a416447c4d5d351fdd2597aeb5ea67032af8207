@@ -1,0 +1,17 @@
+Intent: Close every lifecycle, error classification, resource ownership, and live-verification gap found by the first fresh review of the runtime capture integration.
+
+Implementation:
+- Retry only source disappearance during pre-start admission while keeping unsupported formats, invalid crops, imports, and other contract failures fatal.
+- Classify Vulkan socket disconnects structurally, retain producer status/readback/protocol failures in structured capture diagnostics, and test disconnect and producer-error paths.
+- Release the Layer's DMA-BUF, fence, semaphore, and command resources asynchronously when the consumer disconnects; reject non-device-local export memory.
+- Require successful frame normalization and positive timing samples in the Vulkan live gate.
+- Extend the PipeWire live gate with an SDK-backed same-node renegotiating producer while retaining GStreamer source disappearance/reappearance coverage.
+
+Verification:
+- mise run test: passed, including clippy -D warnings, 472 scorepeek library tests, 260 scorepeek binary tests, OCR, native, browser, and Wayland-independent overlay gates.
+- mise run capture:pipewire:test:live: passed against the user PipeWire session, including same-node 640x480 to 800x600 contract change and generation switch.
+- mise run capture:vulkan:test:live: passed with Gamescope, vkcube, obs-vkcapture, two Scorepeek lifetimes, normalized frames, and positive timing samples.
+
+Exclusions:
+- Release archive placement and install/uninstall/activation UX remain deferred to the first release.
+- bm2dx.exe subjective verification remains operator-owned.
