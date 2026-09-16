@@ -63,6 +63,54 @@ pub struct SurfaceHandle {
     layer: LayerSurface,
     connection: Connection,
 }
+
+trait LayerStateTarget {
+    fn set_top_left_anchor(&self);
+    fn set_position(&self, x: i32, y: i32);
+    fn set_non_exclusive(&self);
+    fn set_keyboard_enabled(&self, enabled: bool);
+    fn set_logical_size(&self, width: u32, height: u32);
+}
+
+impl LayerStateTarget for LayerSurface {
+    fn set_top_left_anchor(&self) {
+        self.set_anchor(Anchor::TOP | Anchor::LEFT);
+    }
+
+    fn set_position(&self, x: i32, y: i32) {
+        self.set_margin(y, 0, 0, x);
+    }
+
+    fn set_non_exclusive(&self) {
+        self.set_exclusive_zone(-1);
+    }
+
+    fn set_keyboard_enabled(&self, enabled: bool) {
+        self.set_keyboard_interactivity(if enabled {
+            KeyboardInteractivity::Exclusive
+        } else {
+            KeyboardInteractivity::None
+        });
+    }
+
+    fn set_logical_size(&self, width: u32, height: u32) {
+        self.set_size(width, height);
+    }
+}
+
+fn apply_layer_state(
+    target: &impl LayerStateTarget,
+    position: [i32; 2],
+    size: [u32; 2],
+    keyboard_enabled: bool,
+) {
+    target.set_top_left_anchor();
+    target.set_position(position[0], position[1]);
+    target.set_non_exclusive();
+    target.set_keyboard_enabled(keyboard_enabled);
+    target.set_logical_size(size[0], size[1]);
+}
+
 impl SurfaceHandle {
     fn unmap(&self) -> Result<(), String> {
         let surface = self.layer.wl_surface();
@@ -277,11 +325,12 @@ impl Shell {
             Some("scorepeek-overlay"),
             Some(&selection.output),
         );
-        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
-        layer.set_margin(y, 0, 0, resolved_x);
-        layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(surface_width, surface_height);
+        apply_layer_state(
+            &layer,
+            [resolved_x, y],
+            [surface_width, surface_height],
+            false,
+        );
         app.scale = selection.info.scale_factor.max(1);
         layer.commit();
 
@@ -437,6 +486,12 @@ impl Shell {
         self.state.configured = false;
         self.state.needs_configure = false;
         self.configure_phase = ConfigurePhase::Awaiting(Instant::now());
+        apply_layer_state(
+            &self.owner.layer,
+            self.position,
+            [self.state.width, self.state.height],
+            self.state.input.keyboard_enabled(),
+        );
         self.owner.layer.commit();
     }
 
@@ -934,7 +989,70 @@ fn choose_output_index<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_output_index, pointer_scroll_delta, scaled_size, upper_right_x};
+    use super::{
+        LayerStateTarget, apply_layer_state, choose_output_index, pointer_scroll_delta,
+        scaled_size, upper_right_x,
+    };
+    use std::cell::RefCell;
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum LayerRequest {
+        AnchorTopLeft,
+        Position(i32, i32),
+        NonExclusive,
+        Keyboard(bool),
+        LogicalSize(u32, u32),
+    }
+
+    #[derive(Default)]
+    struct RecordingLayer {
+        requests: RefCell<Vec<LayerRequest>>,
+    }
+
+    impl LayerStateTarget for RecordingLayer {
+        fn set_top_left_anchor(&self) {
+            self.requests.borrow_mut().push(LayerRequest::AnchorTopLeft);
+        }
+
+        fn set_position(&self, x: i32, y: i32) {
+            self.requests
+                .borrow_mut()
+                .push(LayerRequest::Position(x, y));
+        }
+
+        fn set_non_exclusive(&self) {
+            self.requests.borrow_mut().push(LayerRequest::NonExclusive);
+        }
+
+        fn set_keyboard_enabled(&self, enabled: bool) {
+            self.requests
+                .borrow_mut()
+                .push(LayerRequest::Keyboard(enabled));
+        }
+
+        fn set_logical_size(&self, width: u32, height: u32) {
+            self.requests
+                .borrow_mut()
+                .push(LayerRequest::LogicalSize(width, height));
+        }
+    }
+
+    #[test]
+    fn remap_layer_state_restores_every_double_buffered_request() {
+        let layer = RecordingLayer::default();
+        apply_layer_state(&layer, [120, 48], [560, 1040], true);
+        assert_eq!(
+            *layer.requests.borrow(),
+            [
+                LayerRequest::AnchorTopLeft,
+                LayerRequest::Position(120, 48),
+                LayerRequest::NonExclusive,
+                LayerRequest::Keyboard(true),
+                LayerRequest::LogicalSize(560, 1040),
+            ]
+        );
+    }
+
     #[test]
     fn integer_and_fractional_buffers_round_up() {
         assert_eq!(scaled_size(1920, 120), 1920);

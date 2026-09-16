@@ -108,6 +108,11 @@ impl Input {
             pending: TextUpdate::default(),
         }
     }
+
+    pub(super) const fn keyboard_enabled(&self) -> bool {
+        self.keyboard_enabled
+    }
+
     fn commit(&mut self) {
         if let Some(input) = &self.protocol {
             input.commit();

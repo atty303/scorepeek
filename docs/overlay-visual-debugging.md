@@ -95,9 +95,10 @@ single-flight callback with that present. The presenter has no independent refre
 admission flag. When a display canvas becomes inactive, its current buffer is detached and committed
 immediately; it does not wait for a transparent paint. Its DOM, renderer and skin runtime remain
 allocated, but both the callback-driven presenter and the skin runtime schedule are paused. Becoming
-active performs an immediate skin render and bufferless commit, waits for the layer-shell configure,
-then presents to remap the surface and resumes both loops. Frame callbacks received before that
-configure cannot admit the remap paint.
+active performs an immediate skin render, restores size, anchor, margin, exclusivity and keyboard
+interactivity, and makes a bufferless commit. It waits for the layer-shell configure, then presents
+to remap the surface and resumes both loops. Frame callbacks received before that configure cannot
+admit the remap paint.
 The skin schedule (`idle`, `next-frame`, or `after-ms`) drives Wasm/DOM updates and is independent of
 the presenter callback rate. Repeated configure events with unchanged logical size, physical size
 and scale update no state.
