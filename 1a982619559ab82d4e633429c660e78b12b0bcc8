@@ -1,0 +1,11 @@
+Task: Commit removal of forced diagnostic stream durability synchronization
+Anchor: 1a982619559ab82d4e633429c660e78b12b0bcc8
+Base: e692fcd5622471050528500aaf73c60fe831ba3d
+Line: main
+Commits: 1a982619559ab82d4e633429c660e78b12b0bcc8 removes diagnostic NDJSON sync_data calls and updates the living contract
+Guidance: repository AGENTS.md; develop-repository; review
+Execution: local workspace; targeted socket tests rerun outside the restricted sandbox after bind was denied; no push or target install
+Authority: crates/scorepeek/src/diagnostic_stream.rs and docs/diagnostics.md define the current best-effort diagnostic persistence behavior.
+Transcript:
+- U1: sync_data削除はcommit
+  - A: Confirmed that only diagnostic_stream.rs and diagnostics.md were staged, ran the targeted repository check, obtained an independent fresh review with no actionable findings, and ran diagnostic_stream tests. The restricted sandbox passed 12 tests and denied two Unix socket binds; the identical test outside that boundary passed all 14 tests in both the library and binary targets. Committed the two-file change as 1a982619559ab82d4e633429c660e78b12b0bcc8. The required post-commit build first failed because the sandbox made the mise task-source cache read-only, then succeeded unchanged with normal development-environment access. The final working tree was clean; no install or push was performed.
