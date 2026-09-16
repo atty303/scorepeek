@@ -1,0 +1,14 @@
+Task: Automatically recover the OBS overlay from embedded asset version changes
+Anchor: 41af463d21f539bbd0254c0b20b0f7984f09f3a0
+Base: 1f00511bd316105f819aab97cc2becb9897c88ba
+Line: main
+Commits: 41af463d21f539bbd0254c0b20b0f7984f09f3a0 implements one-shot automatic asset reload with loop protection
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review; maintain-agent-guidance
+Environment: local Git repository; loopback Playwright server and Chromium required sandbox escalation; commit signing agent unavailable; unsigned commit explicitly authorized
+Evidence: The new browser regression failed before implementation with one stage connection instead of two. After implementation and review correction, mise run check, the three Playwright browser scenarios, and the complete mise run test suite passed. The post-commit mise run build succeeded outside the sandbox and rebuilt target/debug/scorepeek with the embedded OBS UI.
+Authority: Current source, tests, README.md, and docs/overlay-visual-debugging.md define the asset mismatch recovery contract.
+Transcript:
+- U1: asset version違いも手動リロードではなく自動リロードにしてくれる？
+  - A: Inspected the existing version mismatch path and no-store responses, classified the change as durable, and retained the existing overlay version diagnostics. Added a failing Playwright regression, then implemented a sessionStorage-guarded automatic page reload on mismatch, a manual fallback after a repeated mismatch, the required web-sys Storage feature, and living documentation updates. The focused browser suite and mise run check passed. A fresh reviewer found that the guard was not cleared after a matching stage, which would suppress a later independent upgrade in a long-lived Browser Source. Added guard clearing on a matching stage and expanded the same-page browser scenario to cover two independent upgrades while preserving the consecutive-mismatch loop bound. Delta review found no remaining actionable issue. The final complete mise run test suite passed. A normal signed commit attempt failed because the signing agent was unavailable, so completion paused with exactly the six intended files staged and requested fresh authorization rather than reusing the previous one-time unsigned exception.
+- U2: 署名なしてコミットして
+  - A: Reconfirmed the staged boundary and committed only the six intended files as 41af463 with commit.gpgsign disabled for that invocation. The first sandboxed unsigned attempt could not create .git/index.lock because the environment-prefixed command did not match the approved script prefix; rerunning the identical authorized command outside the sandbox succeeded. The initial sandboxed post-commit build produced the web bundle but failed when mise could not update its home-state task cache; the required rerun outside the sandbox succeeded. The final VCS snapshot was clean on main at 41af463, ahead of origin/main by 15.
