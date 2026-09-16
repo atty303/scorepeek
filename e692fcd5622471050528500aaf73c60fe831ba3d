@@ -1,0 +1,62 @@
+Task: Repair Wayland overlay canvas visibility after screen changes and INFINITAS restart without recreating retained overlay resources.
+Anchor: e692fcd5622471050528500aaf73c60fe831ba3d
+Base: 46075e8baa727974ad87eba4be63f351d1fe39a1
+Line: main
+Commit: e692fcd5622471050528500aaf73c60fe831ba3d fix(overlay): resume Wayland presentation after canvas remap
+
+Authority and constraints:
+- Repository source, tests, living architecture and visual-debugging documentation are authoritative at the anchor.
+- The user rejected attributing the failure to Scroll without evidence and rejected worker, layer-surface, DOM, Wasm runtime, or skin-package recreation because of cost.
+- Live infinitas.lan deployment or process restart was not authorized or performed.
+
+Outcome:
+- On inactive screen filtering, the retained display worker null-buffer unmaps the existing layer-surface and suspends only Vello GPU presentation.
+- On the next layer configure, the same worker, Shell/layer-surface, DOM, Wasm skin runtime, package, and device context are retained while Vello presentation resumes.
+- native_surface_transition records renderer and surface before/after state for dispatch, configure, unmap/present success and error boundaries.
+- The nested Scroll fixture drives acknowledged music_select -> play -> music_select transitions and requires active -> inactive -> active, one run ID, one skin runtime creation, two mapped paints, renderer true -> false -> true, no worker failure, and remap-to-paint below 250 ms.
+
+Verification:
+- cargo test -p scorepeek-overlay --lib: 87 passed.
+- cargo clippy -p scorepeek-overlay --lib --examples -- -D warnings: passed.
+- mise run overlay:visual:wayland:nested: passed; input-to-paint 4121 us, display-remap 35343 us.
+- mise run test: passed in the host-equivalent environment, 174.51 s.
+- Fresh full review: no findings. Residual risks are no dedicated forced dispatch/configure failure conformance test and no live INFINITAS restart validation.
+- mise run build after commit: passed; target/debug/scorepeek matches committed source.
+- The first sandbox build attempt could not write ~/.local/state/mise/task-sources; the approved host-equivalent rerun passed.
+
+Repository hygiene:
+- Pre-existing staged changes in crates/scorepeek/src/diagnostic_stream.rs and docs/diagnostics.md were excluded from this commit and restored to their original staged state.
+- A commit hook unexpectedly staged diagnostic_stream.rs during the path-limited commit. The immediately-created local commit was amended to remove that unrelated file; the final commit contains exactly the six task files.
+- No push was performed.
+
+Conversation transcript:
+- User: infinitas.lanでwayland overlayがscreen切り替えでcanvas表示状態が変わらない。変わることもある
+  Assistant: Investigated the runtime path and initially considered unmapped layer-surface reuse.
+- User: 既存のunmapped layer-surfaceの再利用に依存せず ← scrollの問題だと言い切れるのか？
+  Assistant: Withdrew the unsupported Scroll attribution and returned to scorepeek-owned state and lifecycle evidence.
+- User: 他人を疑う前に自分を見直せよ。
+  Assistant: Reassessed scorepeek's own lifecycle assumptions first.
+- User: 修正して
+  Assistant: Implemented and tested an initial lifecycle correction.
+- User: 今起動しているがscreen切り替わらない
+  Assistant: Used the running diagnostic stream to compare accepted screen/feed state with Wayland paint state.
+- User: やっと動くようになった……
+  Assistant: Treated the recovery as evidence, not completion.
+- User: 完成と判断する前に関連する未修正に気づく方法ないの？
+  Assistant: Added lifecycle-oriented completion checks and reviewed adjacent failure paths.
+- User: それは今回の特化するとそうだが、今後広く適用できる一般解は？
+  Assistant: Generalized the completion principle around explicit contracts, transition observability, and adversarial forward tests.
+- User: [$maintain-agent-guidance](/var/home/atty/.agents/skills/maintain-agent-guidance/SKILL.md) この原則は反映されているか？
+  Assistant: Audited the durable guidance against the observed failure mode.
+- User: 反映して
+  Assistant: Reflected the approved general principle in the applicable guidance in the preceding task checkpoint.
+- User: 今起動しているが、scorepeekを起動したままinfinitasを再起動したらwaylandがscreenに追随しなくなった
+  Assistant: Investigated the second activation in the same scorepeek process.
+- User: 今music select screenを表示していてobsのほうは曲名が追随するけどwaylandはmusic selectで有効なcanvasが表示されていない。これは事実として確認しているか？
+  Assistant: Confirmed from diagnostics that OBS/feed/screen/configure progressed while the Wayland canvas did not produce the second active paint.
+- User: であれば再現と修正ができるはずだ。最初のinifnitas起動時はwaylandでもcanvasトグルが追随していたから、scrollの問題はありえないだろう。
+  Assistant: Built a same-process active -> inactive -> active reproduction around the retained native display lifecycle.
+- User: ちょっとまて、surface 再作成のコストを考えているか？
+  Assistant: Stopped the recreation direction and separated cheap presentation suspension from expensive worker/surface/DOM/Wasm/package recreation.
+- User: それでいい。安易な方法に逃げるな
+  Assistant: Completed the presentation-only suspend/resume implementation, failure diagnostics, acknowledged nested oracle, full verification, review, commit, and build without live deployment.
