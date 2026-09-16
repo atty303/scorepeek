@@ -1,0 +1,13 @@
+Task: Implement automatic OBS canvas reconnection after a scorepeek backend restart
+Anchor: 1f00511bd316105f819aab97cc2becb9897c88ba
+Base: 1f97b891e32ba6d2f50603ca26aac313813d76fe
+Line: main
+Commits: 1f00511bd316105f819aab97cc2becb9897c88ba implements and verifies the reconnect contract
+Guidance: repository AGENTS.md; develop-repository; investigate-problem; design-program-observability; review; maintain-agent-guidance
+Environment: initial remote fetch failed because the configured SSH agent could not sign; local snapshot was clean at base; Playwright loopback and mise task state required the approved target-equivalent execution environment; the final commit is intentionally unsigned only for this commit by explicit user instruction
+Authority: README.md, crates/scorepeek-overlay/src/skin_browser.js, and tests/overlay-browser.spec.js at the anchor commit define the current behavior and regression contract.
+Transcript:
+- U1: 実装して
+  - A: Classified the production change as durable, confirmed the failure oracle from the prior investigation, and designed the retry within the existing browser WebSocket boundary without a new dependency or diagnostic subsystem. Added a Playwright regression that closed the active canvas socket, rejected two reconnect attempts, and required a third connection to receive fresh state and presentation without reloading the iframe or Wasm instance. The test failed against the old one-shot connection, then passed after adding one bounded one-second reconnect timer and disabling retries after canvas_unavailable. Updated README, passed mise run check, the focused browser test, and the complete mise run test in the target-equivalent environment. A fresh independent reviewer found no actionable issue and identified only live OBS validation as unverified. Repeated signed commit attempts passed hooks but failed at the configured signing-agent boundary.
+- U2: 今署名できないから今回だけ署名なしでコミットして
+  - A: Applied a one-command commit.gpgsign=false override around the repository VCS helper without changing persistent Git configuration. Created commit 1f00511bd316105f819aab97cc2becb9897c88ba for exactly the reviewed three files, then passed the required post-commit mise run build so target/debug/scorepeek contains the embedded updated OBS UI.
