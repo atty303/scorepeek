@@ -14,6 +14,9 @@
   let lastEditorSession;
   let lastEditorRevision = -1;
   let awaitingEditorGeometry = false;
+  let socket;
+  let reconnectTimer;
+  let reconnectEnabled = true;
 
   const workerSource = `
     let instance;
@@ -79,7 +82,7 @@
     try {
       validateOutput(event.data.output);
       apply(event.data.output.tree);
-      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type:"skin_diagnostic", status:"success", phase, duration_us:Math.round((performance.now()-started)*1000), next_tick:event.data.output.schedule.kind}));
+      sendSocketMessage({type:"skin_diagnostic", status:"success", phase, duration_us:Math.round((performance.now()-started)*1000), next_tick:event.data.output.schedule.kind});
       schedule(event.data.output.schedule);
       if (pending) { pending = false; queueMicrotask(requestRender); }
     }
@@ -95,7 +98,7 @@
     pending = false;
     root.replaceChildren();
     document.documentElement.dataset.skinFailure = reason;
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type:"skin_diagnostic", status:"failed", error_type:reason}));
+    sendSocketMessage({type:"skin_diagnostic", status:"failed", error_type:reason});
   }
   function schedule(value) {
     if (!worker || document.hidden || value.kind === "idle") return;
@@ -150,9 +153,23 @@
   function apply(tree) { root.replaceChildren(make(tree, root.firstChild)); }
 
   const sample = new URLSearchParams(location.search).get("sample") === "1" ? "?sample=1" : "";
-  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(spec.canvas.id)}${sample}`);
+  const socketUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(spec.canvas.id)}${sample}`;
+  function sendSocketMessage(message) {
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  }
+  function connect() {
+    clearTimeout(reconnectTimer);
+    const candidate = new WebSocket(socketUrl);
+    socket = candidate;
+    candidate.onmessage = receiveSocketMessage;
+    candidate.onclose = () => {
+      if (socket !== candidate) return;
+      socket = undefined;
+      if (reconnectEnabled) reconnectTimer = setTimeout(connect, 1000);
+    };
+  }
   function sameSpecification(candidate) { return JSON.stringify(candidate) === JSON.stringify(spec); }
-  socket.onmessage = event => {
+  function receiveSocketMessage(event) {
     const message = JSON.parse(event.data);
     if (message.type === "state") { state = message.state; requestRender(); }
     if (message.type === "presentation") {
@@ -161,8 +178,13 @@
       spec = message.specification;
       requestRender();
     }
-    if (message.type === "canvas_unavailable") fail("canvas_unavailable");
-  };
+    if (message.type === "canvas_unavailable") {
+      reconnectEnabled = false;
+      clearTimeout(reconnectTimer);
+      fail("canvas_unavailable");
+    }
+  }
+  connect();
   addEventListener("message", event => {
     if (event.source !== parent || event.origin !== location.origin || typeof event.data !== "string") return;
     let message;

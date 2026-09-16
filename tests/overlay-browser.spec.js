@@ -7,12 +7,15 @@ if (executablePath) {
   test.use({ launchOptions: { executablePath } });
 }
 
-test("editor replicas follow drag, stale websocket delivery, scroll, and lifecycle", async ({ page }) => {
+test("editor replicas reconnect and follow drag, stale delivery, scroll, and lifecycle", async ({ page }) => {
   test.setTimeout(60_000);
   const pageErrors = [];
   const replicaLifecycle = [];
   const skinWasmRequests = [];
   const canvasPresentations = [];
+  const canvasStates = [];
+  const canvasConnections = [];
+  let rejectedCanvasConnections = 0;
   let delayedCanvasMessages = 0;
   let delayNextStageDraftReply = false;
   let delayedStageDraftReplies = 0;
@@ -66,14 +69,23 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
       } catch (_) {}
     }, { capture: true });
   });
-  await page.routeWebSocket("**/ws/canvas-*", (client) => {
+  await page.routeWebSocket("**/ws/canvas-*", async (client) => {
+    const connection = { client, server: undefined, url: client.url() };
+    canvasConnections.push(connection);
+    if (rejectedCanvasConnections > 0) {
+      rejectedCanvasConnections -= 1;
+      await client.close({ code: 1012, reason: "backend restarting" });
+      return;
+    }
     const server = client.connectToServer();
+    connection.server = server;
     client.onMessage((message) => server.send(message));
     server.onMessage((message) => {
       delayedCanvasMessages += 1;
       try {
         const envelope = JSON.parse(typeof message === "string" ? message : message.toString());
         if (envelope.type === "presentation") canvasPresentations.push(envelope.specification);
+        if (envelope.type === "state") canvasStates.push(envelope.state);
       } catch (_) {}
       setTimeout(() => client.send(message), 250);
     });
@@ -168,6 +180,34 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   );
   const slot = frame.locator(`.widget-slot[data-widget-id='${draggedWidgetId}']`);
   await expect.poll(async () => [await handle.count(), await slot.count()]).toEqual([1, 1]);
+  await expect(slot).toBeVisible();
+  const connectionsBeforeRestart = canvasConnections.filter(({ url }) =>
+    url.includes("/ws/canvas-1")).length;
+  const statesBeforeRestart = canvasStates.length;
+  const presentationsBeforeRestart = canvasPresentations.length;
+  const replicaLoadsBeforeRestart = replicaLifecycle.filter(({ phase, url }) =>
+    phase === "loaded" && url.includes("/canvas/canvas-1")).length;
+  const replicaURLBeforeRestart = await page.locator("#scorepeek-replica-canvas-1")
+    .getAttribute("src");
+  rejectedCanvasConnections = 2;
+  const activeCanvasConnection = canvasConnections.findLast(({ server, url }) =>
+    server && url.includes("/ws/canvas-1"));
+  expect(activeCanvasConnection).toBeDefined();
+  await activeCanvasConnection.client.close({ code: 1012, reason: "backend restarting" });
+  await expect.poll(() => canvasConnections.filter(({ url }) =>
+    url.includes("/ws/canvas-1")).length, { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(connectionsBeforeRestart + 3);
+  await expect.poll(() => canvasStates.length, { timeout: 10_000 })
+    .toBeGreaterThan(statesBeforeRestart);
+  await expect.poll(() => canvasPresentations.length, { timeout: 10_000 })
+    .toBeGreaterThan(presentationsBeforeRestart);
+  await expect(page.locator("#scorepeek-replica-canvas-1")).toHaveAttribute(
+    "src",
+    replicaURLBeforeRestart,
+  );
+  expect(replicaLifecycle.filter(({ phase, url }) =>
+    phase === "loaded" && url.includes("/canvas/canvas-1")).length)
+    .toBe(replicaLoadsBeforeRestart);
   await expect(slot).toBeVisible();
   const unrelatedSameCanvas = frame.locator(
     `.widget-slot:not([data-widget-id='${draggedWidgetId}'])`,
