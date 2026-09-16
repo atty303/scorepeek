@@ -9,7 +9,7 @@ extern "C" {
 
 enum {
     SPVK_MAGIC = 0x4b565053u,
-    SPVK_VERSION = 4u,
+    SPVK_VERSION = 5u,
     SPVK_MAX_PLANES = 4u,
 };
 
@@ -71,7 +71,8 @@ typedef struct SpvkPacket {
     uint64_t request_ns;
     uint64_t present_ns;
     uint64_t submit_done_ns;
-    uint64_t fence_done_ns;
+    uint64_t present_call_ns;
+    uint64_t producer_fence_ns;
     uint64_t requests;
     uint64_t captures;
     uint64_t busy_drops;
@@ -85,5 +86,5 @@ typedef struct SpvkPacket {
 
 static_assert(sizeof(SpvkPlaneLayout) == 40);
 static_assert(sizeof(SpvkHello) == 232);
-static_assert(sizeof(SpvkPacket) == 88);
+static_assert(sizeof(SpvkPacket) == 96);
 #endif

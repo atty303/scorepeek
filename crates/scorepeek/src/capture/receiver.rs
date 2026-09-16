@@ -1174,15 +1174,24 @@ impl CalibratedVulkanLease {
                 error_type: None,
                 detail: CaptureDiagnosticDetail::VulkanPerformanceSummary {
                     count: summary.count,
-                    p50_ns: summary.p50_ns,
-                    p95_ns: summary.p95_ns,
-                    p99_ns: summary.p99_ns,
-                    max_ns: summary.max_ns,
+                    request_to_present_ns: timing_distribution(summary.request_to_present),
+                    producer_submit_ns: timing_distribution(summary.producer_submit),
+                    present_call_ns: timing_distribution(summary.present_call),
+                    producer_fence_ns: timing_distribution(summary.producer_fence),
+                    consumer_readback_ns: timing_distribution(summary.consumer_readback),
+                    total_ns: timing_distribution(summary.total),
                     dropped: summary.dropped,
                     requests: summary.requests,
                     captures: summary.captures,
                     busy_drops: summary.busy_drops,
                     coalesced_drops: summary.coalesced_drops,
+                    consumer_queue_family: summary.readback_profile.queue_family,
+                    consumer_queue_flags: summary.readback_profile.queue_flags,
+                    consumer_global_priority_low: summary.readback_profile.global_priority_low,
+                    consumer_commands_prerecorded: summary.readback_profile.commands_prerecorded,
+                    consumer_staging_persistently_mapped: summary
+                        .readback_profile
+                        .staging_persistently_mapped,
                 },
             });
             self.diagnostic_sequence = self.diagnostic_sequence.saturating_add(1);
@@ -1243,19 +1252,39 @@ impl CalibratedVulkanLease {
             error_type: None,
             detail: CaptureDiagnosticDetail::VulkanPerformanceSummary {
                 count: summary.count,
-                p50_ns: summary.p50_ns,
-                p95_ns: summary.p95_ns,
-                p99_ns: summary.p99_ns,
-                max_ns: summary.max_ns,
+                request_to_present_ns: timing_distribution(summary.request_to_present),
+                producer_submit_ns: timing_distribution(summary.producer_submit),
+                present_call_ns: timing_distribution(summary.present_call),
+                producer_fence_ns: timing_distribution(summary.producer_fence),
+                consumer_readback_ns: timing_distribution(summary.consumer_readback),
+                total_ns: timing_distribution(summary.total),
                 dropped: summary.dropped,
                 requests: summary.requests,
                 captures: summary.captures,
                 busy_drops: summary.busy_drops,
                 coalesced_drops: summary.coalesced_drops,
+                consumer_queue_family: summary.readback_profile.queue_family,
+                consumer_queue_flags: summary.readback_profile.queue_flags,
+                consumer_global_priority_low: summary.readback_profile.global_priority_low,
+                consumer_commands_prerecorded: summary.readback_profile.commands_prerecorded,
+                consumer_staging_persistently_mapped: summary
+                    .readback_profile
+                    .staging_persistently_mapped,
             },
         });
         drop(self);
         (Ok(()), 0)
+    }
+}
+
+const fn timing_distribution(
+    summary: super::vulkan::VulkanTimingDistribution,
+) -> super::VulkanTimingDistribution {
+    super::VulkanTimingDistribution {
+        p50: summary.p50_ns,
+        p95: summary.p95_ns,
+        p99: summary.p99_ns,
+        max: summary.max_ns,
     }
 }
 

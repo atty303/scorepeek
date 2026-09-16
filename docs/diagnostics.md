@@ -15,10 +15,18 @@ writing is not retried in that invocation.
 Capture lifecycle and error facts are written when they occur rather than being deferred until
 generation shutdown. Each backend also writes bounded rolling frame-timing summaries every 30
 seconds and at generation end with count, p50, p95, p99, maximum, and drop counters. Vulkan
-summaries additionally retain producer request, capture, busy-drop, and coalesced-drop counters,
-including before the first completed frame. Generation
+summaries separately retain request-to-present, producer submit, present-call, post-present
+producer-fence wait, consumer-readback, and total latency distributions. Producer-fence wait is
+zero when the copy fence completes before `vkQueuePresentKHR` returns, so the present-call and
+producer-fence stages do not count the same interval twice. Summaries also retain producer request, capture,
+busy-drop, and coalesced-drop counters plus the selected consumer queue family, flags, global
+priority, command-recording, and staging-map strategy. The `dropped` total contains producer
+busy and coalesced drops; eviction from the bounded 600-sample latency window is not a frame drop.
+Counters are present even before the first completed frame. Generation
 identity records contain both canonical capture/normalizer documents and their digests; public
 events continue to expose only the digests.
+Capture diagnostic events carrying these stage distributions use the
+`scorepeek-capture-diagnostic-v2` schema.
 
 `$XDG_RUNTIME_DIR/scorepeek/diagnostics.sock` is independent of public `events.sock`. An observer
 requests either live-only delivery or an explicit replay window before the server sends data.

@@ -153,7 +153,9 @@ environment.
 The Vulkan capture-profile document retains the admitted Vulkan format, DRM
 fourcc/modifier, allocation and plane layout, and device UUID in addition to
 the source dimensions. DMA-BUF readback and canonical CPU normalization stay
-off the game present thread. The layer uses an application's existing
+off the game present thread. Consumer readback prefers a non-graphics transfer-capable queue at
+low global priority, with its queue choice and each capture latency stage retained in structured
+diagnostics. The layer uses an application's existing
 swapchain-maintenance present fence when supplied, or adds its own otherwise, so session cleanup
 can prove the presentation engine has released its local chaining semaphore. Unsupported devices
 keep capture disabled without changing the game's device-creation result.

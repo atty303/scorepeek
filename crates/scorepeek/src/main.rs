@@ -34,6 +34,8 @@ use scorepeek::recognition::{
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
+const CAPTURE_DIAGNOSTIC_SCHEMA: &str = "scorepeek-capture-diagnostic-v2";
+
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
     match run(&args) {
@@ -1824,7 +1826,7 @@ fn live_session_event_value(
         }
         capture_live::GamescopeLiveSessionEvent::CaptureDiagnostic { fact } => {
             let mut value = serde_json::json!({
-                "schema": "scorepeek-capture-diagnostic-v1",
+                "schema": CAPTURE_DIAGNOSTIC_SCHEMA,
                 "event": "capture_diagnostic",
                 "fact": fact,
             });
@@ -3607,6 +3609,10 @@ mod tests {
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
+    use scorepeek::capture::{
+        CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
+        CaptureDiagnosticStatus,
+    };
     use scorepeek::catalog::{
         AdapterError, Catalog, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
         FederationInput, SourceRevision, TachiAcquisitionError, TachiFixtureAdapter, TachiResource,
@@ -3620,6 +3626,27 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn capture_diagnostic_events_use_the_stage_timing_schema() {
+        let fact = CaptureDiagnosticFact {
+            sequence: 1,
+            monotonic_start_ms: 2,
+            monotonic_end_ms: 3,
+            operation: CaptureDiagnosticOperation::ProfileBindingAdmission,
+            status: CaptureDiagnosticStatus::Success,
+            error_type: None,
+            detail: CaptureDiagnosticDetail::ProfileBindingAdmission,
+        };
+        let value = live_session_event_value(
+            Some("session-1"),
+            Some(1),
+            GamescopeLiveSessionEvent::CaptureDiagnostic { fact: &fact },
+        )
+        .unwrap();
+        assert_eq!(value["schema"], "scorepeek-capture-diagnostic-v2");
+        assert_eq!(value["event"], "capture_diagnostic");
+    }
 
     #[test]
     fn failed_startup_stage_is_saved_in_a_zero_session_run() {

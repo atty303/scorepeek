@@ -53,6 +53,13 @@ the user's default remote and requires exactly one exact `node.name` with
 CPU-mappable buffers. The Vulkan producer allocates capture resources only
 while Scorepeek is connected. Scorepeek requests at 10 Hz and imports one
 GPU-local DMA-BUF, then performs a fenced readback on an asynchronous worker.
+The consumer prefers a transfer-capable queue family without graphics capability, requests low
+global queue priority when the device supports it, reuses a pre-recorded command buffer, and keeps
+staging memory mapped for the generation lifetime. These choices keep consumer readback off the
+game's graphics queue when the device exposes an eligible family; diagnostics record the admitted
+queue and separate producer, present-call, readback, and total latency distributions.
+The producer-fence stage measures only fence wait remaining after `vkQueuePresentKHR` returns, so
+the present-call and fence stages are non-overlapping.
 CPU normalization also runs on a capture-owned worker before recognition. The
 image is not reused before ACK; there is no frame ring, catch-up queue, or
 external semaphore. A swapchain-maintenance present fence proves that the

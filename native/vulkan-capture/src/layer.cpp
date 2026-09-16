@@ -41,6 +41,13 @@ uint64_t monotonic_ns() {
         std::chrono::duration_cast<std::chrono::nanoseconds>(value).count());
 }
 
+constexpr uint64_t post_present_fence_ns(uint64_t fence_ns, uint64_t present_return_ns) {
+    return fence_ns - std::min(fence_ns, present_return_ns);
+}
+
+static_assert(post_present_fence_ns(100, 120) == 0);
+static_assert(post_present_fence_ns(150, 120) == 30);
+
 bool supported_format(VkFormat format) {
     return format == VK_FORMAT_B8G8R8A8_UNORM ||
         format == VK_FORMAT_B8G8R8A8_SRGB ||
@@ -200,6 +207,9 @@ private:
     std::atomic<uint64_t> submitted_request_ns_{0};
     std::atomic<uint64_t> submitted_present_ns_{0};
     std::atomic<uint64_t> submitted_done_ns_{0};
+    std::atomic<uint64_t> submitted_present_call_ns_{0};
+    std::atomic<uint64_t> submitted_present_return_ns_{0};
+    std::atomic<uint32_t> submitted_present_outcome_{0};
     std::atomic<bool> submission_in_flight_{false};
     bool present_in_flight_ = false;
     std::mutex send_mutex_;
@@ -807,16 +817,6 @@ std::optional<VkResult> SwapchainCapture::capture_and_present(
         return std::nullopt;
     }
 
-    submission_in_flight_.store(true, std::memory_order_release);
-    first_export_ = false;
-    captures_.fetch_add(1, std::memory_order_relaxed);
-    submitted_sequence_.store(sequence, std::memory_order_release);
-    submitted_request_ns_.store(request_ns, std::memory_order_release);
-    submitted_present_ns_.store(present_ns, std::memory_order_release);
-    submitted_done_ns_.store(submit_done_ns, std::memory_order_release);
-    phase_.store(CapturePhase::submitted, std::memory_order_release);
-    phase_.notify_one();
-
     VkSwapchainPresentFenceInfoEXT present_fence_info{
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
         .pNext = present_info->pNext,
@@ -829,15 +829,38 @@ std::optional<VkResult> SwapchainCapture::capture_and_present(
         : present_info->pNext;
     replacement.waitSemaphoreCount = 1;
     replacement.pWaitSemaphores = &present_semaphore_;
+    submission_in_flight_.store(true, std::memory_order_release);
+    first_export_ = false;
+    captures_.fetch_add(1, std::memory_order_relaxed);
+    submitted_sequence_.store(sequence, std::memory_order_release);
+    submitted_request_ns_.store(request_ns, std::memory_order_release);
+    submitted_present_ns_.store(present_ns, std::memory_order_release);
+    submitted_done_ns_.store(submit_done_ns, std::memory_order_release);
+    submitted_present_call_ns_.store(0, std::memory_order_release);
+    submitted_present_outcome_.store(0, std::memory_order_release);
+    phase_.store(CapturePhase::submitted, std::memory_order_release);
+    phase_.notify_one();
+
+    const uint64_t present_call_start_ns = monotonic_ns();
     const VkResult present_result = queue_dispatch.QueuePresentKHR(queue, &replacement);
+    const uint64_t present_return_ns = monotonic_ns();
     present_in_flight_ = present_operations_enqueued(present_result);
     application_present_fence_ = present_in_flight_
         ? application_present_fence
         : VK_NULL_HANDLE;
+    submitted_present_call_ns_.store(
+        present_return_ns - present_call_start_ns,
+        std::memory_order_release);
+    submitted_present_return_ns_.store(present_return_ns, std::memory_order_release);
     if (present_result != VK_SUCCESS && present_result != VK_SUBOPTIMAL_KHR) {
         phase_.store(CapturePhase::disabled, std::memory_order_release);
+        submitted_present_outcome_.store(2, std::memory_order_release);
+        submitted_present_outcome_.notify_one();
         record_error(sequence, SPVK_ERROR_SUBMIT_FAILED);
         close_socket();
+    } else {
+        submitted_present_outcome_.store(1, std::memory_order_release);
+        submitted_present_outcome_.notify_one();
     }
     return present_result;
 }
@@ -846,6 +869,8 @@ void SwapchainCapture::disable() {
     stop_.store(true, std::memory_order_release);
     phase_.store(CapturePhase::disabled, std::memory_order_release);
     phase_.notify_all();
+    submitted_present_outcome_.store(2, std::memory_order_release);
+    submitted_present_outcome_.notify_all();
     close_socket();
 }
 
@@ -1022,6 +1047,10 @@ void SwapchainCapture::socket_loop() {
             reset_capture_resources();
             continue;
         }
+        requests_.store(0, std::memory_order_relaxed);
+        captures_.store(0, std::memory_order_relaxed);
+        busy_drops_.store(0, std::memory_order_relaxed);
+        coalesced_drops_.store(0, std::memory_order_relaxed);
         phase_.store(CapturePhase::idle, std::memory_order_release);
 
         while (!stop_.load(std::memory_order_acquire)) {
@@ -1099,6 +1128,14 @@ void SwapchainCapture::fence_loop() {
             phase_.store(CapturePhase::disabled, std::memory_order_release);
             return;
         }
+        uint32_t present_outcome = submitted_present_outcome_.load(std::memory_order_acquire);
+        while (present_outcome == 0 && !stop_.load(std::memory_order_acquire)) {
+            submitted_present_outcome_.wait(0, std::memory_order_acquire);
+            present_outcome = submitted_present_outcome_.load(std::memory_order_acquire);
+        }
+        if (present_outcome != 1) {
+            return;
+        }
         CapturePhase expected = CapturePhase::submitted;
         if (!phase_.compare_exchange_strong(
                 expected, CapturePhase::awaiting_ack, std::memory_order_acq_rel)) {
@@ -1112,7 +1149,10 @@ void SwapchainCapture::fence_loop() {
             .request_ns = submitted_request_ns_.load(std::memory_order_acquire),
             .present_ns = submitted_present_ns_.load(std::memory_order_acquire),
             .submit_done_ns = submitted_done_ns_.load(std::memory_order_acquire),
-            .fence_done_ns = fence_ns,
+            .present_call_ns = submitted_present_call_ns_.load(std::memory_order_acquire),
+            .producer_fence_ns = post_present_fence_ns(
+                fence_ns,
+                submitted_present_return_ns_.load(std::memory_order_acquire)),
             .requests = requests_.load(std::memory_order_relaxed),
             .captures = captures_.load(std::memory_order_relaxed),
             .busy_drops = busy_drops_.load(std::memory_order_relaxed),

@@ -20,7 +20,7 @@ use rustix::time::{ClockId, Timespec, clock_gettime};
 use scorepeek_vulkan_capture::{ImageContract, ImportedImage, MAX_PLANES, PlaneLayout};
 
 const MAGIC: u32 = 0x4b56_5053;
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const HELLO: u16 = 1;
 const HELLO_ACK: u16 = 2;
 const REQUEST: u16 = 3;
@@ -31,7 +31,7 @@ const ADMIT: u16 = 7;
 const ADMIT_ACK: u16 = 8;
 const STATUS: u16 = 9;
 const HELLO_BYTES: usize = 232;
-const PACKET_BYTES: usize = 88;
+const PACKET_BYTES: usize = 96;
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +57,7 @@ pub struct VulkanTimingStats {
     pub coalesced_drops: u64,
     pub request_to_present_ns: u64,
     pub producer_submit_ns: u64,
+    pub present_call_ns: u64,
     pub producer_fence_ns: u64,
     pub consumer_readback_ns: u64,
     pub total_ns: u64,
@@ -101,11 +102,19 @@ impl VulkanAcceptFailure {
 
 trait CaptureImage: Send {
     fn readback(&mut self) -> Result<scorepeek_vulkan_capture::Readback, String>;
+
+    fn profile(&self) -> scorepeek_vulkan_capture::ReadbackProfile {
+        scorepeek_vulkan_capture::ReadbackProfile::default()
+    }
 }
 
 impl CaptureImage for ImportedImage {
     fn readback(&mut self) -> Result<scorepeek_vulkan_capture::Readback, String> {
         ImportedImage::readback(self)
+    }
+
+    fn profile(&self) -> scorepeek_vulkan_capture::ReadbackProfile {
+        ImportedImage::profile(self)
     }
 }
 
@@ -121,23 +130,34 @@ pub enum VulkanSessionFailure {
 struct SessionState {
     latest: Option<VulkanFrameData>,
     timing: VulkanTimingStats,
+    readback_profile: scorepeek_vulkan_capture::ReadbackProfile,
     terminal: Option<WorkerTerminal>,
-    latencies_ns: VecDeque<u64>,
-    dropped_samples: u64,
+    timing_samples: VecDeque<VulkanTimingStats>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct VulkanTimingDistribution {
+    pub p50_ns: u64,
+    pub p95_ns: u64,
+    pub p99_ns: u64,
+    pub max_ns: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VulkanPerformanceSummary {
     pub count: u64,
-    pub p50_ns: u64,
-    pub p95_ns: u64,
-    pub p99_ns: u64,
-    pub max_ns: u64,
+    pub request_to_present: VulkanTimingDistribution,
+    pub producer_submit: VulkanTimingDistribution,
+    pub present_call: VulkanTimingDistribution,
+    pub producer_fence: VulkanTimingDistribution,
+    pub consumer_readback: VulkanTimingDistribution,
+    pub total: VulkanTimingDistribution,
     pub dropped: u64,
     pub requests: u64,
     pub captures: u64,
     pub busy_drops: u64,
     pub coalesced_drops: u64,
+    pub readback_profile: scorepeek_vulkan_capture::ReadbackProfile,
 }
 
 pub struct VulkanListener {
@@ -302,7 +322,10 @@ impl VulkanSession {
                 ..Packet::default()
             },
         )?;
-        let state = Arc::new(Mutex::new(SessionState::default()));
+        let state = Arc::new(Mutex::new(SessionState {
+            readback_profile: capture_image.profile(),
+            ..SessionState::default()
+        }));
         let worker_state = Arc::clone(&state);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -490,25 +513,23 @@ fn run_worker(
                         received_monotonic_ns: consumer_done_ns,
                         bytes,
                     });
-                    current.timing = VulkanTimingStats {
+                    let timing = VulkanTimingStats {
                         requests,
                         captures,
                         busy_drops,
                         coalesced_drops,
                         request_to_present_ns: packet.present_ns.saturating_sub(packet.request_ns),
                         producer_submit_ns: packet.submit_done_ns.saturating_sub(packet.present_ns),
-                        producer_fence_ns: packet
-                            .fence_done_ns
-                            .saturating_sub(packet.submit_done_ns),
+                        present_call_ns: packet.present_call_ns,
+                        producer_fence_ns: packet.producer_fence_ns,
                         consumer_readback_ns: readback.fence_ns.saturating_sub(readback.submit_ns),
                         total_ns: consumer_done_ns.saturating_sub(packet.request_ns),
                     };
-                    let latency = consumer_done_ns.saturating_sub(packet.request_ns);
-                    if current.latencies_ns.len() == 600 {
-                        current.latencies_ns.pop_front();
-                        current.dropped_samples = current.dropped_samples.saturating_add(1);
+                    current.timing = timing;
+                    if current.timing_samples.len() == 600 {
+                        current.timing_samples.pop_front();
                     }
-                    current.latencies_ns.push_back(latency);
+                    current.timing_samples.push_back(timing);
                 }
                 if let Err(error) = send_packet(
                     &socket,
@@ -612,7 +633,7 @@ fn receive_hello(
         && u16_at(&bytes, 6) == ERROR
     {
         return Err(TransportError::Producer {
-            status: i32::from_ne_bytes(bytes[80..84].try_into().expect("fixed slice")),
+            status: i32::from_ne_bytes(bytes[88..92].try_into().expect("fixed slice")),
         });
     }
     if received.bytes != HELLO_BYTES
@@ -685,7 +706,8 @@ struct Packet {
     request_ns: u64,
     present_ns: u64,
     submit_done_ns: u64,
-    fence_done_ns: u64,
+    present_call_ns: u64,
+    producer_fence_ns: u64,
     requests: u64,
     captures: u64,
     busy_drops: u64,
@@ -712,12 +734,13 @@ fn receive_packet(socket: &OwnedFd, timeout: Duration) -> Result<Option<Packet>,
         request_ns: u64_at(&bytes, 16),
         present_ns: u64_at(&bytes, 24),
         submit_done_ns: u64_at(&bytes, 32),
-        fence_done_ns: u64_at(&bytes, 40),
-        requests: u64_at(&bytes, 48),
-        captures: u64_at(&bytes, 56),
-        busy_drops: u64_at(&bytes, 64),
-        coalesced_drops: u64_at(&bytes, 72),
-        status: i32::from_ne_bytes(bytes[80..84].try_into().expect("fixed slice")),
+        present_call_ns: u64_at(&bytes, 40),
+        producer_fence_ns: u64_at(&bytes, 48),
+        requests: u64_at(&bytes, 56),
+        captures: u64_at(&bytes, 64),
+        busy_drops: u64_at(&bytes, 72),
+        coalesced_drops: u64_at(&bytes, 80),
+        status: i32::from_ne_bytes(bytes[88..92].try_into().expect("fixed slice")),
     }))
 }
 
@@ -725,7 +748,39 @@ fn performance_summary(state: &Mutex<SessionState>) -> VulkanPerformanceSummary 
     let current = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut values = current.latencies_ns.iter().copied().collect::<Vec<_>>();
+    VulkanPerformanceSummary {
+        count: current.timing_samples.len() as u64,
+        request_to_present: timing_distribution(&current.timing_samples, |timing| {
+            timing.request_to_present_ns
+        }),
+        producer_submit: timing_distribution(&current.timing_samples, |timing| {
+            timing.producer_submit_ns
+        }),
+        present_call: timing_distribution(&current.timing_samples, |timing| timing.present_call_ns),
+        producer_fence: timing_distribution(&current.timing_samples, |timing| {
+            timing.producer_fence_ns
+        }),
+        consumer_readback: timing_distribution(&current.timing_samples, |timing| {
+            timing.consumer_readback_ns
+        }),
+        total: timing_distribution(&current.timing_samples, |timing| timing.total_ns),
+        dropped: current
+            .timing
+            .busy_drops
+            .saturating_add(current.timing.coalesced_drops),
+        requests: current.timing.requests,
+        captures: current.timing.captures,
+        busy_drops: current.timing.busy_drops,
+        coalesced_drops: current.timing.coalesced_drops,
+        readback_profile: current.readback_profile,
+    }
+}
+
+fn timing_distribution(
+    samples: &VecDeque<VulkanTimingStats>,
+    value: impl Fn(&VulkanTimingStats) -> u64,
+) -> VulkanTimingDistribution {
+    let mut values = samples.iter().map(value).collect::<Vec<_>>();
     values.sort_unstable();
     let percentile = |numerator: usize| {
         if values.is_empty() {
@@ -734,20 +789,11 @@ fn performance_summary(state: &Mutex<SessionState>) -> VulkanPerformanceSummary 
             values[(values.len().saturating_sub(1) * numerator) / 100]
         }
     };
-    VulkanPerformanceSummary {
-        count: values.len() as u64,
+    VulkanTimingDistribution {
         p50_ns: percentile(50),
         p95_ns: percentile(95),
         p99_ns: percentile(99),
         max_ns: values.last().copied().unwrap_or(0),
-        dropped: current
-            .dropped_samples
-            .saturating_add(current.timing.busy_drops)
-            .saturating_add(current.timing.coalesced_drops),
-        requests: current.timing.requests,
-        captures: current.timing.captures,
-        busy_drops: current.timing.busy_drops,
-        coalesced_drops: current.timing.coalesced_drops,
     }
 }
 
@@ -783,12 +829,13 @@ fn encode_packet(packet: Packet) -> [u8; PACKET_BYTES] {
     put(&mut bytes, 16, &packet.request_ns.to_ne_bytes());
     put(&mut bytes, 24, &packet.present_ns.to_ne_bytes());
     put(&mut bytes, 32, &packet.submit_done_ns.to_ne_bytes());
-    put(&mut bytes, 40, &packet.fence_done_ns.to_ne_bytes());
-    put(&mut bytes, 48, &packet.requests.to_ne_bytes());
-    put(&mut bytes, 56, &packet.captures.to_ne_bytes());
-    put(&mut bytes, 64, &packet.busy_drops.to_ne_bytes());
-    put(&mut bytes, 72, &packet.coalesced_drops.to_ne_bytes());
-    put(&mut bytes, 80, &packet.status.to_ne_bytes());
+    put(&mut bytes, 40, &packet.present_call_ns.to_ne_bytes());
+    put(&mut bytes, 48, &packet.producer_fence_ns.to_ne_bytes());
+    put(&mut bytes, 56, &packet.requests.to_ne_bytes());
+    put(&mut bytes, 64, &packet.captures.to_ne_bytes());
+    put(&mut bytes, 72, &packet.busy_drops.to_ne_bytes());
+    put(&mut bytes, 80, &packet.coalesced_drops.to_ne_bytes());
+    put(&mut bytes, 88, &packet.status.to_ne_bytes());
     bytes
 }
 
@@ -872,14 +919,15 @@ mod tests {
             request_ns: 99,
             present_ns: 100,
             submit_done_ns: 101,
-            fence_done_ns: 102,
-            requests: 103,
-            captures: 104,
-            busy_drops: 105,
-            coalesced_drops: 106,
-            status: 107,
+            present_call_ns: 102,
+            producer_fence_ns: 103,
+            requests: 104,
+            captures: 105,
+            busy_drops: 106,
+            coalesced_drops: 107,
+            status: 108,
         });
-        assert_eq!(bytes.len(), 88);
+        assert_eq!(bytes.len(), 96);
         assert_eq!(u16_at(&bytes, 4), VERSION);
         assert_eq!(u16_at(&bytes, 6), REQUEST);
         assert_eq!(u64_at(&bytes, 8), 42);
@@ -891,13 +939,53 @@ mod tests {
         assert_eq!(u64_at(&bytes, 56), 104);
         assert_eq!(u64_at(&bytes, 64), 105);
         assert_eq!(u64_at(&bytes, 72), 106);
-        assert_eq!(i32::from_ne_bytes(bytes[80..84].try_into().unwrap()), 107);
+        assert_eq!(u64_at(&bytes, 80), 107);
+        assert_eq!(i32::from_ne_bytes(bytes[88..92].try_into().unwrap()), 108);
 
         let admission = encode_packet(Packet {
             message_type: ADMIT,
             ..Packet::default()
         });
         assert_eq!(u16_at(&admission, 6), ADMIT);
+    }
+
+    #[test]
+    fn performance_summary_keeps_stage_distributions_and_real_drop_counters_separate() {
+        let samples = [1_u64, 2, 3, 4]
+            .into_iter()
+            .map(|value| VulkanTimingStats {
+                request_to_present_ns: value,
+                producer_submit_ns: value * 10,
+                present_call_ns: value * 100,
+                producer_fence_ns: value * 1_000,
+                consumer_readback_ns: value * 10_000,
+                total_ns: value * 100_000,
+                ..VulkanTimingStats::default()
+            })
+            .collect();
+        let state = Mutex::new(SessionState {
+            timing: VulkanTimingStats {
+                requests: 11,
+                captures: 4,
+                busy_drops: 2,
+                coalesced_drops: 5,
+                ..VulkanTimingStats::default()
+            },
+            timing_samples: samples,
+            ..SessionState::default()
+        });
+
+        let summary = performance_summary(&state);
+        assert_eq!(summary.count, 4);
+        assert_eq!(summary.request_to_present.p50_ns, 2);
+        assert_eq!(summary.producer_submit.p95_ns, 30);
+        assert_eq!(summary.present_call.p99_ns, 300);
+        assert_eq!(summary.producer_fence.max_ns, 4_000);
+        assert_eq!(summary.consumer_readback.max_ns, 40_000);
+        assert_eq!(summary.total.max_ns, 400_000);
+        assert_eq!(summary.dropped, 7);
+        assert_eq!(summary.requests, 11);
+        assert_eq!(summary.captures, 4);
     }
 
     #[test]

@@ -162,15 +162,22 @@ pub enum CaptureDiagnosticDetail {
     },
     VulkanPerformanceSummary {
         count: u64,
-        p50_ns: u64,
-        p95_ns: u64,
-        p99_ns: u64,
-        max_ns: u64,
+        request_to_present_ns: VulkanTimingDistribution,
+        producer_submit_ns: VulkanTimingDistribution,
+        present_call_ns: VulkanTimingDistribution,
+        producer_fence_ns: VulkanTimingDistribution,
+        consumer_readback_ns: VulkanTimingDistribution,
+        total_ns: VulkanTimingDistribution,
         dropped: u64,
         requests: u64,
         captures: u64,
         busy_drops: u64,
         coalesced_drops: u64,
+        consumer_queue_family: u32,
+        consumer_queue_flags: u32,
+        consumer_global_priority_low: bool,
+        consumer_commands_prerecorded: bool,
+        consumer_staging_persistently_mapped: bool,
     },
     VulkanFailure {
         category: &'static str,
@@ -183,6 +190,14 @@ pub enum CaptureDiagnosticDetail {
     Shutdown {
         source: CaptureSourceKind,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct VulkanTimingDistribution {
+    pub p50: u64,
+    pub p95: u64,
+    pub p99: u64,
+    pub max: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

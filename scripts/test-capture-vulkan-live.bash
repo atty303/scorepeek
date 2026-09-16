@@ -107,6 +107,10 @@ for state_root in "${first_state}" "${second_state}"; do
   grep -q '\\"vulkan_source\\"' "${diagnostics}"
   grep -q 'vulkan_performance_summary' "${diagnostics}"
   grep -Eq '"captures":[1-9][0-9]*.*"kind":"vulkan_performance_summary"' "${diagnostics}"
+  grep -q '"consumer_readback_ns"' "${diagnostics}"
+  grep -q '"present_call_ns"' "${diagnostics}"
+  grep -q '"consumer_commands_prerecorded":true' "${diagnostics}"
+  grep -q '"consumer_staging_persistently_mapped":true' "${diagnostics}"
   if grep -q '"outcome":"error"' "${diagnostics}"; then
     echo "Vulkan capture generation ended with an error" >&2
     exit 1
