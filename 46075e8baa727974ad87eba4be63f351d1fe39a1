@@ -1,0 +1,21 @@
+Task: Fix native Wayland remap after a same-geometry configure
+Anchor: 46075e8baa727974ad87eba4be63f351d1fe39a1
+Base: 41af463d21f539bbd0254c0b20b0f7984f09f3a0
+Line: main
+Commits:
+- 46075e8baa727974ad87eba4be63f351d1fe39a1 fix(overlay): treat every configure as remap readiness
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; independent review
+Environment: durable local runtime change; infinitas.lan was observed read-only over SSH; no deployment, process restart, push, or other target mutation was authorized
+Evidence:
+- The running target process and the previously built local distribution had the same SHA-256, excluding stale deployment of the preceding layer-state restoration fix.
+- Active diagnostic run run-1789559403-940966943-58531 recognized music_select, decide_transition, play, and result transitions and retained a healthy diagnostic stream.
+- After remap, surface_configured and skin_render were recorded for the destination canvas, but native_surface_visibility active=true was absent.
+- dispatch_native_event assigned App::configure_event's geometry-changed result to NativeEventOutcome.configured; an ordinary same-size remap therefore remained AwaitingConfigure even though the protocol configure arrived.
+- The regression test dispatches an identical Configure twice and requires both events to mark the surface configured.
+- Focused check, 87 overlay unit tests, 2 typography tests, the production nested Scroll scenario, and the complete mise run test suite passed.
+- Fresh independent review found no actionable issue; the live target remains unverified until a new binary is deployed and the running process is restarted.
+- The required post-commit mise run build succeeded and refreshed target/debug/scorepeek.
+Authority: current source and tests define implementation; the user's live failure report and the retained target diagnostic run define the failure oracle
+Transcript:
+- U1: 今起動しているがscreen切り替わらない
+  - A: Treated this as continuation of the repair request. Inspected the running target read-only, confirmed the preceding binary was active, correlated semantic transitions with Wayland configure and visibility diagnostics, identified the conflation of configure receipt with geometry change, changed the internal event contract so every successful Configure marks remap readiness, added a same-geometry regression test, ran focused, overlay, nested compositor, and full repository validation, obtained a fresh independent review, committed the fix, and rebuilt locally. Did not deploy or restart the active target process without separate authorization.
