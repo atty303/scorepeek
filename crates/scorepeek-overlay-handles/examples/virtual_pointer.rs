@@ -3,7 +3,7 @@ use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::clien
     zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{io, io::Write as _};
+use std::{io, io::Write as _, os::unix::net::UnixStream, path::Path};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -59,7 +59,51 @@ fn click(pointer: &ZwlrVirtualPointerV1, started: Instant, position: [u32; 2], c
     button(pointer, started, code, wl_pointer::ButtonState::Released);
 }
 
+fn visibility_count(log: &Path, active: bool) -> std::io::Result<usize> {
+    let expected = format!("\"active\":{active}");
+    Ok(std::fs::read_to_string(log)?
+        .lines()
+        .filter(|line| {
+            line.contains("\"operation\":\"native_surface_visibility\"")
+                && line.contains("\"canvas_id\":\"wayland-selection\"")
+                && line.contains(&expected)
+        })
+        .count())
+}
+
+fn drive_screen_transition(
+    trigger: &mut UnixStream,
+    log: &Path,
+    screen: &str,
+    active: bool,
+) -> std::io::Result<()> {
+    let before = visibility_count(log, active)?;
+    writeln!(trigger, "{screen}")?;
+    trigger.flush()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if visibility_count(log, active)? > before {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("selection canvas did not reach active={active} after {screen}"),
+    ))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args_os().skip(1);
+    let feed_trigger = args
+        .next()
+        .ok_or("usage: virtual_pointer FEED_TRIGGER_SOCKET DIAGNOSTIC_LOG")?;
+    let diagnostic_log = args
+        .next()
+        .ok_or("usage: virtual_pointer FEED_TRIGGER_SOCKET DIAGNOSTIC_LOG")?;
+    if args.next().is_some() {
+        return Err("usage: virtual_pointer FEED_TRIGGER_SOCKET DIAGNOSTIC_LOG".into());
+    }
     let connection = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<State>(&connection)?;
     let handle: QueueHandle<State> = queue.handle();
@@ -101,10 +145,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the lifecycle exercise is independent of any in-progress field validity.
     click(&pointer, started, [140, 700], 0x110);
     connection.flush()?;
-    std::thread::sleep(Duration::from_millis(750));
-    // The retained status canvas is visible on HEADLESS-1 after Discard
-    // restores the authority-owned draft. Scroll places that output to the
-    // right of the 1280-wide active output.
+    let mut trigger = UnixStream::connect(feed_trigger)?;
+    let diagnostic_log = Path::new(&diagnostic_log);
+    drive_screen_transition(&mut trigger, diagnostic_log, "music_select", true)?;
+    drive_screen_transition(&mut trigger, diagnostic_log, "play", false)?;
+    drive_screen_transition(&mut trigger, diagnostic_log, "music_select", true)?;
+    drop(trigger);
+    // Reopen only after the second music-select activation has crossed the
+    // production display path and emitted its active acknowledgement.
+    // Scroll places HEADLESS-1 to the right of the 1280-wide active output.
     click(&pointer, started, [1_320, 40], 0x111);
     connection.flush()?;
     std::thread::sleep(Duration::from_secs(1));

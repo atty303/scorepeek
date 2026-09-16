@@ -2,7 +2,18 @@ use scorepeek_overlay::{
     control::Controller,
     runtime::{Backend, Config},
 };
-use std::{io::Write as _, time::Duration};
+use serde_json::json;
+use std::{
+    io::{BufRead as _, BufReader, Write as _},
+    os::unix::net::{UnixListener, UnixStream},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::JoinHandle,
+    time::Duration,
+};
 
 struct TimedLease(Duration);
 
@@ -11,6 +22,185 @@ impl std::io::Read for TimedLease {
         std::thread::sleep(self.0);
         Ok(0)
     }
+}
+
+fn fixture_event(sequence: u64, screen: &str) -> serde_json::Value {
+    json!({
+        "schema": "scorepeek-event-v2",
+        "invocation_id": "overlay-visual-wayland",
+        "sequence": sequence,
+        "event_id": format!("overlay-visual-wayland:{sequence}"),
+        "emitted_monotonic_ms": sequence * 1_000,
+        "emitted_unix_ms": 1_000 + i64::try_from(sequence).unwrap_or(i64::MAX) * 1_000,
+        "capture": null,
+        "event": "screen_state_changed",
+        "state": {
+            "screen_episode_id": sequence,
+            "screen": screen,
+            "suspended": false,
+        },
+    })
+}
+
+struct IntegrationFeed {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<std::io::Result<()>>>,
+    event_socket: PathBuf,
+    trigger_socket: PathBuf,
+}
+
+impl IntegrationFeed {
+    fn shutdown(&mut self) -> Result<(), String> {
+        self.stop.store(true, Ordering::Release);
+        let joined = self.handle.take().map_or(Ok(()), |handle| {
+            handle
+                .join()
+                .map_err(|_| "integration feed panicked".to_owned())?
+                .map_err(|error| format!("integration feed failed: {error}"))
+        });
+        let event_cleanup = remove_fixture_socket(&self.event_socket, "event");
+        let trigger_cleanup = remove_fixture_socket(&self.trigger_socket, "trigger");
+        joined?;
+        event_cleanup?;
+        trigger_cleanup?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), String> {
+        self.shutdown()
+    }
+}
+
+impl Drop for IntegrationFeed {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+fn remove_fixture_socket(path: &Path, name: &str) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove fixture {name} socket: {error}")),
+    }
+}
+
+fn accept_until_stopped(
+    listener: &UnixListener,
+    stop: &AtomicBool,
+) -> std::io::Result<Option<UnixStream>> {
+    listener.set_nonblocking(true)?;
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => return Ok(Some(stream)),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+fn start_integration_feed(socket: &Path, trigger: &Path) -> std::io::Result<IntegrationFeed> {
+    let listener = UnixListener::bind(socket)?;
+    let trigger_listener = match UnixListener::bind(trigger) {
+        Ok(listener) => listener,
+        Err(error) => {
+            let _ = std::fs::remove_file(socket);
+            return Err(error);
+        }
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let handle = match std::thread::Builder::new()
+        .name("overlay-wayland-fixture-feed".into())
+        .spawn(move || {
+            let Some(mut stream) = accept_until_stopped(&listener, &thread_stop)? else {
+                return Ok(());
+            };
+            let snapshot = json!({
+                "schema": "scorepeek-event-snapshot-v2",
+                "invocation_id": "overlay-visual-wayland",
+                "next_sequence": 1,
+                "status": {
+                    "watcher": "session_active",
+                    "capture": null,
+                    "catalog": "ready",
+                    "model": "ready",
+                    "scores": null,
+                    "recording": null,
+                    "last_session_outcome": null,
+                },
+                "result": {
+                    "schema": "scorepeek-event-v2",
+                    "invocation_id": "overlay-visual-wayland",
+                    "sequence": 0,
+                    "event_id": "overlay-visual-wayland:0",
+                    "emitted_monotonic_ms": 0,
+                    "emitted_unix_ms": 1_000,
+                    "capture": null,
+                    "event": "result_changed",
+                    "source_sequence": 0,
+                    "state": {"status": "inactive"},
+                },
+                "screen_state": null,
+                "music_selection": null,
+                "music_select_best": null,
+            });
+            writeln!(stream, "{snapshot}")?;
+            stream.flush()?;
+            let Some(trigger) = accept_until_stopped(&trigger_listener, &thread_stop)? else {
+                return Ok(());
+            };
+            trigger.set_read_timeout(Some(Duration::from_millis(100)))?;
+            let mut commands = BufReader::new(trigger).lines();
+            for (sequence, expected) in [(1, "music_select"), (2, "play"), (3, "music_select")] {
+                let command = loop {
+                    if thread_stop.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    match commands.next() {
+                        Some(Ok(command)) => break command,
+                        Some(Err(error))
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) => {}
+                        Some(Err(error)) => return Err(error),
+                        None => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "fixture trigger closed before all screen transitions",
+                            ));
+                        }
+                    }
+                };
+                if command != expected {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("expected fixture transition {expected}, got {command}"),
+                    ));
+                }
+                let screen = expected;
+                writeln!(stream, "{}", fixture_event(sequence, screen))?;
+                stream.flush()?;
+            }
+            Ok(())
+        }) {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = std::fs::remove_file(socket);
+            let _ = std::fs::remove_file(trigger);
+            return Err(error);
+        }
+    };
+    Ok(IntegrationFeed {
+        stop,
+        handle: Some(handle),
+        event_socket: socket.to_owned(),
+        trigger_socket: trigger.to_owned(),
+    })
 }
 
 fn load_document(
@@ -58,7 +248,7 @@ fn load_document(
     Ok(document)
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn parse_args() -> Result<(std::path::PathBuf, u64, Option<std::ffi::OsString>), String> {
     let mut args = std::env::args_os().skip(1);
     let config_path = args
         .next()
@@ -74,7 +264,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if seconds == 0 || args.next().is_some() {
         return Err("usage: visual_wayland CONFIG.toml [SECONDS>0] [SOURCE_CONFIG.toml]".into());
     }
-    let config_path = std::path::PathBuf::from(config_path);
+    Ok((
+        std::path::PathBuf::from(config_path),
+        seconds,
+        source_config,
+    ))
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (config_path, seconds, source_config) = parse_args()?;
     let parent = config_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -83,6 +281,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let integration_fixture =
         source_config.as_deref() == Some(std::ffi::OsStr::new("--integration-fixture"));
     let document = load_document(source_config, integration_fixture)?;
+    let event_socket = parent.join("events.sock");
+    let feed_trigger = parent.join("feed-trigger.sock");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -91,6 +291,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.write_all(toml::to_string_pretty(&document)?.as_bytes())?;
     file.sync_all()?;
     let controller = Controller::start(&config_path, document.clone())?;
+    let fixture_feed = integration_fixture
+        .then(|| start_integration_feed(&event_socket, &feed_trigger))
+        .transpose()?;
     let runtime_config = || Config {
         backend: Backend::Wayland,
         canvases: document
@@ -104,10 +307,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         skin_store: scorepeek_overlay::skin::StoreRoot::discover()
             .path()
             .to_owned(),
-        socket: std::env::temp_dir().join(format!(
-            "scorepeek-visual-absent-{}.sock",
-            std::process::id()
-        )),
+        socket: if integration_fixture {
+            event_socket.clone()
+        } else {
+            std::env::temp_dir().join(format!(
+                "scorepeek-visual-absent-{}.sock",
+                std::process::id()
+            ))
+        },
         invocation: "overlay-visual-wayland".into(),
         scores_db: None,
         listen: document.obs_listen.parse().expect("fixture listen address"),
@@ -148,11 +355,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Vec::new()
     };
     eprintln!("Wayland editor will remain open for {seconds} seconds.");
-    scorepeek_overlay::native::run_with_editor_scenario(
+    let result = scorepeek_overlay::native::run_with_editor_scenario(
         runtime_config(),
         TimedLease(Duration::from_secs(seconds)),
         scenario,
-    )?;
+    );
+    if let Some(feed) = fixture_feed {
+        feed.finish()?;
+    }
+    result?;
     drop(controller);
     Ok(())
 }

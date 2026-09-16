@@ -45,7 +45,11 @@ the production Wayland runner with four screen-filtered fixture canvases, includ
 all-screen canvas, animated backgrounds, and multiple widgets split across those outputs. It drives
 production `EditorInput` transport to select a named canvas, move it
 between outputs, change visibility and delete it. A virtual-pointer client closes and reopens the
-editor through Scroll, and rejects any display-canvas worker failure during that transition. It also
+editor through Scroll. The virtual-pointer client then drives the public Event API through
+`music_select` → `play` → `music_select`, waiting for the selection canvas's active, inactive, and
+active diagnostic acknowledgements before each next step and before the editor reopens. The canvas must
+unmap and remap under one native run ID, retain one skin runtime, paint within 250 ms of the second
+activation, and report no display-canvas worker failure. It also
 drives compositor-delivered motion, primary/secondary buttons and an
 axis event with the checked-in virtual-pointer client. Every deterministic lifecycle revision must
 be painted by each receiving stage; an independent compositor-input revision must be painted by the
@@ -94,11 +98,14 @@ Each active native surface presents on every compositor frame callback and publi
 single-flight callback with that present. The presenter has no independent refresh cap or paint
 admission flag. When a display canvas becomes inactive, its current buffer is detached and committed
 immediately; it does not wait for a transparent paint. Its DOM, renderer and skin runtime remain
-allocated, but both the callback-driven presenter and the skin runtime schedule are paused. Becoming
+allocated, but the renderer's GPU presentation state is suspended and both the callback-driven
+presenter and the skin runtime schedule are paused. Becoming
 active performs an immediate skin render, restores size, anchor, margin, exclusivity and keyboard
-interactivity, and makes a bufferless commit. It waits for the layer-shell configure, then presents
-to remap the surface and resumes both loops. Frame callbacks received before that configure cannot
-admit the remap paint.
+interactivity, and makes a bufferless commit. It waits for the layer-shell configure, resumes GPU
+presentation, then presents the retained DOM to remap the surface and resumes both loops. Frame
+callbacks received before that configure cannot admit the remap paint. `native_surface_transition`
+records the visibility/configure/frame inputs, surface state, paint/unmap result, and renderer state
+on both sides of each lifecycle boundary.
 The skin schedule (`idle`, `next-frame`, or `after-ms`) drives Wasm/DOM updates and is independent of
 the presenter callback rate. Repeated configure events with unchanged logical size, physical size
 and scale update no state.

@@ -10,7 +10,7 @@ fi
 
 if [[ "${1:-}" == "--exercise-input" ]]; then
   sleep 5
-  "${2:?missing virtual pointer executable}"
+  "${2:?missing virtual pointer executable}" "${3:?missing feed trigger socket}" "${4:?missing diagnostic log}"
   exit 0
 fi
 
@@ -24,7 +24,7 @@ if [[ "${1:-}" == "--run-editor-scenario" ]]; then
   repo_root="${2:?missing repository root}"
   overlay_config="${3:?missing overlay config}"
   cd "$repo_root"
-  SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh target/release/examples/visual_wayland "$overlay_config" 15 --integration-fixture
+  SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh target/release/examples/visual_wayland "$overlay_config" 30 --integration-fixture
   scrollmsg exit >/dev/null 2>&1 || true
   exit 0
 fi
@@ -39,21 +39,9 @@ cleanup() {
   status=$?
   trap - ERR
   if [[ "$status" -ne 0 && -f "$log" ]]; then
-    rg 'pointer-drag|nested_output_layout|native_editor_input|native_editor_action_reduced|native_projection_rebuilt|native_canvas_failed|status":"failed|error' "$log" | tail -n 200 || true
     rg 'nested_output_layout' "$log" || true
-    json_log | jq -sc '
-      [.[]|select(.operation=="native_editor_input_applied" and .data.run_id=="nested-editor-scenario")] as $actions
-      | [.[]|select(.operation=="native_editor_projection_received")] as $projections
-      | [.[]|select(.operation=="native_editor_painted")] as $paints
-      | [$actions[] | . as $action
-        | {action:.data.action,revision:.data.revision,changed:.data.changed,
-           receipts:[$projections[]|select(.data.revision==$action.data.revision)
-             | . as $accepted
-             | {output:.data.output,canvases:[.data.canvases[].id],
-                painted:any($paints[];.data.output==$accepted.data.output and .data.revision >= $action.data.revision and .timestamp_unix_us >= $accepted.timestamp_unix_us)}]}]
-    ' || true
-    json_log | jq -c 'select(.operation == "native_summary") | {operation,data:{run_id:.data.run_id,output_name:.data.output_name,status:.data.status,effective_paint_hz:.data.effective_paint_hz,paint_count:.data.paint_count}}' || true
-    tail -n 200 "$log" | cut -c1-2000 || true
+    json_log | jq -c 'select(.operation == "native_summary") | {operation,data:{run_id:.data.run_id,canvas_id:.data.canvas_id,output_name:.data.output_name,status:.data.status,effective_paint_hz:.data.effective_paint_hz,paint_count:.data.paint_count,skin_runtime_create_count:.data.skin_runtime_create_count}}' || true
+    json_log | jq -c 'select((.operation == "native_surface_transition" or .operation == "native_surface_visibility" or .operation == "native_canvas_failed") and .data.canvas_id == "wayland-selection") | {operation,sequence,timestamp_unix_us,data}' || true
   fi
   find "$test_root" -depth -delete
   return "$status"
@@ -71,8 +59,8 @@ animations { enabled no }
 swaybg_command -
 exec "$repo_root/scripts/test-overlay-wayland-nested.bash" --run-editor-scenario "$repo_root" "$overlay_config"
 exec "$repo_root/scripts/test-overlay-wayland-nested.bash" --report-outputs
-exec "$repo_root/scripts/test-overlay-wayland-nested.bash" --exercise-input "$repo_root/target/release/examples/virtual_pointer"
-exec "$repo_root/scripts/test-overlay-wayland-nested.bash" --exit-compositor-after 30
+exec "$repo_root/scripts/test-overlay-wayland-nested.bash" --exercise-input "$repo_root/target/release/examples/virtual_pointer" "$test_root/feed-trigger.sock" "$log"
+exec "$repo_root/scripts/test-overlay-wayland-nested.bash" --exit-compositor-after 60
 EOF
 
 WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=2 scroll -c "$config" >"$log" 2>&1
@@ -91,7 +79,9 @@ json_log | jq -se '
   == ["canvas_output_moved", "canvas_visibility_none", "canvas_visibility_all", "canvas_deleted"]
 ' >/dev/null
 json_log | jq -se '
-  [ .[] | select(.operation == "native_editor_input_applied" and .data.run_id == "nested-editor-scenario") ] as $actions
+  [ .[] | select(
+      .operation == "native_editor_input_applied"
+      and .data.run_id == "nested-editor-scenario") ] as $actions
   | [ .[] | select(.operation == "native_editor_projection_received") ] as $projections
   | ($actions | map(select(.data.action == "canvas_output_moved")) | first) as $moved
   | ($actions | map(select(.data.action == "canvas_visibility_none")) | first) as $hidden
@@ -121,6 +111,74 @@ json_log | jq -se '
 ' >/dev/null
 json_log | jq -se 'any(.[]; .operation == "native_summary" and (.data.frame_work.frames | type) == "array")' >/dev/null
 json_log | jq -se 'any(.[]; .operation == "native_surface_unmap")' >/dev/null
+json_log | jq -se '
+  [ .[] | select(
+      .operation == "native_surface_visibility"
+      and .data.canvas_id == "wayland-selection") ] as $visibility
+  | (reduce $visibility[] as $event
+      ({phase: 0};
+       if .phase == 0 and $event.data.active == true then .phase = 1
+       elif .phase == 1 and $event.data.active == false then .phase = 2
+       elif .phase == 2 and $event.data.active == true then .phase = 3
+       else . end)) as $progress
+  | [ $visibility[] | select(.data.active == true) ] as $active
+  | $progress.phase == 3
+    and ($active | map(.data.run_id) | unique | length) == 1
+' >/dev/null
+json_log | jq -se '
+  [ .[] | select(
+      .operation == "native_surface_transition"
+      and .data.canvas_id == "wayland-selection"
+      and .data.painted == true
+      and .data.surface_after == "mapped") ]
+  | length >= 2 and (map(.data.run_id) | unique | length) == 1
+' >/dev/null
+json_log | jq -se '
+  any(.[];
+      .operation == "native_surface_transition"
+      and .data.canvas_id == "wayland-selection"
+      and .data.unmapped == true
+      and .data.renderer_active_before == true
+      and .data.renderer_active_after == false)
+  and any(.[];
+      .operation == "native_surface_transition"
+      and .data.canvas_id == "wayland-selection"
+      and .data.configured == true
+      and .data.painted == true
+      and .data.renderer_active_before == false
+      and .data.renderer_active_after == true)
+' >/dev/null
+remap_latency_us="$(json_log | jq -ser '
+  . as $records
+  | [ $records[] | select(
+      .operation == "native_surface_transition"
+      and .data.canvas_id == "wayland-selection"
+      and .data.visibility_changed == true
+      and .data.visible == true) ] | last as $shown
+  | [ $records[] | select(
+      .operation == "native_surface_transition"
+      and .data.canvas_id == "wayland-selection"
+      and .data.run_id == $shown.data.run_id
+      and .data.painted == true
+      and .timestamp_unix_us >= $shown.timestamp_unix_us) ] | first as $painted
+  | if $shown == null or $painted == null then null
+    else $painted.timestamp_unix_us - $shown.timestamp_unix_us end
+')"
+test "$remap_latency_us" != "null"
+test "$remap_latency_us" -ge 0
+test "$remap_latency_us" -lt 250000
+json_log | jq -se '
+  . as $records
+  | [$records[] | select(
+      .operation == "native_surface_visibility"
+      and .data.canvas_id == "wayland-selection"
+      and .data.active == true) | .data.run_id] | last as $run_id
+  | any($records[];
+      .operation == "native_summary"
+      and .data.run_id == $run_id
+      and .data.canvas_id == "wayland-selection"
+      and .data.skin_runtime_create_count == 1)
+' >/dev/null
 json_log | jq -se 'all(.[]; .operation != "native_canvas_failed")' >/dev/null
 json_log | jq -se 'any(.[]; .operation == "nested_wayland_scenario" and .action == "pointer-drag-injected")' >/dev/null
 test "$summary_count" -eq "$complete_count"
@@ -185,3 +243,4 @@ json_log | jq -se '
   | length >= 2 and all(.[].data.frame_work.frames[]; (($required - (.phases | keys)) | length) == 0)
 ' >/dev/null
 printf 'nested input-to-paint latency: %s us\n' "$input_to_paint_us"
+printf 'nested display-remap latency: %s us\n' "$remap_latency_us"

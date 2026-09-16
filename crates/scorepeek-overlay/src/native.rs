@@ -198,6 +198,7 @@ impl NativeFramePresenter for WindowPresenter<'_> {
     }
 
     fn unmap(&mut self) -> Result<(), String> {
+        self.renderer.suspend();
         self.shell.unmap()
     }
 
@@ -1837,6 +1838,7 @@ fn run_canvas(
         .first()
         .ok_or("Wayland overlay has no canvas")?
         .clone();
+    report.borrow_mut().canvas_id = Some(canvas.id.clone());
     wakes
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2795,6 +2797,8 @@ impl App {
                 .clone()
                 .unwrap_or_else(|| self.frame_work.snapshot());
             self.sync_projection();
+            let dispatch_surface_before = self.surface_state;
+            let dispatch_renderer_active_before = self.renderer.is_active();
             let events = match self.shell.dispatch(Duration::from_millis(500)) {
                 Ok(events) => events,
                 Err(_)
@@ -2805,10 +2809,36 @@ impl App {
                     return Ok(());
                 }
                 Err(error) if error == "output_removed" => return Ok(()),
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if !self.editing() {
+                        crate::diagnostics::emit(
+                            "native_surface_transition",
+                            &serde_json::json!({
+                                "run_id": self.report.borrow().run_id,
+                                "canvas_id": self.surface_canvas.id,
+                                "output": self.surface_output,
+                                "visible": self.visible(),
+                                "visibility_changed": false,
+                                "configured": false,
+                                "frame": false,
+                                "renderer_active_before": dispatch_renderer_active_before,
+                                "renderer_active_after": self.renderer.is_active(),
+                                "surface_before": dispatch_surface_before.diagnostic_name(),
+                                "surface_after": self.surface_state.diagnostic_name(),
+                                "painted": false,
+                                "unmapped": false,
+                                "status": "error",
+                                "boundary": "dispatch",
+                                "error_type": canvas_worker_error_type(&error),
+                            }),
+                        );
+                    }
+                    return Err(error);
+                }
             };
             let mut frame = false;
             let mut configured = false;
+            let mut renderer_active_before_configure = None;
             if self.output_descriptions != self.shell.output_descriptions {
                 self.output_descriptions
                     .clone_from(&self.shell.output_descriptions);
@@ -2819,7 +2849,41 @@ impl App {
                 });
             }
             for event in events {
-                let outcome = dispatch_native_event(self, event)?;
+                let configuring = matches!(&event, Event::Configure { .. });
+                let renderer_active_before_event = self.renderer.is_active();
+                let surface_before_event = self.surface_state;
+                let outcome = match dispatch_native_event(self, event) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        if configuring && !self.editing() {
+                            crate::diagnostics::emit(
+                                "native_surface_transition",
+                                &serde_json::json!({
+                                    "run_id": self.report.borrow().run_id,
+                                    "canvas_id": self.surface_canvas.id,
+                                    "output": self.surface_output,
+                                    "visible": self.visible(),
+                                    "visibility_changed": false,
+                                    "configured": true,
+                                    "frame": false,
+                                    "renderer_active_before": renderer_active_before_event,
+                                    "renderer_active_after": self.renderer.is_active(),
+                                    "surface_before": surface_before_event.diagnostic_name(),
+                                    "surface_after": self.surface_state.diagnostic_name(),
+                                    "painted": false,
+                                    "unmapped": false,
+                                    "status": "error",
+                                    "boundary": "configure",
+                                    "error_type": canvas_worker_error_type(&error),
+                                }),
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
+                if outcome.configured {
+                    renderer_active_before_configure = Some(renderer_active_before_event);
+                }
                 if outcome.closed {
                     return Ok(());
                 }
@@ -2959,36 +3023,96 @@ impl App {
             } else {
                 let first_paint = self.paint_count == 0;
                 let was_mapped = self.surface_state.is_mapped();
+                let surface_before = self.surface_state;
+                let renderer_active =
+                    renderer_active_before_configure.unwrap_or_else(|| self.renderer.is_active());
                 let paint_started = Instant::now();
-                let mut presenter = WindowPresenter {
-                    shell: &mut self.shell,
-                    renderer: &mut self.renderer,
+                let result = {
+                    let mut presenter = WindowPresenter {
+                        shell: &mut self.shell,
+                        renderer: &mut self.renderer,
+                    };
+                    run_native_display_turn(
+                        &mut self.document,
+                        &self.skin_assets,
+                        &mut self.full_layout_pending,
+                        &mut self.surface_state,
+                        &mut self.frame_work,
+                        &self.waker,
+                        &frame_start,
+                        NativeDisplayTurnInput {
+                            frame: if frame {
+                                NativeFrameBoundary::Frame
+                            } else {
+                                NativeFrameBoundary::Deferred
+                            },
+                            surface: if configured {
+                                NativeSurfaceReadiness::Configured
+                            } else {
+                                NativeSurfaceReadiness::Pending
+                            },
+                            visible,
+                            live_widgets: u64::try_from(self.canvas.widgets.len())
+                                .unwrap_or(u64::MAX),
+                            seconds: now.as_secs_f64(),
+                        },
+                        &mut presenter,
+                    )
                 };
-                let result = run_native_display_turn(
-                    &mut self.document,
-                    &self.skin_assets,
-                    &mut self.full_layout_pending,
-                    &mut self.surface_state,
-                    &mut self.frame_work,
-                    &self.waker,
-                    &frame_start,
-                    NativeDisplayTurnInput {
-                        frame: if frame {
-                            NativeFrameBoundary::Frame
-                        } else {
-                            NativeFrameBoundary::Deferred
-                        },
-                        surface: if configured {
-                            NativeSurfaceReadiness::Configured
-                        } else {
-                            NativeSurfaceReadiness::Pending
-                        },
-                        visible,
-                        live_widgets: u64::try_from(self.canvas.widgets.len()).unwrap_or(u64::MAX),
-                        seconds: now.as_secs_f64(),
-                    },
-                    &mut presenter,
-                )?;
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        crate::diagnostics::emit(
+                            "native_surface_transition",
+                            &serde_json::json!({
+                                "run_id": self.report.borrow().run_id,
+                                "canvas_id": self.surface_canvas.id,
+                                "output": self.surface_output,
+                                "visible": visible,
+                                "visibility_changed": visibility_changed,
+                                "configured": configured,
+                                "frame": frame,
+                                "renderer_active_before": renderer_active,
+                                "renderer_active_after": self.renderer.is_active(),
+                                "surface_before": surface_before.diagnostic_name(),
+                                "surface_after": self.surface_state.diagnostic_name(),
+                                "painted": false,
+                                "unmapped": false,
+                                "status": "error",
+                                "boundary": "display_turn",
+                                "error_type": canvas_worker_error_type(&error),
+                            }),
+                        );
+                        return Err(error);
+                    }
+                };
+                let renderer_active_after = self.renderer.is_active();
+                if visibility_changed
+                    || configured
+                    || result.unmapped
+                    || (result.painted && !was_mapped)
+                {
+                    crate::diagnostics::emit(
+                        "native_surface_transition",
+                        &serde_json::json!({
+                            "run_id": self.report.borrow().run_id,
+                            "canvas_id": self.surface_canvas.id,
+                            "output": self.surface_output,
+                            "visible": visible,
+                            "visibility_changed": visibility_changed,
+                            "configured": configured,
+                            "frame": frame,
+                            "renderer_active_before": renderer_active,
+                            "renderer_active_after": renderer_active_after,
+                            "surface_before": surface_before.diagnostic_name(),
+                            "surface_after": self.surface_state.diagnostic_name(),
+                            "painted": result.painted,
+                            "unmapped": result.unmapped,
+                            "status": "success",
+                            "boundary": "display_turn",
+                        }),
+                    );
+                }
                 if result.dioxus_changed {
                     self.set_text_composing(false);
                 }
@@ -3169,6 +3293,7 @@ fn shutdown_native_surface<T, E>(
 struct RunReport {
     run_id: String,
     build_revision: &'static str,
+    canvas_id: Option<String>,
     output_name: Option<String>,
     logical_size: Option<[u32; 2]>,
     physical_size: Option<[u32; 2]>,
@@ -3211,6 +3336,7 @@ impl RunReport {
                 RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
             build_revision: option_env!("OVERLAY_BUILD_REVISION").unwrap_or("working-tree"),
+            canvas_id: None,
             output_name: None,
             logical_size: None,
             physical_size: None,
@@ -3699,6 +3825,14 @@ enum NativeDisplaySurfaceState {
 impl NativeDisplaySurfaceState {
     const fn is_mapped(self) -> bool {
         matches!(self, Self::Mapped)
+    }
+
+    const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Unmapped => "unmapped",
+            Self::AwaitingConfigure => "awaiting_configure",
+            Self::Mapped => "mapped",
+        }
     }
 }
 
