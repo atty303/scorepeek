@@ -1,0 +1,22 @@
+Task: Fix native Wayland canvas visibility across semantic screen switches
+Anchor: 7b4d9cc2670a9bce29bb55b2ba0af13c9f3da27a
+Base: 1cf301ffdeb782f33cbe29404cb785c9ff5e8a74
+Line: main
+Commits:
+- 7b4d9cc2670a9bce29bb55b2ba0af13c9f3da27a fix(overlay): restore layer state before remap
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; mandatory review reference
+Environment: durable local runtime change; Wayland compositor is an external protocol boundary; no target deployment or push was authorized
+Authority: current source and tests are implementation facts; living documentation and the user's repair request define intent
+Evidence:
+- The wlr-layer-shell protocol resets layer-surface state after null-buffer unmap, while begin_remap previously issued only a bufferless commit.
+- The target diagnostic stream showed accepted semantic-screen events and applied Wayland visibility state followed by configure_timeout on remapped selection and play canvases.
+- Initial map and remap now share one complete layer-state application path for anchor, margin, exclusive zone, keyboard interactivity, and logical size.
+- Added a request-sequence regression test that verifies every double-buffered request and its current values.
+- Targeted repository checks and 9 Wayland handle tests passed.
+- The checked-in nested Scroll Wayland scenario passed with complete native summaries, editor/input coverage, and no native_canvas_failed event.
+- The complete mise run test suite passed after rerunning outside the filesystem sandbox because Dioxus telemetry/cache access was denied there.
+- A fresh independent review reported no actionable findings; remaining risk is live validation on infinitas.lan after deployment.
+- The required post-commit mise run build succeeded and refreshed target/debug/scorepeek.
+Transcript:
+- U1: 修正して
+  - A: Treated the request as authorization to change and locally commit the repository, not to deploy, restart the target, push, or change external state. Reproduced the protocol-state mismatch from source and diagnostics, restored all double-buffered state before remap, preserved current keyboard ownership, added a focused regression test, updated living docs, ran targeted and full validation, obtained an independent review, committed the change, and rebuilt the debug binary.
