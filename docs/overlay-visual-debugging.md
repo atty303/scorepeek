@@ -218,9 +218,12 @@ configuration revision. Rebuild the web bundle before building the embedded back
 
 Each stage connection and editing request must match the backend build identity.
 Until the first matching stage arrives, editing is disabled. A mismatch discards the
-local draft, selection, gestures, title editing and undo history and displays a
-reload button. It does not save, restore or automatically reload the draft. Reload
-starts from persisted settings. Display-only canvas URLs are not editor sessions.
+local draft, selection, gestures, title editing and undo history, then reloads the
+workspace once to fetch the matching assets. The client records its build identity
+in session storage before reloading; if the same client build mismatches again, it
+stops instead of entering a reload loop and displays a manual reload fallback. It
+does not save or restore the draft. Reload starts from persisted settings.
+Display-only canvas URLs are not editor sessions.
 
 The server owns each WebSocket's editor identity and releases that connection's
 lease on disconnect, including mismatch rejection. Reconnecting cannot release
@@ -230,7 +233,9 @@ The private child diagnostics report `overlay_editor_version` (success or
 controller records lease and commit outcomes.
 
 For upgrade verification, keep a page open while replacing the isolated test
-server with another build. Confirm the mismatch notice, absence of editor handles
-and absence of configuration writes, then reload against matching assets and edit
-again. Versions predating this guard cannot render the new reload notice, but their
-unversioned editor requests are rejected by the new backend.
+server with another build. Confirm automatic navigation to matching assets, absence
+of configuration writes from the discarded draft, and successful editing after the
+new stage connects. Repeating the mismatch for one client build must stop after one
+automatic reload and expose the fallback notice. Versions predating this guard
+cannot automatically reload, but their unversioned editor requests are rejected by
+the new backend.

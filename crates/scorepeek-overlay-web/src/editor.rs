@@ -123,7 +123,7 @@ pub fn app() -> Element {
             }
             if compatibility() == Compatibility::Mismatch {
                 div { class:"version-mismatch", role:"alert",
-                    h2 { "UIが更新されました" }
+                    h2 { "UIを自動更新できませんでした" }
                     p { "未保存の変更は破棄されました。再読み込みして、保存済み設定からやり直してください。" }
                     scorepeek_overlay_ui::editor::Button {
                         tone:scorepeek_overlay_ui::editor::ButtonTone::Primary,

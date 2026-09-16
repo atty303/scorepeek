@@ -7,6 +7,64 @@ if (executablePath) {
   test.use({ launchOptions: { executablePath } });
 }
 
+test("asset version mismatch reloads the editor automatically", async ({ page }) => {
+  const stageConnections = [];
+  let mainFrameNavigations = 0;
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame() && frame.url().includes("/overlay")) {
+      mainFrameNavigations += 1;
+    }
+  });
+  await page.routeWebSocket("**/ws/stage?**", (client) => {
+    stageConnections.push(client);
+    if (stageConnections.length === 1) {
+      client.send(JSON.stringify({
+        type: "version_mismatch",
+        asset_version: "replacement-build",
+      }));
+      return;
+    }
+    const server = client.connectToServer();
+    client.onMessage((message) => server.send(message));
+    server.onMessage((message) => client.send(message));
+  });
+
+  await page.goto(`${baseURL}/overlay`);
+
+  await expect.poll(() => stageConnections.length).toBe(2);
+  await expect.poll(() => mainFrameNavigations).toBe(2);
+  await expect(page.locator(".version-mismatch")).toHaveCount(0);
+  await expect(page.locator("#stage")).toBeVisible();
+
+  stageConnections[1].send(JSON.stringify({
+    type: "version_mismatch",
+    asset_version: "another-replacement-build",
+  }));
+
+  await expect.poll(() => stageConnections.length).toBe(3);
+  await expect.poll(() => mainFrameNavigations).toBe(3);
+  await expect(page.locator(".version-mismatch")).toHaveCount(0);
+  await expect(page.locator("#stage")).toBeVisible();
+});
+
+test("repeated asset version mismatch stops after one automatic reload", async ({ page }) => {
+  let stageConnections = 0;
+  await page.routeWebSocket("**/ws/stage?**", (client) => {
+    stageConnections += 1;
+    client.send(JSON.stringify({
+      type: "version_mismatch",
+      asset_version: "replacement-build",
+    }));
+  });
+
+  await page.goto(`${baseURL}/overlay`);
+
+  await expect.poll(() => stageConnections).toBe(2);
+  await expect(page.locator(".version-mismatch")).toBeVisible();
+  await page.waitForTimeout(750);
+  expect(stageConnections).toBe(2);
+});
+
 test("editor replicas reconnect and follow drag, stale delivery, scroll, and lifecycle", async ({ page }) => {
   test.setTimeout(60_000);
   const pageErrors = [];

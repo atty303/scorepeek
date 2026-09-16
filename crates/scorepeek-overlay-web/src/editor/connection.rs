@@ -13,6 +13,7 @@ use std::{
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
 pub const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
+const VERSION_RELOAD_KEY: &str = "scorepeek-overlay-version-reload";
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Compatibility {
@@ -239,6 +240,7 @@ impl Connection {
         if let Some(socket) = self.socket.borrow().as_ref() {
             let _ = socket.socket.close();
         }
+        reload_once_for_version_mismatch();
     }
     fn receive(&self, message: Message) {
         if *self.compatibility.read() == Compatibility::Mismatch {
@@ -255,6 +257,7 @@ impl Connection {
                     self.mismatch();
                     return;
                 }
+                clear_version_reload_guard();
                 let first = *self.compatibility.read() == Compatibility::Checking;
                 *self.compatibility.write_unchecked() = Compatibility::Ready;
                 self.dispatch_and_send(EditorInput::TransportReady {
@@ -290,6 +293,41 @@ impl Connection {
         }
     }
 }
+
+fn reload_once_for_version_mismatch() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.session_storage() else {
+        return;
+    };
+    if storage
+        .get_item(VERSION_RELOAD_KEY)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some(ASSET_VERSION)
+    {
+        return;
+    }
+    if storage.set_item(VERSION_RELOAD_KEY, ASSET_VERSION).is_err() {
+        return;
+    }
+    if window.location().reload().is_err() {
+        let _ = storage.remove_item(VERSION_RELOAD_KEY);
+    }
+}
+
+fn clear_version_reload_guard() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.session_storage() else {
+        return;
+    };
+    let _ = storage.remove_item(VERSION_RELOAD_KEY);
+}
+
 impl Drop for Connection {
     fn drop(&mut self) {
         if let Some(window) = web_sys::window()

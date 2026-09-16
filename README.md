@@ -250,7 +250,10 @@ empty Wayland and OBS workspaces; the editor creates canvases. For OBS, use
 `http://127.0.0.1:3939/canvas/CANVAS_ID` for one canvas. `obs_listen`
 controls the listen address. A loaded Browser Source reconnects its canvas
 stream after the OBS overlay backend restarts and replaces its display state
-from the new connection without reloading the page.
+from the new connection without reloading the page. If the restarted backend
+contains a different embedded UI build, the complete workspace reloads itself
+once to load the matching assets; a repeated mismatch stops instead of entering
+an automatic reload loop.
 
 Right-click the Wayland stage or OBS page in Browser Source Interaction to
 enter the shared editor. Canvas movement uses secondary-button drag; widget
