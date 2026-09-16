@@ -412,7 +412,7 @@ trait NativeEventConsumer {
         logical: [u32; 2],
         physical: [u32; 2],
         scale_120: u32,
-    ) -> Result<bool, String>;
+    ) -> Result<(), String>;
     fn pointer_motion_event(&mut self, point: [f64; 2]);
     fn pointer_button_event(&mut self, button: u32, pressed: bool, point: [f64; 2]);
     fn pointer_scroll_event(&mut self, delta: [f64; 2], point: [f64; 2]);
@@ -431,7 +431,10 @@ fn dispatch_native_event(
             logical,
             physical,
             scale_120,
-        } => outcome.configured = consumer.configure_event(logical, physical, scale_120)?,
+        } => {
+            consumer.configure_event(logical, physical, scale_120)?;
+            outcome.configured = true;
+        }
         Event::Wake => {}
         Event::PointerMotion { x, y } => {
             consumer.pointer_motion_event([x, y]);
@@ -2430,8 +2433,8 @@ impl NativeEventConsumer for App {
         logical: [u32; 2],
         physical: [u32; 2],
         scale_120: u32,
-    ) -> Result<bool, String> {
-        let changed = self.configure(logical, physical, scale_120)?;
+    ) -> Result<(), String> {
+        self.configure(logical, physical, scale_120)?;
         if self.editing()
             && let Some(output) = self.surface_output.clone()
         {
@@ -2443,7 +2446,7 @@ impl NativeEventConsumer for App {
                 correlation: None,
             });
         }
-        Ok(changed)
+        Ok(())
     }
 
     fn pointer_motion_event(&mut self, point: [f64; 2]) {
@@ -4987,6 +4990,47 @@ mod skin_tests {
     use super::*;
 
     #[test]
+    fn configure_event_is_a_surface_boundary_even_when_geometry_is_unchanged() {
+        #[derive(Default)]
+        struct ConfigureConsumer {
+            calls: usize,
+        }
+
+        impl NativeEventConsumer for ConfigureConsumer {
+            fn configure_event(
+                &mut self,
+                _logical: [u32; 2],
+                _physical: [u32; 2],
+                _scale_120: u32,
+            ) -> Result<(), String> {
+                self.calls += 1;
+                Ok(())
+            }
+
+            fn pointer_motion_event(&mut self, _point: [f64; 2]) {}
+            fn pointer_button_event(&mut self, _button: u32, _pressed: bool, _point: [f64; 2]) {}
+            fn pointer_scroll_event(&mut self, _delta: [f64; 2], _point: [f64; 2]) {}
+            fn text_event(&mut self, _command: &scorepeek_overlay_handles::TextCommand) {}
+            fn ime_event(&mut self, _update: scorepeek_overlay_handles::TextUpdate) {}
+            fn keyboard_focus_event(&mut self, _focused: bool) {}
+        }
+
+        let event = Event::Configure {
+            logical: [1280, 136],
+            physical: [1920, 204],
+            scale_120: 180,
+        };
+        let mut consumer = ConfigureConsumer::default();
+
+        let initial = dispatch_native_event(&mut consumer, event.clone()).unwrap();
+        let unchanged_remap = dispatch_native_event(&mut consumer, event).unwrap();
+
+        assert!(initial.configured);
+        assert!(unchanged_remap.configured);
+        assert_eq!(consumer.calls, 2);
+    }
+
+    #[test]
     fn display_visibility_update_releases_the_signal_read_before_writing() {
         let mut canvas =
             crate::config::empty_canvas("screen-filtered".into(), crate::runtime::Backend::Wayland);
@@ -5304,7 +5348,7 @@ mod skin_tests {
                 _logical: [u32; 2],
                 physical: [u32; 2],
                 scale_120: u32,
-            ) -> Result<bool, String> {
+            ) -> Result<(), String> {
                 self.0
                     .document
                     .inner
@@ -5316,7 +5360,7 @@ mod skin_tests {
                             / 120.0,
                         ColorScheme::Dark,
                     ));
-                Ok(true)
+                Ok(())
             }
             fn pointer_motion_event(&mut self, point: [f64; 2]) {
                 self.0
@@ -6149,7 +6193,7 @@ mod skin_tests {
                 logical: [u32; 2],
                 physical: [u32; 2],
                 scale_120: u32,
-            ) -> Result<bool, String> {
+            ) -> Result<(), String> {
                 let scale =
                     f32::from(u16::try_from(scale_120).map_err(|error| error.to_string())?) / 120.0;
                 self.document.inner.borrow_mut().set_viewport(Viewport::new(
@@ -6167,7 +6211,7 @@ mod skin_tests {
                     },
                     correlation: None,
                 });
-                Ok(logical != [0, 0])
+                Ok(())
             }
 
             fn pointer_motion_event(&mut self, point: [f64; 2]) {
@@ -6430,7 +6474,7 @@ mod skin_tests {
                 _logical: [u32; 2],
                 physical: [u32; 2],
                 scale_120: u32,
-            ) -> Result<bool, String> {
+            ) -> Result<(), String> {
                 let scale =
                     f32::from(u16::try_from(scale_120).map_err(|error| error.to_string())?) / 120.0;
                 self.document.inner.borrow_mut().set_viewport(Viewport::new(
@@ -6439,7 +6483,7 @@ mod skin_tests {
                     scale,
                     ColorScheme::Dark,
                 ));
-                Ok(true)
+                Ok(())
             }
 
             fn pointer_motion_event(&mut self, point: [f64; 2]) {
