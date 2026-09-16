@@ -8,7 +8,7 @@ The durable stream is
 `$XDG_STATE_HOME/scorepeek/diagnostics/<run-id>/diagnostics.ndjson`. It contains lifecycle,
 recognition observations, overlay child diagnostics, and exact public event payloads with their
 `events.sock` enqueue outcome. Records use a diagnostic-local sequence, are limited to 1 MiB,
-flush immediately, and sync on important transitions and short intervals. Persistence failure
+flush immediately without forcing filesystem durability. Persistence failure
 degrades diagnostics only: the run continues, the in-memory ring remains available, and disk
 writing is not retried in that invocation.
 

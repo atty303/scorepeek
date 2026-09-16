@@ -28,8 +28,6 @@ pub const RETAINED_RUNS: usize = 10;
 
 const MAX_CLIENTS: usize = 8;
 const MAX_REQUEST_BYTES: usize = 1024;
-const SYNC_INTERVAL: Duration = Duration::from_millis(250);
-
 #[derive(Clone)]
 pub struct DiagnosticSink {
     shared: Arc<Shared>,
@@ -65,7 +63,6 @@ struct State {
 struct Record {
     sequence: u64,
     bytes: Arc<[u8]>,
-    important: bool,
     observed_at: Instant,
 }
 
@@ -227,7 +224,7 @@ impl Drop for RunDiagnostics {
 }
 
 impl DiagnosticSink {
-    pub fn record(&self, operation: &str, data: &Value, important: bool) {
+    pub fn record(&self, operation: &str, data: &Value, _important: bool) {
         let observed_unix_us = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -253,7 +250,7 @@ impl DiagnosticSink {
         if bytes.len() > MAX_RECORD_BYTES {
             append_small_failure(&mut state, operation, bytes.len());
         } else {
-            append(&mut state, Arc::from(bytes), important, Instant::now());
+            append(&mut state, Arc::from(bytes), Instant::now());
         }
         self.shared.changed.notify_all();
     }
@@ -293,11 +290,11 @@ fn append_small_failure(state: &mut State, operation: &str, bytes: usize) {
     });
     if let Ok(mut bytes) = serde_json::to_vec(&value) {
         bytes.push(b'\n');
-        append(state, Arc::from(bytes), true, Instant::now());
+        append(state, Arc::from(bytes), Instant::now());
     }
 }
 
-fn append(state: &mut State, bytes: Arc<[u8]>, important: bool, observed_at: Instant) {
+fn append(state: &mut State, bytes: Arc<[u8]>, observed_at: Instant) {
     while state.ring_bytes.saturating_add(bytes.len()) > RING_BYTES {
         let Some(removed) = state.records.pop_front() else {
             break;
@@ -311,7 +308,6 @@ fn append(state: &mut State, bytes: Arc<[u8]>, important: bool, observed_at: Ins
     state.records.push_back(Record {
         sequence,
         bytes,
-        important,
         observed_at,
     });
 }
@@ -434,7 +430,6 @@ fn spawn_writer(shared: Arc<Shared>, mut file: File) -> Result<JoinHandle<()>, S
         .name("scorepeek-diagnostic-writer".to_owned())
         .spawn(move || {
             let mut cursor = 1_u64;
-            let mut last_sync = Instant::now();
             loop {
                 let record = {
                     let mut state = shared
@@ -454,7 +449,6 @@ fn spawn_writer(shared: Arc<Shared>, mut file: File) -> Result<JoinHandle<()>, S
                         }
                         if !state.active && cursor >= state.next_sequence {
                             let _ = file.flush();
-                            let _ = file.sync_data();
                             return;
                         }
                         state = shared
@@ -474,17 +468,6 @@ fn spawn_writer(shared: Arc<Shared>, mut file: File) -> Result<JoinHandle<()>, S
                     return;
                 }
                 cursor = cursor.saturating_add(1);
-                if record.important || last_sync.elapsed() >= SYNC_INTERVAL {
-                    if file.sync_data().is_err() {
-                        if let Ok(mut state) = shared.state.lock() {
-                            mark_persistence_failure(&mut state, Persistence::Failed, "sync_failed");
-                            shared.changed.notify_all();
-                        }
-                        eprintln!("scorepeek: diagnostic persistence degraded: stream sync failed");
-                        return;
-                    }
-                    last_sync = Instant::now();
-                }
             }
         })
         .map_err(|error| format!("diagnostic writer could not start: {error}"))
@@ -503,7 +486,7 @@ fn mark_persistence_failure(state: &mut State, persistence: Persistence, error_t
     });
     if let Ok(mut bytes) = serde_json::to_vec(&value) {
         bytes.push(b'\n');
-        append(state, Arc::from(bytes), true, Instant::now());
+        append(state, Arc::from(bytes), Instant::now());
     }
 }
 
@@ -1190,7 +1173,7 @@ mod tests {
         let shared = shared("run-1-0-1", Persistence::Active);
         let mut state = shared.state.lock().unwrap();
         for _ in 0..100_000 {
-            append(&mut state, Arc::from(&b"{}\n"[..]), false, Instant::now());
+            append(&mut state, Arc::from(&b"{}\n"[..]), Instant::now());
         }
         assert_eq!(record_at(&state, 1).map(|record| record.sequence), Some(1));
         assert_eq!(
@@ -1269,13 +1252,11 @@ mod tests {
         append(
             &mut state,
             Arc::from(&b"{}\n"[..]),
-            false,
             now.checked_sub(Duration::from_secs(20)).unwrap(),
         );
         append(
             &mut state,
             Arc::from(&b"{}\n"[..]),
-            false,
             now.checked_sub(Duration::from_secs(5)).unwrap(),
         );
         state.dropped_before_oldest = 1;
