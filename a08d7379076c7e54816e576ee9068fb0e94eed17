@@ -1,0 +1,61 @@
+Task: standardize bundled skin previews for web catalog and editor use
+Anchor: a08d737
+Base: 1a98261
+Workline: main
+Commits: 53a4d71 standardizes package preview rules in create-overlay-skin; a08d737 adds production-rendered previews and their generator
+Guidance: repository AGENTS.md; create-overlay-skin; dig; develop-repository; design-program-observability; review
+Execution: durable repository change; repository-owned inputs; production browser Wasm/CSS/resource rendering; isolated loopback server; pinned Playwright and ffmpeg; sandbox loopback and mise-state writes required target-equivalent reruns
+Authority: Current source, tests, living documentation, and the user-confirmed preview scene are authoritative.
+Transcript:
+- U1: [$create-overlay-skin](/var/home/atty/src/atty303/scorepeek/.agents/skills/create-overlay-skin/SKILL.md) [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) スキンのプレビューを規格化したい。web catalogやeditor previewで使う想定
+  - A: create-overlay-skinとdigを適用し、用途、媒体、寸法、表示内容、生成基準を一問ずつ深掘りした。
+- U2: B
+  - A: 提示した選択肢Bを設計条件へ反映し、次の未確定事項を質問した。
+- U3: A
+  - A: 提示した選択肢Aを設計条件へ反映し、次の未確定事項を質問した。
+- U4: プレビュー用にコンパクト。全widgetは不要。そのskinのthemeが判別できればいい
+  - A: 全widget網羅ではなく、テーマ判別に必要な代表widgetへ絞る方針を固定した。
+- U5: A. theme自体の名前を曲名、作者をartistにするといい
+  - A: selectionのtitleをskin名、artistをmanifest authorにする条件を固定した。
+- U6: web catalogで扱いやすいのは？
+  - A: catalog用途の静止画と動画の形式・寸法候補を比較し、扱いやすさを説明した。
+- U7: サイズごとの簡単なスケルトンを書いて
+  - A: サイズ候補ごとのwidget配置スケルトンを提示した。
+- U8: C. 余白にさらにwdigetを入れられる。score widgetが簡略化されていて、本来はもっと縦が大きく、a,bには収まらないはずだ
+  - A: Cを採用候補にし、実際のscore高さを前提に配置を見直した。
+- U9: どれも追加すると収まらないと思うが
+  - A: 指摘を受け、追加widgetを無理に詰め込まず実寸で再評価する方針へ修正した。
+- U10: 続けて
+  - A: repositoryの実装と実描画を調べ、共通sceneの残る選択を順に確認した。
+- U11: A
+  - A: 選択肢Aを共通scene条件へ反映した。
+- U12: A
+  - A: 選択肢Aを共通scene条件へ反映した。
+- U13: A
+  - A: 選択肢Aを共通scene条件へ反映した。
+- U14: A
+  - A: 選択肢Aを共通scene条件へ反映した。
+- U15: A
+  - A: 選択肢Aを共通scene条件へ反映した。
+- U16: A
+  - A: 選択肢Aを共通scene条件へ反映した。
+- U17: B. 今のskinのpreview使ってを具体的に詰めたい
+  - A: 既存3 skinを使って共通sceneの具体的な見え方を検討する方針を採用した。
+- U18: そのpreviewはデザインでしかないから、基準にしないで。実際にskinを描画したものを基準にして
+  - A: デザインmasterを生成基準から除外し、production browserのWasm、CSS、font、resourceによる実描画を基準に固定した。
+- U19: A
+  - A: 実描画候補の選択肢Aを採用した。
+- U20: A. 一番上にstatus widgetを追加してみて
+  - A: selection、score、graphにstatusを加えた実描画候補を生成して比較した。
+- U21: graphと一番下に追加すると？
+  - A: graphを含む下段配置の実描画候補を生成し、640角内の密度を比較した。
+- U22: ここからstatusを除くとちょうとよさそう
+  - A: 最終構成をselection、score、history-graphへ絞り、statusを除外した。
+- U23: A
+  - A: 最終配置の選択肢Aを採用した。
+- U24: A
+  - A: 媒体仕様の選択肢Aを採用した。
+- U25: A
+  - A: 最後の生成・loop条件の選択肢Aを採用し、640x640 PNGと8秒25fps VP9 WebM、animated背景、frame M、固定AAA/FULL COMBO stateの規格を確定した。
+- U26: まずskin skill を修正。その後3 skinのpreviewを作り直して
+  - A: skill規格を53a4d71で先に確定した。続いてversioned scene、production browser generator、resource/DOM/media/hash検証、再現可能なVP9生成、3 skinのPNG/WebM、package組み込み、CyanのAAA atlas補完、release 3を実装した。全PNGと動画時刻0/4/7秒を目視し、2回生成のbyte一致、mise run check、mise run test、commit後mise run buildを確認した。fresh reviewのstale ZIP指摘を生成後再buildで修正し、unzip依存を除去したdelta reviewまで完了した。
