@@ -1,0 +1,56 @@
+Task: Refine scorepeek wordmark and add theme-specific README logos
+Anchor: 5802645
+Base: 998fa405d363af918594b21413ddc6a8d6b6e896
+Line: main
+Commits: 5802645 - README picture sources, approved short-slash light logo, contrasting dark logo
+Guidance: Repository AGENTS.md; common user guidance; dig; imagegen; develop-repository; atty303-engineering-policy; review; verify-with-computer-use; maintain-agent-guidance
+Profile: Durable documentation and synthetic image assets; trusted personal repository; no runtime or external-state mutations
+Environment: Repository-pinned Playwright1.63.0; isolated temporary HTML and headless Chromium; elevated VCS snapshot/commit/notes and required postcommit mise build; no new dependencies
+History-source: Runtime session01a0afe1-8d80-7d11-9d5e-cbcca7d5aa7b; exact response_item user text from2026-09-17T16:25:22.819Z through latest palette correction, including terminal newlines
+Verification: Targeted mise check passed; fresh review and palette delta reviews passed; browser currentSrc light-dark-light/fallback at1000px and390px passed; postcommit mise run build passed; live GitHub rendering unverified
+Evidence
+Light-reference: Built-in imagegen exec-b6337501-6b74-432b-a67d-38a317c342d7.png; SHA2562d94c93d9815be672f5a9d70719b3c165755eecd6942b2945ead7840c23892e7; opaque RGB2172x724
+Dark-reference: Built-in imagegen exec-e7ddb19c-d3bb-458e-9ed2-862045cde1d2.png; SHA25652f25a5dab996eeb92da5679a410209a42eb6dfbd1fd47090d59ee7732d8bc47; opaque RGB2172x724
+Final-dark-prompt: Change only the k inset stripe to the emblem bottom-stroke palette: royal blue from its right end at top of k, violet from its left end at bottom; preserve white letters, equal weight, short thin parallel separator, geometry and opaque dark background. Built-in imagegen, no CLI/API fallback.
+Authority: Current README.md and docs/assets/scorepeek-logo-{light,dark}.png; this note records history, not current design authority.
+Transcript
+- U1:
+    ロゴだけど、scoreとpeekになんらかのコントラスト対比があってもいいのでは？
+    
+  - A: Continued the completed README cycle as a new logo-refinement cycle. Used dig and built-in imagegen to propose color, weight, and tonal contrast between score and peek; recommended weight contrast. Kept approved emblem and inset k stripe.
+- U2:
+    Bが近いが対比が大きすぎる。あと間に空間や図形を入れるとかは？
+    
+  - A: Generated reduced-weight-contrast variants separated by whitespace, a middle dot, or a short slash. Presented all three without changing the repository.
+- U3:
+    太さは同じにて斜線で。傾きがあってないので、マージンを最小限で細いラインですっきりと
+    
+  - A: Generated equal-weight and tightly spaced thin-slash variants; corrected angle and cleaned a background artifact. Presented a candidate, but its score weight still differed from peek.
+- U4:
+    文字の太さがあってないぞ。peekにあわせて
+    
+  - A: Returned to the original equal-weight logo as the reference and inserted a thin slash. This corrected the glyph-weight mismatch. Generated candidate exec-31b705e1-dc94-4327-a481-a2b19ffacdf0.png.
+- U5:
+    いいね。ラインが長くなってるから短くして
+    
+  - A: Shortened only the separator symmetrically to about half the lowercase height. Generated approved light reference exec-b6337501-6b74-432b-a67d-38a317c342d7.png, later copied unchanged into the repository.
+- U6:
+    これのlight/dark背景バリアントを作って。readmeもそれを使うように更新
+    
+  - A: Applied develop-repository, imagegen, review and verification guidance. Snapshot --fetch found clean main at998fa405d363af918594b21413ddc6a8d6b6e896, synchronized with origin/main. Classified durable docs/image work in personal trusted domain, no program-path changes. Read README, architecture and guidance. Verified GitHub picture/media support against official docs. Generated white-letter dark variant; added light/dark PNGs, replaced README image with picture sources and light fallback, removed old unreferenced logo. Targeted check passed. Fresh reviewer found no issues. Local repository-pinned Playwright verified light-dark-light switching, fallback and aspect ratio at widths1000/390. No GitHub live check.
+- U7:
+    ちょっとdarkが微妙だな。文字黒は維持したい
+    
+  - A: Generated a black/navy-filled dark variant with thin light contours, replaced working dark asset and repeated browser checks. A fresh reviewer found no correctness issues. This design was subsequently rejected by the user; it is not committed.
+- U8:
+    ちょっと違うなぁ。白文字のままだとすると、kのグラデーションに違和感あったんだよね
+    
+  - A: Returned to white lettering and generated single-cyan and cyan-to-blue k stripe alternatives. Asked which interpretation addressed the concern. Did not commit those previews.
+- U9:
+    いや、白文字に対してのコントラストの問題だ。グラデーションはそのままでいいがたぶん明るすぎる
+    
+  - A: Preserved cyan-blue-violet hue progression and darkened only the k stripe. Replaced working asset and repeated browser validation. Reviewer found no defects, but user judged the stripe too dark.
+- U10:
+    それは暗すぎる。ロゴの下ラインの左右グラデーションがちょうどよさそう
+    
+  - A: Used the existing emblem lower stroke as the color/brightness reference: royal blue at top of k stripe to violet at bottom. Generated final dark exec-e7ddb19c-d3bb-458e-9ed2-862045cde1d2.png. Replaced only dark asset; light reference unchanged. Repeated desktop/narrow browser switching/fallback/no-overflow checks, inspected both dark screenshots. Original reviewer completed delta review with no findings. Snapshot showed only intended paths. Committed5802645, then mise run build succeeded including embedded-web/capture build. Audited guidance candidates: no new durable guidance justified. Prepared this note from all10 verbatim runtime user messages for current cycle; temporary verification resources scheduled for cleanup before handoff.
