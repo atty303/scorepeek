@@ -156,6 +156,15 @@ run = 'cargo run --locked -p scorepeek-overlay --example render_skin -- "$@"'
 description = "Build repository skin ZIP packages without installing them"
 run = "bash scripts/build-skins.sh"
 
+[tasks."overlay:skins:preview:generate"]
+description = "Regenerate bundled skin PNG and WebM previews from the production browser renderer"
+depends = [
+  "overlay:web:browser:server:build",
+  "overlay:skins:build",
+  "overlay:web:browser:install",
+]
+run = "scripts/generate-skin-previews.bash"
+
 [tasks."overlay:visual:native"]
 description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario without Wayland"
 run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay --example visual_native -- "$@"'

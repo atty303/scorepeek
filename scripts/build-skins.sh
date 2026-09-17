@@ -26,10 +26,14 @@ package() {
   mkdir -p "$work"
   cp "$root/skins/$name/skin.toml" "$work/skin.toml"
   cp "$wasm" "$work/skin.wasm"
-  cp "$root/docs/design/overlay-canvas/$name.png" "$work/preview.png"
+  cp "$root/skins/$name/preview.png" "$work/preview.png"
+  cp "$root/skins/$name/preview.webm" "$work/preview.webm"
   cp "$root/crates/scorepeek-overlay-ui/assets/skins/$name-background.png" "$work/$name-background.png"
   cp "$root/crates/scorepeek-overlay-ui/assets/skins/$name-frame.png" "$work/$name-frame.png"
   cp "$root/crates/scorepeek-overlay-ui/assets/skins/type-$name.png" "$work/type-$name.png"
+  if [[ "$name" == cyan-system ]]; then
+    cp "$root/crates/scorepeek-overlay-ui/assets/skins/type-result-aurora.png" "$work/type-result-aurora.png"
+  fi
   cp "$root/crates/scorepeek-overlay-ui/assets/skins/labels-$name.png" "$work/labels-$name.png"
   cp "$root/crates/scorepeek-overlay-ui/assets/fonts/Oxanium.ttf" "$work/Oxanium.ttf"
   cp "$root/crates/scorepeek-overlay-ui/assets/fonts/Orbitron.ttf" "$work/Orbitron.ttf"

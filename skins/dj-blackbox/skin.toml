@@ -1,6 +1,6 @@
 id = "dev.atty303.scorepeek.skin.dj-blackbox"
 name = "DJ Blackbox"
-release = "2"
+release = "3"
 api_version = 1
 description = "Dark industrial panels with acid-green indicators."
 author = "scorepeek"

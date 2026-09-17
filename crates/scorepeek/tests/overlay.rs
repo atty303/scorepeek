@@ -125,6 +125,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(stage.contains("obs-selection"));
     assert!(stage.contains("editor-button"));
     assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.png"));
+    assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.webm"));
     let font = get(address, "/fonts/oxanium.ttf").unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));
@@ -145,6 +146,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let package_root = "/skin/dev.atty303.scorepeek.skin.result-aurora";
     for (name, mime) in [
         ("preview.png", "image/png"),
+        ("preview.webm", "video/webm"),
         ("result-aurora-background.png", "image/png"),
         ("result-aurora-frame.png", "image/png"),
         ("result-aurora-header.png", "image/png"),

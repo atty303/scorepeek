@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let config_path = args
         .next()
-        .ok_or("usage: visual_obs CONFIG.toml [LISTEN]")?;
+        .ok_or("usage: visual_obs CONFIG.toml [LISTEN] [SOURCE_CONFIG.toml]")?;
     let listen_text = args.next().map_or_else(
         || Ok::<_, Box<dyn std::error::Error>>("127.0.0.1:17384".to_owned()),
         |value| {
@@ -21,8 +21,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !listen.ip().is_loopback() {
         return Err("LISTEN must use a loopback address".into());
     }
+    let source_path = args.next();
     if args.next().is_some() {
-        return Err("usage: visual_obs CONFIG.toml [LISTEN]".into());
+        return Err("usage: visual_obs CONFIG.toml [LISTEN] [SOURCE_CONFIG.toml]".into());
     }
     let config_path = std::path::PathBuf::from(config_path);
     let parent = config_path
@@ -30,7 +31,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let document = scorepeek_overlay::config::OverlayConfig::initial();
+    let document = if let Some(source_path) = source_path {
+        toml::from_str(&std::fs::read_to_string(source_path)?)?
+    } else {
+        scorepeek_overlay::config::OverlayConfig::initial()
+    };
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

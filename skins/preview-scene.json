@@ -1,0 +1,87 @@
+{
+  "schema": "scorepeek-skin-preview-scene-v1",
+  "canvas": {
+    "width": 640,
+    "height": 640,
+    "background": "animated",
+    "widgets": [
+      { "id": "selection", "kind": "selection", "x": 48, "y": 22, "width": 544, "height": 124 },
+      { "id": "score", "kind": "score", "x": 48, "y": 178, "width": 544, "height": 200 },
+      { "id": "history-graph", "kind": "history-graph", "x": 48, "y": 410, "width": 544, "height": 208 }
+    ]
+  },
+  "media": {
+    "png_time_ms": 2000,
+    "video_duration_ms": 8000,
+    "video_fps": 25,
+    "video_codec": "vp9"
+  },
+  "skins": [
+    { "slug": "cyan-system", "id": "dev.atty303.scorepeek.skin.cyan-system" },
+    { "slug": "result-aurora", "id": "dev.atty303.scorepeek.skin.result-aurora" },
+    { "slug": "dj-blackbox", "id": "dev.atty303.scorepeek.skin.dj-blackbox" }
+  ],
+  "state": {
+    "connected": true,
+    "chart": {
+      "song_id": "preview",
+      "play_type": "single",
+      "difficulty": "another",
+      "level": 12,
+      "notes": 1877
+    },
+    "system": "active",
+    "result_signal": "active",
+    "best": {
+      "score": "3554",
+      "dj_level": "AAA",
+      "miss": "0",
+      "clear": "FULL COMBO"
+    },
+    "detail": {
+      "pgreat": "1677",
+      "great": "200",
+      "good": "0",
+      "bad": "0",
+      "poor": "0",
+      "fast": "112",
+      "slow": "88",
+      "combo_break": "0",
+      "play_options": "RANDOM"
+    },
+    "history": {
+      "recorded": true,
+      "plays": [],
+      "graph": [
+        { "received_unix_ms": 1772582400000, "score_ratio": 0.57, "miss_ratio": 0.12 },
+        { "received_unix_ms": 1773446400000, "score_ratio": 0.72, "miss_ratio": 0.15 },
+        { "received_unix_ms": 1774310400000, "score_ratio": 0.67, "miss_ratio": 0.09 },
+        { "received_unix_ms": 1775174400000, "score_ratio": 0.79, "miss_ratio": 0.22 },
+        { "received_unix_ms": 1776038400000, "score_ratio": 0.69, "miss_ratio": 0.30 },
+        { "received_unix_ms": 1776902400000, "score_ratio": 0.61, "miss_ratio": 0.14 },
+        { "received_unix_ms": 1777766400000, "score_ratio": 0.65, "miss_ratio": 0.18 },
+        { "received_unix_ms": 1778630400000, "score_ratio": 0.88, "miss_ratio": 0.24 },
+        { "received_unix_ms": 1779494400000, "score_ratio": 0.80, "miss_ratio": 0.46 },
+        { "received_unix_ms": 1780358400000, "score_ratio": 0.84, "miss_ratio": 0.34 },
+        { "received_unix_ms": 1781222400000, "score_ratio": 0.86, "miss_ratio": 0.39 },
+        { "received_unix_ms": 1782086400000, "score_ratio": 0.64, "miss_ratio": 0.58 },
+        { "received_unix_ms": 1782950400000, "score_ratio": 0.68, "miss_ratio": 0.21 },
+        { "received_unix_ms": 1783814400000, "score_ratio": 0.62, "miss_ratio": 0.18 },
+        { "received_unix_ms": 1784678400000, "score_ratio": 0.83, "miss_ratio": 0.16 },
+        { "received_unix_ms": 1785542400000, "score_ratio": 0.70, "miss_ratio": 0.22 },
+        { "received_unix_ms": 1786406400000, "score_ratio": 0.66, "miss_ratio": 0.24 },
+        { "received_unix_ms": 1787270400000, "score_ratio": 0.74, "miss_ratio": 0.18 }
+      ],
+      "graph_ticks": [
+        { "unix_ms": 1772323200000, "label": "MAR" },
+        { "unix_ms": 1774915200000, "label": "APR" },
+        { "unix_ms": 1777507200000, "label": "MAY" },
+        { "unix_ms": 1780099200000, "label": "JUN" },
+        { "unix_ms": 1782691200000, "label": "JUL" },
+        { "unix_ms": 1785283200000, "label": "AUG" }
+      ],
+      "graph_start_unix_ms": [1785542400000, 1780358400000, 1772323200000, 1756598400000],
+      "graph_end_unix_ms": 1788134400000
+    }
+  }
+}

@@ -9,6 +9,9 @@ the references for their respective skins; adding the skill does not redesign th
 These independently generated mockups define the worlds and information design of the three bundled overlay
 skins. They are the current reference for faithful panel proportions, contours,
 materials, typography hierarchy and information density. Runtime values remain semantic and charts retain their data meaning.
+They are design masters, not package previews. The bundled package previews live under
+`skins/<name>/preview.png` and `preview.webm`; regenerate them from the production browser renderer with
+`mise run overlay:skins:preview:generate` after a skin's rendered appearance changes.
 
 - `cyan-system.png`: technical navy, silver and cyan
 - `result-aurora.png`: black-violet glass, silver, gold and aurora light

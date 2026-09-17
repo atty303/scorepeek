@@ -10,6 +10,12 @@ The archive contains one skin and normalized relative paths. Root files `skin.to
 package-relative resources. CSS `url('background.png')` addresses the ZIP root; `../`, absolute
 paths, remote URLs, filesystem, and network host calls are not package APIs.
 
+The bundled scorepeek skins use the repository's versioned 640×640 catalog scene and include both
+PNG and WebM previews. `mise run overlay:skins:preview:generate` renders their installed Wasm, CSS,
+fonts, and resources through the production browser canvas, verifies the output, and updates the
+source assets under `skins/<name>/`. This repository authoring rule does not make WebM mandatory for
+external v1 packages.
+
 `skin.toml` has this shape. `id` is a lowercase ASCII reverse-domain name, `release` is an opaque
 non-empty string, and property keys use lowercase ASCII letters, digits, and `-`. Properties may be
 omitted entirely; the example shows every supported type:
