@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="docs/assets/scorepeek-logo.png" alt="scorepeek" width="760">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scorepeek-logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/scorepeek-logo-light.png">
+    <img src="docs/assets/scorepeek-logo-light.png" alt="scorepeek" width="760">
+  </picture>
 </p>
 
 <p align="center">
