@@ -1,0 +1,118 @@
+Task: English product README and approved scorepeek logo
+Thread: 01a0afe1-8d80-7d11-9d5e-cbcca7d5aa7b
+Base: a08d7379076c7e54816e576ee9068fb0e94eed17
+Anchor: 998fa405d363af918594b21413ddc6a8d6b6e896
+Line: main; local commit only; no push
+Commit: 998fa405d363af918594b21413ddc6a8d6b6e896 owns README.md and docs/assets/scorepeek-logo.png
+Profile: durable documentation and approved branding; same operator control domain; no runtime or external-state changes
+Guidance: user-provided common AGENTS rules; repository AGENTS.md; dig; imagegen; develop-repository; atty303 engineering policy; review; verify-with-computer-use; Browser; investigate-problem; maintain-agent-guidance
+Environment: repository mise toolchain; sandbox .git read-only; approved elevated VCS writes and post-commit build; no live game, Wayland, OBS, deployment, release or service changes
+Transcript source: local Codex runtime JSONL for this thread, 25 human messages through the implementation request; injected skill/environment/guidance excluded
+Evidence:
+- Approved logo source: /home/atty/.codex/generated_images/01a0afe1-8d80-7d11-9d5e-cbcca7d5aa7b/exec-09a507a9-6934-4f6d-8f73-539247db9aca.png
+- Approved logo SHA256: 2a9841a8684d1b9d0d5451de7ed034a596e1c738ebc43b6fd08e60afe301740e; opaque RGB PNG 2172x724
+- Independent review: /root/readme_review, no findings against README SHA256 a27d15eb8830ad732de4eb9bd016dd7d27af38b0926a4667aa6b40ccd6a12be4 and the approved logo digest
+- Local visual proof: /var/home/atty/.codex/visualizations/2026/09/17/01a0afe1-8d80-7d11-9d5e-cbcca7d5aa7b/scorepeek-readme-preview.png; approximate GitHub-like rendering, not GitHub itself
+Authority: current README and domain docs/source own product facts; this note records task history only
+Transcript:
+- U1:
+    [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) readme.mdを現状にあわせて変更したい。今は技術によりすぎている。ユーザーが得られるものを主体にする。先頭に製品ロゴを作りたい。overlayのpreviewを3つ並べると見た目がいい。
+    
+  - A: Applied dig and performed a memory quick pass. Took a clean VCS snapshot at a08d7379076c7e54816e576ee9068fb0e94eed17, inspected README, architecture and skin contracts, and verified the existing three preview PNGs. Q1 offered player benefit, streaming, or Linux companion positioning.
+- U2:
+    A
+    
+  - A: Selected automatic recording and immediate visibility of play achievements as the main value. Q2 asked README language.
+- U3:
+    B
+    
+  - A: Selected English only. Q3 offered product introduction versus a complete onboarding README.
+- U4:
+    A. まだ配布できる段階にないので使い方詳細は不要
+    
+  - A: Selected a product introduction with no detailed usage and no new setup guide because distribution is not ready. Q4 proposed logo directions.
+- U5:
+    実際に提示して。3 skinはサンプルでしかないので考慮しなくていい
+    
+  - A: Applied imagegen and created three actual preview logos: restrained wordmark, energetic blue-violet rhythm-game identity, and friendly eye companion. Existing skins were explicitly excluded as branding constraints. Q5 requested a direction.
+- U6:
+    Bの方向
+    
+  - A: Selected energetic B direction. Proposed intro copy options in Q6, but no tagline option was selected.
+- U7:
+    ロゴのバリエーションをもっと考えて
+    
+  - A: Created B1 rhythm pulse, B2 eye, B3 angular S with ascending score elements, and B4 wordmark-only variants; asked Q7.
+- U8:
+    B3. さらに考えて
+    
+  - A: Created four B3 variations: compact emblem, timing-lane styling, negative-space S, and a low wide integrated emblem; asked Q8.
+- U9:
+    E. kの縦ラインを入れるところはCがいい
+    
+  - A: Combined B3-4 low wide emblem and lettering with B3-2 blue-violet stripe along the k stem, removing the colored diagonal k arm. Q9 attempted overall agreement.
+- U10:
+    B. sの色はなんの意図？
+    
+  - A: Explained that the initial s blue accent was an agent-added visual link to the symbol, without functional meaning; recommended removing it in Q10.
+- U11:
+    A. kのラインのバリエーションもだして
+    
+  - A: Removed the initial s accent and generated four k-stripe variants: fine continuous, broad continuous, inset with end caps, and split. Refined the fine line after its first generation was too similar to the broad band. Q11 compared them.
+- U12:
+    C. あとは左の図形のバリエーションが欲しい。
+    
+  - A: Selected inset k stripe with navy caps. Generated S1 precise base, S2 stronger hooks, S3 open score lanes, and S4 abstract three-stroke emblem while retaining lettering; asked Q12.
+- U13:
+    D. このぐらい抽象的でいい。さらにバリエーションは？
+    
+  - A: Accepted stronger abstraction. Generated M1 two bands, M2 interlocking blocks, M3 open loop, and M4 cut solid alternatives. Q13 also retained previous S4 as an option.
+- U14:
+    E. 真ん中が左に伸びてるのが違和感。中央だけにするとSっぽくなりそう
+    
+  - A: Returned to S4, removed the middle stroke leftward extension and retained only a short central parallelogram. Cleaned an incidental notch from the bottom band. Q14 showed the result.
+- U15:
+    C. 下ラインの左上のでっぱりがないほうがいい
+    
+  - A: Trimmed the upper-left protrusion of the lower purple band and straightened its upper edge. Preserved the central piece, top stroke, unaccented s and inset k stripe. Generated final candidate exec-09a507a9-6934-4f6d-8f73-539247db9aca.png and asked Q15.
+- U16:
+    A
+    
+  - A: Confirmed the selected logo. Q16 restated logo, three preview samples, benefits, current project status and exclusion of usage details.
+- U17:
+    B. 構成を見出しと概要で出して
+    
+  - A: Presented the README heading/summary outline: logo and introduction, preview gallery, What you get, Project status, and optional Learn more. Q17 asked whether to retain technical links.
+- U18:
+    B. 画像認識ベースでありゲームの解析ではないことは特徴だ
+    
+  - A: Removed Learn more. Added screen image recognition rather than game-internal analysis as a feature and initially included it in the opening. Q18 asked for agreement.
+- U19:
+    冒頭には入れなくていい
+    
+  - A: Moved recognition-method explanation out of the opening and into What you get. Q19 restated the revised scope.
+- U20:
+    for Linuxもいらない。
+    
+  - A: Removed for Linux from the opening; retained current target information in Project status. Proposed exact opening: An IIDX companion that automatically records your results and brings your progress into view. Q20 asked agreement.
+- U21:
+    オンラインから取得した楽曲カタログとOCRで照合するのも特徴。画像トレイニングではないので、新曲への追随コストが低い。
+    他にも僕が特徴にしたいであろう項目を提案して
+    
+  - A: Inspected field semantics, sources, architecture and recognition implementation. Qualified the maintenance claim as no per-song image collection/training, since OCR and numeric recognition do use trained models. Proposed six extra benefits: local processing, SELECT best supplementation, cross-checked recognition, personal-screen and OBS use, richer result detail, and customizable overlays. Q21 requested selection.
+- U22:
+    C. 1,4,6かな
+    
+  - A: Selected local processing/storage, personal-screen plus stream usage, and customization. Consolidated these with automatic tracking and catalog-backed screen recognition into five features; asked Q22.
+- U23:
+    あーあと、認識coreがポータブルでevents api/sqliteから利用者が任意consumerを作れるのも特徴だ。overlay利用は必須ではない拡張性
+    
+  - A: Inspected Cargo dependencies, recognition modules and Event API/SQLite contracts. Added recognition logic separated from capture/presentation for portability and reuse, live Event API and durable SQLite for user-built consumers, and optional overlays. Kept this distinct from unverified application-wide multi-OS support. Q23 proposed six features.
+- U24:
+    A
+    
+  - A: Closed dig with the agreed English product-introduction outline, selected logo, three sample skins, six benefit sections, development/Linux/licensing status, and no setup guide or technical link list.
+- U25:
+    実行して
+    
+  - A: Applied develop-repository for a durable documentation-only change within the trusted operator workspace. Re-read applicable repository guidance, engineering policy and review workflow. Initial sandbox fetch could not write .git/FETCH_HEAD; authorized elevated vcs.sh snapshot --fetch succeeded, with clean main at a08d7379076c7e54816e576ee9068fb0e94eed17 and no remote notes ref. Replaced the 288-line README with 59 lines and copied the approved PNG byte-for-byte to docs/assets/scorepeek-logo.png; reused the three existing skin PNGs. Program-observability and rendered-overlay gates were not applicable because no runtime, overlay code, CSS, API or dependencies changed. Focused mise checks passed; sandbox mise cache writes emitted nonfatal warnings. A fresh read-only review subagent examined the exact two-file candidate and reported no findings. Applied verify-with-computer-use and Browser skills; Browser connection failed before startup because its tool referenced absent browser/26.911.61220/scripts/browser-service.mjs while installed plugin was 26.908.40834. Applied investigate-problem to isolate that tool-environment failure, then used repository-pinned Playwright 1.63.0 for an isolated local HTML approximation of the README. Inspected desktop/light, desktop/dark and 390px screenshots and DOM: four images loaded, three previews aligned, and no horizontal overflow. This is local layout evidence, not GitHub-site verification. Retained one desktop screenshot outside the repository for handoff. Snapshot and hashes remained identical to the reviewed candidate. First commit call used unsupported repeated -m arguments and exited with usage before mutation; reran with one multiline message. The two-file commit 998fa405d363af918594b21413ddc6a8d6b6e896 succeeded with hooks. Post-commit mise run build succeeded with embedded web assets current and Vulkan/debug CLI build completed. Final source hashes matched the reviewed files and the worktree was clean. Full runtime tests and live target checks were not run for this documentation-only change. Applied maintain-agent-guidance audit: local tool bootstrap mismatch and invocation correction were task-specific; product decisions are owned by README and this note, so no guidance or memory update was made. Prepared this note from all 25 runtime-recorded human messages, preserving their full original text and chronological decisions; no remote push was requested.
