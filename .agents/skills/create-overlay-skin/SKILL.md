@@ -31,6 +31,22 @@ description: scorepeekのoverlayスキンを、IIDXの意味に沿った複数�
 4. 両経路の静止画と、異なる時刻の表示または短い動きの記録を提示し、動く試作の確認を求める。明確な素材・輪郭・文字の妥協が必要なら見本との比較を先に示す。
 5. 再現手段の通常の選択や修正は自律的に行う。見本の見た目を変える妥協だけを確認対象にし、簡略化した成果を黙って採用しない。
 
+## Package preview
+
+- package previewはデザインmaster、比較sheetまたは手描きmockupを流用せず、完成したskinのWasm、CSS、fontおよびpackage resourceをブラウザ経路で実際に描画して生成する。
+- repository共通のversioned preview sceneを使用する。canvasは640×640、背景はanimated、frame widthはMとし、次のwidgetを固定配置する。
+
+  | widget | x | y | width | height |
+  | --- | ---: | ---: | ---: | ---: |
+  | selection | 48 | 22 | 544 | 124 |
+  | score | 48 | 178 | 544 | 200 |
+  | history-graph | 48 | 410 | 544 | 208 |
+
+- selectionのtitleへmanifestのskin名、artistへmanifestのauthorを入れる。AAAとFULL COMBOを含むscore、detailおよびgraphはsceneの固定合成データを使い、skinごとに値を変えない。status、history-listおよびemptyはpackage previewへ含めない。
+- `preview.png`は640×640 PNG、`preview.webm`は640×640、8秒、25 fps、VP9、音声なしとする。動画は実際の継続animationを記録し、loop境界の不連続は許容する。値とgraph geometryを動かさない。
+- PNGとWebMは同じsceneとproduction browser DOMから生成する。web catalogとbrowser editorは両方、native editorはPNGを使用する。これは制作・catalog掲載規格であり、任意の外部skinに対するinstall拒否条件へ拡張しない。
+- 生成時は全resource request、Wasm init/render、期待DOM、画像寸法、動画codec・duration・frame rate・audio absenceおよび成果物hashを機械的に検証する。欠落resource、skin failure、文字やwidgetの欠落を残したpreviewをpackageしない。
+
 ## 3. Expand and verify
 
 - 試作の承認後、status・selection・score・history-list・history-graph・emptyとcanvas背景へ展開する。欧文の主要数値だけでなく、定型ラベルも一貫した素材にする。

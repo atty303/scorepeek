@@ -2,7 +2,8 @@
 
 本資料は2026-09-08に利用者と合意した新規スキン制作・再設計の判断基準。
 ゲームの事実ではなく、scorepeekのデザイン上の選択である。
-既存masterの原典と再現手段は `docs/design/overlay-canvas/README.md` を参照する。
+既存masterの原典と再現手段は `docs/design/overlay-canvas/README.md` を参照する。masterは世界観と情報設計の原典であり、
+package previewそのものではない。package previewはskill本体の共通sceneから実装済みskinを描画して生成する。
 
 ## 世界観と再現
 

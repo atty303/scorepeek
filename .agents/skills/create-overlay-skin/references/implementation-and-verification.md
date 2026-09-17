@@ -21,8 +21,11 @@ skin ID、表示名、release、propertyはmanifestが所有し、editorへ静�
 `scripts/build-skins.sh`へsourceと自己完結resourceのpackage手順を追加する。画像・font・licenseは
 ZIP内へ入れ、通常runtimeのembedded assetへ登録しない。widget resizeで枠厚や文字が一緒に
 伸びないこと、canvas cropと意図したoverflowを両hostで確認する。
-`preview.png`は実際のskinを代表する必須画像として制作し、editorで選択して表示を確認する。
-`preview.webm`を含める場合はOBS editorで再生・loopを確認する。native editorはPNGだけを表示する。
+`preview.png`と`preview.webm`はskill本体の共通preview sceneからproduction browser経路で生成する。
+デザインmaster、比較sheet、DOMの手動書換えまたは別実装による再現画像をpackageへ入れない。生成後は
+PNGをnativeとbrowserのeditorで選択して表示し、WebMをbrowser editorで再生・loop確認する。native editorはPNGだけを表示する。
+同じ生成runでresource request、Wasm init/render、期待DOM、media metadataと成果物hashを記録し、欠落resourceや不完全な描画を
+成功成果物として残さない。
 
 素材には生成元/制作条件・再生成方法・必要なlicenseを残す。独自生成素材とOFL fontを用い、
 ゲーム画像、upstream資産、実playerデータはrepositoryの包含許可なしにcommitしない。
