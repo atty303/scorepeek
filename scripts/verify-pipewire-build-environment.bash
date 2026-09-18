@@ -28,6 +28,10 @@ if ! command -v cc >/dev/null 2>&1; then
   echo "native build prerequisite is missing: C compiler 'cc'" >&2
   exit 2
 fi
+if ! command -v pkg-config >/dev/null 2>&1; then
+  echo "native build prerequisite is missing: host 'pkg-config'" >&2
+  exit 2
+fi
 
 libclang="$(scripts/resolve-clang-build-input.bash library)"
 clang_resource_dir="$(scripts/resolve-clang-build-input.bash resource-dir)"
@@ -42,12 +46,57 @@ if [[ "$version" != "1.6.8" ]]; then
   exit 2
 fi
 
+xkbcommon_version="$(scripts/pkg-config-scorepeek.bash --modversion xkbcommon)"
+if [[ "$xkbcommon_version" != "1.7.0" ]]; then
+  echo "unexpected xkbcommon SDK version: $xkbcommon_version" >&2
+  exit 2
+fi
+
+system_openssl_version="$(pkg-config --modversion openssl)"
+wrapped_openssl_version="$(scripts/pkg-config-scorepeek.bash --modversion openssl)"
+if [[ "$wrapped_openssl_version" != "$system_openssl_version" ]]; then
+  echo "pkg-config wrapper did not resolve the host OpenSSL package" >&2
+  exit 2
+fi
+scripts/pkg-config-scorepeek.bash --exists 'openssl >= 1.0.0'
+
+if mixed_error="$(scripts/pkg-config-scorepeek.bash --exists 'openssl >= 1.0.0' 'libpipewire-0.3 >= 0.3' 2>&1)"; then
+  echo "pkg-config wrapper accepted packages from different SDK routes" >&2
+  exit 2
+fi
+if [[ "$mixed_error" != "pkg-config packages require different SDK routes" ]]; then
+  echo "pkg-config wrapper returned an unexpected mixed-route error: $mixed_error" >&2
+  exit 2
+fi
+
+unsupported_queries=(
+  'scorepeek-unsupported-probe'
+  'openssl zlib'
+  'openssl >= 1.0.0 libpipewire-0.3'
+)
+for unsupported_query in "${unsupported_queries[@]}"; do
+  if unsupported_error="$(scripts/pkg-config-scorepeek.bash --exists "$unsupported_query" 2>&1)"; then
+    echo "pkg-config wrapper accepted an unsupported package requirement: $unsupported_query" >&2
+    exit 2
+  fi
+  if [[ "$unsupported_error" != "unsupported pkg-config package: $unsupported_query" ]]; then
+    echo "pkg-config wrapper returned an unexpected unsupported-package error: $unsupported_error" >&2
+    exit 2
+  fi
+done
+
 flags="$(scripts/pkg-config-scorepeek.bash --cflags --libs libpipewire-0.3 libspa-0.2)"
 if [[ "$flags" != *"$sdk_root/usr/include/pipewire-0.3"* ]] \
   || [[ "$flags" != *"$sdk_root/usr/include/spa-0.2"* ]] \
   || [[ "$flags" != *"$sdk_root/usr/lib"* ]] \
   || [[ "$flags" != *"-lpipewire-0.3"* ]]; then
   echo "pkgconf did not resolve the complete pinned PipeWire SDK" >&2
+  exit 2
+fi
+
+qualified_flags="$(scripts/pkg-config-scorepeek.bash --cflags --libs 'libpipewire-0.3 >= 0.3' 'libspa-0.2 >= 0.2')"
+if [[ "$qualified_flags" != "$flags" ]]; then
+  echo "version-qualified PipeWire query did not resolve the pinned SDK" >&2
   exit 2
 fi
 
@@ -82,6 +131,8 @@ if [[ -z "$host_pipewire_version" ]]; then
 fi
 
 printf 'pipewire_sdk_version=%s\n' "$version"
+printf 'xkbcommon_sdk_version=%s\n' "$xkbcommon_version"
+printf 'host_openssl_version=%s\n' "$wrapped_openssl_version"
 printf 'pipewire_sdk_root=%s\n' "$sdk_root"
 printf 'pkgconf_version=%s\n' "$("$pkgconf" --version)"
 compiler_version="$(cc --version)"
