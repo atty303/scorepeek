@@ -1703,6 +1703,7 @@ mod tests {
 
     struct PrefetchObserver {
         order: Arc<Mutex<Vec<(&'static str, u64)>>>,
+        second_admitted: Arc<(Mutex<bool>, Condvar)>,
     }
 
     impl FieldObserver for PrefetchObserver {
@@ -1712,6 +1713,7 @@ mod tests {
 
         fn admission(&self) -> Option<FieldObserverAdmission<Self::Output>> {
             let order = Arc::clone(&self.order);
+            let second_admitted = Arc::clone(&self.second_admitted);
             Some(Arc::new(move |input| {
                 order
                     .lock()
@@ -1720,13 +1722,27 @@ mod tests {
                         ("text_submit", input.sequence()),
                         ("numeric_submit", input.sequence()),
                     ]);
+                if input.sequence() == 2 {
+                    let (lock, condition) = &*second_admitted;
+                    *lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                    condition.notify_all();
+                }
                 None
             }))
         }
 
         fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
             if input.sequence() == 1 {
-                thread::sleep(Duration::from_millis(50));
+                let (lock, condition) = &*self.second_admitted;
+                let admitted = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (admitted, timeout) = condition
+                    .wait_timeout_while(admitted, Duration::from_secs(1), |admitted| !*admitted)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert!(*admitted && !timeout.timed_out());
             }
             self.order
                 .lock()
@@ -1740,11 +1756,13 @@ mod tests {
     fn admission_submits_next_frame_text_and_numeric_before_ordered_commit() {
         let descriptor = descriptor("pipelined-prefetch", 1);
         let order = Arc::new(Mutex::new(Vec::new()));
+        let second_admitted = Arc::new((Mutex::new(false), Condvar::new()));
         let mut worker = FieldObserverWorker::start_for_test(
             &descriptor,
             |_| {
                 Ok::<_, ()>(PrefetchObserver {
                     order: Arc::clone(&order),
+                    second_admitted: Arc::clone(&second_admitted),
                 })
             },
             2,
