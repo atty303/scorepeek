@@ -27,7 +27,7 @@ trap cleanup EXIT
 scripts/with-isolated-skins.sh target/debug/examples/visual_obs "$config_path" "$address" <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
 server_pid=$!
 
-for _ in {1..100}; do
+for _ in {1..300}; do
   if curl --fail --silent --output /dev/null "http://$address/overlay"; then
     break
   fi
