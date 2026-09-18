@@ -1,0 +1,28 @@
+CI recovery and validation sharding
+
+Observed and fixed:
+- CI resolved OpenSSL through the pinned SDK pkg-config wrapper; OpenSSL now uses the system pkg-config while PipeWire remains pinned.
+- CI installs the Wasm Rust target, uses current mise formatting, and has deterministic admission/corpus tests.
+- Overlay tests have a hermetic Mesa/Wayland runtime and bounded browser startup.
+- The prior sequential CI run took 23m41s.
+
+Parallelization:
+- Split mise run test and the CI matrix into checks, capture, runtime, overlay-native, overlay-browser, overlay-embedded-unit, and overlay-embedded-integration.
+- Every CI shard was verified from a checkout with no target directory and produces its own required artifacts.
+- The local aggregate prebuilds shared skin and web outputs before launching the same seven shards in parallel, avoiding concurrent writes to shared target artifacts.
+- Browser and software Vulkan packages are installed only for the shards that need them.
+
+Fresh-target local measurements:
+- checks: 59.47s, max RSS 1,691,624 KB
+- capture: 58.76s, max RSS 3,983,612 KB
+- runtime: 59.62s, max RSS 4,011,740 KB
+- overlay-native: 72.31s, max RSS 3,085,196 KB
+- overlay-browser: 99.30s, max RSS 2,984,248 KB
+- overlay-embedded-unit: 110.46s, max RSS 3,231,712 KB
+- overlay-embedded-integration: 99.44s, max RSS 4,033,540 KB
+
+Validation:
+- mise run test passed through the seven-shard local aggregate in 111.33s.
+- mise tasks validate passed all 76 tasks.
+- Targeted mise checks, shell syntax validation, and the required post-commit mise run build passed.
+- GitHub Actions run 35363926158 passed all seven jobs in 15m58s wall time; the longest job was overlay-embedded-unit at 15m55s.
