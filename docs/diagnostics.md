@@ -37,6 +37,15 @@ and reports `replay_available_us`, and the CLI warns on stderr while continuing 
 suffix. A client that falls behind is disconnected and the observer exits nonzero instead of
 resynchronizing.
 
+Offline production-path consumers may create an isolated runtime root and use the same
+`diagnostics.sock` request, header, ordering, gap, and terminal-completion contract. They complete
+the live-only handshake before producing required records and consume the stream while the
+producer is active. Isolated streams report their smaller 8 MiB ring in
+`diagnostic_run_started`; the ordinary `scorepeek run` ring remains 128 MiB. Corpus replay uses
+this isolated stream without creating a persistent `diagnostics.ndjson`, so concurrent replay
+sessions cannot accumulate a second copy of their diagnostic payloads on disk. Neither ring is an
+unbounded event collector.
+
 ```text
 scorepeek diagnostic observe
 scorepeek diagnostic observe --replay 30

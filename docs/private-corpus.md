@@ -117,7 +117,15 @@ scorepeek-corpus corpus replay --store /absolute/private-corpus-v2 --text-worker
 
 Replay losslessly decodes retained segment frames and supplies their original sequence and
 monotonic time to the production screen-episode, field-recognition, attempt, RESULT-finalization,
-and run-event reducers. Frames are streamed one at a time. Intentional gaps are not filled with
+and run-event reducers. Each active replay session exposes those production run events through an
+isolated `diagnostics.sock`; replay connects live before publishing the session start and reduces
+the ordered stream as it arrives. Sequence gaps, malformed records, or a disconnect before the
+diagnostic run finishes fail the replay. The oracle retains only selection changes, confirmed
+results, and aggregate counts rather than the full event stream. The isolated stream is socket-only:
+it uses an 8 MiB byte-bounded ring and does not persist a second diagnostic NDJSON file. Frames are
+streamed one at a time. Success and failure paths finish the diagnostic producer and reap the
+observer and optional trace writer before releasing the active-session memory reservation.
+Intentional gaps are not filled with
 synthetic pixels: PLAY and MODE SELECT gaps continue their semantic screen, while a retained
 UNKNOWN suspends until the next retained known frame or session end. A DecideTransition gap is an
 invalid suite.
@@ -171,12 +179,16 @@ field semantics and snapshot authority are defined in
 
 `mise run corpus:test --trace-dir DIR` retains production state/domain events as session-indexed
 NDJSON in a new directory. Raw `field_observation` records are excluded: their OCR candidate
-payloads remain in the existing recognition recordings. Headers identify the active corpus
+payloads remain in the existing recognition recordings. Retained events are written incrementally
+from the same live diagnostic socket used by the replay oracle; the trace does not accumulate a
+session event vector in memory. Each session uses a bounded nonblocking writer queue, so a slow
+trace filesystem cannot stop diagnostic socket draining or another session's trace. Queue,
+capacity, sync, or filesystem failure is reported only in that session's trace status and does not
+alter result acceptance or the replay oracle. Headers identify the active corpus
 generation, executable digest, selected-source fingerprint, registered text/numeric manifests and integrated/best layout digests.
 Per-session `trace` summaries report path, written/total events, bytes and an optional error.
 The budget is 256 MiB across the run; existing directories/files are not overwritten. Trace
-capacity or filesystem failure does not alter result acceptance or the replay oracle. No output
-is created without `--trace-dir`; private traces must remain outside Git.
+No output is created without `--trace-dir`; private traces must remain outside Git.
 
 Compare interval starts, held identity, conflicts, content revisions and episode revisits using
 source sequences. Endpoint SELECT labels do not assert a stationary span: inspect ambiguous

@@ -53,7 +53,8 @@ const DEFAULT_REPLAY_MEMORY_MIB: usize = 2_048;
 const MINIMUM_REPLAY_MEMORY_MIB: usize = 256;
 const MAXIMUM_REPLAY_MEMORY_MIB: usize = 8_192;
 const DECODER_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
-const SESSION_STATE_RESERVATION_BYTES: usize = 64 * 1024 * 1024;
+const SESSION_STATE_RESERVATION_BYTES: usize =
+    64 * 1024 * 1024 + scorepeek::diagnostic_stream::ISOLATED_RING_BYTES;
 const PENDING_FIELD_FRAME_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
 const REPLAY_SEGMENT_PREFETCH: usize = 2;
 const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
@@ -683,6 +684,7 @@ struct ReplayStepContext<'a> {
     preprocess_pool: &'a ReplayPreprocessPool,
     outstanding_limit: usize,
     segment_resolver: &'a SegmentResolver,
+    trace: Option<&'a Arc<Mutex<ReplayTrace>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3273,12 +3275,11 @@ type ReplayRecognitionSession = scorepeek::recognition_live::field_session::Fiel
 >;
 
 struct ReplaySessionRuntime {
-    index: usize,
     session: CaptureSession,
     label: RegressionLabel,
     binding: SessionBinding,
     recognition: Option<ReplayRecognitionSession>,
-    output: scorepeek::routine_output::RoutineOutput,
+    event_stream: ReplayEventStream,
     timeline: scorepeek::timeline_driver::TimelineDriver,
     pending: VecDeque<ReplayPending>,
     measurements: ReplayMeasurements,
@@ -3305,6 +3306,30 @@ impl Drop for ReplaySessionRuntime {
                 scorepeek::diagnostic_recording::DiagnosticRunStatus::Error,
                 self.last_monotonic_ms,
             );
+        }
+    }
+}
+
+struct ReplayEventStream {
+    output: scorepeek::routine_output::RoutineOutput,
+    observer: Option<JoinHandle<Result<ReplayObserved, String>>>,
+}
+
+impl ReplayEventStream {
+    fn finish(&mut self, status: &str) -> Result<ReplayObserved, String> {
+        self.output.finish_diagnostics(status);
+        self.observer
+            .take()
+            .ok_or_else(|| "replay diagnostic observer is not active".to_owned())?
+            .join()
+            .map_err(|_| "replay diagnostic observer panicked".to_owned())?
+    }
+}
+
+impl Drop for ReplayEventStream {
+    fn drop(&mut self) {
+        if self.observer.is_some() {
+            let _ = self.finish("error");
         }
     }
 }
@@ -3351,6 +3376,14 @@ struct ReplaySessionOutcome {
     wall_us: u64,
     decoder_slot_wait_us: u64,
     memory_wait_us: u64,
+}
+
+#[derive(Default)]
+struct ReplayObserved {
+    music_selections: Vec<(u64, scorepeek::routine_output::MusicSelectionState)>,
+    confirmed_results: Vec<scorepeek::routine_output::ResultDomainEvent>,
+    music_select_best_snapshots: usize,
+    trace: Option<TraceStatus>,
 }
 
 #[derive(Default)]
@@ -3661,6 +3694,9 @@ fn replay_canonical_suite(
     let (finalize_sender, finalize_receiver) =
         mpsc::channel::<Option<(usize, String, ReplaySessionRuntime)>>();
     let finalize_receiver = Arc::new(Mutex::new(finalize_receiver));
+    let trace = options
+        .trace_dir
+        .map(|path| Arc::new(Mutex::new(ReplayTrace::new(path, &generation_sha256))));
     let mut handles = Vec::with_capacity(decode_workers);
     for _ in 0..decode_workers {
         let receiver = Arc::clone(&work_receiver);
@@ -3671,6 +3707,7 @@ fn replay_canonical_suite(
         let store = store.to_owned();
         let diagnostic_root = environment.diagnostic_root.to_owned();
         let segment_resolver = environment.segment_resolver.clone();
+        let trace = trace.clone();
         handles.push(thread::spawn(move || {
             loop {
                 let message = receiver
@@ -3693,6 +3730,7 @@ fn replay_canonical_suite(
                         preprocess_pool: &preprocess_pool,
                         outstanding_limit: per_session_pending_limit,
                         segment_resolver: &segment_resolver,
+                        trace: trace.as_ref(),
                     };
                     execute_replay_step(&context, work)
                 }))
@@ -3714,12 +3752,8 @@ fn replay_canonical_suite(
             }
         }));
     }
-    let trace = options
-        .trace_dir
-        .map(|path| Arc::new(Mutex::new(ReplayTrace::new(path, &generation_sha256))));
     let mut finalizer_handles = Vec::with_capacity(decode_workers);
     for _ in 0..decode_workers {
-        let trace = trace.clone();
         let receiver = Arc::clone(&finalize_receiver);
         let result_sender = result_sender.clone();
         finalizer_handles.push(thread::spawn(move || {
@@ -3732,7 +3766,7 @@ fn replay_canonical_suite(
                     break;
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    finalize_replay_session(runtime, trace.as_ref())
+                    finalize_replay_session(runtime)
                 }))
                 .unwrap_or_else(|_| {
                     Err(CorpusError::InvalidReplay(
@@ -4063,6 +4097,100 @@ fn load_prepared_replay_session(
     })
 }
 
+fn start_replay_observer(
+    stream_observer: scorepeek::diagnostic_stream::DiagnosticObserver,
+    index: usize,
+    trace: Option<&Arc<Mutex<ReplayTrace>>>,
+    #[cfg(test)] fail_spawn: bool,
+) -> Result<JoinHandle<Result<ReplayObserved, String>>, String> {
+    #[cfg(test)]
+    if fail_spawn {
+        finish_abandoned_trace_session(trace, index)?;
+        return Err("replay diagnostic observer could not be started: injected failure".to_owned());
+    }
+    let observer_trace = trace.cloned();
+    match thread::Builder::new()
+        .name(format!("scorepeek-replay-observer-{index}"))
+        .spawn(move || {
+            let mut collected = ReplayObserved::default();
+            let stream = stream_observer.consume(|record| {
+                if record["operation"] == "diagnostic_record_rejected"
+                    && record["data"]["source_operation"] == "run_event"
+                    && record["data"]["error_type"] == "record_too_large"
+                {
+                    return Err("diagnostic run event exceeded the stream record bound".to_owned());
+                }
+                if record["operation"] != "run_event" {
+                    return Ok(());
+                }
+                let data = record
+                    .get("data")
+                    .ok_or_else(|| "diagnostic run event has no data".to_owned())?;
+                let event = scorepeek::routine_output::RunEvent::from_value(data.clone())?;
+                if matches!(
+                    event.kind,
+                    scorepeek::routine_output::RunEventKind::FieldObservation { .. }
+                ) {
+                    return Ok(());
+                }
+                if let Some(trace) = &observer_trace {
+                    trace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .observe(index, &event)?;
+                }
+                match event.kind {
+                    scorepeek::routine_output::RunEventKind::MusicSelectionChanged {
+                        source_sequence,
+                        state,
+                        ..
+                    } => collected.music_selections.push((source_sequence, state)),
+                    scorepeek::routine_output::RunEventKind::ResultChanged {
+                        state: scorepeek::routine_output::ResultState::Confirmed { result, .. },
+                        ..
+                    } => collected.confirmed_results.push(*result),
+                    scorepeek::routine_output::RunEventKind::MusicSelectBestObserved { .. } => {
+                        collected.music_select_best_snapshots =
+                            collected.music_select_best_snapshots.saturating_add(1);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            });
+            if let Some(trace) = observer_trace {
+                let finisher = trace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .finish_session(index)?;
+                collected.trace = Some(finisher.finish());
+            }
+            stream?;
+            Ok(collected)
+        }) {
+        Ok(observer) => Ok(observer),
+        Err(error) => {
+            finish_abandoned_trace_session(trace, index)?;
+            Err(format!(
+                "replay diagnostic observer could not be started: {error}"
+            ))
+        }
+    }
+}
+
+fn finish_abandoned_trace_session(
+    trace: Option<&Arc<Mutex<ReplayTrace>>>,
+    index: usize,
+) -> Result<(), String> {
+    if let Some(trace) = trace {
+        let finisher = trace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .finish_session(index)?;
+        let _ = finisher.finish();
+    }
+    Ok(())
+}
+
 fn start_replay_session(
     store: &Path,
     diagnostic_root: &Path,
@@ -4072,6 +4200,7 @@ fn start_replay_session(
     >,
     decode_activity: &Arc<ReplayDecodeActivity>,
     memory_wait_us: u64,
+    trace: Option<&Arc<Mutex<ReplayTrace>>>,
 ) -> Result<ReplaySessionRuntime, CorpusError> {
     let PreparedReplaySession {
         index: session_index,
@@ -4092,44 +4221,43 @@ fn start_replay_session(
         .into_iter()
         .filter(|tick| tick.disposition == "retained")
         .collect::<Vec<_>>();
-    let mut output = scorepeek::routine_output::RoutineOutput::start_headless(
+    let run_id = format!("corpus-{session_index}");
+    let runtime_root = diagnostic_root.join(format!("runtime-{session_index}"));
+    let diagnostics =
+        scorepeek::diagnostic_stream::RunDiagnostics::start_ephemeral_at(&runtime_root, &run_id);
+    let observer =
+        scorepeek::diagnostic_stream::DiagnosticObserver::connect_at(&runtime_root, None)
+            .map_err(CorpusError::InvalidReplay)?;
+    if let Some(trace) = trace {
+        trace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .start_session(session_index, &session_id)
+            .map_err(CorpusError::InvalidReplay)?;
+    }
+    let observer = start_replay_observer(
+        observer,
+        session_index,
+        trace,
+        #[cfg(test)]
+        false,
+    )
+    .map_err(CorpusError::InvalidReplay)?;
+    let output = scorepeek::routine_output::RoutineOutput::start_headless_with_diagnostics(
         format!("corpus-{session_index}"),
         session.profile_sha256.clone(),
+        diagnostics,
     );
-    output
-        .publish(&scorepeek::routine_output::RunEvent {
-            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
-            kind: scorepeek::routine_output::RunEventKind::SessionStarted {
-                session_id: Some(session_id.clone()),
-                capture_generation: session.capture_generation,
-                capture_profile_sha256: binding.capture_profile_sha256.clone(),
-                normalizer_artifact_sha256: binding.normalizer_sha256.clone(),
-            },
-        })
-        .map_err(CorpusError::InvalidReplay)?;
     let descriptor = replay_descriptor(session_index, &session, &binding);
-    let recognition =
-        scorepeek::recognition_live::field_session::FieldObservationSession::start_registered_shared(
-            diagnostic_root,
-            descriptor,
-            scorepeek::diagnostic_recording::DiagnosticPolicy {
-                enabled: false,
-                ..scorepeek::diagnostic_recording::DiagnosticPolicy::default()
-            },
-            shared,
-        )
-        .map_err(|error| {
-            CorpusError::InvalidReplay(format!(
-                "production recognizer could not start: {error:?}"
-            ))
-        })?;
-    Ok(ReplaySessionRuntime {
-        index: session_index,
+    let mut runtime = ReplaySessionRuntime {
         session,
         label,
         binding,
-        recognition: Some(recognition),
-        output,
+        recognition: None,
+        event_stream: ReplayEventStream {
+            output,
+            observer: Some(observer),
+        },
         timeline: scorepeek::timeline_driver::TimelineDriver::default(),
         pending: VecDeque::new(),
         measurements: ReplayMeasurements::default(),
@@ -4147,7 +4275,37 @@ fn start_replay_session(
         decoder_slot_wait_us: 0,
         memory_wait_us,
         _memory: decode_activity.reserve_session(),
-    })
+    };
+    runtime
+        .event_stream
+        .output
+        .publish(&scorepeek::routine_output::RunEvent {
+            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
+            kind: scorepeek::routine_output::RunEventKind::SessionStarted {
+                session_id: Some(runtime.session_id.clone()),
+                capture_generation: runtime.session.capture_generation,
+                capture_profile_sha256: runtime.binding.capture_profile_sha256.clone(),
+                normalizer_artifact_sha256: runtime.binding.normalizer_sha256.clone(),
+            },
+        })
+        .map_err(CorpusError::InvalidReplay)?;
+    let recognition =
+        scorepeek::recognition_live::field_session::FieldObservationSession::start_registered_shared(
+            diagnostic_root,
+            descriptor,
+            scorepeek::diagnostic_recording::DiagnosticPolicy {
+                enabled: false,
+                ..scorepeek::diagnostic_recording::DiagnosticPolicy::default()
+            },
+            shared,
+        )
+        .map_err(|error| {
+            CorpusError::InvalidReplay(format!(
+                "production recognizer could not start: {error:?}"
+            ))
+        })?;
+    runtime.recognition = Some(recognition);
+    Ok(runtime)
 }
 
 fn execute_replay_step(
@@ -4165,6 +4323,7 @@ fn execute_replay_step(
                 Arc::clone(context.shared),
                 context.decode_activity,
                 source.memory_wait_us,
+                context.trace,
             )?;
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
@@ -4192,6 +4351,7 @@ fn execute_replay_step(
                 Arc::clone(context.shared),
                 context.decode_activity,
                 memory_wait_us,
+                context.trace,
             )?;
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
@@ -4377,7 +4537,7 @@ fn process_replay_frame(
         commit_replay_pending(
             runtime.recognition.as_mut().expect("recognizer is active"),
             &mut runtime.pending,
-            &mut runtime.output,
+            &mut runtime.event_stream.output,
             true,
             &runtime.session_id,
             runtime.session.capture_generation,
@@ -4387,7 +4547,7 @@ fn process_replay_frame(
     commit_replay_pending(
         runtime.recognition.as_mut().expect("recognizer is active"),
         &mut runtime.pending,
-        &mut runtime.output,
+        &mut runtime.event_stream.output,
         false,
         &runtime.session_id,
         runtime.session.capture_generation,
@@ -4452,6 +4612,7 @@ fn process_replay_frame(
         .timeline
         .observe(screen.into(), tick.sequence, tick.monotonic_ms);
     runtime
+        .event_stream
         .output
         .publish(&scorepeek::routine_output::RunEvent {
             schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
@@ -4472,7 +4633,7 @@ fn process_replay_frame(
         timeline_step.actions,
         runtime.recognition.as_mut().expect("recognizer is active"),
         &mut runtime.pending,
-        &mut runtime.output,
+        &mut runtime.event_stream.output,
         &runtime.session_id,
         runtime.session.capture_generation,
         tick.sequence,
@@ -4510,14 +4671,13 @@ fn process_replay_frame(
 
 fn finalize_replay_session(
     mut runtime: ReplaySessionRuntime,
-    trace: Option<&Arc<Mutex<ReplayTrace>>>,
 ) -> Result<ReplaySessionOutcome, CorpusError> {
     let finish_actions = runtime.timeline.finish();
     if finish_actions.is_empty() {
         drain_replay_pending(
             runtime.recognition.as_mut().expect("recognizer is active"),
             &mut runtime.pending,
-            &mut runtime.output,
+            &mut runtime.event_stream.output,
             &runtime.session_id,
             runtime.session.capture_generation,
             &mut runtime.measurements,
@@ -4527,7 +4687,7 @@ fn finalize_replay_session(
             finish_actions,
             runtime.recognition.as_mut().expect("recognizer is active"),
             &mut runtime.pending,
-            &mut runtime.output,
+            &mut runtime.event_stream.output,
             &runtime.session_id,
             runtime.session.capture_generation,
             runtime.last_sequence,
@@ -4536,6 +4696,7 @@ fn finalize_replay_session(
         )?;
     }
     runtime
+        .event_stream
         .output
         .publish(&scorepeek::routine_output::RunEvent {
             schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
@@ -4553,45 +4714,29 @@ fn finalize_replay_session(
         runtime.last_monotonic_ms,
         Duration::from_secs(30),
     );
+    let observed = runtime
+        .event_stream
+        .finish("success")
+        .map_err(CorpusError::InvalidReplay)?;
     if finish.field_observer.status
         != scorepeek::recognition_live::field_observer::FieldObserverFinishStatus::Complete
     {
         return invalid_replay("production recognizer did not finish cleanly");
     }
-    let events = runtime.output.take_headless_events();
-    let trace = trace.map(|trace| {
-        Box::new({
-            trace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .write_session(runtime.index, &runtime.session_id, &events)
-        })
-    });
-    validate_music_selection_oracle(&runtime.label, &events, &mut runtime.failures);
-    let music_select_best_snapshots = events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.kind,
-                scorepeek::routine_output::RunEventKind::MusicSelectBestObserved { .. }
-            )
-        })
-        .count();
-    let emitted = events
-        .into_iter()
-        .filter_map(|event| match event.kind {
-            scorepeek::routine_output::RunEventKind::ResultChanged {
-                state: scorepeek::routine_output::ResultState::Confirmed { result, .. },
-                ..
-            } => Some(*result),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    validate_semantic_oracle(&runtime.label, &emitted, &mut runtime.failures);
+    validate_music_selection_oracle(
+        &runtime.label,
+        &observed.music_selections,
+        &mut runtime.failures,
+    );
+    validate_semantic_oracle(
+        &runtime.label,
+        &observed.confirmed_results,
+        &mut runtime.failures,
+    );
     Ok(ReplaySessionOutcome {
-        trace,
+        trace: observed.trace.map(Box::new),
         session_key: runtime.session_id.clone(),
-        music_select_best_snapshots,
+        music_select_best_snapshots: observed.music_select_best_snapshots,
         episode_count: runtime.label.episodes.len(),
         canonical_frames: runtime.canonical_frames,
         negative_frames: runtime.label.negative_frames.len(),
@@ -5024,10 +5169,10 @@ fn validate_semantic_oracle(
 
 fn validate_music_selection_oracle(
     label: &RegressionLabel,
-    events: &[scorepeek::routine_output::RunEvent],
+    selections: &[(u64, scorepeek::routine_output::MusicSelectionState)],
     failures: &mut Vec<String>,
 ) {
-    use scorepeek::routine_output::{MusicSelectionState, RunEventKind};
+    use scorepeek::routine_output::MusicSelectionState;
     for episode in &label.episodes {
         let Some(span) = episode
             .attempt
@@ -5036,16 +5181,10 @@ fn validate_music_selection_oracle(
         else {
             continue;
         };
-        let latest = events
+        let latest = selections
             .iter()
-            .filter_map(|event| match &event.kind {
-                RunEventKind::MusicSelectionChanged {
-                    source_sequence,
-                    state,
-                    ..
-                } if *source_sequence <= span.last_sequence => Some(state),
-                _ => None,
-            })
+            .filter(|(source_sequence, _)| *source_sequence <= span.last_sequence)
+            .map(|(_, state)| state)
             .next_back();
         let expected = &episode.expected_result;
         let matches = match latest {
@@ -6002,6 +6141,114 @@ mod tests {
     use object_store::ObjectStore;
     use object_store::memory::InMemory;
     use std::io::Seek as _;
+
+    #[test]
+    fn replay_observer_rejects_an_oversized_run_event_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = temporary.path().join("runtime");
+        let mut diagnostics =
+            scorepeek::diagnostic_stream::RunDiagnostics::start_ephemeral_at(&runtime, "replay-0");
+        assert!(diagnostics.run_root().is_none());
+        let stream_observer =
+            scorepeek::diagnostic_stream::DiagnosticObserver::connect_at(&runtime, None).unwrap();
+        let observer = start_replay_observer(stream_observer, 0, None, false).unwrap();
+        diagnostics.sink().record(
+            "run_event",
+            &serde_json::json!({
+                "payload": "x".repeat(scorepeek::diagnostic_stream::MAX_RECORD_BYTES)
+            }),
+            false,
+        );
+        diagnostics.finish("success");
+        let Err(error) = observer.join().unwrap() else {
+            panic!("oversized run event unexpectedly reached replay");
+        };
+        assert!(error.contains("exceeded the stream record bound"));
+    }
+
+    #[test]
+    fn replay_observer_validates_field_observations_before_dropping_them() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = temporary.path().join("runtime");
+        let mut diagnostics =
+            scorepeek::diagnostic_stream::RunDiagnostics::start_ephemeral_at(&runtime, "replay-0");
+        let stream_observer =
+            scorepeek::diagnostic_stream::DiagnosticObserver::connect_at(&runtime, None).unwrap();
+        let observer = start_replay_observer(stream_observer, 0, None, false).unwrap();
+        diagnostics.sink().record(
+            "run_event",
+            &serde_json::json!({"event":"field_observation"}),
+            false,
+        );
+        diagnostics.finish("success");
+        let Err(error) = observer.join().unwrap() else {
+            panic!("malformed field observation unexpectedly reached replay");
+        };
+        assert!(error.contains("run event"));
+    }
+
+    #[test]
+    fn observer_spawn_failure_reaps_the_registered_trace_session() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = temporary.path().join("runtime");
+        let mut diagnostics =
+            scorepeek::diagnostic_stream::RunDiagnostics::start_ephemeral_at(&runtime, "replay-0");
+        let stream_observer =
+            scorepeek::diagnostic_stream::DiagnosticObserver::connect_at(&runtime, None).unwrap();
+        let trace = Arc::new(Mutex::new(ReplayTrace::new(
+            temporary.path().join("trace"),
+            "generation",
+        )));
+        trace.lock().unwrap().start_session(0, "session").unwrap();
+
+        let error = start_replay_observer(stream_observer, 0, Some(&trace), true).unwrap_err();
+
+        assert!(error.contains("injected failure"));
+        assert_eq!(trace.lock().unwrap().active_session_count(), 0);
+        diagnostics.finish("error");
+    }
+
+    #[test]
+    fn dropping_a_failed_replay_stream_reaps_its_observer_and_trace_writer() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = temporary.path().join("runtime");
+        let mut replay_trace = ReplayTrace::new(temporary.path().join("trace"), "generation");
+        let writer_gate = replay_trace.block_writer(0);
+        replay_trace.start_session(0, "session").unwrap();
+        let trace = Arc::new(Mutex::new(replay_trace));
+        let diagnostics =
+            scorepeek::diagnostic_stream::RunDiagnostics::start_ephemeral_at(&runtime, "replay-0");
+        let stream_observer =
+            scorepeek::diagnostic_stream::DiagnosticObserver::connect_at(&runtime, None).unwrap();
+        let observer = start_replay_observer(stream_observer, 0, Some(&trace), false).unwrap();
+        let event_stream = ReplayEventStream {
+            output: scorepeek::routine_output::RoutineOutput::start_headless_with_diagnostics(
+                "replay-0".to_owned(),
+                "a".repeat(64),
+                diagnostics,
+            ),
+            observer: Some(observer),
+        };
+
+        let (dropped_sender, dropped_receiver) = mpsc::channel();
+        let dropper = thread::spawn(move || {
+            drop(event_stream);
+            dropped_sender.send(()).unwrap();
+        });
+
+        assert!(matches!(
+            dropped_receiver.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        writer_gate.release();
+        dropped_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        dropper.join().unwrap();
+
+        assert_eq!(trace.lock().unwrap().active_session_count(), 0);
+        assert!(temporary.path().join("trace/session-0.ndjson").is_file());
+    }
 
     #[test]
     fn run_import_requires_the_selected_sessions_saved_completion_record() {

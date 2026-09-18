@@ -24,6 +24,7 @@ pub const STREAM_NAME: &str = "diagnostics.ndjson";
 const ACTIVE_LOCK_NAME: &str = "active.lock";
 pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
 pub const RING_BYTES: usize = 128 * 1024 * 1024;
+pub const ISOLATED_RING_BYTES: usize = 8 * 1024 * 1024;
 pub const RETAINED_RUNS: usize = 10;
 
 const MAX_CLIENTS: usize = 8;
@@ -51,6 +52,7 @@ struct State {
     run_id: String,
     records: VecDeque<Record>,
     ring_bytes: usize,
+    ring_capacity_bytes: usize,
     next_sequence: u64,
     dropped_before_oldest: u64,
     persistence: Persistence,
@@ -106,6 +108,29 @@ impl RunDiagnostics {
         Self::from_disk(run_id, prepare_run(store, run_id))
     }
 
+    /// Starts one diagnostic run with an explicitly isolated persistence and runtime root.
+    ///
+    /// This is used by offline production-path consumers that must observe the same socket
+    /// protocol without colliding with an active interactive run.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the library entry point is consumed by corpus replay"
+    )]
+    pub fn start_at(store: &Path, runtime: &Path, run_id: &str) -> Self {
+        Self::from_disk_at(run_id, prepare_run(store, run_id), Some(runtime), true)
+    }
+
+    /// Starts an isolated socket-only diagnostic run without persistent output.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the library entry point is consumed by corpus replay"
+    )]
+    pub fn start_ephemeral_at(runtime: &Path, run_id: &str) -> Self {
+        Self::from_disk_at(run_id, Err(String::new()), Some(runtime), false)
+    }
+
     #[must_use]
     pub fn start_default(run_id: &str) -> Self {
         let disk = default_store().and_then(|store| prepare_run(&store, run_id));
@@ -113,6 +138,20 @@ impl RunDiagnostics {
     }
 
     fn from_disk(run_id: &str, disk: Result<(PathBuf, File, File), String>) -> Self {
+        Self::from_disk_at(run_id, disk, None, true)
+    }
+
+    fn from_disk_at(
+        run_id: &str,
+        disk: Result<(PathBuf, File, File), String>,
+        runtime: Option<&Path>,
+        report_persistence_error: bool,
+    ) -> Self {
+        let ring_capacity_bytes = if runtime.is_some() {
+            ISOLATED_RING_BYTES
+        } else {
+            RING_BYTES
+        };
         let (run_root, file, active_lock, persistence) = match disk {
             Ok((root, file, active_lock)) => (
                 Some(root),
@@ -121,7 +160,9 @@ impl RunDiagnostics {
                 Persistence::Active,
             ),
             Err(error) => {
-                eprintln!("scorepeek: diagnostic persistence unavailable: {error}");
+                if report_persistence_error {
+                    eprintln!("scorepeek: diagnostic persistence unavailable: {error}");
+                }
                 (None, None, None, Persistence::Unavailable)
             }
         };
@@ -130,6 +171,7 @@ impl RunDiagnostics {
                 run_id: run_id.to_owned(),
                 records: VecDeque::new(),
                 ring_bytes: 0,
+                ring_capacity_bytes,
                 next_sequence: 1,
                 dropped_before_oldest: 0,
                 persistence,
@@ -153,10 +195,17 @@ impl RunDiagnostics {
                 None
             }
         });
-        let (_, server) = start_server(Arc::clone(&shared)).unwrap_or_else(|error| {
-            eprintln!("scorepeek: diagnostic socket unavailable: {error}");
-            (None, None)
-        });
+        let server = runtime
+            .map_or_else(
+                || start_server(Arc::clone(&shared)).map(|(_, server)| server),
+                |runtime| {
+                    start_server_at(Arc::clone(&shared), runtime).map(|(_, server)| Some(server))
+                },
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("scorepeek: diagnostic socket unavailable: {error}");
+                None
+            });
         let diagnostics = Self {
             sink,
             run_root,
@@ -173,7 +222,7 @@ impl RunDiagnostics {
                     "version": env!("CARGO_PKG_VERSION"),
                     "process_id": std::process::id()
                 },
-                "ring_bytes": RING_BYTES,
+                "ring_bytes": ring_capacity_bytes,
                 "record_bytes": MAX_RECORD_BYTES,
                 "retained_runs": RETAINED_RUNS,
                 "persistence": persistence.name()
@@ -295,7 +344,7 @@ fn append_small_failure(state: &mut State, operation: &str, bytes: usize) {
 }
 
 fn append(state: &mut State, bytes: Arc<[u8]>, observed_at: Instant) {
-    while state.ring_bytes.saturating_add(bytes.len()) > RING_BYTES {
+    while state.ring_bytes.saturating_add(bytes.len()) > state.ring_capacity_bytes {
         let Some(removed) = state.records.pop_front() else {
             break;
         };
@@ -1043,6 +1092,113 @@ pub fn observe(replay_seconds: Option<u64>) -> Result<(), String> {
     copy_observation_stream(BufReader::new(stream), stdout.lock(), stderr.lock())
 }
 
+/// A validated, ordered client of one `diagnostics.sock` stream.
+#[allow(
+    dead_code,
+    reason = "the library entry point is consumed by corpus replay"
+)]
+pub struct DiagnosticObserver {
+    reader: BufReader<UnixStream>,
+    expected: u64,
+}
+
+#[allow(
+    dead_code,
+    reason = "the library entry point is consumed by corpus replay"
+)]
+impl DiagnosticObserver {
+    /// Connects to an explicitly selected runtime root and completes the stream handshake.
+    ///
+    /// Once this returns, live-only delivery is armed before the caller produces more records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket cannot be connected, the request cannot be sent, or the
+    /// server returns an invalid or gapped stream header.
+    pub fn connect_at(runtime: &Path, replay_seconds: Option<u64>) -> Result<Self, String> {
+        let mut stream = UnixStream::connect(runtime.join("scorepeek").join(SOCKET_NAME))
+            .map_err(|error| format!("diagnostic socket could not be connected: {error}"))?;
+        let request = replay_seconds.map_or_else(
+            || json!({"schema":REQUEST_SCHEMA,"mode":"live"}),
+            |seconds| json!({"schema":REQUEST_SCHEMA,"mode":"replay","seconds":seconds}),
+        );
+        serde_json::to_writer(&mut stream, &request)
+            .map_err(|error| format!("diagnostic socket request failed: {error}"))?;
+        stream
+            .write_all(b"\n")
+            .and_then(|()| stream.shutdown(Shutdown::Write))
+            .map_err(|error| format!("diagnostic socket request failed: {error}"))?;
+        let mut reader = BufReader::new(stream);
+        let (header, _) = read_observation_value(&mut reader)?
+            .ok_or_else(|| "diagnostic socket returned no header".to_owned())?;
+        if header["schema"] != HEADER_SCHEMA {
+            return Err("diagnostic socket header schema is unsupported".to_owned());
+        }
+        if header["gap"] == true {
+            return Err("diagnostic socket declared an initial sequence gap".to_owned());
+        }
+        let expected = header["stream_start_sequence"]
+            .as_u64()
+            .or_else(|| header["oldest_sequence"].as_u64())
+            .ok_or_else(|| "diagnostic socket header has no start sequence".to_owned())?;
+        Ok(Self { reader, expected })
+    }
+
+    /// Consumes validated records until the producer reports terminal completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed records, sequence gaps, early disconnect, or a callback
+    /// failure.
+    pub fn consume(
+        mut self,
+        mut observe: impl FnMut(Value) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut finished = false;
+        while let Some((value, _)) = read_observation_value(&mut self.reader)? {
+            let sequence = value["sequence"]
+                .as_u64()
+                .ok_or_else(|| "diagnostic socket record has no sequence".to_owned())?;
+            if sequence != self.expected {
+                return Err("diagnostic socket sequence gap".to_owned());
+            }
+            self.expected = sequence.saturating_add(1);
+            finished = value["operation"] == "diagnostic_run_finished";
+            observe(value)?;
+        }
+        if finished {
+            Ok(())
+        } else {
+            Err(
+                "diagnostic socket disconnected before the run finished; records may have been evicted"
+                    .to_owned(),
+            )
+        }
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "the library entry point is consumed by corpus replay"
+)]
+fn read_observation_value(
+    reader: &mut impl std::io::BufRead,
+) -> Result<Option<(Value, Vec<u8>)>, String> {
+    let mut line = Vec::new();
+    let read = reader
+        .read_until(b'\n', &mut line)
+        .map_err(|error| format!("diagnostic socket read failed: {error}"))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.last() != Some(&b'\n') || line.len() > MAX_RECORD_BYTES {
+        return Err("diagnostic socket returned a malformed record".to_owned());
+    }
+    let value: Value = serde_json::from_slice(&line)
+        .map_err(|_| "diagnostic socket returned invalid NDJSON".to_owned())?;
+    Ok(Some((value, line)))
+}
+
 fn copy_observation_stream(
     mut reader: impl std::io::BufRead,
     mut output: impl std::io::Write,
@@ -1121,6 +1277,7 @@ mod tests {
                 run_id: run_id.to_owned(),
                 records: VecDeque::new(),
                 ring_bytes: 0,
+                ring_capacity_bytes: RING_BYTES,
                 next_sequence: 1,
                 dropped_before_oldest: 0,
                 persistence,
@@ -1166,6 +1323,55 @@ mod tests {
             serde_json::from_slice::<Value>(&state.records[0].bytes).unwrap()["operation"],
             "diagnostic_record_rejected"
         );
+    }
+
+    #[test]
+    fn explicit_runtime_observer_arms_live_delivery_before_records() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = temporary.path().join("store");
+        let runtime = temporary.path().join("runtime");
+        let mut diagnostics = RunDiagnostics::start_at(&store, &runtime, "run-1-0-1");
+        let observer = DiagnosticObserver::connect_at(&runtime, None).unwrap();
+        diagnostics
+            .sink()
+            .record("run_event", &json!({"event":"test"}), false);
+        diagnostics.finish("success");
+        let mut operations = Vec::new();
+        observer
+            .consume(|record| {
+                operations.push(record["operation"].as_str().unwrap().to_owned());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            operations,
+            ["run_event".to_owned(), "diagnostic_run_finished".to_owned()]
+        );
+    }
+
+    #[test]
+    fn ephemeral_runtime_observer_does_not_create_persistent_output() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = temporary.path().join("runtime");
+        let mut diagnostics = RunDiagnostics::start_ephemeral_at(&runtime, "run-1-0-1");
+        assert!(diagnostics.run_root().is_none());
+        let observer = DiagnosticObserver::connect_at(&runtime, None).unwrap();
+        diagnostics
+            .sink()
+            .record("run_event", &json!({"event":"test"}), false);
+        diagnostics.finish("success");
+        let mut operations = Vec::new();
+        observer
+            .consume(|record| {
+                operations.push(record["operation"].as_str().unwrap().to_owned());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            operations,
+            ["run_event".to_owned(), "diagnostic_run_finished".to_owned()]
+        );
+        assert!(!temporary.path().join("store").exists());
     }
 
     #[test]

@@ -2622,6 +2622,7 @@ pub struct RoutineOutput {
     attempt_phase_started_ms: Option<u64>,
     timing_active: bool,
     output_us: u64,
+    #[cfg(test)]
     headless_events: Vec<RunEvent>,
     diagnostics: Option<RunDiagnostics>,
 }
@@ -2833,6 +2834,7 @@ impl RoutineOutput {
             attempt_phase_started_ms: None,
             timing_active: false,
             output_us: 0,
+            #[cfg(test)]
             headless_events: Vec::new(),
             diagnostics,
         };
@@ -2841,11 +2843,33 @@ impl RoutineOutput {
     }
 
     #[must_use]
+    #[cfg(test)]
+    pub fn start_headless(invocation_id: String, profile_sha256: String) -> Self {
+        Self::start_headless_inner(invocation_id, profile_sha256, None)
+    }
+
+    #[must_use]
     #[allow(
         dead_code,
-        reason = "the library entry point is consumed by offline corpus replay"
+        reason = "the library entry point is consumed by corpus replay"
     )]
-    pub fn start_headless(invocation_id: String, profile_sha256: String) -> Self {
+    pub fn start_headless_with_diagnostics(
+        invocation_id: String,
+        profile_sha256: String,
+        diagnostics: RunDiagnostics,
+    ) -> Self {
+        Self::start_headless_inner(invocation_id, profile_sha256, Some(diagnostics))
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the library entry point is consumed by corpus replay"
+    )]
+    fn start_headless_inner(
+        invocation_id: String,
+        profile_sha256: String,
+        diagnostics: Option<RunDiagnostics>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(RunViewState::new(
                 invocation_id,
@@ -2881,15 +2905,13 @@ impl RoutineOutput {
             attempt_phase_started_ms: None,
             timing_active: false,
             output_us: 0,
+            #[cfg(test)]
             headless_events: Vec::new(),
-            diagnostics: None,
+            diagnostics,
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "the library entry point is consumed by offline corpus replay"
-    )]
+    #[cfg(test)]
     pub fn take_headless_events(&mut self) -> Vec<RunEvent> {
         std::mem::take(&mut self.headless_events)
     }
@@ -4463,6 +4485,7 @@ impl RoutineOutput {
             value["diagnostic_health"] = sink.health();
             sink.record("run_event", &value, important_run_event(event));
         }
+        #[cfg(test)]
         self.headless_events.push(event.clone());
         if self.timing_active {
             self.output_us = self
