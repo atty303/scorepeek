@@ -1,0 +1,18 @@
+## Work history
+
+Moved the bundled skin design authority out of `docs/design/overlay-canvas` and into the skin source tree. The shared guidance is now `skins/DESIGN.md`, and each unchanged master image is colocated with its owner as `skins/<name>/design.png`.
+
+Updated the repository `create-overlay-skin` references to the new design paths and the current independent API v2 skin crates, optional `skins/shared` implementation, generic resource layout, auto-discovery, and skin-owned backend/motion contract.
+
+## Validation
+
+- Design master SHA-256 values and PNG dimensions are unchanged after the move.
+- `./scripts/build-skins.sh`: passed.
+- Inspected all three generated ZIP inventories; no `design.png` was packaged.
+- Search found no remaining `docs/design`, old API v1, or `skins/guest-core` references.
+- `mise run check`: passed.
+- `mise run build` after commit: passed.
+
+## User message
+
+> docs/designもskinに統合してくれる？
