@@ -1,0 +1,61 @@
+## Work history
+
+Moved every skin-owned renderer, stylesheet, resource, font, motion rule, theme value, and authoring path out of `scorepeek-overlay-ui`. Each bundled skin is now an independently built Wasm crate and exhaustive package manifest. `skins/shared` is an optional generic implementation shortcut with no production skin registry, IDs, or theme values.
+
+Upgraded the skin package and input contract to API v2. Manifests declare generic resources with media types and all widget defaults. The host only interprets `font/*` resources specially. Inputs expose `backend` and `monotonic_ms`; each skin owns native/browser scheduling and motion. Package discovery scans `skins/*/skin.toml`.
+
+Removed the host built-in/default Cyan dependency, moved appearance controls to manifest properties, and migrated config schema v8 typed background/frame/fill fields into schema v9 skin properties. Existing generic properties take precedence. Adding a widget is unavailable when no skin is installed.
+
+Added the generic `skins/shared/tools/compose-css.bash` authoring helper, updated the living API/design/architecture documentation, and removed superseded direct-renderer examples and tests.
+
+## Validation
+
+- `./scripts/build-skins.sh`
+- `mise run fix`
+- `mise run check`
+- `mise run test` in the target-equivalent environment: passed
+- `cargo test --locked -p scorepeek-skin-shared`: 3 passed
+- `cargo test --locked -p scorepeek --features embedded-web --test overlay`: 2 passed
+- `mise run overlay:web:browser:test` in the target-equivalent environment: 3 passed
+- `mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-debug.json /tmp/scorepeek-skin-move-visual-20260918`: all 30 operations, layouts, PNGs, and manifest passed; every PNG was inspected through four contact sheets
+- `mise run build` after commit: passed; `target/debug/scorepeek` rebuilt from committed source
+
+The first sandboxed browser/full-test attempts could not use localhost/Unix sockets, and the first sandboxed post-commit build could not update mise's home task-source cache. The same commands passed in the approved target-equivalent environment.
+
+## User messages
+
+> [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) skin systemを作ったがoverlay-uiにskinのassetsやコードが残っている。すべてskinへ移動する
+>
+> A
+>
+> B
+>
+> A
+>
+> Aだがguest-coreもsharedに統合するのか？
+>
+> A
+>
+> Aだがfontsに限定しなくて汎用resource扱いでいい
+>
+> A
+>
+> hostってsharedのことか？
+>
+> B
+>
+> すでにskinはnative/browserどちらかを判別できる値を受け取ってるだろ？最適化はskin側の仕事
+>
+> A. sharedは今後のskin実装のショートカットでしかない。sharedがskin実体を知っているのはおかしい
+>
+> A
+>
+> A
+>
+> A
+>
+> A
+>
+> A
+>
+> A. 実装して
