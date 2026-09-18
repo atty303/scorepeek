@@ -1,4 +1,4 @@
-//! Language-neutral scorepeek skin ABI v1 types and Rust guest helpers.
+//! Language-neutral scorepeek skin ABI v2 types and Rust guest helpers.
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::BTreeMap};
 
@@ -8,6 +8,9 @@ pub const MAX_AFTER_MS: u64 = 2_147_483_647;
 pub struct Input {
     pub schema: String,
     pub backend: String,
+    /// Monotonic milliseconds since the host process started.
+    #[serde(default)]
+    pub monotonic_ms: u64,
     pub canvas: Canvas,
     #[serde(default)]
     pub widgets: Vec<Widget>,

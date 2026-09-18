@@ -208,7 +208,9 @@ fn load_document(
     integration_fixture: bool,
 ) -> Result<scorepeek_overlay::config::OverlayConfig, Box<dyn std::error::Error>> {
     if integration_fixture {
-        let mut document = scorepeek_overlay::config::visual_debug_config();
+        let mut document = scorepeek_overlay::config::visual_debug_config(
+            "dev.atty303.scorepeek.skin.cyan-system".parse()?,
+        );
         for (index, canvas) in document
             .canvases
             .iter_mut()
@@ -221,7 +223,9 @@ fn load_document(
                 "HEADLESS-2"
             }
             .into();
-            canvas.background = scorepeek_overlay_ui::Background::Animated;
+            canvas
+                .skin_properties
+                .insert("background".into(), serde_json::json!("animated"));
             if canvas.id == "wayland-status" {
                 canvas.show_on = Some(scorepeek_overlay_ui::editor_model::SCREENS.to_vec());
             }

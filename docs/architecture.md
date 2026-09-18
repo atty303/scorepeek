@@ -142,7 +142,7 @@ surface lifecycle, input normalization, and rendering differences.
 Each installed skin is a self-contained ZIP with manifest, Wasm DOM producer,
 CSS, preview, and package-relative resources. Native executes the Wasm module
 through Wasmtime; OBS executes it in a Web Worker. The current authoring
-contract is [skin plugin API v1](skin-plugin-api-v1.md).
+contract is [skin plugin API v2](skin-plugin-api-v2.md).
 
 An active Wayland surface presents once per compositor frame callback. An inactive canvas detaches
 its buffer and suspends only the GPU presentation renderer while retaining the worker, Wayland shell,

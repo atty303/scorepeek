@@ -137,16 +137,15 @@ scenario are the routine completion gates. Use actual Wayland or OBS when invest
 backend-specific failure.
 
 A scenario may set `skin` to any installed reverse-domain skin ID. The visual tasks build and
-install the three repository packages into an isolated XDG store before running the scenario.
-`{"action":"motion","seconds":2.25}` samples the production native motion driver at an explicit
-nonnegative timestamp and records another PNG/layout pair. Use multiple timestamps to inspect
-changing paint as well as stable text. The action is a development capture clock, not a runtime setting.
+install repository packages into an isolated XDG store before running the scenario. A skin receives
+the backend and host monotonic time in every ABI input and owns its native and browser schedules.
+Use captures separated by ordinary scenario interactions to inspect changing paint and stable text.
 
 ## Stream composition scenario
 
 `tests/fixtures/visual-composition.json` supplies synthetic `canvases` (the shared presentation
 schema) rather than the normal first-run canvases. This optional scenario field does not change the
-runtime defaults. It exercises background motion, S/M/L changes and a switch back to static:
+runtime defaults. It exercises animated background selection and the S/M/L frame properties:
 
 ```text
 mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-composition.json /tmp/scorepeek-composition-visual
@@ -190,8 +189,8 @@ editor input updates the single Dioxus editor authority and publishes a complete
 projection to each stage. Surface workers never acquire or release the backend editor lease and
 never become editor authorities. Persistence effects and output resolution are serialized by the
 coordinator; stages retain only transport replicas. Closing releases the lease before the
-coordinator replaces the editor stages with display-canvas surfaces. While the editor is open, the visible preview continues requesting compositor frame
-callbacks so shared presentation motion advances without another interaction; damage remains
+coordinator replaces the editor stages with display-canvas surfaces. While the editor is open, a
+visible preview follows the schedule returned by its skin; damage remains
 coalesced until the next callback. In a nested multi-output check, leave the editor idle before and
 after an output assignment and confirm that frame callbacks continue without a configure timeout or
 canvas-worker failure.
@@ -219,7 +218,7 @@ the shared root stylesheet must remain present independently of canvas visibilit
 ## Browser build compatibility
 
 The overlay backend and browser WASM compile the same SHA-256 build identity from
-`scripts/overlay-build.rs`. Its inputs cover overlay sources, shared assets/styles,
+`scripts/overlay-build.rs`. Its inputs cover overlay sources, host styles,
 workspace dependencies and build configuration; this is a build identity, not the
 configuration revision. Rebuild the web bundle before building the embedded backend.
 

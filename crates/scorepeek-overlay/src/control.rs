@@ -476,7 +476,7 @@ fn build_replacements(
             .iter()
             .find(|canvas| canvas.backend == backend && canvas.id == presentation.id)
             .cloned()
-            .unwrap_or_else(|| empty_canvas(presentation.id.clone(), backend));
+            .unwrap_or_else(|| empty_canvas(presentation.id.clone(), backend, presentation.skin));
         canvas.apply_presentation(&presentation);
         replacements.push(canvas);
     }
@@ -552,6 +552,14 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
 mod tests {
     use super::*;
 
+    fn blackbox_skin() -> scorepeek_overlay_ui::Skin {
+        "dev.atty303.scorepeek.skin.dj-blackbox".parse().unwrap()
+    }
+
+    fn cyan_skin() -> scorepeek_overlay_ui::Skin {
+        "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap()
+    }
+
     fn fixture(name: &str) -> (PathBuf, Mutex<State>) {
         let root = std::env::temp_dir().join(format!(
             "scorepeek-overlay-control-{name}-{}",
@@ -561,7 +569,7 @@ mod tests {
         (
             root.join("overlay.toml"),
             Mutex::new(State {
-                config: crate::config::visual_debug_config(),
+                config: crate::config::visual_debug_config(cyan_skin()),
                 leases: BTreeMap::new(),
                 diagnostics: VecDeque::new(),
                 dropped_diagnostics: 0,
@@ -613,7 +621,7 @@ mod tests {
             "workspace editor is already active"
         );
         let mut draft = first.canvases;
-        draft[0].skin = scorepeek_overlay_ui::Skin::DjBlackbox;
+        draft[0].skin = blackbox_skin();
         let updated = apply(
             Request::UpdateBackendDraft {
                 backend: Backend::Obs,
@@ -648,10 +656,7 @@ mod tests {
         .unwrap();
         assert!(!saved.dirty);
         assert_eq!(saved.generation, Some(1));
-        assert_eq!(
-            saved.canvases[0].skin,
-            scorepeek_overlay_ui::Skin::DjBlackbox
-        );
+        assert_eq!(saved.canvases[0].skin, blackbox_skin());
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
@@ -709,7 +714,7 @@ mod tests {
             .unwrap()
             .touched = Instant::now().checked_sub(LEASE_TIMEOUT).unwrap();
         let mut draft = acquire("current").canvases;
-        draft[0].skin = scorepeek_overlay_ui::Skin::DjBlackbox;
+        draft[0].skin = blackbox_skin();
         let updated = apply(
             Request::UpdateBackendDraft {
                 backend: Backend::Obs,

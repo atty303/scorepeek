@@ -1,5 +1,5 @@
 [package]
-name = "scorepeek-skin-guest-core"
+name = "scorepeek-skin-dj-blackbox"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-scorepeek-skin-sdk = { path = "../../crates/scorepeek-skin-sdk" }
-serde_json.workspace = true
+scorepeek-skin-shared = { path = "../shared" }
 
 [lints.rust]
 unsafe_code = "allow"

@@ -103,9 +103,11 @@ impl Fixture {
         let directory = TestDirectory(directory);
         let skins = crate::skin::StoreRoot::new(directory.0.join("skins"));
         let mut document = OverlayConfig::initial();
-        document
-            .canvases
-            .push(crate::config::empty_canvas("obs-test".into(), Backend::Obs));
+        document.canvases.push(crate::config::empty_canvas(
+            "obs-test".into(),
+            Backend::Obs,
+            "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap(),
+        ));
         let path = directory.0.join("overlay.toml");
         let controller = Controller::start(&path, document.clone()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

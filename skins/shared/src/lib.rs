@@ -1,6 +1,10 @@
 use scorepeek_skin_sdk::{Input, Node, Output, Schedule, Widget};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{cell::Cell, collections::BTreeMap};
+
+thread_local! {
+    static MOTION: Cell<(bool, u64)> = const { Cell::new((false, 0)) };
+}
 
 const GLYPHS: &str = "0123456789ABCDEFG-";
 const LABELS: &[&str] = &[
@@ -59,62 +63,44 @@ const LABELS: &[&str] = &[
     "0%",
 ];
 
-#[derive(Clone, Copy, PartialEq)]
-enum Skin {
-    Cyan,
-    Aurora,
-    Blackbox,
-}
-impl Skin {
-    fn from_id(id: &str) -> Self {
-        if id.ends_with("result-aurora") {
-            Self::Aurora
-        } else if id.ends_with("dj-blackbox") {
-            Self::Blackbox
-        } else {
-            Self::Cyan
-        }
-    }
-    fn name(self) -> &'static str {
-        match self {
-            Self::Cyan => "cyan-system",
-            Self::Aurora => "result-aurora",
-            Self::Blackbox => "dj-blackbox",
-        }
-    }
-    fn graph(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Cyan => ("#55e9ff", "#ffbd44"),
-            Self::Aurora => ("#f4d174", "#df74ff"),
-            Self::Blackbox => ("#c6f139", "#ff9e30"),
-        }
-    }
+#[derive(Clone, Copy)]
+pub struct Theme {
+    pub graph_score: &'static str,
+    pub graph_miss: &'static str,
+    pub frame_source: [f64; 2],
+    pub frame_factor: f64,
+    pub selection_illumination: bool,
+    pub status_edge: &'static str,
+    pub lamp_accent: &'static str,
+    pub rail_edge: &'static str,
+    pub rail_inner: &'static str,
+    pub rank_material: &'static str,
+    pub label_font: &'static str,
+    pub label_descent: f64,
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn scorepeek_alloc(length: i32) -> i32 {
+type Skin = &'static Theme;
+
+#[must_use]
+pub fn allocate(length: i32) -> i32 {
     scorepeek_skin_sdk::allocate(length)
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn scorepeek_dealloc(pointer: i32, length: i32) {
+
+pub fn deallocate(pointer: i32, length: i32) {
     scorepeek_skin_sdk::deallocate(pointer, length);
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn scorepeek_init(pointer: i32, length: i32) -> i64 {
-    render(pointer, length)
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn scorepeek_render(pointer: i32, length: i32) -> i64 {
-    render(pointer, length)
-}
-fn render(pointer: i32, length: i32) -> i64 {
-    let output = scorepeek_skin_sdk::decode(pointer, length).map_or_else(error_tree, tree);
+
+#[must_use]
+pub fn render(pointer: i32, length: i32, theme: &'static Theme) -> i64 {
+    let output = scorepeek_skin_sdk::decode(pointer, length)
+        .map_or_else(error_tree, |input| tree(input, theme));
     scorepeek_skin_sdk::encode(&output)
 }
 
-fn tree(input: Input) -> Output {
-    let skin = Skin::from_id(&input.canvas.skin);
-    let (score, miss) = skin.graph();
+fn tree(input: Input, theme: Skin) -> Output {
+    let native = input.backend == "native";
+    MOTION.set((native, input.monotonic_ms));
+    let (score, miss) = (theme.graph_score, theme.graph_miss);
     let background = input
         .canvas
         .properties
@@ -123,22 +109,25 @@ fn tree(input: Input) -> Output {
         .unwrap_or("none");
     let mut children = Vec::new();
     if background != "none" {
-        children.push(canvas_background(skin, background, &input.widgets));
+        children.push(canvas_background(background, &input.widgets));
     }
     children.extend(
         input
             .widgets
             .iter()
-            .map(|widget| widget_slot(widget, &input.state, skin)),
+            .map(|widget| widget_slot(widget, &input.state, theme)),
     );
     Output {
-        schedule: Schedule::Idle,
+        schedule: if native {
+            Schedule::NextFrame
+        } else {
+            Schedule::Idle
+        },
         tree: el(
             "canvas",
             "main",
             &[
                 ("class", "overlay-canvas".into()),
-                ("data-skin", skin.name().into()),
                 ("data-backend", input.backend),
                 ("data-canvas-id", input.canvas.id),
                 (
@@ -154,10 +143,10 @@ fn tree(input: Input) -> Output {
     }
 }
 
-fn widget_slot(widget: &Widget, state: &Value, skin: Skin) -> Node {
+fn widget_slot(widget: &Widget, state: &Value, theme: Skin) -> Node {
     let key = format!("widget:{}", widget.id);
     let child = if widget.kind == "empty" {
-        empty_widget(&key, widget, skin)
+        empty_widget(&key, widget, theme)
     } else {
         let expanded = expanded_widget(widget);
         el(
@@ -174,7 +163,7 @@ fn widget_slot(widget: &Widget, state: &Value, skin: Skin) -> Node {
                     ),
                 ),
             ],
-            vec![render_widget(&key, &expanded, state, skin)],
+            vec![render_widget(&key, &expanded, state, theme)],
         )
     };
     el(
@@ -473,6 +462,7 @@ fn score_widget(key: &str, widget: &Widget, state: &Value, skin: Skin) -> Node {
                                                 &[
                                                     ("class", "clear-value".into()),
                                                     ("data-clear", clear_role(&clear).into()),
+                                                    ("style", clear_motion_style(&clear)),
                                                 ],
                                                 vec![label(
                                                     &format!("{key}:clear:label"),
@@ -595,7 +585,10 @@ fn history_list(key: &str, widget: &Widget, state: &Value, skin: Skin) -> Node {
                     el(
                         &format!("{key}:history:{i}:clear"),
                         "span",
-                        &[("data-clear", clear_role(&clear).into())],
+                        &[
+                            ("data-clear", clear_role(&clear).into()),
+                            ("style", clear_motion_style(&clear)),
+                        ],
                         vec![label(
                             &format!("{key}:history:{i}:clear:label"),
                             &clear,
@@ -730,7 +723,7 @@ fn history_graph(key: &str, widget: &Widget, state: &Value, skin: Skin) -> Node 
             ));
         }
     }
-    let (score_color, miss_color) = skin.graph();
+    let (score_color, miss_color) = (skin.graph_score, skin.graph_miss);
     let mut lines = vec![polyline(
         &format!("{key}:graph:score-line"),
         "score-line",
@@ -895,24 +888,28 @@ fn chrome(key: &str, widget: &Widget, skin: Skin) -> Node {
             el(
                 &format!("{key}:energy"),
                 "div",
-                &[("class", "skin-energy".into())],
+                &[
+                    ("class", "skin-energy".into()),
+                    ("style", energy_motion_style()),
+                ],
                 vec![],
             ),
             el(
                 &format!("{key}:glint"),
                 "div",
-                &[("class", "skin-glint".into())],
+                &[
+                    ("class", "skin-glint".into()),
+                    ("style", glint_motion_style(&widget.kind)),
+                ],
                 vec![],
             ),
         ],
     )
 }
 fn frame(key: &str, widget: &Widget, skin: Skin) -> Node {
-    let (image, source_x, source_y, factor) = match skin {
-        Skin::Cyan => ("cyan-system-frame.png", 340.0, 200.0, 0.16_f64),
-        Skin::Aurora => ("result-aurora-frame.png", 160.0, 160.0, 0.24),
-        Skin::Blackbox => ("dj-blackbox-frame.png", 260.0, 120.0, 0.22),
-    };
+    let image = "frame.png";
+    let [source_x, source_y] = skin.frame_source;
+    let factor = skin.frame_factor;
     let edge = f64::from(frame_width(widget));
     let width = f64::from(widget.width) - 16.0 + edge * 2.0;
     let height = f64::from(widget.height) - 16.0 + edge * 2.0;
@@ -954,7 +951,7 @@ fn frame(key: &str, widget: &Widget, skin: Skin) -> Node {
         ],
         pieces,
     )];
-    if skin == Skin::Aurora && widget.kind == "selection" {
+    if skin.selection_illumination && widget.kind == "selection" {
         nodes.push(el(
             &format!("{key}:illumination"),
             "div",
@@ -963,11 +960,7 @@ fn frame(key: &str, widget: &Widget, skin: Skin) -> Node {
         ));
     }
     if widget.kind == "status" {
-        let edge = match skin {
-            Skin::Cyan => "#13dcef",
-            Skin::Aurora => "#c2a660",
-            Skin::Blackbox => "#687067",
-        };
+        let edge = skin.status_edge;
         nodes.push(el(
             &format!("{key}:panel-frame"),
             "svg",
@@ -1008,6 +1001,7 @@ fn lamp(key: &str, state: &str, caption: Option<&str>, vertical: bool, skin: Ski
             ("class", "lamp".into()),
             ("data-state", state.into()),
             ("aria-hidden", "true".into()),
+            ("style", lamp_motion_style(state)),
         ],
         vec![lamp_svg(key, state, vertical, skin)],
     )];
@@ -1036,11 +1030,7 @@ fn lamp(key: &str, state: &str, caption: Option<&str>, vertical: bool, skin: Ski
 }
 
 fn lamp_svg(key: &str, state: &str, vertical: bool, skin: Skin) -> Node {
-    let accent = match skin {
-        Skin::Cyan => "#10dcfa",
-        Skin::Aurora => "#c16aff",
-        Skin::Blackbox => "#c5e819",
-    };
+    let accent = skin.lamp_accent;
     let light = match (state, vertical) {
         ("active", true) => accent,
         ("active", false) => "#54e56b",
@@ -1173,16 +1163,8 @@ fn lamp_gradient(key: &str, state: &str, light: &str, gradient_id: &str) -> Node
     )
 }
 fn chart_rail(key: &str, width: u32, skin: Skin) -> Node {
-    let edge = match skin {
-        Skin::Cyan => "#13dcef",
-        Skin::Aurora => "#c2a660",
-        Skin::Blackbox => "#8c918c",
-    };
-    let inner = match skin {
-        Skin::Cyan => "#086f83",
-        Skin::Aurora => "#b383cc",
-        Skin::Blackbox => "#444943",
-    };
+    let edge = skin.rail_edge;
+    let inner = skin.rail_inner;
     let width_f64 = f64::from(width);
     el(
         key,
@@ -1265,11 +1247,7 @@ fn metallic(key: &str, value: &str, skin: Skin, height: u32, rank: bool) -> Node
     }
     let width = 44.0 * f64::from(height) / 80.0;
     let sheet = width * 18.0;
-    let material = if rank && skin == Skin::Cyan {
-        Skin::Aurora
-    } else {
-        skin
-    };
+    let material = if rank { skin.rank_material } else { "type.png" };
     let mut nodes = vec![node_text(
         &format!("{key}:value"),
         "span",
@@ -1278,7 +1256,7 @@ fn metallic(key: &str, value: &str, skin: Skin, height: u32, rank: bool) -> Node
     )];
     for (i, glyph) in value.chars().enumerate() {
         let index = GLYPHS.chars().position(|v| v == glyph).unwrap_or(0);
-        nodes.push(el(&format!("{key}:glyph:{i}"), "span", &[("class", "metal-glyph".into()), ("aria-hidden", "true".into()), ("style", format!("width:{width}px;height:{height}px;background-image:url('type-{}.png');background-size:{sheet}px {height}px;background-position:-{}px 0", material.name(), f64::from(u32::try_from(index).unwrap_or(0)) * width))], vec![]));
+        nodes.push(el(&format!("{key}:glyph:{i}"), "span", &[("class", "metal-glyph".into()), ("aria-hidden", "true".into()), ("style", format!("width:{width}px;height:{height}px;background-image:url('{material}');background-size:{sheet}px {height}px;background-position:-{}px 0", f64::from(u32::try_from(index).unwrap_or(0)) * width))], vec![]));
     }
     el(key, "span", &[("class", "metal-type".into())], nodes)
 }
@@ -1287,11 +1265,7 @@ fn label(key: &str, value: &str, skin: Skin, height: u32) -> Node {
         return text(key, value);
     };
     let scale = f64::from(height) / 24.0;
-    let font = if skin == Skin::Blackbox {
-        "Rajdhani"
-    } else {
-        "Oxanium"
-    };
+    let font = skin.label_font;
     el(
         key,
         "span",
@@ -1301,7 +1275,7 @@ fn label(key: &str, value: &str, skin: Skin, height: u32) -> Node {
                 "style",
                 format!(
                     "margin-bottom:-{}px;font-family:{font};font-size:{}px;line-height:{height}px;height:{height}px",
-                    scale * if skin == Skin::Blackbox { 6.16 } else { 6.2 },
+                    scale * skin.label_descent,
                     scale * 20.0
                 ),
             ),
@@ -1322,8 +1296,7 @@ fn label(key: &str, value: &str, skin: Skin, height: u32) -> Node {
                     (
                         "style",
                         format!(
-                            "width:100%;height:{height}px;background-image:url('labels-{}.png');background-size:{}px {}px;background-position:0 -{}px",
-                            skin.name(),
+                            "width:100%;height:{height}px;background-image:url('labels.png');background-size:{}px {}px;background-position:0 -{}px",
                             256.0 * scale,
                             f64::from(u32::try_from(LABELS.len()).unwrap_or(0)) * 24.0 * scale,
                             u32::try_from(index).unwrap_or(0) * height
@@ -1426,7 +1399,7 @@ fn empty_widget(key: &str, widget: &Widget, skin: Skin) -> Node {
         nodes,
     )
 }
-fn canvas_background(skin: Skin, mode: &str, widgets: &[Widget]) -> Node {
+fn canvas_background(mode: &str, widgets: &[Widget]) -> Node {
     let mask = aperture_mask(widgets.iter().filter(|widget| widget.kind == "empty").map(
         |widget| {
             (
@@ -1452,17 +1425,17 @@ fn canvas_background(skin: Skin, mode: &str, widgets: &[Widget]) -> Node {
                 "div",
                 &[
                     ("class", "canvas-background-art".into()),
-                    (
-                        "style",
-                        format!("background-image:url('{}-background.png')", skin.name()),
-                    ),
+                    ("style", "background-image:url('background.png')".into()),
                 ],
                 vec![],
             ),
             el(
                 "background:light",
                 "div",
-                &[("class", "canvas-background-light".into())],
+                &[
+                    ("class", "canvas-background-light".into()),
+                    ("style", background_motion_style(mode)),
+                ],
                 vec![],
             ),
         ],
@@ -1474,7 +1447,12 @@ fn aperture_mask(holes: impl IntoIterator<Item = (i64, i64, u32, u32)>) -> Strin
     let mut sizes = vec!["100% 100%".to_owned()];
     let mut positions = vec!["0px 0px".to_owned()];
     for (x, y, width, height) in holes {
-        images.push(format!("url('/skins/aperture-{width}-{height}.svg')"));
+        let cut = (width / 4).min(12).min(height / 4);
+        let right = width.saturating_sub(cut);
+        let bottom = height.saturating_sub(cut);
+        images.push(format!(
+            "url(\"data:image/svg+xml,%3Csvg%20xmlns=%27http://www.w3.org/2000/svg%27%20width=%27{width}%27%20height=%27{height}%27%3E%3Cpath%20fill=%27white%27%20d=%27M{cut}%200H{right}L{width}%20{cut}V{bottom}L{right}%20{height}H{cut}L0%20{bottom}V{cut}Z%27/%3E%3C/svg%3E\")"
+        ));
         sizes.push(format!("{width}px {height}px"));
         positions.push(format!("{x}px {y}px"));
     }
@@ -1564,6 +1542,73 @@ fn frame_width(widget: &Widget) -> u32 {
         "l" => 16,
         _ => 8,
     }
+}
+
+fn motion_value(from: f64, to: f64, period: f64, phase: f64, ramp: bool) -> Option<f64> {
+    MOTION.with(|motion| {
+        let (native, milliseconds) = motion.get();
+        if !native {
+            return None;
+        }
+        let seconds = std::time::Duration::from_millis(milliseconds).as_secs_f64();
+        let phase = (seconds / period + phase).rem_euclid(1.0);
+        let blend = if ramp {
+            phase
+        } else {
+            0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()
+        };
+        Some(from + (to - from) * blend)
+    })
+}
+
+fn background_motion_style(mode: &str) -> String {
+    if mode != "animated" {
+        return String::new();
+    }
+    motion_value(0.3, 0.85, 16.0, 0.0, false)
+        .map_or_else(String::new, |value| format!("opacity:{value:.4}"))
+}
+
+fn energy_motion_style() -> String {
+    let Some(opacity) = motion_value(0.06, 0.16, 7.0, 0.0, false) else {
+        return String::new();
+    };
+    let left = motion_value(-5.0, 1.0, 11.0, 0.0, false).unwrap_or(-5.0);
+    format!("opacity:{opacity:.4};left:{left:.4}%")
+}
+
+fn glint_motion_style(kind: &str) -> String {
+    let phase = match kind {
+        "selection" => 0.14,
+        "score" => 0.28,
+        "history-list" => 0.42,
+        "history-graph" => 0.56,
+        _ => 0.0,
+    };
+    motion_value(-20.0, 100.0, 6.0, phase, true)
+        .map_or_else(String::new, |value| format!("left:{value:.4}%"))
+}
+
+fn clear_motion_style(clear: &str) -> String {
+    let track = match clear_role(clear) {
+        "full-combo" => Some((0.72, 0.82)),
+        "ex-hard" => Some((1.1, 0.82)),
+        _ => None,
+    };
+    track
+        .and_then(|(period, from)| motion_value(from, 1.0, period, 0.0, false))
+        .map_or_else(String::new, |value| format!("opacity:{value:.4}"))
+}
+
+fn lamp_motion_style(state: &str) -> String {
+    let track = match state {
+        "active" | "persisted" => Some((1.8, 0.68)),
+        "processing" => Some((0.8, 0.4)),
+        _ => None,
+    };
+    track
+        .and_then(|(period, from)| motion_value(from, 1.0, period, 0.0, false))
+        .map_or_else(String::new, |value| format!("opacity:{value:.4}"))
 }
 fn dot_style(value: &Value, ratio: f64, start: i64, end: i64) -> String {
     format!(
@@ -1662,13 +1707,20 @@ mod tests {
     use scorepeek_skin_sdk::Canvas;
     use std::collections::BTreeSet;
 
-    #[test]
-    fn skin_identity_selects_material() {
-        assert_eq!(
-            Skin::from_id("dev.atty303.scorepeek.skin.result-aurora").name(),
-            "result-aurora"
-        );
-    }
+    static TEST_THEME: Theme = Theme {
+        graph_score: "#55e9ff",
+        graph_miss: "#ffbd44",
+        frame_source: [340.0, 200.0],
+        frame_factor: 0.16,
+        selection_illumination: false,
+        status_edge: "#13dcef",
+        lamp_accent: "#10dcfa",
+        rail_edge: "#13dcef",
+        rail_inner: "#086f83",
+        rank_material: "rank-type.png",
+        label_font: "Oxanium",
+        label_descent: 6.2,
+    };
 
     #[test]
     fn arbitrary_widget_ids_make_valid_distinct_svg_fragment_ids() {
@@ -1678,28 +1730,32 @@ mod tests {
 
     #[test]
     fn status_retains_the_original_expanded_rendering_surface() {
-        let output = tree(Input {
-            schema: "scorepeek-skin-input-v1".into(),
-            backend: "native".into(),
-            canvas: Canvas {
-                id: "test".into(),
-                skin: "dev.atty303.scorepeek.skin.cyan-system".into(),
-                width: 560,
-                height: 60,
-                properties: BTreeMap::new(),
+        let output = tree(
+            Input {
+                schema: "scorepeek-skin-input-v2".into(),
+                backend: "native".into(),
+                monotonic_ms: 0,
+                canvas: Canvas {
+                    id: "test".into(),
+                    skin: "dev.example.skin".into(),
+                    width: 560,
+                    height: 60,
+                    properties: BTreeMap::new(),
+                },
+                widgets: vec![Widget {
+                    id: "status".into(),
+                    kind: "status".into(),
+                    x: 8,
+                    y: 8,
+                    width: 544,
+                    height: 44,
+                    settings: Value::Null,
+                    properties: BTreeMap::new(),
+                }],
+                state: serde_json::json!({}),
             },
-            widgets: vec![Widget {
-                id: "status".into(),
-                kind: "status".into(),
-                x: 8,
-                y: 8,
-                width: 544,
-                height: 44,
-                settings: Value::Null,
-                properties: BTreeMap::new(),
-            }],
-            state: serde_json::json!({}),
-        });
+            &TEST_THEME,
+        );
         let slot = element_with_class(&output.tree, "widget-slot").unwrap();
         assert_eq!(
             slot.get("style").unwrap(),
@@ -1727,38 +1783,42 @@ mod tests {
                 ("fill-opacity-percent".into(), Value::from(0)),
             ]),
         };
-        let output = tree(Input {
-            schema: "scorepeek-skin-input-v1".into(),
-            backend: "native".into(),
-            canvas: Canvas {
-                id: "test".into(),
-                skin: "dev.atty303.scorepeek.skin.cyan-system".into(),
-                width: 560,
-                height: 1120,
-                properties: BTreeMap::from([(
-                    "background".into(),
-                    Value::String("animated".into()),
-                )]),
+        let output = tree(
+            Input {
+                schema: "scorepeek-skin-input-v2".into(),
+                backend: "native".into(),
+                monotonic_ms: 0,
+                canvas: Canvas {
+                    id: "test".into(),
+                    skin: "dev.example.skin".into(),
+                    width: 560,
+                    height: 1120,
+                    properties: BTreeMap::from([(
+                        "background".into(),
+                        Value::String("animated".into()),
+                    )]),
+                },
+                widgets: [
+                    "status",
+                    "selection",
+                    "score",
+                    "history-list",
+                    "history-graph",
+                    "empty",
+                ]
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| widget(kind, i32::try_from(index * 224).unwrap()))
+                .collect(),
+                state: serde_json::json!({
+                    "chart":{"play_type":"single","difficulty":"another","title":"TITLE","artist":"ARTIST","level":12,"notes":1000},
+                    "best":{"score":"1778","dj_level":"AAA","miss":"0","clear":"FULL COMBO"},
+                    "detail":{},
+                    "history":{"recorded":true,"plays":[],"graph":[],"graph_ticks":[],"graph_start_unix_ms":[0,0,0,0],"graph_end_unix_ms":1}
+                }),
             },
-            widgets: [
-                "status",
-                "selection",
-                "score",
-                "history-list",
-                "history-graph",
-                "empty",
-            ]
-            .iter()
-            .enumerate()
-            .map(|(index, kind)| widget(kind, i32::try_from(index * 224).unwrap()))
-            .collect(),
-            state: serde_json::json!({
-                "chart":{"play_type":"single","difficulty":"another","title":"TITLE","artist":"ARTIST","level":12,"notes":1000},
-                "best":{"score":"1778","dj_level":"AAA","miss":"0","clear":"FULL COMBO"},
-                "detail":{},
-                "history":{"recorded":true,"plays":[],"graph":[],"graph_ticks":[],"graph_start_unix_ms":[0,0,0,0],"graph_end_unix_ms":1}
-            }),
-        });
+            &TEST_THEME,
+        );
         let mut classes = BTreeSet::new();
         let mut keys = BTreeSet::new();
         collect(&output.tree, &mut classes, &mut keys);
@@ -1783,7 +1843,7 @@ mod tests {
         }
         let encoded = serde_json::to_string(&output).unwrap();
         assert!(encoded.contains("mask-image:"));
-        assert!(encoded.contains("aperture-560-224.svg"));
+        assert!(encoded.contains("width=%27560%27%20height=%27224%27"));
         assert!(encoded.contains("radialGradient"));
         assert!(encoded.contains("stroke-width"));
     }

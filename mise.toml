@@ -109,9 +109,7 @@ sources = [
   "crates/scorepeek-overlay-handles/src/**",
   "crates/scorepeek-overlay-ui/Cargo.toml",
   "crates/scorepeek-overlay-ui/src/**",
-  "crates/scorepeek-overlay-ui/assets/**",
   "crates/scorepeek-overlay-ui/styles/**",
-  "crates/scorepeek-overlay-ui/motion.js",
   "crates/scorepeek-overlay-web/Cargo.toml",
   "crates/scorepeek-overlay-web/src/**",
 ]
@@ -149,10 +147,6 @@ run = "scripts/test-overlay-browser.bash"
 [tasks."overlay:wayland:build:check"]
 description = "Build and test the standalone Wayland shell without host development metadata"
 run = "cargo test --locked -p scorepeek-overlay-handles --lib"
-
-[tasks."overlay:skin:render"]
-description = "Render a skin preview JSON to a create-only PAM using native DOM/Vello (no Wayland or DB)"
-run = 'cargo run --locked -p scorepeek-overlay --example render_skin -- "$@"'
 
 [tasks."overlay:skins:build"]
 description = "Build repository skin ZIP packages without installing them"
@@ -554,7 +548,3 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek --example select_difficulty_probe -- "$@"
 '''
-
-[tasks."overlay:type:generate"]
-description = "Generate metallic glyph PNGs in a new directory using embedded fonts and the pinned native renderer"
-run = 'cargo run --locked -p scorepeek-overlay --example generate_type_atlas -- "$@"'

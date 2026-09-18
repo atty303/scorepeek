@@ -46,10 +46,7 @@ impl ButtonTone {
     }
 }
 
-use crate::{
-    AspectRatio, Background, CanvasPresentation, FrameWidth, ScreenKind, Skin, WidgetKind,
-    WidgetLayout,
-};
+use crate::{AspectRatio, CanvasPresentation, ScreenKind, Skin, WidgetKind, WidgetLayout};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorAction {
@@ -78,7 +75,6 @@ pub enum EditorAction {
     Skin(Skin),
     CanvasSkinProperty(String, serde_json::Value),
     WidgetSkinProperty(String, serde_json::Value),
-    Background(Background),
     Opacity(u8),
     Output(String),
     FitToOutput,
@@ -92,7 +88,6 @@ pub enum EditorAction {
     Discard,
     Save,
     Close,
-    FrameWidth(FrameWidth),
     EditTitle,
     AcceptTitle,
     CancelTitle,
@@ -101,8 +96,6 @@ pub enum EditorAction {
         field_key: String,
         composing: bool,
     },
-    FillDelta(i8),
-    FillOpacity(u8),
     AspectRatio(usize),
     HistoryCount(u32),
     GraphMonths(u32),
@@ -147,7 +140,6 @@ impl EditorAction {
             Self::Skin(_) => "skin",
             Self::CanvasSkinProperty(_, _) => "canvas_skin_property",
             Self::WidgetSkinProperty(_, _) => "widget_skin_property",
-            Self::Background(_) => "background",
             Self::Opacity(_) => "opacity",
             Self::Output(_) => "output",
             Self::FitToOutput => "fit_to_output",
@@ -158,14 +150,11 @@ impl EditorAction {
             Self::Discard => "discard",
             Self::Save => "save",
             Self::Close => "close",
-            Self::FrameWidth(_) => "frame_width",
             Self::EditTitle => "edit_title",
             Self::AcceptTitle => "accept_title",
             Self::CancelTitle => "cancel_title",
             Self::TitleText(_) => "title_text",
             Self::TextComposition { .. } => "text_composition",
-            Self::FillDelta(_) => "fill_delta",
-            Self::FillOpacity(_) => "fill_opacity",
             Self::AspectRatio(_) => "aspect_ratio",
             Self::HistoryCount(_) => "history_count",
             Self::GraphMonths(_) => "graph_months",
@@ -239,10 +228,18 @@ pub struct EditorSkin {
     pub preview: String,
     pub preview_video: Option<String>,
     #[serde(default)]
+    pub widget_defaults: std::collections::BTreeMap<String, EditorWidgetDefault>,
+    #[serde(default)]
     pub canvas_properties: std::collections::BTreeMap<String, EditorProperty>,
     #[serde(default)]
     pub widget_properties:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, EditorProperty>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EditorWidgetDefault {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -362,7 +359,7 @@ pub struct EditorView {
     pub access: EditorAccess,
     pub title: EditorTitleState,
     pub skins: Vec<EditorSkin>,
-    pub new_canvas_skin: Skin,
+    pub new_canvas_skin: Option<Skin>,
 }
 
 #[must_use]
@@ -666,7 +663,7 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                         oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("widget-add".into(), index)),
                     }
                 }
-                Button { class: "add-canvas", disabled: view.access.readonly || view.active_output.is_none(), onclick: move |_| onaction.call(EditorAction::AddCanvas), "+ Add canvas" }
+                Button { class: "add-canvas", disabled: view.access.readonly || view.active_output.is_none() || view.new_canvas_skin.is_none(), onclick: move |_| onaction.call(EditorAction::AddCanvas), "+ Add canvas" }
             }
         }
     }
@@ -699,7 +696,11 @@ pub fn Inspector(
                         }
                     } else {
                         div { class: "inspector-empty", strong { "Select an object" } p { "Choose an output or add a canvas to begin editing." } }
-                        {editor_accordion("new-canvas:skin".into(), "New canvas skin", &view, onaction, skin_picker(&view, view.new_canvas_skin, true, onaction))}
+                        if let Some(skin) = view.new_canvas_skin {
+                            {editor_accordion("new-canvas:skin".into(), "New canvas skin", &view, onaction, skin_picker(&view, skin, true, onaction))}
+                        } else {
+                            p { class: "editor-help", "Install a skin before adding a canvas." }
+                        }
                     }
                 }
             }
@@ -821,7 +822,7 @@ fn canvas_inspector(
         {editor_accordion(format!("canvas:{}:identity", canvas.id), "Identity", view, onaction, rsx! { TextField { field_key: format!("{}:name", canvas.id), label: format!("Name · {}", canvas.id), value: canvas.name.clone(), disallowed, disabled: view.access.readonly, update_on_input: true, draft:view.chrome.field_drafts.get(&format!("{}:name", canvas.id)).cloned(), onchange: move |value| onaction.call(EditorAction::CanvasName(value)), onstate:onaction } })}
         {editor_accordion(format!("canvas:{}:geometry", canvas.id), "Geometry", view, onaction, rsx! { {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], bounds, minimum: child_min, key: &canvas.id, widget: false, readonly: view.access.readonly }, view, onaction)} div { class: "geometry-action", Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } } })}
         {editor_accordion(format!("canvas:{}:visibility", canvas.id), "Visibility", view, onaction, rsx! { div { class: "visibility-actions", Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleAll), "All" } Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleNone), "None" } } {visibility_toggles(&canvas.id, canvas.show_on.as_deref(), view.access.readonly, onaction)} })}
-        {editor_accordion(format!("canvas:{}:appearance", canvas.id), "Appearance", view, onaction, rsx! { {skin_picker(view, canvas.skin, false, onaction)} div { class: "control-heading", "Background" } SegmentedControl { class: "background-control", label: "Canvas background", for (index,(value,label)) in [(Background::None,"None"),(Background::Static,"Static"),(Background::Animated,"Animated")].into_iter().enumerate() { Button { class: "background-option", selected: canvas.background == value, disabled: view.access.readonly, "data-index": index, onclick: move |_| onaction.call(EditorAction::Background(value)), "{label}" } } } div { class: "control-heading", "Opacity" } SegmentedControl { class: "opacity-control", label: "Canvas opacity", for value in [25, 50, 75, 100] { Button { class: "opacity-option", selected: canvas.opacity_percent == value, disabled: view.access.readonly, "data-value": value, onclick: move |_| onaction.call(EditorAction::Opacity(value)), "{value}%" } } } if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { {property_controls(&skin.canvas_properties, &canvas.skin_properties, &canvas.id, true, view, onaction)} } })}
+        {editor_accordion(format!("canvas:{}:appearance", canvas.id), "Appearance", view, onaction, rsx! { {skin_picker(view, canvas.skin, false, onaction)} div { class: "control-heading", "Opacity" } SegmentedControl { class: "opacity-control", label: "Canvas opacity", for value in [25, 50, 75, 100] { Button { class: "opacity-option", selected: canvas.opacity_percent == value, disabled: view.access.readonly, "data-value": value, onclick: move |_| onaction.call(EditorAction::Opacity(value)), "{value}%" } } } if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { {property_controls(&skin.canvas_properties, &canvas.skin_properties, &canvas.id, true, view, onaction)} } })}
         {editor_accordion(format!("canvas:{}:output", canvas.id), "Output", view, onaction, rsx! { div { class: "output-list", for output in view.outputs.iter() { Button { class: "output-option", layout: ButtonLayout::Row, selected: canvas.output.as_deref() == Some(output.name.as_str()), disabled: view.access.readonly, "data-output": "{output.name}", onclick: { let output = output.name.clone(); move |_| onaction.call(EditorAction::Output(output.clone())) }, strong { "{output.name}" } } } } })}
         {editor_accordion(format!("canvas:{}:danger", canvas.id), "Danger zone", view, onaction, rsx! { Button { class: "delete-canvas", tone: ButtonTone::Danger, disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::DeleteCanvas), "Delete canvas" } })}
     }
@@ -963,7 +964,7 @@ fn property_controls(
         }
     };
     rsx! { section { class:if canvas {"skin-property-list canvas-property-list"} else {"skin-property-list widget-property-list"},
-        for (key,property) in properties.iter().filter(|(key, _)| !canvas || key.as_str() != "background") {
+        for (key,property) in properties {
         div { class:"skin-property", "data-property":key,
             div { class:"property-heading",
                 label { class:"property-label", title:"{key}", "{property_key_display(properties,key)}" }

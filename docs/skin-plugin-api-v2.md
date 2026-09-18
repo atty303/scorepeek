@@ -1,6 +1,6 @@
-# scorepeek skin plugin API v1
+# scorepeek skin plugin API v2
 
-This is the current language-neutral authoring contract for `api_version = 1`.
+This is the current language-neutral authoring contract for `api_version = 2`.
 Unknown API versions are rejected.
 
 ## ZIP layout
@@ -14,7 +14,7 @@ The bundled scorepeek skins use the repository's versioned 640×640 catalog scen
 PNG and WebM previews. `mise run overlay:skins:preview:generate` renders their installed Wasm, CSS,
 fonts, and resources through the production browser canvas, verifies the output, and updates the
 source assets under `skins/<name>/`. This repository authoring rule does not make WebM mandatory for
-external v1 packages.
+external v2 packages.
 
 `skin.toml` has this shape. `id` is a lowercase ASCII reverse-domain name, `release` is an opaque
 non-empty string, and property keys use lowercase ASCII letters, digits, and `-`. Properties may be
@@ -24,11 +24,39 @@ omitted entirely; the example shows every supported type:
 id = "dev.example.skin"
 name = "Example"
 release = "2026-09-08"
-api_version = 1
+api_version = 2
 description = "Optional description"
 author = "Optional author"
 license = "Optional SPDX expression or label"
 homepage = "https://example.invalid/skin"
+
+[widget_defaults.status]
+width = 544
+height = 44
+
+[widget_defaults.selection]
+width = 544
+height = 124
+
+[widget_defaults.score]
+width = 544
+height = 200
+
+[widget_defaults.history-list]
+width = 544
+height = 156
+
+[widget_defaults.history-graph]
+width = 544
+height = 208
+
+[widget_defaults.empty]
+width = 640
+height = 360
+
+[[resources]]
+path = "panel.png"
+media_type = "image/png"
 
 [canvas_properties.enabled]
 type = "boolean"
@@ -61,6 +89,11 @@ default = ""
 maximum_length = 80
 ```
 
+`widget_defaults` must define `status`, `selection`, `score`, `history-list`, `history-graph`, and
+`empty`. Each resource outside the mandatory root files and optional `preview.webm` must appear
+exactly once in `resources`; undeclared files and missing declarations are rejected. Resource media
+types are generic. The host loads only declarations whose type starts with `font/` as native fonts.
+
 An enum must contain distinct non-empty values and its default must be one of them. Integer and
 number bounds are inclusive and must contain the default; numbers must be finite. Colors are
 `#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`. A widget property table names a widget kind or uses `*`
@@ -81,7 +114,8 @@ Input is UTF-8 JSON written to the allocation. Output `i64` packs its pointer in
 and byte length in the low 32 bits. Output remains readable until the next call. Calls are
 synchronous and the host deallocates each successful input. There is no WASI or host import.
 
-Input schema `scorepeek-skin-input-v1` contains `backend` (`native` or `obs`), canvas identity,
+Input schema `scorepeek-skin-input-v2` contains `backend` (`native` or `obs`), monotonic elapsed
+milliseconds, canvas identity,
 dimensions and effective properties, host widget geometry/settings/effective properties, and the
 versioned semantic presentation snapshot. Unknown additive input fields must be ignored.
 
@@ -89,8 +123,9 @@ The complete input shape is:
 
 ```json
 {
-  "schema": "scorepeek-skin-input-v1",
+  "schema": "scorepeek-skin-input-v2",
   "backend": "native",
+  "monotonic_ms": 1250,
   "canvas": {"id": "main", "skin": "dev.example.skin", "width": 1920, "height": 1080, "properties": {}},
   "widgets": [{
     "id": "score", "kind": "score", "x": 20, "y": 20,
@@ -140,9 +175,10 @@ Every key is non-empty and unique. The host uses keys to reconcile full trees. P
 pointer, keyboard, focus, click, timer, thread, filesystem, network, database, Event API fold, or
 asynchronous callback interface.
 
-Rust reference types and buffer helpers live in `crates/scorepeek-skin-sdk`. The repository guest
-in `skins/guest-core` is the buildable reference used by the three repository skins; it reproduces
-their complete widget hierarchy, image-backed materials, atlas typography, graphs, and motion.
+Rust reference types and buffer helpers live in `crates/scorepeek-skin-sdk`. Each repository skin
+is a separate Wasm crate. `skins/shared` is an optional implementation shortcut containing generic
+rendering code, styles, resources, and authoring tools; it contains no skin registry or theme values.
+The skin uses `backend` and `monotonic_ms` to choose its own native or browser scheduling and motion.
 
 ## Local package management
 
@@ -157,7 +193,7 @@ scorepeek skin uninstall dev.example.skin-name
 
 The store is `$XDG_DATA_HOME/scorepeek/skins` (or the corresponding home data directory). A package
 whose ID and release already match is reported as `unchanged` without replacing the stored ZIP.
-Changing the opaque release replaces that ID atomically after the v1 property compatibility check.
+Changing the opaque release replaces that ID atomically after the v2 property compatibility check.
 Uninstall does not rewrite canvases that reference the ID; install or select an available skin
 before the next overlay startup. There is no live reload or protection for a package changed while
 an overlay process is using it.

@@ -3,8 +3,8 @@ use crate::editor::{
     EditorTitleState, EditorView, GeometryField,
 };
 use crate::{
-    AspectRatio, Background, CanvasPresentation, ScreenKind, Skin, WidgetKind, WidgetLayout,
-    WidgetSettings, default_widget_size, next_widget_id,
+    AspectRatio, CanvasPresentation, ScreenKind, Skin, WidgetKind, WidgetLayout, WidgetSettings,
+    next_widget_id,
 };
 
 pub const SCREENS: [ScreenKind; 6] = [
@@ -100,7 +100,7 @@ pub struct EditorSession {
     pub discard_pending: bool,
     pub notice: Option<String>,
     pub skins: Vec<EditorSkin>,
-    pub new_canvas_skin: Skin,
+    pub new_canvas_skin: Option<Skin>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -228,9 +228,7 @@ impl EditorSession {
         _namespace: &'static str,
     ) -> Self {
         let active_output = canvases.first().and_then(|canvas| canvas.output.clone());
-        let new_canvas_skin = canvases
-            .first()
-            .map_or(Skin::CyanSystem, |canvas| canvas.skin);
+        let new_canvas_skin = canvases.first().map(|canvas| canvas.skin);
         let skins = canvases
             .iter()
             .map(|canvas| {
@@ -242,6 +240,7 @@ impl EditorSession {
                         release: String::new(),
                         preview: String::new(),
                         preview_video: None,
+                        widget_defaults: std::collections::BTreeMap::new(),
                         canvas_properties: std::collections::BTreeMap::new(),
                         widget_properties: std::collections::BTreeMap::new(),
                     },
@@ -535,9 +534,9 @@ impl EditorSession {
         if !self
             .skins
             .iter()
-            .any(|skin| skin.id == self.new_canvas_skin)
+            .any(|skin| Some(skin.id) == self.new_canvas_skin)
         {
-            self.new_canvas_skin = self.skins.first().map_or(Skin::CyanSystem, |skin| skin.id);
+            self.new_canvas_skin = self.skins.first().map(|skin| skin.id);
         }
     }
     pub fn set_outputs(&mut self, outputs: Vec<crate::editor::EditorOutput>) {
@@ -619,6 +618,17 @@ impl EditorSession {
         self.draft
             .iter()
             .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+    }
+    #[must_use]
+    pub fn widget_default_size(&self, kind: WidgetKind) -> Option<[u32; 2]> {
+        let canvas = self.current()?;
+        let default = self
+            .skins
+            .iter()
+            .find(|skin| skin.id == canvas.skin)?
+            .widget_defaults
+            .get(kind.name())?;
+        Some([default.width, default.height])
     }
     #[must_use]
     pub fn visible(&self, canvas: &CanvasPresentation) -> bool {
@@ -814,7 +824,7 @@ impl EditorSession {
             }
             EditorAction::NewCanvasSkin(skin) => {
                 if self.skins.iter().any(|candidate| candidate.id == *skin) {
-                    self.new_canvas_skin = *skin;
+                    self.new_canvas_skin = Some(*skin);
                 }
             }
             EditorAction::CancelTitle => self.title = None,
@@ -1092,6 +1102,9 @@ impl EditorSession {
                 }
             }
             EditorAction::AddCanvas => {
+                let Some(new_canvas_skin) = self.new_canvas_skin else {
+                    return;
+                };
                 let id = (1..=self.draft.len() + 1)
                     .map(|i| format!("canvas-{i}"))
                     .find(|id| self.draft.iter().all(|canvas| &canvas.id != id))
@@ -1102,11 +1115,11 @@ impl EditorSession {
                         .map(|i| format!("Canvas {i}"))
                         .find(|name| self.draft.iter().all(|canvas| &canvas.name != name))
                         .unwrap(),
-                    skin: self.new_canvas_skin,
+                    skin: new_canvas_skin,
                     skin_properties: self
                         .skins
                         .iter()
-                        .find(|skin| skin.id == self.new_canvas_skin)
+                        .find(|skin| skin.id == new_canvas_skin)
                         .map_or_else(std::collections::BTreeMap::new, |skin| {
                             migrate_properties(
                                 None,
@@ -1114,7 +1127,6 @@ impl EditorSession {
                                 &std::collections::BTreeMap::new(),
                             )
                         }),
-                    background: Background::None,
                     show_on: Some(vec![self.preview]),
                     opacity_percent: 100,
                     output: self.active_output.clone(),
@@ -1170,7 +1182,6 @@ impl EditorSession {
                                 canvas.skin = *value;
                             }
                         }
-                        EditorAction::Background(value) => canvas.background = *value,
                         EditorAction::CanvasSkinProperty(key, value) => {
                             if let Some(property) = skins
                                 .iter()
@@ -1275,6 +1286,9 @@ impl EditorSession {
             .map_or_else(std::collections::BTreeMap::new, |properties| {
                 migrate_properties(None, properties, &std::collections::BTreeMap::new())
             });
+        let Some([width, height]) = self.widget_default_size(kind) else {
+            return false;
+        };
         let Some(canvas) = self
             .draft
             .iter_mut()
@@ -1282,7 +1296,6 @@ impl EditorSession {
         else {
             return false;
         };
-        let (width, height) = default_widget_size(kind);
         let width = grid(width.min(canvas.width));
         let height = grid(height.min(canvas.height));
         let id = next_widget_id(kind, &canvas.widgets);
@@ -1320,6 +1333,9 @@ impl EditorSession {
             .map_or_else(std::collections::BTreeMap::new, |properties| {
                 migrate_properties(None, properties, &std::collections::BTreeMap::new())
             });
+        let Some([width, height]) = self.widget_default_size(kind) else {
+            return false;
+        };
         let Some(canvas) = self
             .draft
             .iter_mut()
@@ -1327,7 +1343,6 @@ impl EditorSession {
         else {
             return false;
         };
-        let (width, height) = default_widget_size(kind);
         let width = width.min(canvas.width);
         let height = height.min(canvas.height);
         let id = next_widget_id(kind, &canvas.widgets);
@@ -1731,14 +1746,6 @@ fn apply_widget_action(
     action: &EditorAction,
 ) {
     match action {
-        EditorAction::FrameWidth(value) => widget.settings.frame_width = *value,
-        EditorAction::FillDelta(delta) => {
-            widget.settings.fill_opacity_percent = u8::try_from(
-                (i16::from(widget.settings.fill_opacity_percent) + i16::from(*delta)).clamp(0, 100),
-            )
-            .unwrap_or_default();
-        }
-        EditorAction::FillOpacity(value) => widget.settings.fill_opacity_percent = *value,
         EditorAction::AspectRatio(index) => {
             if let Some(ratio) = [
                 AspectRatio::Free,
@@ -1770,7 +1777,42 @@ fn apply_widget_action(
 #[cfg(test)]
 mod skin_tests {
     use super::*;
-    type Model = EditorSession;
+
+    #[derive(Clone, PartialEq)]
+    struct Model(EditorSession);
+
+    impl Model {
+        fn new(
+            canvases: Vec<CanvasPresentation>,
+            viewport: [u32; 2],
+            namespace: &'static str,
+        ) -> Self {
+            let mut installed = canvases
+                .iter()
+                .map(|canvas| skin(canvas.skin.name(), 1))
+                .collect::<Vec<_>>();
+            if installed.is_empty() {
+                installed.push(skin("dev.example.test-skin", 1));
+            }
+            let mut model = EditorSession::new(canvases, viewport, namespace);
+            model.set_skins(installed);
+            Self(model)
+        }
+    }
+
+    impl std::ops::Deref for Model {
+        type Target = EditorSession;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl std::ops::DerefMut for Model {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
 
     fn skin(id: &str, default: i64) -> EditorSkin {
         EditorSkin {
@@ -1779,6 +1821,22 @@ mod skin_tests {
             release: "1".into(),
             preview: "/preview.png".into(),
             preview_video: None,
+            widget_defaults: [
+                ("status", [544, 56]),
+                ("selection", [544, 132]),
+                ("score", [544, 208]),
+                ("history-list", [544, 164]),
+                ("history-graph", [544, 208]),
+                ("empty", [320, 180]),
+            ]
+            .into_iter()
+            .map(|(kind, [width, height])| {
+                (
+                    kind.into(),
+                    crate::editor::EditorWidgetDefault { width, height },
+                )
+            })
+            .collect(),
             canvas_properties: std::collections::BTreeMap::from([(
                 "amount".into(),
                 EditorProperty::Integer {
@@ -1803,19 +1861,36 @@ mod skin_tests {
         model.readonly = false;
         model.preview = ScreenKind::Unknown;
         model.set_skins(vec![skin("dev.atty303.scorepeek.skin.dj-blackbox", 1)]);
-        model.action(&EditorAction::NewCanvasSkin(Skin::DjBlackbox));
+        let selected: Skin = "dev.atty303.scorepeek.skin.dj-blackbox".parse().unwrap();
+        model.action(&EditorAction::NewCanvasSkin(selected));
 
         assert!(model.action(&EditorAction::AddCanvas));
         let canvas = &model.draft[0];
         assert_eq!(canvas.output.as_deref(), Some("DP-1"));
         assert_eq!([canvas.x, canvas.y], [0, 0]);
         assert_eq!([canvas.width, canvas.height], [1716, 1494]);
-        assert_eq!(canvas.skin, Skin::DjBlackbox);
+        assert_eq!(canvas.skin, selected);
         assert_eq!(canvas.show_on, Some(vec![ScreenKind::Unknown]));
         assert_eq!(canvas.name, "Canvas 1");
 
         assert!(model.action(&EditorAction::DeleteCanvas));
         assert!(model.draft.is_empty());
+    }
+
+    #[test]
+    fn empty_workspace_without_installed_skins_cannot_add_a_canvas() {
+        let mut model = EditorSession::new(Vec::new(), [800, 600], "test");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "test".into(),
+            logical_size: Some([800, 600]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+
+        assert!(!model.action(&EditorAction::AddCanvas));
+        assert!(model.draft.is_empty());
+        assert!(model.new_canvas_skin.is_none());
     }
 
     #[test]
@@ -1913,7 +1988,8 @@ mod skin_tests {
         model.editing = true;
         model.readonly = false;
         model.action(&EditorAction::AddCanvas);
-        model.saved.clone_from(&model.draft);
+        let draft = model.draft.clone();
+        model.saved.clone_from(&draft);
         model.undo = None;
 
         assert!(model.action(&EditorAction::CanvasName(String::new())));
@@ -2534,10 +2610,9 @@ mod skin_tests {
         let canvas = CanvasPresentation {
             id: "large-canvas".into(),
             name: "Large canvas".into(),
-            skin: Skin::CyanSystem,
+            skin: "dev.example.skin".parse().unwrap(),
             skin_properties: std::collections::BTreeMap::new(),
             show_on: None,
-            background: Background::None,
             opacity_percent: 100,
             output: Some("large".into()),
             x: 0,
@@ -2640,10 +2715,9 @@ mod skin_tests {
         let canvas = CanvasPresentation {
             id: "wide-canvas".into(),
             name: "Wide canvas".into(),
-            skin: Skin::CyanSystem,
+            skin: "dev.example.skin".parse().unwrap(),
             skin_properties: std::collections::BTreeMap::new(),
             show_on: None,
-            background: Background::None,
             opacity_percent: 100,
             output: Some("DP-2".into()),
             x: 0,
@@ -2688,7 +2762,6 @@ mod skin_tests {
                 serde_json::json!(99),
             )]),
             show_on: None,
-            background: Background::None,
             opacity_percent: 100,
             output: None,
             x: 0,
@@ -2737,7 +2810,6 @@ mod skin_tests {
                 serde_json::json!(99),
             )]),
             show_on: None,
-            background: Background::None,
             opacity_percent: 100,
             output: None,
             x: 0,
@@ -2765,7 +2837,6 @@ mod skin_tests {
             skin: "dev.example.skin".parse().unwrap(),
             skin_properties: std::collections::BTreeMap::new(),
             show_on: None,
-            background: Background::None,
             opacity_percent: 100,
             output: None,
             x: 0,

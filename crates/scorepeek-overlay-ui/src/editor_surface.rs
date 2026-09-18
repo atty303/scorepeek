@@ -63,8 +63,7 @@ pub fn EditorSelectionMetrics(
 
 #[component]
 pub fn EditorSurface(onaction: EventHandler<SurfaceAction>, children: Element) -> Element {
-    rsx! { crate::OverlayStyles {}
-    div { class:"editor-surface",
+    rsx! { div { class:"editor-surface",
         onkeydown:move |event|{if event.key()==Key::Escape {onaction.call(SurfaceAction::Cancel);}},
         onpointermove: move |event| onaction.call(SurfaceAction::Move(point(&event))),
         onpointerup: move |_| onaction.call(SurfaceAction::End),
@@ -153,7 +152,7 @@ pub fn EditorCanvas(
 }
 
 #[component]
-pub fn PlacementPreview(kind: crate::WidgetKind, point: [f64; 2]) -> Element {
-    let (width, height) = crate::default_widget_size(kind);
+pub fn PlacementPreview(kind: crate::WidgetKind, point: [f64; 2], size: [u32; 2]) -> Element {
+    let [width, height] = size;
     rsx! {div {class:"placement-ghost",style:format!("left:{}px;top:{}px;width:{width}px;height:{height}px",point[0],point[1])}}
 }

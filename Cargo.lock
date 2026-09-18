@@ -4608,11 +4608,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "scorepeek-skin-guest-core"
+name = "scorepeek-skin-cyan-system"
 version = "0.1.0"
 dependencies = [
- "scorepeek-skin-sdk",
- "serde_json",
+ "scorepeek-skin-shared",
+]
+
+[[package]]
+name = "scorepeek-skin-dj-blackbox"
+version = "0.1.0"
+dependencies = [
+ "scorepeek-skin-shared",
+]
+
+[[package]]
+name = "scorepeek-skin-result-aurora"
+version = "0.1.0"
+dependencies = [
+ "scorepeek-skin-shared",
 ]
 
 [[package]]
@@ -4620,6 +4633,14 @@ name = "scorepeek-skin-sdk"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "scorepeek-skin-shared"
+version = "0.1.0"
+dependencies = [
+ "scorepeek-skin-sdk",
  "serde_json",
 ]
 

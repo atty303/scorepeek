@@ -375,14 +375,19 @@ fn notification_time(unix_ms: i64) -> String {
 mod tests {
     #[test]
     fn stored_clear_states_have_material_labels() {
+        let labels = [
+            "NO PLAY",
+            "FAILED",
+            "ASSIST",
+            "EASY",
+            "CLEAR",
+            "HARD",
+            "EX HARD",
+            "FULL COMBO",
+        ];
         for state in 0..=7 {
             let text = super::clear(Some(state));
-            assert!(
-                scorepeek_overlay_ui::typography::LABELS
-                    .iter()
-                    .any(|(label, _)| *label == text),
-                "missing material for stored clear state {text}"
-            );
+            assert_eq!(text, labels[usize::try_from(state).unwrap()]);
         }
     }
 

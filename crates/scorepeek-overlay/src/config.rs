@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 pub const OBS_OUTPUT_ID: &str = "obs-output";
 pub const PENDING_WAYLAND_OUTPUT_ID: &str = "__pending-wayland-output__";
 
@@ -62,12 +62,9 @@ impl ProjectionGenerations {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Canvas {
-    #[serde(default)]
-    pub background: scorepeek_overlay_ui::Background,
     pub id: String,
     pub name: String,
     pub backend: Backend,
-    #[serde(default)]
     pub skin: Skin,
     #[serde(default)]
     pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
@@ -155,14 +152,10 @@ impl OverlayConfig {
         for canvas in &self.canvases {
             match validate_canvas(canvas, &mut canvas_ids, &mut canvas_names).and_then(|()| {
                 crate::skin::validate_id(canvas.skin.name())?;
-                (store.is_installed(canvas.skin.name())?
-                    || cfg!(test)
-                        && matches!(
-                            canvas.skin.name(),
-                            Skin::CYAN_SYSTEM_ID | Skin::RESULT_AURORA_ID | Skin::DJ_BLACKBOX_ID
-                        ))
-                .then_some(())
-                .ok_or_else(|| format!("skin {} is not installed", canvas.skin.name()))
+                store
+                    .is_installed(canvas.skin.name())?
+                    .then_some(())
+                    .ok_or_else(|| format!("skin {} is not installed", canvas.skin.name()))
             }) {
                 Ok(()) => valid.push(canvas.clone()),
                 Err(message) => issues.push(ConfigIssue {
@@ -179,7 +172,6 @@ impl Canvas {
     #[must_use]
     pub fn presentation(&self) -> scorepeek_overlay_ui::CanvasPresentation {
         scorepeek_overlay_ui::CanvasPresentation {
-            background: self.background,
             id: self.id.clone(),
             name: self.name.clone(),
             skin: self.skin,
@@ -210,7 +202,6 @@ impl Canvas {
 
     pub fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
         self.name.clone_from(&presentation.name);
-        self.background = presentation.background;
         self.skin = presentation.skin;
         self.skin_properties
             .clone_from(&presentation.skin_properties);
@@ -272,11 +263,78 @@ fn load_or_create_with_store(
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("overlay TOML is not UTF-8: {error}"))?;
+    let (migrated, migrated_text) = migrate_v8(text)?;
     let mut config: OverlayConfig =
-        toml::from_str(text).map_err(|error| format!("overlay TOML: {error}"))?;
+        toml::from_str(&migrated_text).map_err(|error| format!("overlay TOML: {error}"))?;
     let (valid, issues) = config.validated_with_store(store)?;
+    if migrated {
+        write_atomic(path, migrated_text.as_bytes())?;
+    }
     config.canvases = valid;
     Ok((config, issues))
+}
+
+fn migrate_v8(text: &str) -> Result<(bool, String), String> {
+    let mut document: toml::Value =
+        toml::from_str(text).map_err(|error| format!("overlay TOML: {error}"))?;
+    let Some(root) = document.as_table_mut() else {
+        return Err("overlay TOML root must be a table".into());
+    };
+    if root.get("schema_version").and_then(toml::Value::as_integer) != Some(8) {
+        return Ok((false, text.to_owned()));
+    }
+    if let Some(canvases) = root.get_mut("canvases").and_then(toml::Value::as_array_mut) {
+        for canvas in canvases {
+            let Some(canvas) = canvas.as_table_mut() else {
+                continue;
+            };
+            if let Some(background) = canvas.remove("background") {
+                let properties = canvas
+                    .entry("skin_properties")
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+                    .as_table_mut()
+                    .ok_or("canvas skin_properties must be a table")?;
+                properties.entry("background").or_insert(background);
+            }
+            if let Some(widgets) = canvas
+                .get_mut("widgets")
+                .and_then(toml::Value::as_array_mut)
+            {
+                for widget in widgets {
+                    let Some(widget) = widget.as_table_mut() else {
+                        continue;
+                    };
+                    let migrated = {
+                        let Some(settings) = widget
+                            .get_mut("settings")
+                            .and_then(toml::Value::as_table_mut)
+                        else {
+                            continue;
+                        };
+                        [
+                            ("frame_width", "frame-width"),
+                            ("fill_opacity_percent", "fill-opacity-percent"),
+                        ]
+                        .into_iter()
+                        .filter_map(|(old, new)| settings.remove(old).map(|value| (new, value)))
+                        .collect::<Vec<_>>()
+                    };
+                    let properties = widget
+                        .entry("skin_properties")
+                        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+                        .as_table_mut()
+                        .ok_or("widget skin_properties must be a table")?;
+                    for (key, value) in migrated {
+                        properties.entry(key).or_insert(value);
+                    }
+                }
+            }
+        }
+    }
+    root.insert("schema_version".into(), toml::Value::Integer(9));
+    let text = toml::to_string_pretty(&document)
+        .map_err(|error| format!("serialize migrated overlay TOML: {error}"))?;
+    Ok((true, text))
 }
 
 /// Replaces a configuration durably in the same directory.
@@ -372,9 +430,6 @@ fn validate_canvas(
                 widget.id
             ));
         }
-        if widget.settings.fill_opacity_percent > 100 {
-            return Err(format!("widget {} fill opacity must be 0..100", widget.id));
-        }
         if widget.width < 16 || widget.height < 16 {
             return Err(format!("widget {} must be at least 16x16", widget.id));
         }
@@ -406,7 +461,7 @@ fn validate_canvas(
 
 #[doc(hidden)]
 #[must_use]
-pub fn visual_debug_config() -> OverlayConfig {
+pub fn visual_debug_config(skin: scorepeek_overlay_ui::Skin) -> OverlayConfig {
     use scorepeek_overlay_ui::ScreenKind;
 
     let mut config = OverlayConfig::initial();
@@ -457,8 +512,7 @@ pub fn visual_debug_config() -> OverlayConfig {
                 id: format!("{prefix}-{suffix}"),
                 name: suffix.replace('-', " "),
                 backend,
-                background: scorepeek_overlay_ui::Background::None,
-                skin: Skin::CyanSystem,
+                skin,
                 skin_properties: BTreeMap::new(),
                 show_on,
                 opacity_percent: 100,
@@ -474,7 +528,7 @@ pub fn visual_debug_config() -> OverlayConfig {
                 widgets: widgets
                     .into_iter()
                     .map(|(id, kind, x, y)| {
-                        let (width, height) = scorepeek_overlay_ui::default_widget_size(kind);
+                        let (width, height) = visual_debug_widget_size(kind);
                         Widget {
                             id: id.into(),
                             kind,
@@ -503,13 +557,12 @@ fn dashboard_test_widgets() -> Vec<(&'static str, WidgetKind, i32, i32)> {
 }
 
 #[must_use]
-pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
+pub fn empty_canvas(id: String, backend: Backend, skin: Skin) -> Canvas {
     Canvas {
         name: id.clone(),
         id,
         backend,
-        background: scorepeek_overlay_ui::Background::None,
-        skin: Skin::CyanSystem,
+        skin,
         skin_properties: BTreeMap::new(),
         show_on: Some(Vec::new()),
         opacity_percent: 100,
@@ -523,6 +576,16 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
         width: default_width(),
         height: default_height(),
         widgets: Vec::new(),
+    }
+}
+
+const fn visual_debug_widget_size(kind: WidgetKind) -> (u32, u32) {
+    match kind {
+        WidgetKind::Status => (544, 56),
+        WidgetKind::Selection => (544, 132),
+        WidgetKind::Score | WidgetKind::HistoryGraph => (544, 208),
+        WidgetKind::HistoryList => (544, 164),
+        WidgetKind::Empty => (320, 180),
     }
 }
 
@@ -546,6 +609,10 @@ fn default_listen() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_skin() -> scorepeek_overlay_ui::Skin {
+        "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap()
+    }
 
     fn test_widget() -> Widget {
         Widget {
@@ -600,7 +667,7 @@ mod tests {
 
     #[test]
     fn invalid_canvas_is_isolated() {
-        let mut config = visual_debug_config();
+        let mut config = visual_debug_config(test_skin());
         config.canvases.push(Canvas {
             id: "bad id".into(),
             ..config.canvases[0].clone()
@@ -614,7 +681,7 @@ mod tests {
     fn loading_omits_invalid_canvases_and_reports_them() {
         let root = temporary("invalid-canvas");
         let path = root.join("overlay.toml");
-        let mut config = visual_debug_config();
+        let mut config = visual_debug_config(test_skin());
         config.canvases.push(Canvas {
             id: "bad id".into(),
             ..config.canvases[0].clone()
@@ -639,7 +706,7 @@ mod tests {
 
     #[test]
     fn canvas_with_off_grid_widget_is_isolated() {
-        let mut config = visual_debug_config();
+        let mut config = visual_debug_config(test_skin());
         let mut invalid = config.canvases[0].clone();
         invalid.id = "wayland-off-grid".into();
         invalid.name = "Off grid".into();
@@ -678,7 +745,7 @@ mod tests {
         let store = crate::skin::StoreRoot::new(root.join("skins"));
         std::fs::create_dir_all(store.path()).unwrap();
         std::fs::write(store.path().join("dev.example.custom.zip"), []).unwrap();
-        let mut config = visual_debug_config();
+        let mut config = visual_debug_config(test_skin());
         for canvas in &mut config.canvases {
             canvas.skin = "dev.example.custom".parse().unwrap();
         }
@@ -700,18 +767,76 @@ mod tests {
         config.schema_version = 1;
         assert_eq!(
             config.validated().unwrap_err(),
-            "overlay schema_version must be 8"
+            "overlay schema_version must be 9"
         );
     }
 
     #[test]
+    fn v8_skin_fields_migrate_once_without_overwriting_generic_properties() {
+        let source = r#"
+schema_version = 8
+unknown_grace_ms = 1000
+obs_listen = "127.0.0.1:3939"
+
+[[canvases]]
+id = "main"
+name = "Main"
+backend = "obs"
+skin = "dev.example.test-skin"
+background = "animated"
+opacity_percent = 100
+output = "obs-output"
+x = 0
+y = 0
+width = 1920
+height = 1080
+
+[canvases.skin_properties]
+background = "static"
+
+[[canvases.widgets]]
+id = "score"
+kind = "score"
+x = 0
+y = 0
+width = 544
+height = 200
+
+[canvases.widgets.skin_properties]
+frame-width = "s"
+
+[canvases.widgets.settings]
+frame_width = "l"
+fill_opacity_percent = 37
+history_count = 5
+graph_months = 6
+"#;
+
+        let (changed, migrated) = migrate_v8(source).unwrap();
+        assert!(changed);
+        let config: OverlayConfig = toml::from_str(&migrated).unwrap();
+        assert_eq!(config.schema_version, 9);
+        assert_eq!(config.canvases[0].skin_properties["background"], "static");
+        assert_eq!(
+            config.canvases[0].widgets[0].skin_properties["frame-width"],
+            "s"
+        );
+        assert_eq!(
+            config.canvases[0].widgets[0].skin_properties["fill-opacity-percent"],
+            37
+        );
+        assert!(!migrated.contains("frame_width"));
+        assert!(!migrated.contains("fill_opacity_percent"));
+    }
+
+    #[test]
     fn canvas_names_are_non_empty_and_unique_per_backend() {
-        let mut config = visual_debug_config();
+        let mut config = visual_debug_config(test_skin());
         config.canvases[0].name.clear();
         let (_, issues) = config.validated().unwrap();
         assert_eq!(issues[0].message, "canvas name must be non-empty");
 
-        let mut config = visual_debug_config();
+        let mut config = visual_debug_config(test_skin());
         let duplicate = config.canvases[0].name.clone();
         config.canvases[1].name = duplicate;
         let (_, issues) = config.validated().unwrap();
@@ -730,11 +855,11 @@ mod tests {
 
     #[test]
     fn visibility_and_opacity_are_strict() {
-        let mut empty = visual_debug_config();
+        let mut empty = visual_debug_config(test_skin());
         empty.canvases[0].show_on = Some(Vec::new());
         assert!(empty.validated().unwrap().1.is_empty());
 
-        let mut transparent = visual_debug_config();
+        let mut transparent = visual_debug_config(test_skin());
         transparent.canvases[0].opacity_percent = 0;
         assert!(
             transparent
@@ -745,7 +870,7 @@ mod tests {
                 .any(|issue| issue.message.contains("1 and 100"))
         );
 
-        let mut obs = visual_debug_config();
+        let mut obs = visual_debug_config(test_skin());
         let canvas = obs
             .canvases
             .iter_mut()
@@ -762,11 +887,16 @@ mod tests {
         for canvas in &mut config.canvases {
             canvas.widgets.push(test_widget());
             let mut view = canvas.presentation();
-            view.background = scorepeek_overlay_ui::Background::Animated;
+            view.skin_properties
+                .insert("background".into(), serde_json::json!("animated"));
             view.widgets[0].kind = WidgetKind::Empty;
             view.widgets[0].settings.title = "手元 CAMERA / DP".into();
-            view.widgets[0].settings.frame_width = scorepeek_overlay_ui::FrameWidth::L;
-            view.widgets[0].settings.fill_opacity_percent = 37;
+            view.widgets[0]
+                .skin_properties
+                .insert("frame-width".into(), serde_json::json!("l"));
+            view.widgets[0]
+                .skin_properties
+                .insert("fill-opacity-percent".into(), serde_json::json!(37));
             view.widgets[0].settings.aspect_ratio =
                 scorepeek_overlay_ui::AspectRatio::Current([640, 360]);
             canvas.apply_presentation(&view);

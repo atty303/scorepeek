@@ -10,7 +10,7 @@ if (scene.schema !== "scorepeek-skin-preview-scene-v1") {
 }
 const quote = (value) => JSON.stringify(value);
 const lines = [
-  "schema_version = 8",
+  "schema_version = 9",
   "unknown_grace_ms = 1000",
   'obs_listen = "127.0.0.1:3939"',
 ];
@@ -19,7 +19,6 @@ for (const skin of scene.skins) {
   lines.push(
     "",
     "[[canvases]]",
-    `background = ${quote(scene.canvas.background)}`,
     `id = ${quote(canvasId)}`,
     `name = ${quote(skin.slug)}`,
     'backend = "obs"',
@@ -30,6 +29,9 @@ for (const skin of scene.skins) {
     "y = 0",
     `width = ${scene.canvas.width}`,
     `height = ${scene.canvas.height}`,
+    "",
+    "[canvases.skin_properties]",
+    `background = ${quote(scene.canvas.background)}`,
   );
   for (const widget of scene.canvas.widgets) {
     lines.push(
@@ -42,9 +44,11 @@ for (const skin of scene.skins) {
       `width = ${widget.width}`,
       `height = ${widget.height}`,
       "",
+      "[canvases.widgets.skin_properties]",
+      'frame-width = "m"',
+      "fill-opacity-percent = 0",
+      "",
       "[canvases.widgets.settings]",
-      'frame_width = "m"',
-      "fill_opacity_percent = 0",
       "history_count = 5",
       "graph_months = 6",
     );

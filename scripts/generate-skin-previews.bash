@@ -55,10 +55,10 @@ if [[ -n "$destination" ]]; then
   mkdir -p "$destination"
   cp -a "$staging/." "$destination/"
 else
-  for slug in cyan-system result-aurora dj-blackbox; do
+  while IFS= read -r slug; do
     install -m 0644 "$staging/$slug/preview.png" "$root/skins/$slug/preview.png"
     install -m 0644 "$staging/$slug/preview.webm" "$root/skins/$slug/preview.webm"
-  done
+  done < <(node -e 'const scene=require(process.argv[1]);for(const skin of scene.skins)console.log(skin.slug)' "$root/skins/preview-scene.json")
   "$root/scripts/build-skins.sh"
   mkdir -p "$root/target/skin-previews"
   install -m 0644 "$staging/manifest.json" "$root/target/skin-previews/manifest.json"

@@ -9,4 +9,4 @@ pub mod skin;
 pub mod state;
 pub mod web;
 
-pub use scorepeek_overlay_ui::{Appearance, Skin};
+pub use scorepeek_overlay_ui::Skin;

@@ -49,7 +49,7 @@
     }`;
 
   function input() {
-    return { schema:"scorepeek-skin-input-v1", backend:"obs", canvas:spec.canvas,
+    return { schema:"scorepeek-skin-input-v2", backend:"obs", monotonic_ms:Math.round(performance.now()), canvas:spec.canvas,
       widgets:spec.widgets, state };
   }
   function start() {

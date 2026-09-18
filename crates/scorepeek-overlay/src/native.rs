@@ -26,8 +26,10 @@ use dioxus::prelude::*;
 use dioxus_core::VirtualDom;
 use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{Event, OutputDescription, Shell};
+use scorepeek_overlay_ui::OverlayState;
+#[cfg(test)]
+use scorepeek_overlay_ui::WidgetLayout;
 use scorepeek_overlay_ui::editor::{EditorAction, EditorOutput, EditorPanel};
-use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout};
 use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
@@ -611,6 +613,7 @@ impl NativeProjectionCache {
                     let mut canvas = crate::config::empty_canvas(
                         presentation.id.clone(),
                         crate::runtime::Backend::Wayland,
+                        presentation.skin,
                     );
                     canvas.apply_presentation(presentation);
                     canvas
@@ -1016,6 +1019,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
     });
     match &*projection.borrow() {
         NativeDocumentProjection::Display { canvas, visible } => rsx! {
+            style { {scorepeek_overlay_ui::HOST_CSS} }
             EditorSurface { onaction:onsurface,
                 div { class:"canvas-content",style:format!("display:{};opacity:{}",if *visible{"block"}else{"none"},f32::from(canvas.opacity_percent)/100.0),
                     div { id:"scorepeek-skin-root", class:"scorepeek-skin-scope", "data-backend":"native", style:"position:absolute;inset:0" }
@@ -1025,6 +1029,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         NativeDocumentProjection::Editor(stage) => {
             let selected = stage.selected_canvas.as_ref();
             rsx! {
+                style { {scorepeek_overlay_ui::HOST_CSS} }
                 EditorSurface { onaction:onsurface,
                     div { id:"scorepeek-skin-root", style:"display:none" }
                     for canvas in &stage.canvases {
@@ -1044,7 +1049,9 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                             onaction,
                         }
                         if let Some(kind)=stage.placing {
-                            PlacementPreview {kind,point:stage.point.map(f64::from)}
+                            if let Some(size) = stage.view.skins.iter().find(|skin| stage.selected_canvas.as_ref().is_some_and(|canvas| canvas.skin == skin.id)).and_then(|skin| skin.widget_defaults.get(kind.name())).map(|default| [default.width, default.height]) {
+                                PlacementPreview {kind,point:stage.point.map(f64::from),size}
+                            }
                         }
                     }
                     if let Some(notice)=&stage.notice {
@@ -1058,32 +1065,16 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
 
 struct CalloopWaker(Ping);
 
-fn widget_layout(widget: &crate::config::Widget) -> WidgetLayout {
-    WidgetLayout {
-        id: widget.id.clone(),
-        kind: widget.kind,
-        x: widget.x,
-        y: widget.y,
-        width: widget.width,
-        height: widget.height,
-        settings: widget.settings.clone(),
-        skin_properties: widget.skin_properties.clone(),
-    }
-}
-
 fn native_skin_input(
     canvas: &crate::config::Canvas,
     state: &OverlayState,
     manifest: &crate::skin::Manifest,
 ) -> serde_json::Value {
-    let mut canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
-    canvas_properties.insert(
-        "background".into(),
-        serde_json::to_value(canvas.background).expect("Background serialization is infallible"),
-    );
+    let canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
     serde_json::json!({
-        "schema":"scorepeek-skin-input-v1",
+        "schema":"scorepeek-skin-input-v2",
         "backend":"native",
+        "monotonic_ms":skin_monotonic_ms(),
         "canvas":{"id":canvas.id,"skin":canvas.skin.name(),"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
         "widgets":canvas.widgets.iter().map(|widget| { let kind = serde_json::to_value(widget.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default(); let properties = manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
         "state":state,
@@ -1095,18 +1086,20 @@ fn native_skin_input_presentation(
     state: &OverlayState,
     manifest: &crate::skin::Manifest,
 ) -> serde_json::Value {
-    let mut canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
-    canvas_properties.insert(
-        "background".into(),
-        serde_json::to_value(canvas.background).expect("Background serialization is infallible"),
-    );
+    let canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
     serde_json::json!({
-        "schema":"scorepeek-skin-input-v1",
+        "schema":"scorepeek-skin-input-v2",
         "backend":"native",
+        "monotonic_ms":skin_monotonic_ms(),
         "canvas":{"id":canvas.id,"skin":canvas.skin.name(),"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
         "widgets":canvas.widgets.iter().map(|widget| { let kind = serde_json::to_value(widget.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default(); let properties = manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
         "state":state,
     })
+}
+
+fn skin_monotonic_ms() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn skin_deadline(schedule: &crate::skin::Schedule, editing: bool) -> Option<Instant> {
@@ -1134,6 +1127,7 @@ fn skin_error_type(error: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn embedded_editor_skins() -> Vec<scorepeek_overlay_ui::editor::EditorSkin> {
     [
         include_str!("../../../skins/cyan-system/skin.toml"),
@@ -1149,6 +1143,10 @@ fn embedded_editor_skins() -> Vec<scorepeek_overlay_ui::editor::EditorSkin> {
             release: manifest.release,
             preview: String::new(),
             preview_video: None,
+            widget_defaults: serde_json::from_value(
+                serde_json::to_value(manifest.widget_defaults).ok()?,
+            )
+            .ok()?,
             canvas_properties: serde_json::from_value(
                 serde_json::to_value(manifest.canvas_properties).ok()?,
             )
@@ -1597,6 +1595,7 @@ pub fn run_with_editor_scenario(
                         let mut canvas = crate::config::empty_canvas(
                             presentation.id.clone(),
                             crate::runtime::Backend::Wayland,
+                            presentation.skin,
                         );
                         canvas.apply_presentation(&presentation);
                         canvas
@@ -1760,6 +1759,7 @@ fn editor_bootstrap(skin: scorepeek_overlay_ui::Skin) -> crate::config::Canvas {
     let mut bootstrap = crate::config::empty_canvas(
         "__scorepeek-editor-bootstrap".into(),
         crate::runtime::Backend::Wayland,
+        skin,
     );
     bootstrap.skin = skin;
     bootstrap.x = 0;
@@ -1802,7 +1802,7 @@ fn editor_stage_projections(
             while canvases.iter().any(|canvas| canvas.id == id) {
                 id.push('_');
             }
-            let mut stage = crate::config::empty_canvas(id, crate::runtime::Backend::Wayland);
+            let mut stage = crate::config::empty_canvas(id, crate::runtime::Backend::Wayland, skin);
             stage.skin = skin;
             stage.output.clone_from(&output.name);
             stage.show_on = Some(Vec::new());
@@ -1940,12 +1940,8 @@ fn run_canvas(
         .borrow_mut()
         .operations
         .push("renderer_context_initialized");
-    let appearance = Appearance { skin: canvas.skin };
-    let widgets = canvas.widgets.iter().map(widget_layout).collect();
     let app_started = Instant::now();
     let mut app = App::new(
-        appearance,
-        widgets,
         renderer,
         shell,
         Waker::from(Arc::new(CalloopWaker(ping.0))),
@@ -2235,8 +2231,11 @@ fn create_editor_skin_preview(
     work: &mut FrameWorkProfile,
 ) -> Result<EditorSkinPreview, String> {
     let canvas = work.measure("canvas_config", || {
-        let mut canvas =
-            crate::config::empty_canvas(presentation.id.clone(), crate::runtime::Backend::Wayland);
+        let mut canvas = crate::config::empty_canvas(
+            presentation.id.clone(),
+            crate::runtime::Backend::Wayland,
+            presentation.skin,
+        );
         canvas.apply_presentation(presentation);
         canvas
     });
@@ -2351,6 +2350,43 @@ fn reconcile_editor_skin_previews(
                 preview.canvas.apply_presentation(presentation);
             });
         }
+        if !preview.tree.is_attached(&document.inner.borrow()) {
+            let root_id = editor_skin_root_id(&presentation.id);
+            let root = document
+                .inner
+                .borrow()
+                .query_selector(&format!("#{root_id}"))
+                .map_err(|error| format!("query editor skin root: {error:?}"))?
+                .ok_or_else(|| format!("editor skin root is missing for {}", presentation.id))?;
+            let input = work.measure("skin_input", || {
+                native_skin_input(&preview.canvas, state, &preview.package.manifest)
+            });
+            let (mut rendered, timing) = preview.runtime.render_measured(&input)?;
+            work.record("wasm_render", timing.wasm);
+            work.record("json_tree", timing.json_tree);
+            namespace_native_skin_output(&preview.package.manifest.id, &mut rendered);
+            let css = namespace_skin_css(
+                &preview.package.manifest.id,
+                std::str::from_utf8(
+                    preview
+                        .package
+                        .resource(crate::skin::STYLE_PATH)
+                        .ok_or("skin.css missing")?,
+                )
+                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+            );
+            let mut tree =
+                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+            tree.apply(&mut document.inner.borrow_mut(), &rendered);
+            preview.tree = tree;
+            preview.next_render = skin_deadline(&rendered.schedule, false);
+            preview.last_input = input;
+            preview.last_state = state.clone();
+            reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
+            reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
+            reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+            continue;
+        }
         let desired_skin = preview.canvas.skin.name();
         if preview.package.manifest.id != desired_skin {
             let next_package = skin_assets.load_profiled(desired_skin, work)?;
@@ -2397,7 +2433,7 @@ fn reconcile_editor_skin_previews(
         }
         let due = preview
             .next_render
-            .is_some_and(|deadline| Instant::now() >= deadline);
+            .is_some_and(|deadline| deadline <= Instant::now());
         if !due && !presentation_changed && preview.last_state == *state {
             continue;
         }
@@ -2483,8 +2519,6 @@ impl NativeEventConsumer for App {
 impl App {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn new(
-        _appearance: Appearance,
-        _widgets: Vec<WidgetLayout>,
         renderer: VelloWindowRenderer,
         mut shell: Shell,
         waker: Waker,
@@ -2554,7 +2588,8 @@ impl App {
                 port,
             },
         );
-        let (document_config, _) = document_config_inner_with_handle(Arc::clone(&skin_assets));
+        let (document_config, _) =
+            document_config_inner_with_handle(Arc::clone(&skin_assets), Vec::new());
         let mut document = DioxusDocument::new(vdom, document_config);
         document.initial_build();
         let projection = published
@@ -2752,8 +2787,11 @@ impl App {
             return false;
         }
         if let Some(canvas) = candidate.selected_canvas.as_ref() {
-            self.canvas =
-                crate::config::empty_canvas(canvas.id.clone(), crate::runtime::Backend::Wayland);
+            self.canvas = crate::config::empty_canvas(
+                canvas.id.clone(),
+                crate::runtime::Backend::Wayland,
+                canvas.skin,
+            );
             self.canvas.apply_presentation(canvas);
         }
         if previews_changed
@@ -3419,6 +3457,25 @@ impl SkinAssetCache {
         }
     }
 
+    #[cfg(test)]
+    fn with_packages(packages: Vec<crate::skin::Package>) -> Self {
+        let packages = packages
+            .into_iter()
+            .map(|package| (package.manifest.id.clone(), Arc::new(package)))
+            .collect();
+        Self {
+            store: crate::skin::StoreRoot::discover(),
+            packages: std::sync::Mutex::new(packages),
+            editor_owners: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            open_count: std::sync::atomic::AtomicU64::new(0),
+            open_ns: std::sync::atomic::AtomicU64::new(0),
+            clone_count: std::sync::atomic::AtomicU64::new(0),
+            clone_ns: std::sync::atomic::AtomicU64::new(0),
+            resource_lookup_count: std::sync::atomic::AtomicU64::new(0),
+            resource_lookup_ns: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     fn acquire_editor_owner(&self, canvas: &str, output: &str) -> bool {
         let mut owners = self
             .editor_owners
@@ -3557,6 +3614,11 @@ impl SkinAssetCache {
                     release: manifest.release.clone(),
                     preview: format!("/skin/{}/{}", manifest.id, crate::skin::PREVIEW_PATH),
                     preview_video: None,
+                    widget_defaults: serde_json::from_value(
+                        serde_json::to_value(&manifest.widget_defaults)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?,
                     canvas_properties: serde_json::from_value(
                         serde_json::to_value(&manifest.canvas_properties)
                             .map_err(|error| error.to_string())?,
@@ -3679,14 +3741,8 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
             && let Some(bytes) = package.resource(resource)
         {
             blitz_traits::net::Bytes::copy_from_slice(bytes)
-        } else if let Some(svg) =
-            scorepeek_overlay_ui::composition::aperture_asset(request.url.path())
-        {
-            blitz_traits::net::Bytes::from(svg)
         } else {
-            blitz_traits::net::Bytes::from_static(
-                scorepeek_overlay_ui::skin_asset(request.url.path()).unwrap_or_default(),
-            )
+            blitz_traits::net::Bytes::new()
         };
         self.cache
             .resource_lookup_count
@@ -3696,23 +3752,6 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
             std::sync::atomic::Ordering::Relaxed,
         );
         handler.bytes(request.url.to_string(), bytes);
-    }
-}
-
-/// Applies the same presentation tracks used by the browser, without changing domain state.
-pub fn apply_motion(document: &mut blitz_dom::BaseDocument, seconds: f64) {
-    static TRACKS: std::sync::LazyLock<Vec<scorepeek_overlay_ui::motion::Track>> =
-        std::sync::LazyLock::new(|| {
-            serde_json::from_str(scorepeek_overlay_ui::motion::SPEC)
-                .expect("embedded motion specification")
-        });
-    for track in TRACKS.iter() {
-        if let Ok(nodes) = document.query_selector_all(&track.selector) {
-            let value = track.value(seconds);
-            for node in nodes {
-                document.set_style_property(node, &track.property, &value);
-            }
-        }
     }
 }
 
@@ -4061,9 +4100,7 @@ fn render_native_frame(
             .resource_lookup_ns
             .load(std::sync::atomic::Ordering::Relaxed),
     };
-    if visible {
-        work.measure("motion", || apply_motion(document, seconds));
-    }
+    let _ = visible;
     let incremental_layout = document.incremental_layout();
     if *full_layout_pending {
         document.set_incremental_layout(false);
@@ -4128,7 +4165,7 @@ fn render_native_frame(
     result
 }
 
-/// Registers embedded artwork and the Latin font, preserving Japanese system fallbacks.
+/// Creates a document using only resources declared by its skin package.
 #[must_use]
 pub fn document_config() -> DocumentConfig {
     document_config_inner(None)
@@ -4136,36 +4173,46 @@ pub fn document_config() -> DocumentConfig {
 
 fn document_config_inner(package: Option<crate::skin::Package>) -> DocumentConfig {
     let store = crate::skin::StoreRoot::discover();
-    let cache = match package {
-        Some(package) => Arc::new(SkinAssetCache::with_package(store, Arc::new(package))),
-        None => Arc::new(SkinAssetCache::new(store)),
+    let (cache, fonts) = match package {
+        Some(package) => {
+            let fonts = package.font_resources().map(<[u8]>::to_vec).collect();
+            (
+                Arc::new(SkinAssetCache::with_package(store, Arc::new(package))),
+                fonts,
+            )
+        }
+        None => (Arc::new(SkinAssetCache::new(store)), Vec::new()),
     };
-    document_config_inner_with_handle(cache).0
+    document_config_inner_with_handle(cache, fonts).0
 }
 
+#[cfg(not(test))]
 fn document_config_with_skin_handle(
     package: Arc<crate::skin::Package>,
 ) -> (DocumentConfig, Arc<SkinAssetCache>) {
-    document_config_inner_with_handle(Arc::new(SkinAssetCache::with_package(
-        crate::skin::StoreRoot::discover(),
-        package,
-    )))
+    let fonts = package.font_resources().map(<[u8]>::to_vec).collect();
+    document_config_inner_with_handle(
+        Arc::new(SkinAssetCache::with_package(
+            crate::skin::StoreRoot::discover(),
+            package,
+        )),
+        fonts,
+    )
 }
 
 fn document_config_inner_with_handle(
     cache: Arc<SkinAssetCache>,
+    fonts: Vec<Vec<u8>>,
 ) -> (DocumentConfig, Arc<SkinAssetCache>) {
     let mut font_ctx = blitz_dom::FontContext::default();
-    font_ctx
-        .collection
-        .register_fonts(peniko::Blob::new(Arc::new(OXANIUM)), None);
-    for (_, bytes) in scorepeek_overlay_ui::FONT_ASSETS {
+    for bytes in fonts {
         font_ctx
             .collection
-            .register_fonts(peniko::Blob::new(Arc::new(*bytes)), None);
+            .register_fonts(peniko::Blob::new(Arc::new(bytes)), None);
     }
     let config = DocumentConfig {
         font_ctx: Some(font_ctx),
+        ua_stylesheets: Some(vec![scorepeek_overlay_ui::HOST_CSS.into()]),
         base_url: Some("http://scorepeek.invalid/".into()),
         net_provider: Some(Arc::new(EmbeddedSkinAssets {
             cache: Arc::clone(&cache),
@@ -4213,9 +4260,6 @@ pub enum VisualDebugAction {
         text: String,
         #[serde(default)]
         composing: bool,
-    },
-    Motion {
-        seconds: f64,
     },
     SetEditing {
         value: bool,
@@ -4319,7 +4363,18 @@ struct VisualDebugSession {
 impl VisualDebugSession {
     #[allow(clippy::too_many_lines)]
     fn new(scenario: &VisualDebugScenario, physical_size: [u32; 2]) -> Result<Self, String> {
-        let config = crate::config::visual_debug_config();
+        #[cfg(test)]
+        let default_skin = "dev.atty303.scorepeek.skin.cyan-system".parse().ok();
+        #[cfg(not(test))]
+        let default_skin = SkinAssetCache::new(crate::skin::StoreRoot::discover())
+            .installed_editor_skins()?
+            .first()
+            .map(|skin| skin.id);
+        let skin = scenario
+            .skin
+            .or(default_skin)
+            .ok_or("visual debugging requires an installed skin or scenario skin")?;
+        let config = crate::config::visual_debug_config(skin);
         let mut canvases = config
             .canvases
             .into_iter()
@@ -4359,7 +4414,12 @@ impl VisualDebugSession {
         };
         let mut model = EditorSession::new(canvases, scenario.logical_size, "visual");
         model.set_session_id(1);
+        #[cfg(test)]
         model.set_skins(embedded_editor_skins());
+        #[cfg(not(test))]
+        model.set_skins(
+            SkinAssetCache::new(crate::skin::StoreRoot::discover()).installed_editor_skins()?,
+        );
         model.set_outputs(vec![output.clone()]);
         model.active_output = Some(output.name.clone());
         model.selected_canvas = Some(selected);
@@ -4389,7 +4449,23 @@ impl VisualDebugSession {
             },
         };
         #[cfg(test)]
-        let package: Option<crate::skin::Package> = None;
+        let (document_config, skin_assets) = {
+            let package_root =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
+            let packages = ["cyan-system.zip", "result-aurora.zip", "dj-blackbox.zip"]
+                .into_iter()
+                .map(|name| crate::skin::Package::open(&package_root.join(name)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let fonts = packages
+                .iter()
+                .flat_map(crate::skin::Package::font_resources)
+                .map(<[u8]>::to_vec)
+                .collect();
+            document_config_inner_with_handle(
+                Arc::new(SkinAssetCache::with_packages(packages)),
+                fonts,
+            )
+        };
         #[cfg(not(test))]
         let package = {
             let store = crate::skin::StoreRoot::discover();
@@ -4399,11 +4475,13 @@ impl VisualDebugSession {
                 .then(|| store.open(canvas.skin.name()))
                 .transpose()?
         };
+        #[cfg(not(test))]
         let (document_config, skin_assets) = package.map_or_else(
             || {
-                document_config_inner_with_handle(Arc::new(SkinAssetCache::new(
-                    crate::skin::StoreRoot::discover(),
-                )))
+                document_config_inner_with_handle(
+                    Arc::new(SkinAssetCache::new(crate::skin::StoreRoot::discover())),
+                    Vec::new(),
+                )
             },
             |package| document_config_with_skin_handle(Arc::new(package)),
         );
@@ -4469,6 +4547,7 @@ impl VisualDebugSession {
                         let mut canvas = crate::config::empty_canvas(
                             mounted.id.clone(),
                             crate::runtime::Backend::Wayland,
+                            mounted.skin,
                         );
                         canvas.apply_presentation(&mounted);
                         canvas
@@ -4549,7 +4628,6 @@ impl VisualDebugSession {
             ColorScheme::Dark,
         ));
         inner.resolve(0.0);
-        apply_motion(&mut inner, 1.0);
         resolve_with_loaded_resources(&mut inner, 1.0);
     }
 
@@ -4635,6 +4713,7 @@ impl VisualDebugSession {
                             let mut configured = crate::config::empty_canvas(
                                 canvas.id.clone(),
                                 crate::runtime::Backend::Wayland,
+                                canvas.skin,
                             );
                             configured.apply_presentation(&canvas);
                             configured
@@ -5001,16 +5080,6 @@ pub fn run_visual_debug(
                         "title-commit".into()
                     }
                 }
-                VisualDebugAction::Motion { seconds } => {
-                    if !seconds.is_finite() || *seconds < 0.0 {
-                        return Err("motion seconds must be finite and nonnegative".into());
-                    }
-                    session.render_skin()?;
-                    let mut inner = session.document.inner.borrow_mut();
-                    apply_motion(&mut inner, *seconds);
-                    resolve_with_loaded_resources(&mut inner, *seconds);
-                    format!("motion-{seconds}")
-                }
                 VisualDebugAction::SetEditing { value } => {
                     session.set_editing(*value);
                     format!("set-editing-{value}")
@@ -5123,6 +5192,18 @@ fn sanitize_artifact_name(name: &str) -> String {
 mod skin_tests {
     use super::*;
 
+    fn test_skin(id: &str) -> scorepeek_overlay_ui::Skin {
+        id.parse().unwrap()
+    }
+
+    fn cyan_skin() -> scorepeek_overlay_ui::Skin {
+        test_skin("dev.atty303.scorepeek.skin.cyan-system")
+    }
+
+    fn result_skin() -> scorepeek_overlay_ui::Skin {
+        test_skin("dev.atty303.scorepeek.skin.result-aurora")
+    }
+
     #[test]
     fn configure_event_is_a_surface_boundary_even_when_geometry_is_unchanged() {
         #[derive(Default)]
@@ -5166,8 +5247,11 @@ mod skin_tests {
 
     #[test]
     fn display_visibility_update_releases_the_signal_read_before_writing() {
-        let mut canvas =
-            crate::config::empty_canvas("screen-filtered".into(), crate::runtime::Backend::Wayland);
+        let mut canvas = crate::config::empty_canvas(
+            "screen-filtered".into(),
+            crate::runtime::Backend::Wayland,
+            cyan_skin(),
+        );
         canvas.show_on = Some(vec![scorepeek_overlay_ui::ScreenKind::MusicSelect]);
         let published = Rc::new(RefCell::new(None));
         let (coordinator, _commands) = std::sync::mpsc::channel();
@@ -5420,12 +5504,15 @@ mod skin_tests {
     }
 
     #[test]
-    fn native_skin_input_uses_the_canvas_background_authority() {
+    fn native_skin_input_uses_the_manifest_property_authority() {
         let mut canvas = crate::config::empty_canvas(
             "background-probe".into(),
             crate::runtime::Backend::Wayland,
+            cyan_skin(),
         );
-        canvas.background = scorepeek_overlay_ui::Background::Static;
+        canvas
+            .skin_properties
+            .insert("background".into(), serde_json::json!("static"));
         let manifest: crate::skin::Manifest =
             toml::from_str(include_str!("../../../skins/cyan-system/skin.toml")).unwrap();
 
@@ -5436,7 +5523,7 @@ mod skin_tests {
 
     #[test]
     fn unchanged_native_frames_do_not_rebuild_surface_projection() {
-        let config = crate::config::visual_debug_config();
+        let config = crate::config::visual_debug_config(cyan_skin());
         let draft = config
             .canvases
             .iter()
@@ -5457,7 +5544,7 @@ mod skin_tests {
         for _ in 0..120 {
             assert_eq!(
                 cache
-                    .resolve(Some(scorepeek_overlay_ui::Skin::CyanSystem), &session, &[])
+                    .resolve(Some(cyan_skin()), &session, &[])
                     .unwrap()
                     .len(),
                 1
@@ -5466,9 +5553,7 @@ mod skin_tests {
 
         assert_eq!(cache.rebuilds, 1);
         session.advance_revision();
-        let _ = cache
-            .resolve(Some(scorepeek_overlay_ui::Skin::CyanSystem), &session, &[])
-            .unwrap();
+        let _ = cache.resolve(Some(cyan_skin()), &session, &[]).unwrap();
         assert_eq!(cache.rebuilds, 2);
     }
 
@@ -5530,7 +5615,7 @@ mod skin_tests {
             .unwrap();
             assert!(outcome.input_damage);
         };
-        let canvases = crate::config::visual_debug_config()
+        let canvases = crate::config::visual_debug_config(cyan_skin())
             .canvases
             .into_iter()
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
@@ -5782,6 +5867,7 @@ mod skin_tests {
                         let mut canvas = crate::config::empty_canvas(
                             presentation.id.clone(),
                             crate::runtime::Backend::Wayland,
+                            presentation.skin,
                         );
                         canvas.apply_presentation(presentation);
                         canvas
@@ -5789,11 +5875,7 @@ mod skin_tests {
                     .collect::<Vec<_>>();
                 let projected = self
                     .projection_cache
-                    .resolve(
-                        Some(scorepeek_overlay_ui::Skin::CyanSystem),
-                        session,
-                        &display,
-                    )
+                    .resolve(Some(cyan_skin()), session, &display)
                     .unwrap();
                 let lifecycle = reconcile_worker_lifecycle(
                     self.surfaces
@@ -5883,7 +5965,7 @@ mod skin_tests {
             }
         }
 
-        let mut canvases = crate::config::visual_debug_config()
+        let mut canvases = crate::config::visual_debug_config(cyan_skin())
             .canvases
             .into_iter()
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
@@ -5959,7 +6041,7 @@ mod skin_tests {
 
         let creates = fake.runtime_creates;
         let drops = fake.runtime_drops;
-        session.draft[0].skin = scorepeek_overlay_ui::Skin::ResultAurora;
+        session.draft[0].skin = result_skin();
         session.advance_revision();
         fake.apply(&session);
         assert_eq!(fake.runtime_creates, creates + 1);
@@ -6079,7 +6161,7 @@ mod skin_tests {
                 };
                 let mut document = DioxusDocument::new(
                     VirtualDom::new_with_props(native_overlay, props),
-                    document_config_inner_with_handle(Arc::clone(&assets)).0,
+                    document_config_inner_with_handle(Arc::clone(&assets), Vec::new()).0,
                 );
                 document.initial_build();
                 let projection = published
@@ -6425,7 +6507,7 @@ mod skin_tests {
                 };
                 let mut document = DioxusDocument::new(
                     VirtualDom::new_with_props(native_overlay, props),
-                    document_config_inner_with_handle(Arc::clone(&assets)).0,
+                    document_config_inner_with_handle(Arc::clone(&assets), Vec::new()).0,
                 );
                 document.initial_build();
                 while poll_native_document(&mut document, Waker::noop()) {}
@@ -6758,6 +6840,7 @@ mod skin_tests {
                             let mut canvas = crate::config::empty_canvas(
                                 presentation.id.clone(),
                                 crate::runtime::Backend::Wayland,
+                                presentation.skin,
                             );
                             canvas.apply_presentation(presentation);
                             canvas
@@ -6767,11 +6850,9 @@ mod skin_tests {
                     canvases
                 };
                 let started = Instant::now();
-                let projected = self.projection_cache.resolve(
-                    Some(scorepeek_overlay_ui::Skin::CyanSystem),
-                    &session,
-                    &display,
-                )?;
+                let projected =
+                    self.projection_cache
+                        .resolve(Some(cyan_skin()), &session, &display)?;
                 self.work.record("projection", started.elapsed());
                 let lifecycle = reconcile_worker_lifecycle(
                     self.surfaces
@@ -7307,7 +7388,7 @@ mod skin_tests {
             );
         }
 
-        let mut canvases = crate::config::visual_debug_config()
+        let mut canvases = crate::config::visual_debug_config(cyan_skin())
             .canvases
             .into_iter()
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
@@ -7316,7 +7397,9 @@ mod skin_tests {
             .collect::<Vec<_>>();
         canvases[0].output = Some("WL-1".into());
         canvases[1].output = Some("WL-2".into());
-        canvases[0].background = scorepeek_overlay_ui::Background::Static;
+        canvases[0]
+            .skin_properties
+            .insert("background".into(), serde_json::json!("static"));
         canvases[0].x = 0;
         canvases[0].y = 0;
         canvases[0].width = canvases[0].width.min(1_200);
@@ -7330,7 +7413,9 @@ mod skin_tests {
         unrelated_widget.id = "selection-unrelated".into();
         unrelated_widget.y = 420;
         canvases[1].widgets = vec![animated_widget, unrelated_widget];
-        canvases[1].background = scorepeek_overlay_ui::Background::Animated;
+        canvases[1]
+            .skin_properties
+            .insert("background".into(), serde_json::json!("animated"));
         canvases[1].width = 1_200;
         canvases[1].height = 700;
         canvases[1].x = 0;
@@ -7389,10 +7474,7 @@ mod skin_tests {
         let mut cold_load_work = FrameWorkProfile::default();
         let cold_start = cold_load_work.snapshot();
         assets
-            .load_profiled(
-                scorepeek_overlay_ui::Skin::CyanSystem.name(),
-                &mut cold_load_work,
-            )
+            .load_profiled(cyan_skin().name(), &mut cold_load_work)
             .unwrap();
         cold_load_work.finish_frame(&cold_start, 0, 0);
         let cold_load = cold_load_work.frames.back().unwrap();
@@ -7597,7 +7679,7 @@ mod skin_tests {
                 .sum::<usize>(),
             2
         );
-        let heavy = (
+        let retained = (
             fake.projection_cache.rebuilds,
             fake.config_conversions,
             fake.runtime_creates(),
@@ -7607,14 +7689,6 @@ mod skin_tests {
             fake.assets
                 .resource_lookup_count
                 .load(std::sync::atomic::Ordering::Relaxed),
-            fake.stages
-                .values()
-                .map(|stage| stage.reconciliations)
-                .sum::<u64>(),
-            fake.stages
-                .values()
-                .map(|stage| stage.input_generations)
-                .sum::<u64>(),
         );
         let work_calls = |fake: &FakeAdapter, phase: &'static str| {
             fake.work.calls(phase)
@@ -7624,16 +7698,8 @@ mod skin_tests {
                     .map(|stage| stage.work.calls(phase))
                     .sum::<u64>()
         };
-        let retained_work = [
-            "package_clone",
-            "wasm_runtime_create",
-            "skin_input",
-            "wasm_render",
-            "json_tree",
-            "tree_reconciliation",
-            "skin_reconciliation",
-        ]
-        .map(|phase| work_calls(&fake, phase));
+        let retained_work =
+            ["package_clone", "wasm_runtime_create"].map(|phase| work_calls(&fake, phase));
         let frame_counts = |fake: &FakeAdapter| {
             fake.stages
                 .values()
@@ -7695,31 +7761,14 @@ mod skin_tests {
                     fake.assets
                         .resource_lookup_count
                         .load(std::sync::atomic::Ordering::Relaxed),
-                    fake.stages
-                        .values()
-                        .map(|stage| stage.reconciliations)
-                        .sum::<u64>(),
-                    fake.stages
-                        .values()
-                        .map(|stage| stage.input_generations)
-                        .sum::<u64>(),
                 ),
-                heavy,
-                "steady frames must poll and paint without rebuilding projection/config/runtime"
+                retained,
+                "steady frames must not rebuild projection/config/runtime or reload resources"
             );
             assert_eq!(
-                [
-                    "package_clone",
-                    "wasm_runtime_create",
-                    "skin_input",
-                    "wasm_render",
-                    "json_tree",
-                    "tree_reconciliation",
-                    "skin_reconciliation",
-                ]
-                .map(|phase| work_calls(&fake, phase)),
+                ["package_clone", "wasm_runtime_create",].map(|phase| work_calls(&fake, phase)),
                 retained_work,
-                "steady production turns must not reach retained skin reconstruction phases"
+                "steady production turns must retain packages and runtimes"
             );
             let frame_after = frame_counts(&fake);
             let expected = u64::from(hz) * u64::try_from(fake.stages.len()).unwrap();
@@ -7754,8 +7803,8 @@ mod skin_tests {
                     frame_after.1 - frame_before.1,
                     frame_after.2 - frame_before.2
                 ),
-                (0, 0),
-                "CSS animation frames must not rerun idle Wasm or rebuild its JSON tree"
+                (expected, expected),
+                "the skin-owned native schedule must rerender each animated preview"
             );
             assert_eq!(frame_after.3 - frame_before.3, expected);
             assert_eq!(frame_after.4 - frame_before.4, expected);
@@ -7790,12 +7839,16 @@ mod skin_tests {
                         "package_open",
                         "package_clone",
                         "wasm_runtime_create",
+                    ] {
+                        assert_eq!(sample.phases[phase].calls, 0, "unexpected {phase} work");
+                    }
+                    for phase in [
                         "skin_input",
                         "wasm_render",
                         "json_tree",
                         "tree_reconciliation",
                     ] {
-                        assert_eq!(sample.phases[phase].calls, 0, "unexpected {phase} work");
+                        assert_eq!(sample.phases[phase].calls, expected_live_canvases);
                     }
                     assert_eq!(sample.phases["dioxus_poll"].calls, 1);
                     assert_eq!(sample.phases["blitz_layout"].calls, 2);
@@ -7847,12 +7900,10 @@ mod skin_tests {
         );
 
         let runtime_creates = fake.runtime_creates();
-        let replacement_skin = if authority.session().current().unwrap().skin
-            == scorepeek_overlay_ui::Skin::ResultAurora
-        {
-            scorepeek_overlay_ui::Skin::CyanSystem
+        let replacement_skin = if authority.session().current().unwrap().skin == result_skin() {
+            cyan_skin()
         } else {
-            scorepeek_overlay_ui::Skin::ResultAurora
+            result_skin()
         };
         authority.dispatch(EditorInput::Action(EditorAction::Skin(replacement_skin)));
         fake.apply(&mut authority).unwrap();
@@ -7933,14 +7984,20 @@ mod skin_tests {
             .fold((0, 0, 0), |sum, count| {
                 (sum.0 + count.0, sum.1 + count.1, sum.2 + count.2)
             });
+        let scheduled = 60_u64
+            * fake
+                .stages
+                .values()
+                .map(|stage| u64::try_from(stage.previews.len()).unwrap_or(u64::MAX))
+                .sum::<u64>();
         assert_eq!(
             (
                 work_after_delete_frame.0 - work_before_delete_frame.0,
                 work_after_delete_frame.1 - work_before_delete_frame.1,
                 work_after_delete_frame.2 - work_before_delete_frame.2,
             ),
-            (0, 0, 0),
-            "CSS animation after deletion must not revisit deleted or unchanged live skin runtimes"
+            (scheduled, scheduled, scheduled),
+            "skin scheduling after deletion must visit only the remaining live previews"
         );
         for (output, stage) in &fake.stages {
             let expected_live_canvases = u64::try_from(stage.previews.len()).unwrap_or(u64::MAX);
@@ -7958,10 +8015,13 @@ mod skin_tests {
             for sample in samples {
                 assert_eq!(sample.live_canvases, expected_live_canvases);
                 assert_eq!(sample.live_widgets, expected_live_widgets);
-                assert_eq!(sample.phases["skin_input"].calls, 0);
-                assert_eq!(sample.phases["wasm_render"].calls, 0);
-                assert_eq!(sample.phases["json_tree"].calls, 0);
-                assert_eq!(sample.phases["tree_reconciliation"].calls, 0);
+                assert_eq!(sample.phases["skin_input"].calls, expected_live_canvases);
+                assert_eq!(sample.phases["wasm_render"].calls, expected_live_canvases);
+                assert_eq!(sample.phases["json_tree"].calls, expected_live_canvases);
+                assert_eq!(
+                    sample.phases["tree_reconciliation"].calls,
+                    expected_live_canvases
+                );
             }
         }
         fake.click_stage(&mut authority, "WL-1", ".add-canvas")
@@ -8258,7 +8318,7 @@ mod skin_tests {
 
     #[test]
     fn canvas_position_does_not_invalidate_skin_but_content_geometry_does() {
-        let mut before = crate::config::visual_debug_config()
+        let mut before = crate::config::visual_debug_config(cyan_skin())
             .canvases
             .into_iter()
             .find(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
@@ -8382,7 +8442,7 @@ mod skin_tests {
         use dioxus::html::input_data::MouseButton;
         type Moves = Rc<RefCell<Vec<bool>>>;
         fn probe(moves: Moves) -> Element {
-            rsx! { div { style: "position:absolute;inset:0", onpointermove: move |event| moves.borrow_mut().push(event.held_buttons().contains(MouseButton::Primary)), "selectable text" } }
+            rsx! { div { style: "position:fixed;inset:0", onpointermove: move |event| moves.borrow_mut().push(event.held_buttons().contains(MouseButton::Primary)), "selectable text" } }
         }
         let moves = Moves::default();
         let mut document = DioxusDocument::new(
@@ -8390,6 +8450,10 @@ mod skin_tests {
             document_config(),
         );
         document.initial_build();
+        document
+            .inner
+            .borrow_mut()
+            .set_viewport(Viewport::new(100, 100, 1.0, ColorScheme::Dark));
         document.inner.borrow_mut().resolve(1.0);
         let mut pointer = PointerInput::default();
         pointer.dispatch(&mut document, [10.0, 10.0], 0x110, None);
@@ -8434,6 +8498,7 @@ mod skin_tests {
         let projected = vec![crate::config::empty_canvas(
             "wayland-canvas".into(),
             crate::runtime::Backend::Wayland,
+            cyan_skin(),
         )];
 
         assert!(worker_needs_replacement(
@@ -8489,7 +8554,7 @@ mod skin_tests {
 
     #[test]
     fn editor_stages_are_output_owned_when_canvas_assignment_changes() {
-        let mut canvases = crate::config::visual_debug_config()
+        let mut canvases = crate::config::visual_debug_config(cyan_skin())
             .canvases
             .into_iter()
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
@@ -9123,14 +9188,6 @@ mod skin_tests {
     }
 
     #[test]
-    fn embedded_artwork_decodes_with_the_native_png_feature() {
-        for (path, bytes) in scorepeek_overlay_ui::SKIN_ASSETS {
-            let image = image::load_from_memory(bytes).expect(path);
-            assert!(image.width() > 0 && image.height() > 0, "{path}");
-        }
-    }
-
-    #[test]
     fn every_native_scene_retains_an_image_atlas_generation() {
         let mut scene = anyrender::Scene::new();
         retain_native_image_atlas(&mut scene);
@@ -9162,7 +9219,7 @@ mod skin_tests {
     #[test]
     fn aggregate_canvas_visibility_preserves_explicit_screen_membership() {
         use scorepeek_overlay_ui::editor_model::SCREENS;
-        let mut canvas = crate::config::visual_debug_config().canvases[0].presentation();
+        let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
         canvas.show_on = None;
         let mut model = EditorSession::new(vec![canvas.clone()], [1920, 1080], "wayland");
         model.readonly = false;
@@ -9218,8 +9275,16 @@ mod skin_tests {
             (scorepeek_overlay_ui::AspectRatio::Current([1, 8]), 0.125),
             (scorepeek_overlay_ui::AspectRatio::Current([8, 1]), 8.0),
         ] {
-            let mut original = scorepeek_overlay_ui::default_widgets().remove(0);
-            original.kind = scorepeek_overlay_ui::WidgetKind::Empty;
+            let mut original = WidgetLayout {
+                id: "empty".into(),
+                kind: scorepeek_overlay_ui::WidgetKind::Empty,
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 360,
+                settings: scorepeek_overlay_ui::WidgetSettings::default(),
+                skin_properties: std::collections::BTreeMap::new(),
+            };
             original.x = 40;
             original.y = 40;
             original.width = 640;

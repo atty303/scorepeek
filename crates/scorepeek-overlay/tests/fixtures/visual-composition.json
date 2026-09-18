@@ -8,7 +8,7 @@
       "y": 0,
       "width": 1920,
       "height": 1080,
-      "background": "animated",
+      "skin_properties": { "background": "animated" },
       "widgets": [
         {
           "id": "game",
@@ -28,10 +28,8 @@
           "y": 752,
           "width": 760,
           "height": 280,
-          "settings": {
-            "title": "HAND CAM / DP",
-            "frame_width": "l"
-          }
+          "settings": { "title": "HAND CAM / DP" },
+          "skin_properties": { "frame-width": "l" }
         },
         {
           "id": "status",
@@ -80,10 +78,8 @@
           "y": 752,
           "width": 400,
           "height": 280,
-          "settings": {
-            "title": "FACE CAM",
-            "frame_width": "s"
-          }
+          "settings": { "title": "FACE CAM" },
+          "skin_properties": { "frame-width": "s" }
         },
         {
           "id": "comments",
@@ -116,10 +112,6 @@
     ".delete-widget"
   ],
   "actions": [
-    {
-      "action": "motion",
-      "seconds": 5
-    },
     {
       "action": "set_editing",
       "value": true
@@ -201,19 +193,15 @@
     },
     {
       "action": "click",
-      "selector": ".background-control .background-option[data-index='1']"
+      "selector": ".skin-property[data-property='background'] .property-option[data-value='static']"
     },
     {
       "action": "click",
-      "selector": ".background-control .background-option[data-index='2']"
+      "selector": ".skin-property[data-property='background'] .property-option[data-value='animated']"
     },
     {
       "action": "set_editing",
       "value": false
-    },
-    {
-      "action": "motion",
-      "seconds": 10
     }
   ]
 }

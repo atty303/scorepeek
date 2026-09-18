@@ -3,8 +3,8 @@ pub use scorepeek_overlay_ui::editor_model::*;
 mod tests {
     use super::*;
     use scorepeek_overlay_ui::{
-        AspectRatio, Background,
-        editor::{EditorAction, EditorTitleState},
+        AspectRatio,
+        editor::{EditorAction, EditorProperty, EditorSkin, EditorTitleState, EditorWidgetDefault},
     };
     fn editor() -> EditorSession {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -19,6 +19,32 @@ mod tests {
         model.editing = true;
         model.readonly = false;
         model.selected_widget = Some("cam".into());
+        model.set_skins(vec![EditorSkin {
+            id: model.draft[0].skin,
+            name: "fixture".into(),
+            release: "1".into(),
+            preview: String::new(),
+            preview_video: None,
+            widget_defaults: [
+                ("status", [544, 44]),
+                ("selection", [544, 124]),
+                ("score", [544, 200]),
+                ("history-list", [544, 156]),
+                ("history-graph", [544, 208]),
+                ("empty", [640, 360]),
+            ]
+            .into_iter()
+            .map(|(kind, [width, height])| (kind.into(), EditorWidgetDefault { width, height }))
+            .collect(),
+            canvas_properties: std::collections::BTreeMap::from([(
+                "background".into(),
+                EditorProperty::Enum {
+                    default: "none".into(),
+                    values: vec!["none".into(), "static".into(), "animated".into()],
+                },
+            )]),
+            widget_properties: std::collections::BTreeMap::new(),
+        }]);
         model
     }
     #[test]
@@ -65,7 +91,9 @@ mod tests {
         assert_eq!(model.draft.len(), 2);
         let mut remote = model.draft.clone();
         remote.remove(0);
-        remote[0].background = Background::Static;
+        remote[0]
+            .skin_properties
+            .insert("background".into(), serde_json::json!("static"));
         model.receive_stage(remote.clone());
         assert_eq!(model.draft, remote);
         assert_eq!(model.saved, remote);
@@ -94,7 +122,10 @@ mod tests {
     #[test]
     fn denied_edits_and_navigation_preserve_draft_and_undo() {
         let mut model = editor();
-        assert!(model.action(&EditorAction::Background(Background::None)));
+        assert!(model.action(&EditorAction::CanvasSkinProperty(
+            "background".into(),
+            serde_json::json!("none")
+        )));
         let changed = model.draft.clone();
         let undo = model.undo.clone();
         model.readonly = true;

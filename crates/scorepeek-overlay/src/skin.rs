@@ -11,7 +11,7 @@ use std::{
 use wasmtime::{Engine, Instance, Memory, Module, Store, TypedFunc};
 use zip::ZipArchive;
 
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 pub const MANIFEST_PATH: &str = "skin.toml";
 pub const MODULE_PATH: &str = "skin.wasm";
 pub const STYLE_PATH: &str = "skin.css";
@@ -70,9 +70,27 @@ pub struct Manifest {
     #[serde(default)]
     pub homepage: Option<String>,
     #[serde(default)]
+    pub resources: Vec<Resource>,
+    #[serde(default)]
+    pub widget_defaults: BTreeMap<String, WidgetDefault>,
+    #[serde(default)]
     pub canvas_properties: BTreeMap<String, Property>,
     #[serde(default)]
     pub widget_properties: BTreeMap<String, BTreeMap<String, Property>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resource {
+    pub path: String,
+    pub media_type: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WidgetDefault {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -205,6 +223,53 @@ impl Manifest {
         if self.api_version != API_VERSION {
             return Err(format!("skin api_version must be {API_VERSION}"));
         }
+        let mut resource_paths = BTreeSet::new();
+        for resource in &self.resources {
+            validate_entry_path(&resource.path)?;
+            if !resource_paths.insert(resource.path.as_str()) {
+                return Err(format!(
+                    "skin resource {} is declared more than once",
+                    resource.path
+                ));
+            }
+            if resource.media_type.is_empty()
+                || !resource.media_type.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'+' | b'.' | b'-')
+                })
+                || !resource.media_type.contains('/')
+            {
+                return Err(format!(
+                    "skin resource {} has invalid media type",
+                    resource.path
+                ));
+            }
+        }
+        for (kind, default) in &self.widget_defaults {
+            if kind.is_empty() || default.width < 16 || default.height < 16 {
+                return Err(format!(
+                    "skin widget default {kind:?} has invalid dimensions"
+                ));
+            }
+        }
+        let required_widget_defaults = [
+            "status",
+            "selection",
+            "score",
+            "history-list",
+            "history-graph",
+            "empty",
+        ];
+        if self
+            .widget_defaults
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != required_widget_defaults.into_iter().collect()
+        {
+            return Err(
+                "skin widget_defaults must define every supported widget kind exactly once".into(),
+            );
+        }
         for (key, property) in &self.canvas_properties {
             validate_property_key(key)?;
             property.validate("canvas", key)?;
@@ -329,6 +394,28 @@ impl Package {
         let manifest: Manifest =
             toml::from_str(manifest_text).map_err(|error| format!("skin.toml: {error}"))?;
         manifest.validate()?;
+        let declared = manifest
+            .resources
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect::<BTreeSet<_>>();
+        let packaged = entries
+            .keys()
+            .map(String::as_str)
+            .filter(|path| {
+                !matches!(
+                    *path,
+                    MANIFEST_PATH | MODULE_PATH | STYLE_PATH | PREVIEW_PATH | PREVIEW_VIDEO_PATH
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        if declared != packaged {
+            let missing = declared.difference(&packaged).copied().collect::<Vec<_>>();
+            let undeclared = packaged.difference(&declared).copied().collect::<Vec<_>>();
+            return Err(format!(
+                "skin resource inventory mismatch: missing={missing:?} undeclared={undeclared:?}"
+            ));
+        }
         std::str::from_utf8(required(&entries, STYLE_PATH)?)
             .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
         let wasm = required(&entries, MODULE_PATH)?;
@@ -347,13 +434,30 @@ impl Package {
         self.entries.get(path).map(Vec::as_slice)
     }
 
+    #[must_use]
+    pub fn resource_media_type(&self, path: &str) -> Option<&str> {
+        self.manifest
+            .resources
+            .iter()
+            .find(|resource| resource.path == path)
+            .map(|resource| resource.media_type.as_str())
+    }
+
+    pub fn font_resources(&self) -> impl Iterator<Item = &[u8]> {
+        self.manifest
+            .resources
+            .iter()
+            .filter(|resource| resource.media_type.starts_with("font/"))
+            .filter_map(|resource| self.resource(&resource.path))
+    }
+
     /// Runs native and browser-equivalent initialization smoke calls.
     /// # Errors
     /// Returns an ABI, trap, timeout, JSON tree or stable-key error.
     pub fn smoke_test(&self) -> Result<(), String> {
         for backend in ["native", "obs"] {
             let mut runtime = Runtime::new(self)?;
-            let input = serde_json::json!({"schema":"scorepeek-skin-input-v1","backend":backend,"canvas":{"id":"install-smoke","skin":self.manifest.id,"width":1920,"height":1080,"properties":{}},"widgets":[],"state":{"screen":"unknown"}});
+            let input = serde_json::json!({"schema":"scorepeek-skin-input-v2","backend":backend,"monotonic_ms":0,"canvas":{"id":"install-smoke","skin":self.manifest.id,"width":1920,"height":1080,"properties":{}},"widgets":[],"state":{"screen":"unknown"}});
             runtime.init(&input)?;
             runtime.render(&input)?;
         }
@@ -753,6 +857,7 @@ impl Node {
 pub struct NativeTree {
     root: blitz_dom::NodeId,
     style: blitz_dom::NodeId,
+    marker: String,
     mounted: Option<Mounted>,
 }
 
@@ -773,8 +878,13 @@ enum MountedKind {
 impl NativeTree {
     /// Creates a package-owned subtree below a host-owned canvas root.
     pub fn new(document: &mut blitz_dom::BaseDocument, root: blitz_dom::NodeId, css: &str) -> Self {
+        static NEXT_MARKER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let marker = NEXT_MARKER
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string();
         let mut mutator = document.mutate();
         let style = mutator.create_element(html_name("style"), Vec::new());
+        mutator.set_attribute(style, attribute_name("data-scorepeek-tree"), &marker);
         let text = mutator.create_text_node(css);
         mutator.append_children(style, &[text]);
         mutator.append_children(root, &[style]);
@@ -782,8 +892,18 @@ impl NativeTree {
         Self {
             root,
             style,
+            marker,
             mounted: None,
         }
+    }
+
+    #[must_use]
+    pub fn is_attached(&self, document: &blitz_dom::BaseDocument) -> bool {
+        document
+            .query_selector(&format!("[data-scorepeek-tree-root='{}']", self.marker))
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Reconciles a validated full tree by stable key.
@@ -791,6 +911,11 @@ impl NativeTree {
         let old = self.mounted.take();
         let mut mutator = document.mutate();
         let mounted = reconcile(&mut mutator, old, &output.tree, false);
+        mutator.set_attribute(
+            mounted.node,
+            attribute_name("data-scorepeek-tree-root"),
+            &self.marker,
+        );
         mutator.append_children(self.root, &[self.style, mounted.node]);
         self.mounted = Some(mounted);
     }
@@ -807,6 +932,11 @@ impl NativeTree {
         }
         mutator.remove_and_drop_node(self.style);
         self.style = mutator.create_element(html_name("style"), Vec::new());
+        mutator.set_attribute(
+            self.style,
+            attribute_name("data-scorepeek-tree"),
+            &self.marker,
+        );
         let text = mutator.create_text_node(css);
         mutator.append_children(self.style, &[text]);
         drop(mutator);
@@ -817,6 +947,11 @@ impl NativeTree {
         let mut mutator = document.mutate();
         mutator.remove_and_drop_node(self.style);
         self.style = mutator.create_element(html_name("style"), Vec::new());
+        mutator.set_attribute(
+            self.style,
+            attribute_name("data-scorepeek-tree"),
+            &self.marker,
+        );
         let text = mutator.create_text_node(css);
         mutator.append_children(self.style, &[text]);
         mutator.append_children(self.root, &[self.style]);

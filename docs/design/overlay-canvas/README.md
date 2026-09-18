@@ -36,12 +36,10 @@ material treatment:
 - DJ BLACKBOX: charcoal anodized metal, recessed faceplates, engraved grooves,
   corner fasteners and lime indicator bars.
 
-The existing original PNGs under `crates/scorepeek-overlay-ui/assets/skins/` retain these
-materials. `frame.rs` maps each into nine regions: fixed-aspect corners, independently
-stretched edge middles and a central surface. It preserves edge thickness when widgets resize;
-very small widgets scale the corners together. Raster art owns material detail, while shared
-DOM/SVG retains live text, chart badges and signal semantics. Both native and browser use
-this composition; neither uses CSS border-image or replaces the material with outline paths.
+Each skin's original PNGs under `skins/<name>/resources/` retain these materials. The skin's Wasm
+maps each frame into fixed-aspect corners, independently stretched edge middles and a central
+surface, preserving edge thickness as widgets resize. Raster art owns material detail, while the
+skin DOM/SVG retains live text, chart badges and signal semantics on both backends.
 
 ## Typography material
 
@@ -55,26 +53,18 @@ and layout; decorative layers are hidden from accessibility. Unsupported strings
 Mixed-language song titles and dynamic detail/history values use ordinary text with Japanese
 system-font fallback. Clear-state opacity motion remains semantic; numeric values never count up.
 
-All six atlases are generated at 3× resolution from bundled OFL fonts through the pinned native
-renderer. They are checked in alongside the frame artwork; normal builds require no generation,
-font download or game images. Regenerate into a new directory, inspect at actual display sizes,
-then replace the six matching files under `crates/scorepeek-overlay-ui/assets/skins/`:
-
-```text
-mise run overlay:type:generate -- /tmp/scorepeek-type-atlas
-```
-
-`examples/generate_type_atlas.rs` owns font styling, face reflection, groove and bevel lighting;
-`scorepeek-overlay-ui/src/typography.rs` owns semantic label roles, glyph order, geometry and shared
-native/browser composition. Preserve proportional label shaping when changing the generation font.
+The atlases are checked in under each skin's `resources/` directory alongside its frame artwork;
+normal builds require no generation, font download, or game images. The optional shared crate owns
+generic atlas lookup and DOM composition, while each skin owns its atlas files and theme values.
+Preserve proportional label shaping when changing a skin's generation source.
 
 Label boxes expose the atlas font baseline through their bottom margin, including the transparent
 area below the glyphs. Detail and history rows align text baselines; history headings remain centered.
-Keep the below-baseline metrics in `typography.rs` synchronized when changing the atlas fonts.
+Keep the skin's below-baseline metrics synchronized when changing its atlas fonts.
 
 ## Stream composition materials
 
 The `*-background.png` assets fill canvas gaps without game imagery or baked-in widgets.
 They are 16:9 textures with no text, logo, border, foreground object, or UI. Runtime composition
-uses the checked-in PNGs in `crates/scorepeek-overlay-ui/assets/skins/`, with a separate slow
-light layer for optional motion. Aperture geometry and frame width remain semantic code.
+uses the checked-in PNGs in each skin's `resources/`, with a separate slow light layer for optional
+motion. Aperture geometry and frame width remain skin code.

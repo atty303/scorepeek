@@ -440,7 +440,9 @@ test("editor replicas reconnect and follow drag, stale delivery, scroll, and lif
   const appearance = page
     .locator(".editor-accordion-heading[data-section='canvas:canvas-1:appearance']")
     .locator("..");
-  await appearance.getByRole("button", { name: "Static", exact: true }).click();
+  await appearance
+    .locator(".skin-property[data-property='background'] .property-option[data-value='static']")
+    .click();
   await expect(frame.locator(".canvas-background-art")).toBeVisible();
   await expect(frame.locator(".canvas-background")).toHaveCSS(
     "background-color",

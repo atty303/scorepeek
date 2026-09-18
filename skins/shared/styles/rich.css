@@ -1,6 +1,6 @@
 /* Material detail follows the imagegen concepts; content follows the widget design sheets. */
 .overlay-canvas{font-family:Oxanium,"Noto Sans JP",sans-serif}
-.overlay-canvas .widget-slot,.overlay-canvas[data-skin] .widget{overflow:visible;clip-path:none;filter:none}
+.overlay-canvas .widget-slot,.overlay-canvas .widget{overflow:visible;clip-path:none;filter:none}
 .overlay-canvas .widget{background:transparent;border:0}
 .overlay-canvas .skin-frame{z-index:0;overflow:visible}
 .overlay-canvas .panel-frame{position:absolute;inset:0;width:100%;height:100%}
@@ -54,10 +54,6 @@
 .overlay-canvas .graph-legend{top:37px;left:175px;gap:22px;font-size:12px}
 .overlay-canvas .level-axis,.overlay-canvas .miss-axis{font-size:12px}
 .overlay-canvas .graph-dot{width:6px;height:6px;margin:-3px;box-shadow:none}
-.overlay-canvas[data-skin=cyan-system]{--surface:linear-gradient(110deg,#02070c,#000306);--dim:#087489aa}
-.overlay-canvas[data-skin=result-aurora]{--surface:linear-gradient(120deg,#10091b,#030208 65%,#160828);--dim:#8c699899}
-.overlay-canvas[data-skin=result-aurora] .song-copy p{font-style:italic}
-.overlay-canvas[data-skin=dj-blackbox]{--surface:linear-gradient(115deg,#191b19,#101210 65%,#1b1d1b);--dim:#686e6699}
 
 
 .overlay-canvas .detail-section h2{margin-left:-16px;padding-left:16px}
@@ -71,30 +67,13 @@
 .overlay-canvas .graph-legend .score-key,.overlay-canvas .graph-legend .miss-key{color:var(--text)}
 .overlay-canvas .graph-legend .score-key:before{color:var(--graph-score)}
 .overlay-canvas .graph-legend .miss-key:before{color:var(--graph-miss)}
-.overlay-canvas[data-skin=result-aurora] .skin-energy{display:none}
 
-.overlay-canvas[data-skin=dj-blackbox] .song-copy h1{color:#dddeda;text-shadow:0 1px #fff,0 3px #050605}
 
 .overlay-canvas .material-frame{position:absolute;inset:0;pointer-events:none}
 .overlay-canvas .material-slice{position:absolute;background-repeat:no-repeat}
-.overlay-canvas[data-skin=dj-blackbox] .score-content{padding:18px 28px 14px}
-.overlay-canvas[data-skin=dj-blackbox] h2{height:21px}
-.overlay-canvas[data-skin=dj-blackbox] .history-content{padding:18px 28px 14px}
-.overlay-canvas[data-skin=dj-blackbox] .history-row{height:20px;line-height:20px}
-.overlay-canvas[data-skin=dj-blackbox] .history-head{height:17px}
-.overlay-canvas[data-skin=dj-blackbox] .graph-content{padding:18px var(--graph-padding-x) 14px}
-.overlay-canvas[data-skin=dj-blackbox] .plot{margin-top:18px}
-.overlay-canvas[data-skin=dj-blackbox] .graph-legend{top:41px}
-.overlay-canvas[data-skin=dj-blackbox] .time-axis{height:18px;line-height:18px}
-.overlay-canvas .material-illumination{position:absolute;inset:12px;background:url("/skins/result-aurora-header.png") center/100% 100% no-repeat;opacity:.7}
-.overlay-canvas[data-skin=result-aurora] .score-main strong{color:#f4d174;text-shadow:-1px -1px #fff3c5,1px 1px #80521d}
-.overlay-canvas[data-skin=result-aurora] .best-side .dj-level{color:#f4d174;font-style:italic;text-shadow:0 1px #82521c}
-.overlay-canvas[data-skin=result-aurora] .clear-value{color:#f5d785;font-style:italic;letter-spacing:.08em}
-.overlay-canvas[data-skin=dj-blackbox] .detail-row{height:16px;line-height:16px}
-.overlay-canvas[data-skin=dj-blackbox] .detail-row.fast,.overlay-canvas[data-skin=dj-blackbox] .detail-row.options{height:21px}
+.overlay-canvas .material-illumination{position:absolute;inset:12px;background:url("header.png") center/100% 100% no-repeat;opacity:.7}
 .overlay-canvas .metal-type{display:inline-flex;position:relative;vertical-align:top;max-width:100%;text-shadow:none}
 .overlay-canvas .metal-glyph{display:block;flex-shrink:0;background-repeat:no-repeat}
-.overlay-canvas[data-skin=result-aurora] .metal-type{transform:skewX(-9deg);transform-origin:center}
  .overlay-canvas .type-value{position:absolute;opacity:0;pointer-events:none}
 .overlay-canvas .material-label{display:inline-block;position:relative;vertical-align:baseline;max-width:100%;overflow:hidden;white-space:nowrap;font-weight:600;letter-spacing:.04em;text-shadow:none;font-style:normal;padding-right:2px}
 .overlay-canvas .label-value{opacity:0;position:relative;white-space:nowrap}

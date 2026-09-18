@@ -153,6 +153,7 @@ mod server {
                         let mut canvas = crate::config::empty_canvas(
                             presentation.id.clone(),
                             crate::runtime::Backend::Obs,
+                            presentation.skin,
                         );
                         canvas.apply_presentation(presentation);
                         canvases.push(canvas);
@@ -224,12 +225,8 @@ mod server {
             .route("/skin/{id}/{*path}", get(skin_asset))
             .route("/ws/stage", get(stage_socket))
             .route("/ws/{id}", get(socket))
-            .route("/fonts/oxanium.ttf", get(font))
-            .route("/fonts/{name}", get(extra_font))
-            .route("/motion.js", get(motion_script))
             .route("/skin-runtime.js", get(skin_runtime_script))
             .route("/skin-host.css", get(skin_host_style))
-            .route("/fonts/OFL.txt", get(font_license))
             .route("/{*path}", get(asset))
             .with_state(Arc::clone(&shared));
         let listener = tokio::net::TcpListener::bind(config.listen)
@@ -291,6 +288,10 @@ mod server {
                     preview_video: package
                         .resource("preview.webm")
                         .map(|_| format!("/skin/{}/preview.webm", skin.id)),
+                    widget_defaults: serde_json::from_value(
+                        serde_json::to_value(package.manifest.widget_defaults).ok()?,
+                    )
+                    .ok()?,
                     canvas_properties: serde_json::from_value(
                         serde_json::to_value(package.manifest.canvas_properties).ok()?,
                     )
@@ -312,8 +313,7 @@ mod server {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
         let initial = format!(
-            "<head><script id=\"scorepeek-stage\" type=\"application/json\">{canvases}</script><script id=\"scorepeek-skins\" type=\"application/json\">{skins}</script><style>@font-face{{font-family:Oxanium;src:url('/fonts/oxanium.ttf');font-weight:200 800}}{}{}{} </style>",
-            scorepeek_overlay_ui::FONT_CSS,
+            "<head><script id=\"scorepeek-stage\" type=\"application/json\">{canvases}</script><script id=\"scorepeek-skins\" type=\"application/json\">{skins}</script><style>{}{} </style>",
             scorepeek_overlay_ui::EDITOR_CSS,
             include_str!("../../scorepeek-overlay-ui/styles/stage.css")
         );
@@ -406,21 +406,17 @@ mod server {
         canvas: &crate::config::Canvas,
         manifest: &crate::skin::Manifest,
     ) -> std::collections::BTreeMap<String, serde_json::Value> {
-        let mut canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
-        canvas_properties.insert(
-            "background".into(),
-            serde_json::to_value(canvas.background)
-                .expect("Background serialization is infallible"),
-        );
-        canvas_properties
+        manifest.effective_canvas_properties(&canvas.skin_properties)
     }
 
     #[cfg(test)]
     #[test]
-    fn display_canvas_specification_uses_the_shared_background_authority() {
-        let mut canvas =
-            crate::config::empty_canvas("browser-background".into(), crate::runtime::Backend::Obs);
-        canvas.background = scorepeek_overlay_ui::Background::Static;
+    fn display_canvas_specification_uses_the_skin_property_authority() {
+        let mut canvas = crate::config::empty_canvas(
+            "browser-background".into(),
+            crate::runtime::Backend::Obs,
+            "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap(),
+        );
         canvas
             .skin_properties
             .insert("background".into(), serde_json::json!("none"));
@@ -429,7 +425,7 @@ mod server {
 
         assert_eq!(
             effective_canvas_properties(&canvas, &manifest)["background"],
-            "static"
+            "none"
         );
     }
 
@@ -443,17 +439,14 @@ mod server {
         let Some(bytes) = package.resource(&path) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        let content_type = match std::path::Path::new(&path)
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)
-        {
-            Some("wasm") => "application/wasm",
-            Some("css") => "text/css; charset=utf-8",
-            Some("png") => "image/png",
-            Some("webm") => "video/webm",
-            Some("svg") => "image/svg+xml",
-            Some("json") => "application/json",
-            _ => "application/octet-stream",
+        let content_type = match path.as_str() {
+            crate::skin::MODULE_PATH => "application/wasm",
+            crate::skin::STYLE_PATH => "text/css; charset=utf-8",
+            crate::skin::PREVIEW_PATH => "image/png",
+            crate::skin::PREVIEW_VIDEO_PATH => "video/webm",
+            _ => package
+                .resource_media_type(&path)
+                .unwrap_or("application/octet-stream"),
         };
         (
             [
@@ -461,28 +454,6 @@ mod server {
                 (header::CACHE_CONTROL, "no-store"),
             ],
             bytes.to_vec(),
-        )
-            .into_response()
-    }
-    async fn extra_font(Path(name): Path<String>) -> Response {
-        if let Some((_, text)) = scorepeek_overlay_ui::FONT_LICENSES
-            .iter()
-            .find(|(path, _)| *path == name)
-        {
-            return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], *text).into_response();
-        }
-        scorepeek_overlay_ui::FONT_ASSETS
-            .iter()
-            .find(|(path, _)| *path == name)
-            .map_or_else(
-                || StatusCode::NOT_FOUND.into_response(),
-                |(_, bytes)| ([(header::CONTENT_TYPE, "font/ttf")], *bytes).into_response(),
-            )
-    }
-    async fn motion_script() -> Response {
-        (
-            [(header::CONTENT_TYPE, "text/javascript")],
-            scorepeek_overlay_ui::motion::BROWSER_DRIVER,
         )
             .into_response()
     }
@@ -500,30 +471,10 @@ mod server {
         )
             .into_response()
     }
-    async fn font() -> Response {
-        (
-            [(header::CONTENT_TYPE, "font/ttf")],
-            scorepeek_overlay_ui::OXANIUM,
-        )
-            .into_response()
-    }
-    async fn font_license() -> Response {
-        (
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            include_str!("../../scorepeek-overlay-ui/assets/fonts/OFL.txt"),
-        )
-            .into_response()
-    }
     async fn asset(Path(path): Path<String>) -> Response {
         embedded(&path)
     }
     fn embedded(path: &str) -> Response {
-        if let Some(svg) = scorepeek_overlay_ui::composition::aperture_asset(&format!("/{path}")) {
-            return ([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response();
-        }
-        if let Some(bytes) = scorepeek_overlay_ui::skin_asset(&format!("/{path}")) {
-            return ([(header::CONTENT_TYPE, "image/png")], bytes).into_response();
-        }
         #[cfg(feature = "embedded-web")]
         if let Some(asset) = Assets::get(path) {
             return (

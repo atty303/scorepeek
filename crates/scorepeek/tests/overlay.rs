@@ -61,10 +61,11 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let config = Config {
         backend: Backend::Obs,
         canvases: {
-            let mut canvas =
-                scorepeek_overlay::config::empty_canvas("obs-selection".into(), Backend::Obs);
-            canvas.skin = scorepeek_overlay::Skin::ResultAurora;
-            vec![canvas]
+            vec![scorepeek_overlay::config::empty_canvas(
+                "obs-selection".into(),
+                Backend::Obs,
+                "dev.atty303.scorepeek.skin.result-aurora".parse().unwrap(),
+            )]
         },
         config_path: temporary.path().join("overlay.toml"),
         control_socket: temporary.path().join("absent-control.sock"),
@@ -126,11 +127,15 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(stage.contains("editor-button"));
     assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.png"));
     assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.webm"));
-    let font = get(address, "/fonts/oxanium.ttf").unwrap();
+    let font = get(
+        address,
+        "/skin/dev.atty303.scorepeek.skin.result-aurora/Oxanium.ttf",
+    )
+    .unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));
     assert!(font.ends_with(include_bytes!(
-        "../../scorepeek-overlay-ui/assets/fonts/Oxanium.ttf"
+        "../../../skins/shared/resources/Oxanium.ttf"
     )));
 
     assert!(
@@ -139,22 +144,29 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             .starts_with(b"HTTP/1.1 404")
     );
     assert!(
-        String::from_utf8(get(address, "/fonts/OFL.txt").unwrap())
+        String::from_utf8(
+            get(
+                address,
+                "/skin/dev.atty303.scorepeek.skin.result-aurora/Oxanium-OFL.txt",
+            )
             .unwrap()
-            .contains("SIL OPEN FONT LICENSE")
+        )
+        .unwrap()
+        .contains("SIL OPEN FONT LICENSE")
     );
     let package_root = "/skin/dev.atty303.scorepeek.skin.result-aurora";
     for (name, mime) in [
         ("preview.png", "image/png"),
         ("preview.webm", "video/webm"),
-        ("result-aurora-background.png", "image/png"),
-        ("result-aurora-frame.png", "image/png"),
-        ("result-aurora-header.png", "image/png"),
-        ("type-result-aurora.png", "image/png"),
-        ("labels-result-aurora.png", "image/png"),
-        ("Oxanium.ttf", "application/octet-stream"),
-        ("Orbitron.ttf", "application/octet-stream"),
-        ("Rajdhani-SemiBold.ttf", "application/octet-stream"),
+        ("background.png", "image/png"),
+        ("frame.png", "image/png"),
+        ("header.png", "image/png"),
+        ("type.png", "image/png"),
+        ("labels.png", "image/png"),
+        ("energy.png", "image/png"),
+        ("Oxanium.ttf", "font/ttf"),
+        ("Orbitron.ttf", "font/ttf"),
+        ("Rajdhani-SemiBold.ttf", "font/ttf"),
         ("skin.wasm", "application/wasm"),
     ] {
         let asset = get(address, &format!("{package_root}/{name}")).unwrap();

@@ -114,7 +114,9 @@ pub fn app() -> Element {
                 if projection.interactive {
                     EditorPanel {view:runtime.inspector.read().clone(),title:projection.title.clone(),onaction:action}
                     if let Some(kind)=projection.placing {
-                        PlacementPreview {kind,point:projection.point.map(f64::from)}
+                        if let Some(size) = projection.view.skins.iter().find(|skin| projection.selected_canvas.as_ref().is_some_and(|canvas| canvas.skin == skin.id)).and_then(|skin| skin.widget_defaults.get(kind.name())).map(|default| [default.width, default.height]) {
+                            PlacementPreview {kind,point:projection.point.map(f64::from),size}
+                        }
                     }
                 }
                 if let Some(notice)=&projection.notice {
@@ -141,7 +143,7 @@ fn canvas_replica_specification(
     skins: &[scorepeek_overlay_ui::editor::EditorSkin],
 ) -> Option<serde_json::Value> {
     let skin = skins.iter().find(|skin| skin.id == canvas.skin)?;
-    let mut canvas_properties = skin
+    let canvas_properties = skin
         .canvas_properties
         .iter()
         .map(|(key, property)| {
@@ -151,10 +153,6 @@ fn canvas_replica_specification(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    canvas_properties.insert(
-        "background".into(),
-        serde_json::to_value(canvas.background).expect("Background serialization is infallible"),
-    );
     let widgets = canvas
         .widgets
         .iter()
@@ -241,16 +239,17 @@ fn publish_canvas_replica(
 mod tests {
     use super::*;
     use scorepeek_overlay_ui::editor::{EditorProperty, EditorSkin};
-    use scorepeek_overlay_ui::{Background, Skin, WidgetKind, WidgetLayout, WidgetSettings};
+    use scorepeek_overlay_ui::{WidgetKind, WidgetLayout, WidgetSettings};
 
     #[test]
     fn iframe_replica_specification_contains_effective_properties_and_complete_geometry() {
         let skin = EditorSkin {
-            id: Skin::CyanSystem,
+            id: "dev.example.skin".parse().unwrap(),
             name: "test".into(),
             release: "1.0.0".into(),
             preview: String::new(),
             preview_video: None,
+            widget_defaults: std::collections::BTreeMap::new(),
             canvas_properties: std::collections::BTreeMap::from([
                 (
                     "tint".into(),
@@ -279,14 +278,13 @@ mod tests {
             )]),
         };
         let mut canvas = CanvasPresentation {
-            background: Background::Static,
             id: "canvas-1".into(),
             name: "Canvas 1".into(),
-            skin: Skin::CyanSystem,
-            skin_properties: std::collections::BTreeMap::from([(
-                "tint".into(),
-                serde_json::json!("#112233"),
-            )]),
+            skin: "dev.example.skin".parse().unwrap(),
+            skin_properties: std::collections::BTreeMap::from([
+                ("tint".into(), serde_json::json!("#112233")),
+                ("background".into(), serde_json::json!("static")),
+            ]),
             show_on: None,
             opacity_percent: 100,
             output: Some("OBS".into()),

@@ -1,9 +1,59 @@
 id = "dev.atty303.scorepeek.skin.dj-blackbox"
 name = "DJ Blackbox"
-release = "3"
-api_version = 1
+release = "4"
+api_version = 2
 description = "Dark industrial panels with acid-green indicators."
 author = "scorepeek"
+
+[widget_defaults.status]
+width = 544
+height = 44
+[widget_defaults.selection]
+width = 544
+height = 124
+[widget_defaults.score]
+width = 544
+height = 200
+[widget_defaults.history-list]
+width = 544
+height = 156
+[widget_defaults.history-graph]
+width = 544
+height = 208
+[widget_defaults.empty]
+width = 640
+height = 360
+
+[[resources]]
+path = "background.png"
+media_type = "image/png"
+[[resources]]
+path = "frame.png"
+media_type = "image/png"
+[[resources]]
+path = "type.png"
+media_type = "image/png"
+[[resources]]
+path = "labels.png"
+media_type = "image/png"
+[[resources]]
+path = "Oxanium.ttf"
+media_type = "font/ttf"
+[[resources]]
+path = "Orbitron.ttf"
+media_type = "font/ttf"
+[[resources]]
+path = "Rajdhani-SemiBold.ttf"
+media_type = "font/ttf"
+[[resources]]
+path = "Oxanium-OFL.txt"
+media_type = "text/plain"
+[[resources]]
+path = "Orbitron-OFL.txt"
+media_type = "text/plain"
+[[resources]]
+path = "Rajdhani-OFL.txt"
+media_type = "text/plain"
 
 [canvas_properties.background]
 type = "enum"
