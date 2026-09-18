@@ -237,7 +237,7 @@ mise run check
 mise run //tools/ocr:test
 mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
+scripts/with-isolated-skins.sh cargo test --locked --workspace
 exec mise run overlay:web:test
 '''
 
