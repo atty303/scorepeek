@@ -1,0 +1,17 @@
+Task: Repair the GitHub Actions OpenSSL pkg-config routing failure
+Anchor: 5ae3f2c389a0e2ec89bc825a4e0b7db31a70876d
+Base: 2008c030773570733212889dac59e9785dfbd836
+Workline: main
+Commits: 5ae3f2c389a0e2ec89bc825a4e0b7db31a70876d routes OpenSSL through host pkg-config while retaining pinned PipeWire and xkbcommon SDK routes
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; review; maintain-agent-guidance
+Environment: GitHub-hosted Ubuntu 24.04 job evidence and a Fedora development host; localhost integration tests, clean cargo install verification, VCS writes, and the post-commit build required target-equivalent execution outside the filesystem/network sandbox
+Evidence: GitHub Actions run 35316764685 job 105510003150 failed in mise-action while openssl-sys built dioxus-cli 0.7.10 because the repository PKG_CONFIG wrapper hid the host openssl.pc; a clean temporary cargo install of dioxus-cli 0.7.10 succeeded after the route change; the final exact diff passed bash syntax, native route verification, mise run check, mise run test, independent review, and the post-commit mise run build
+Authority: The wrapper and native verification script are the living source; the linked GitHub Actions job is incident evidence; the user approved routing OpenSSL to the system side
+Transcript:
+- U1: github ciが落ちている
+  [https://github.com/atty303/scorepeek/actions/runs/35316764685/job/105510003150](https://github.com/atty303/scorepeek/actions/runs/35316764685/job/105510003150)
+  - A: Inspected the linked job and a current failing run. The failure occurred before repository tests while mise-action built dioxus-cli 0.7.10: openssl-sys could not find openssl.pc because the repository-wide PKG_CONFIG wrapper sent non-xkbcommon queries to the pinned PipeWire SDK. Compared the wrapper with host pkg-config, established that host OpenSSL was present, and proposed an explicit package allowlist. No files were changed during diagnosis.
+- U2: pkgconfig wrapperがopensslをsystem側に向けたらいいのでは？
+  - A: Agreed. Proposed keeping libpipewire-0.3 and libspa-0.2 on the pinned PipeWire SDK, xkbcommon on the pinned xkbcommon SDK, routing only openssl to host pkg-config, and rejecting unknown or mixed routes.
+- U3: それでいい
+  - A: Implemented the approved durable fix in the wrapper and native build-environment verifier. Added host OpenSSL, pinned xkbcommon, version-qualified requirements, mixed-route, unknown-package, and single-argument package-smuggling checks. A fresh independent review found and drove fixes for version-qualified system-deps arguments and single-argument route bypasses; the final delta review reported no important findings. Verified bash syntax, native routing, mise run check, a clean temporary dioxus-cli 0.7.10 install, and two complete mise run test executions, with the final exact diff completing in 90.45 seconds. Committed only the two scripts as 5ae3f2c389a0e2ec89bc825a4e0b7db31a70876d, then completed mise run build. Did not push or rerun GitHub Actions because remote writes were not authorized. The durable invariant is already encoded in the wrapper and executable verification, so no additional guidance change was proposed.
