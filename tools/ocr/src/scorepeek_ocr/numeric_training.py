@@ -27,7 +27,7 @@ from scorepeek_ocr.training_initializer import MAX_MANIFEST_BYTES, _publish, _re
 from scorepeek_ocr.training_process import run_checked
 from scorepeek_ocr.training_source import load_registered_source, verify_source
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 MOBILE_MANIFEST = PROJECT_ROOT / "models/manifests/en-number-mobile-v2-rec-trained-v1.json"
 PPOCRV6_MANIFEST = PROJECT_ROOT / "models/manifests/pp-ocrv6-small-rec-pretrained-v1.json"
 DATASET_SCHEMA = "scorepeek-private-numeric-ctc-dataset-v1"

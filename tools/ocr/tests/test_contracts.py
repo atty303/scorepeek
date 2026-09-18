@@ -1080,7 +1080,7 @@ class ContractTests(unittest.TestCase):
 
     def test_registered_model_manifest_is_exact(self) -> None:
         manifest = (
-            Path(__file__).parents[2]
+            Path(__file__).parents[3]
             / "models"
             / "manifests"
             / "pp-ocrv6-small-rec-v1.json"

@@ -1,4 +1,8 @@
 min_version = "2026.8.3"
+monorepo_root = true
+
+[monorepo]
+config_roots = ["tools/ocr"]
 
 [tools]
 "cargo:dioxus-cli" = "0.7.10"
@@ -6,11 +10,9 @@ actionlint = "1.7.12"
 cargo-dist = "0.32.0"
 hk = "1.54.1"
 "npm:playwright" = "1.63.0"
-python = "3.12.13"
 rclone = "1.74.2"
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
 taplo = "0.10.0"
-uv = "0.11.7"
 zig = "0.16.0"
 
 [tools."http:pkgconf"]
@@ -233,7 +235,7 @@ mise run overlay:wayland:build:check
 mise run overlay:web:check
 mise run check README.md
 mise run check
-mise run ocr:test
+mise run //tools/ocr:test
 mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
@@ -485,168 +487,12 @@ catalog="${SCOREPEEK_CATALOG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepee
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-select dwell evaluate-correctness --store "$root" --catalog-store "$catalog" "$@"
 '''
 
-[tasks."ocr:sync"]
-description = "Synchronize the locked offline OCR development environment"
-run = "uv sync --locked --no-dev"
-
-[tasks."ocr:model:fetch"]
-description = "Fetch and verify the registered PP-OCRv6 model outside the repository"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch "$@"
-'''
-
-[tasks."ocr:onnx:model:fetch"]
-description = "Fetch and verify the registered PP-OCRv6 ONNX model outside the repository"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch-onnx "$@"
-'''
-
-[tasks."ocr:official-model:fetch"]
-description = "Fetch a registered official ONNX model bundle outside the repository"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch-onnx-bundle "$@"
-'''
-
-[tasks."ocr:spike"]
-description = "Run PP-OCRv6 against a verified canonical crop artifact"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.spike "$@"
-'''
-
-[tasks."ocr:provisional-labels"]
-description = "Generate catalog-bound provisional labels from reviewed music-list crops"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.provisional_labels "$@"
-'''
-
-[tasks."ocr:training-input-manifest"]
-description = "Seal reviewed provisional music-list labels into title-disjoint training splits"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_inputs "$@"
-'''
-
-[tasks."ocr:training-source:verify"]
-description = "Verify an explicit PaddleOCR checkout against the registered v3.7.0 source"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_source "$@"
-'''
-
-[tasks."ocr:title-model:prepare"]
-description = "Prepare a complete private dictionary and digest-bound Paddle training inputs"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_artifacts prepare "$@"
-'''
-
-[tasks."ocr:title-model:record-export"]
-description = "Record a private Paddle/ONNX export without promoting it to runtime"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_artifacts record-export "$@"
-'''
-
-[tasks."ocr:title-model:initialize"]
-description = "Map a registered PP-OCRv6 checkpoint to a prepared private dictionary and probe validation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_initializer "$@"
-'''
-
-[tasks."ocr:title-model:pilot"]
-description = "Run bounded fixed-step private title-model fine-tuning and select the first improvement"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_pilot "$@"
-'''
-
-[tasks."ocr:title-model:export"]
-description = "Export a selected private title model through registered Paddle and ONNX entrypoints"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_export "$@"
-'''
-
-[tasks."ocr:title-model:parity-reference"]
-description = "Create a Paddle tensor reference for a scorepeek-owned title-model export"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.export_parity "$@"
-'''
-
 [tasks."ocr:title-model:parity-run"]
 description = "Verify scorepeek-owned Paddle and ONNX tensor and dictionary contracts"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition title-model-contract-parity "$@"
-'''
-
-[tasks."ocr:title-model:replay"]
-description = "Compare the mapped initializer and selected pilot on private result and evaluation inputs"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_replay "$@"
-'''
-
-[tasks."ocr:numeric-model"]
-description = "Prepare or initialize the private fixed-ROI numeric CTC model"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.numeric_training "$@"
-'''
-
-[tasks."ocr:numeric-fixed-slot:build"]
-description = "Build and evaluate the private fixed-slot HOG/MLP numeric bundle"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.fixed_slot_training "$@"
-'''
-
-[tasks."ocr:title-model:census"]
-description = "Measure unique song-ID coverage across the complete private title corpus"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.training_census "$@"
-'''
-
-[tasks."ocr:official-onnx:census"]
-description = "Measure an official ONNX recognizer with full-catalog song search"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.official_census "$@"
-'''
-
-[tasks."ocr:official-onnx:residual-matrix"]
-description = "Cross-tabulate two saved official-model censuses without ONNX inference"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.official_residual_matrix "$@"
 '''
 
 [tasks."ocr:official-onnx:decode-dynamic"]
@@ -657,22 +503,6 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition title-official-dynamic-onnx-decode "$@"
 '''
 
-[tasks."ocr:short-title:probe"]
-description = "Reproduce private one-character title OCR signal observations"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.short_title_probe "$@"
-'''
-
-[tasks."ocr:parity:reference"]
-description = "Generate a digest-bound Paddle parity reference from a verified title crop"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec uv run --locked --no-dev python -m scorepeek_ocr.parity "$@"
-'''
-
 [tasks."ocr:parity:run"]
 description = "Run Rust/Paddle/ONNX parity and diagnostic active-catalog title scoring"
 run = '''
@@ -680,10 +510,6 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition title-onnx-parity "$@"
 '''
-
-[tasks."ocr:test"]
-description = "Validate offline OCR manifests without acquiring a model"
-run = "uv run --locked --no-dev python -m unittest discover -s tests/ocr -p 'test_*.py'"
 
 [tasks."corpus:synthetic:render"]
 description = "Render a deterministic catalog-independent synthetic title set"

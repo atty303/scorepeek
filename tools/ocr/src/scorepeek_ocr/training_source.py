@@ -15,7 +15,7 @@ from typing import Any
 
 from scorepeek_ocr.model_store import MAX_MANIFEST_BYTES, _read_regular_bytes, _valid_sha256
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 REGISTERED_TRAINING_SOURCE_MANIFEST = (
     PROJECT_ROOT / "models" / "manifests" / "paddleocr-v3.7.0-training-source.json"
 )

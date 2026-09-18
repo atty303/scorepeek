@@ -25,7 +25,7 @@ from scorepeek_ocr.model_store import (
 
 MAX_CROP_MANIFEST_BYTES = 64 * 1024
 MAX_LAYOUT_BYTES = 64 * 1024
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 CANONICAL_LAYOUT_PATH = PROJECT_ROOT / "crates" / "scorepeek" / "src" / "canonical-layout-v1.json"
 CALIBRATED_NORMALIZER_SHA256 = (
     "0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf"

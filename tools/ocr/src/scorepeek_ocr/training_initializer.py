@@ -33,7 +33,7 @@ from scorepeek_ocr.spike import _sync_directory
 from scorepeek_ocr.training_source import load_registered_source, verify_source
 from scorepeek_ocr.title_presentation import IDENTITY_TRANSFORM_ID, apply_transform
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 CHECKPOINT_MANIFEST = (
     PROJECT_ROOT / "models/manifests/pp-ocrv6-small-rec-pretrained-v1.json"
 )

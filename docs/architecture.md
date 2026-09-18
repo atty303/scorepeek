@@ -39,6 +39,18 @@ registered PP-OCRv6-small text bundle, the installed private numeric bundle,
 and one explicitly selected capture backend before admitting recognition work. Python is restricted
 to reproducible offline OCR preparation, training, and export tooling.
 
+The offline Python project lives in `tools/ocr/`, including its source, tests,
+`pyproject.toml`, `uv.lock`, and local `.venv`. Its `mise.toml` owns the pinned
+Python and uv tools and the offline tasks. From the repository root, run
+`mise run //tools/ocr:sync` to prepare the environment or
+`mise run //tools/ocr:test` to test it; mise prepares missing tools when a task
+runs. Other Python tasks use the same `//tools/ocr:` prefix, such as
+`mise run //tools/ocr:title-model:prepare`. Tasks run in `tools/ocr/`, so relative
+CLI paths are resolved there. Use absolute paths for private inputs and outputs.
+The root `mise run test` and CI include the offline tests. Shared model manifests
+remain in `models/manifests/`, and Rust recognition and verification tasks remain
+in the root configuration.
+
 The runtime does not start, stop, signal, or restart the operator's ordinary
 Gamescope, Steam, or game processes. It waits for exactly one eligible source,
 treats each producer lifetime as a distinct capture

@@ -1,7 +1,7 @@
 # Build and tool state
 /target/
 /.direnv/
-/.venv/
+/tools/ocr/.venv/
 /.mise.local.toml
 __pycache__/
 *.py[cod]

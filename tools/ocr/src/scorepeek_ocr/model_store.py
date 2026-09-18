@@ -29,7 +29,7 @@ ONNX_BUNDLE_STORE_CLAIM = ".scorepeek-onnx-bundle-store-claim-v1"
 ONNX_BUNDLE_STORE_MARKER = ".scorepeek-onnx-bundle-store-v1"
 ONNX_BUNDLE_STAGING_PREFIX = ".scorepeek-staging-"
 ONNX_BUNDLE_STAGING_MARKER = ".scorepeek-onnx-bundle-staging-v1"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 REGISTERED_MODEL_MANIFEST = (
     PROJECT_ROOT / "models" / "manifests" / "pp-ocrv6-small-rec-v1.json"
 )
