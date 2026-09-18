@@ -1573,8 +1573,8 @@ fn recover_output_staging(parent: &Path) -> Result<(), CorpusError> {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let metadata = entry.path().symlink_metadata()?;
         if name.starts_with(EXTRACT_STAGING_PREFIX) {
+            let metadata = entry.path().symlink_metadata()?;
             if !metadata.is_dir() {
                 return Err(invalid_media("frame staging entry is not a directory"));
             }
@@ -1582,9 +1582,11 @@ fn recover_output_staging(parent: &Path) -> Result<(), CorpusError> {
             fs::remove_dir_all(entry.path())?;
             changed = true;
         } else if name.starts_with(FILE_CLAIM_PREFIX) && !name.ends_with(".staging") {
+            let metadata = entry.path().symlink_metadata()?;
             recover_file_claim(parent, &entry.path(), &name, &metadata)?;
             changed = true;
         } else if let Some(digest) = name.strip_prefix(".scorepeek-output-claim-") {
+            let metadata = entry.path().symlink_metadata()?;
             recover_output_claim(parent, &entry.path(), digest, &metadata)?;
             changed = true;
         }
