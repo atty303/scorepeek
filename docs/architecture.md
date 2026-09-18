@@ -144,6 +144,11 @@ CSS, preview, and package-relative resources. Native executes the Wasm module
 through Wasmtime; OBS executes it in a Web Worker. The current authoring
 contract is [skin plugin API v2](skin-plugin-api-v2.md).
 
+An explicitly requested overlay is part of `scorepeek run` startup. The child must report ready
+after its configured skins and backend-owned surfaces or listener initialize; a timeout or error
+before that boundary fails the run. A worker or adapter failure after ready remains an overlay
+diagnostic and does not terminate recognition.
+
 An active Wayland surface presents once per compositor frame callback. An inactive canvas detaches
 its buffer and suspends only the GPU presentation renderer while retaining the worker, Wayland shell,
 DOM, and skin runtime. Reactivation restores the complete double-buffered layer state before its

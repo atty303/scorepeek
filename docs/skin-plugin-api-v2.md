@@ -194,6 +194,8 @@ scorepeek skin uninstall dev.example.skin-name
 The store is `$XDG_DATA_HOME/scorepeek/skins` (or the corresponding home data directory). A package
 whose ID and release already match is reported as `unchanged` without replacing the stored ZIP.
 Changing the opaque release replaces that ID atomically after the v2 property compatibility check.
+An installed package from an older API is never listed or executed, but installing a valid v2 ZIP
+with the same ID replaces it atomically and reports the previous release.
 Uninstall does not rewrite canvases that reference the ID; install or select an available skin
 before the next overlay startup. There is no live reload or protection for a package changed while
 an overlay process is using it.

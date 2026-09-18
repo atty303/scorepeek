@@ -183,16 +183,10 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             .unwrap()
             .starts_with(b"HTTP/1.1 404")
     );
-    // A conflicting OBS child fails independently; the first remains available.
-    children.start(&executable, &config).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while children.poll().is_empty() {
-        assert!(
-            Instant::now() < deadline,
-            "conflicting listener did not fail"
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
+    // A conflicting OBS child fails its initialization; the ready child remains available.
+    let error = children.start(&executable, &config).unwrap_err();
+    assert!(error.contains("overlay initialization"), "{error}");
+    assert!(error.contains("Address already in use"), "{error}");
     assert!(get(address, "/").unwrap().starts_with(b"HTTP/1.1 200"));
     children.shutdown();
     assert!(get(address, "/").is_err());

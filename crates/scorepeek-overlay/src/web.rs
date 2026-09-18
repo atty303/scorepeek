@@ -191,6 +191,15 @@ mod server {
         config: Config,
         mut input: impl std::io::Read + Send + 'static,
     ) -> Result<(), String> {
+        let skins = crate::skin::StoreRoot::new(config.skin_store.clone());
+        for skin in config
+            .canvases
+            .iter()
+            .map(|canvas| canvas.skin.name())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            skins.open(skin)?;
+        }
         let changed = Arc::new(Notify::new());
         let wake = Arc::clone(&changed);
         let feed = Feed::start(config.clone(), Arc::new(move || wake.notify_waiters()))
@@ -210,13 +219,12 @@ mod server {
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Obs)
             .cloned()
             .collect();
-        let skin_store = config.skin_store.clone();
         let shared = Arc::new(Shared {
             canvases: Mutex::new(managed_canvases),
             control_socket: config.control_socket.clone(),
             feed,
             changed,
-            skins: crate::skin::StoreRoot::new(skin_store),
+            skins,
         });
         let app = Router::new()
             .route("/", get(canvas_index))
@@ -232,6 +240,10 @@ mod server {
         let listener = tokio::net::TcpListener::bind(config.listen)
             .await
             .map_err(|error| error.to_string())?;
+        crate::diagnostics::emit(
+            "child_ready",
+            &serde_json::json!({"backend":"obs","status":"success"}),
+        );
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 while !shared.feed.stop.load(Ordering::Acquire) {

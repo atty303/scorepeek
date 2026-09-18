@@ -12,6 +12,7 @@ use std::{
 
 pub const ENTRYPOINT: &str = "__scorepeek-overlay";
 const MAX_DIAGNOSTIC_LINE_BYTES: u64 = 1024 * 1024;
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn process_exit_observation(backend: &str, status: std::process::ExitStatus) -> serde_json::Value {
     serde_json::json!({
@@ -65,13 +66,35 @@ impl Children {
             .ok_or_else(|| "overlay diagnostic pipe missing".to_owned())?;
         let observations = Arc::clone(&self.observations);
         let backend = name.clone();
+        let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
         let reader = std::thread::Builder::new()
             .name("overlay-diagnostics".into())
-            .spawn(move || read_diagnostics(stdout, &observations, &backend));
+            .spawn(move || read_diagnostics(stdout, &observations, &backend, Some(startup_tx)));
         match reader {
             Ok(reader) => {
-                self.status.insert(name.clone(), "running");
-                self.owned.push((name, child, Some(reader)));
+                let startup =
+                    startup_rx
+                        .recv_timeout(STARTUP_TIMEOUT)
+                        .map_err(|error| match error {
+                            std::sync::mpsc::RecvTimeoutError::Timeout => {
+                                format!("{name} overlay initialization timed out")
+                            }
+                            std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                                format!("{name} overlay initialization channel closed")
+                            }
+                        });
+                match startup.and_then(|result| result) {
+                    Ok(()) => {
+                        self.status.insert(name.clone(), "running");
+                        self.owned.push((name, child, Some(reader)));
+                    }
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = reader.join();
+                        return Err(format!("{name} overlay initialization: {error}"));
+                    }
+                }
             }
             Err(error) => {
                 let _ = child.kill();
@@ -185,6 +208,7 @@ fn read_diagnostics(
     stdout: impl std::io::Read,
     observations: &Mutex<Vec<serde_json::Value>>,
     backend: &str,
+    mut startup: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
 ) {
     let mut expected_sequence = 1_u64;
     let mut terminal_seen = false;
@@ -236,6 +260,19 @@ fn read_diagnostics(
                 }
                 expected_sequence = sequence.unwrap_or(expected_sequence).saturating_add(1);
                 terminal_seen |= record["operation"] == "child_exit";
+                if record["operation"] == "child_ready" {
+                    if let Some(sender) = startup.take() {
+                        let _ = sender.send(Ok(()));
+                    }
+                } else if record["operation"] == "child_exit"
+                    && let Some(sender) = startup.take()
+                {
+                    let error = record["data"]["error"]
+                        .as_str()
+                        .unwrap_or("overlay exited before initialization completed")
+                        .to_owned();
+                    let _ = sender.send(Err(error));
+                }
                 serde_json::json!({"backend": backend, "record": record})
             }
             Err(error) => {
@@ -252,6 +289,11 @@ fn read_diagnostics(
             serde_json::json!({"backend": backend, "transport":"stdout", "operation":"eof", "error_type":"unexpected_eof"})
         },
     );
+    if let Some(sender) = startup {
+        let _ = sender.send(Err(
+            "overlay diagnostic stream ended before initialization completed".into(),
+        ));
+    }
 }
 
 fn push_observation(observations: &Mutex<Vec<serde_json::Value>>, value: serde_json::Value) {
@@ -270,6 +312,35 @@ impl Drop for Children {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_boundary_ignores_later_child_failure_for_startup() {
+        let input = concat!(
+            "{\"sequence\":1,\"operation\":\"child_ready\",\"data\":{}}\n",
+            "{\"sequence\":2,\"operation\":\"child_exit\",\"data\":{\"success\":false,\"error\":\"later failure\"}}\n"
+        );
+        let observations = Mutex::new(Vec::new());
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        read_diagnostics(input.as_bytes(), &observations, "Wayland", Some(sender));
+
+        assert_eq!(receiver.recv().unwrap(), Ok(()));
+        assert_eq!(observations.into_inner().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn child_failure_before_ready_fails_startup() {
+        let input = "{\"sequence\":1,\"operation\":\"child_exit\",\"data\":{\"success\":false,\"error\":\"initialization failed\"}}\n";
+        let observations = Mutex::new(Vec::new());
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+
+        read_diagnostics(input.as_bytes(), &observations, "Wayland", Some(sender));
+
+        assert_eq!(
+            receiver.recv().unwrap(),
+            Err("initialization failed".into())
+        );
+    }
 
     #[test]
     fn forced_shutdown_records_the_child_exit() {

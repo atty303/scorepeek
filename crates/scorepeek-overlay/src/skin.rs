@@ -429,6 +429,21 @@ impl Package {
         Ok(Self { manifest, entries })
     }
 
+    fn read_manifest(path: &Path) -> Result<Manifest, String> {
+        let file = File::open(path)
+            .map_err(|error| format!("open skin package {}: {error}", path.display()))?;
+        let mut archive =
+            ZipArchive::new(file).map_err(|error| format!("read skin ZIP: {error}"))?;
+        let mut entry = archive
+            .by_name(MANIFEST_PATH)
+            .map_err(|error| format!("read skin ZIP entry {MANIFEST_PATH}: {error}"))?;
+        let mut manifest_text = String::new();
+        entry
+            .read_to_string(&mut manifest_text)
+            .map_err(|error| format!("skin.toml is not UTF-8: {error}"))?;
+        toml::from_str(&manifest_text).map_err(|error| format!("skin.toml: {error}"))
+    }
+
     #[must_use]
     pub fn resource(&self, path: &str) -> Option<&[u8]> {
         self.entries.get(path).map(Vec::as_slice)
@@ -1179,18 +1194,37 @@ impl StoreRoot {
             self.recover_staging(&package.manifest.id)?;
             let target = self.0.join(format!("{}.zip", package.manifest.id));
             let prior = if target.exists() {
-                Some(Package::open(&target)?)
+                match Package::open(&target) {
+                    Ok(old) => Some((old.manifest, true)),
+                    Err(error) => {
+                        let old = Package::read_manifest(&target)?;
+                        if old.api_version == API_VERSION {
+                            return Err(error);
+                        }
+                        validate_id(&old.id)?;
+                        if old.id != package.manifest.id {
+                            return Err(format!(
+                                "installed skin package id {} does not match {}",
+                                old.id, package.manifest.id
+                            ));
+                        }
+                        if old.release.is_empty() {
+                            return Err("installed skin release must be non-empty".into());
+                        }
+                        Some((old, false))
+                    }
+                }
             } else {
                 None
             };
             if prior
                 .as_ref()
-                .is_some_and(|old| old.manifest.release == package.manifest.release)
+                .is_some_and(|(old, current)| *current && old.release == package.manifest.release)
             {
                 return Ok(InstallOutcome::Unchanged);
             }
-            if let Some(old) = &prior {
-                compatible_properties(&old.manifest, &package.manifest)?;
+            if let Some((old, _)) = &prior {
+                compatible_properties(old, &package.manifest)?;
             }
             package.smoke_test()?;
             fs::rename(&temporary, &target)
@@ -1198,11 +1232,11 @@ impl StoreRoot {
             File::open(&self.0)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| format!("sync skin store: {error}"))?;
-            Ok(
-                prior.map_or(InstallOutcome::Installed, |old| InstallOutcome::Replaced {
-                    previous_release: old.manifest.release,
-                }),
-            )
+            Ok(prior.map_or(InstallOutcome::Installed, |(old, _)| {
+                InstallOutcome::Replaced {
+                    previous_release: old.release,
+                }
+            }))
         })();
         if temporary.exists() {
             fs::remove_file(&temporary)
@@ -1369,6 +1403,8 @@ fn compatible_properties(old: &Manifest, new: &Manifest) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn reverse_domain_ids_are_strict() {
@@ -1447,6 +1483,38 @@ mod tests {
                 .validate()
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn legacy_manifest_remains_readable_for_explicit_replacement() {
+        let mut manifest: Manifest =
+            toml::from_str(include_str!("../../../skins/cyan-system/skin.toml")).unwrap();
+        manifest.api_version = 1;
+        manifest.release = "legacy".into();
+        let path = std::env::temp_dir().join(format!(
+            "scorepeek-legacy-skin-{}-{}.zip",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let file = File::create(&path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(MANIFEST_PATH, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive
+            .write_all(toml::to_string(&manifest).unwrap().as_bytes())
+            .unwrap();
+        archive.finish().unwrap();
+
+        assert!(Package::open(&path).is_err());
+        let prior = Package::read_manifest(&path).unwrap();
+        assert_eq!(prior.id, manifest.id);
+        assert_eq!(prior.release, "legacy");
+        assert_eq!(prior.api_version, 1);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

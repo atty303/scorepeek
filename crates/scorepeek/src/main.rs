@@ -979,7 +979,9 @@ fn run_routine_live_session(
                     }),
                 },
             })?;
-            output.warning(format!("overlay unavailable: {error}"))?;
+            return Err(format!(
+                "{backend:?} overlay initialization failed: {error}"
+            ));
         }
     }
     output.publish(&routine_output::RunEvent {

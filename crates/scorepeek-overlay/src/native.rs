@@ -877,6 +877,11 @@ struct NativeWorker {
     join: std::thread::JoinHandle<Result<(), String>>,
 }
 
+enum NativeWorkerStartup {
+    Ready(String),
+    Failed { canvas_id: String, error: String },
+}
+
 impl WorkerControl for NativeWorker {
     fn request_stop(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
@@ -1415,6 +1420,9 @@ pub fn run_with_editor_scenario(
     let mut workers = BTreeMap::<String, NativeWorker>::new();
     let mut failed = BTreeMap::<String, (Option<String>, Instant)>::new();
     let (coordinator_tx, coordinator_rx) = std::sync::mpsc::channel();
+    let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+    let mut startup_pending = None::<std::collections::BTreeSet<String>>;
+    let mut startup_complete = false;
     if !scenario.is_empty() {
         let scenario_tx = coordinator_tx.clone();
         std::thread::Builder::new()
@@ -1459,7 +1467,7 @@ pub fn run_with_editor_scenario(
     let skin_assets = Arc::new(SkinAssetCache::new(crate::skin::StoreRoot::new(
         config.skin_store.clone(),
     )));
-    let installed_skins = skin_assets.installed_editor_skins().unwrap_or_default();
+    let installed_skins = skin_assets.installed_editor_skins()?;
     let fallback_skin = installed_skins.first().map(|skin| skin.id);
     let probe = desired.first().cloned().map_or_else(
         || {
@@ -1626,6 +1634,9 @@ pub fn run_with_editor_scenario(
         let session = authority.session();
         let projection_started = Instant::now();
         let projected = projection_cache.resolve(fallback_skin, &session, &desired)?;
+        if startup_pending.is_none() {
+            startup_pending = Some(projected.iter().map(|canvas| canvas.id.clone()).collect());
+        }
         coordinator_work.record("projection", projection_started.elapsed());
         let lifecycle_started = Instant::now();
         let reconciliation = reconcile_worker_lifecycle(
@@ -1684,6 +1695,7 @@ pub fn run_with_editor_scenario(
             let stages = Arc::clone(&published_stages);
             let wakes = Arc::clone(&canvas_wakes);
             let coordinator = coordinator_tx.clone();
+            let startup = startup_tx.clone();
             let assets = Arc::clone(&skin_assets);
             let role = if editing {
                 SurfaceRole::EditorStage
@@ -1703,6 +1715,7 @@ pub fn run_with_editor_scenario(
                         coordinator,
                         role,
                         assets,
+                        &startup,
                     )
                 })
                 .map_err(|error| error.to_string())?;
@@ -1714,6 +1727,34 @@ pub fn run_with_editor_scenario(
                     join,
                 },
             );
+        }
+        while let Ok(event) = startup_rx.try_recv() {
+            if startup_complete {
+                continue;
+            }
+            match event {
+                NativeWorkerStartup::Ready(canvas_id) => {
+                    if let Some(pending) = startup_pending.as_mut() {
+                        pending.remove(&canvas_id);
+                    }
+                }
+                NativeWorkerStartup::Failed { canvas_id, error } => {
+                    return Err(format!(
+                        "native canvas worker {canvas_id} failed during initialization: {error}"
+                    ));
+                }
+            }
+        }
+        if !startup_complete
+            && startup_pending
+                .as_ref()
+                .is_some_and(std::collections::BTreeSet::is_empty)
+        {
+            crate::diagnostics::emit(
+                "child_ready",
+                &serde_json::json!({"backend":"wayland","status":"success"}),
+            );
+            startup_complete = true;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1828,6 +1869,45 @@ fn run_canvas(
     coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
     role: SurfaceRole,
     skin_assets: Arc<SkinAssetCache>,
+    startup: &std::sync::mpsc::Sender<NativeWorkerStartup>,
+) -> Result<(), String> {
+    let canvas_id = config
+        .canvases
+        .first()
+        .map_or_else(|| "unknown".into(), |canvas| canvas.id.clone());
+    let result = run_canvas_inner(
+        config,
+        external_stop,
+        feed_state,
+        feed_stop,
+        published_stages,
+        wakes,
+        coordinator,
+        role,
+        skin_assets,
+        startup,
+    );
+    if let Err(error) = &result {
+        let _ = startup.send(NativeWorkerStartup::Failed {
+            canvas_id,
+            error: error.clone(),
+        });
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_canvas_inner(
+    config: &Config,
+    external_stop: Arc<std::sync::atomic::AtomicBool>,
+    feed_state: Arc<std::sync::Mutex<OverlayState>>,
+    feed_stop: Arc<std::sync::atomic::AtomicBool>,
+    published_stages: Arc<std::sync::Mutex<PublishedStages>>,
+    wakes: &Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
+    coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
+    role: SurfaceRole,
+    skin_assets: Arc<SkinAssetCache>,
+    startup: &std::sync::mpsc::Sender<NativeWorkerStartup>,
 ) -> Result<(), String> {
     let startup_started = Instant::now();
     let report = Rc::new(RefCell::new(RunReport::new()));
@@ -1967,6 +2047,7 @@ fn run_canvas(
             "elapsed_us": duration_us(startup_started.elapsed()),
         }),
     );
+    let _ = startup.send(NativeWorkerStartup::Ready(app.surface_canvas.id.clone()));
     let result = app.run();
     let unmap = shutdown_native_surface(
         &mut app,
