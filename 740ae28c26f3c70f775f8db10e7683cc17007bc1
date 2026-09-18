@@ -1,0 +1,38 @@
+Task: Isolate offline OCR Python tooling under tools/ocr
+Anchor: 740ae28c26f3c70f775f8db10e7683cc17007bc1
+Base: 580264557653cc66cbb40fe3d61656734a169ad9
+Line: main
+Commits: 740ae28c26f3c70f775f8db10e7683cc17007bc1 implements the agreed relocation and task/tool split
+Guidance: repository AGENTS.md; dig; develop-repository and atty303 engineering policy; design-program-observability; review; investigate-problem; maintain-agent-guidance
+Environment: repository host development tools via mise 2026.8.12; durable layout change in the trusted operator domain; no live game or external service mutation
+Transcript source: runtime session 01a0b21c-0ee4-7a61-8437-170d2c8a36f0; design and implementation exchanges retained as context for the commit retry after signature-blocked handoff
+Authority: current source, tools/ocr/mise.toml, root mise.toml and docs/architecture.md
+Transcript:
+- U1:
+    [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) pyrprojectをルートではなくサブディレクトリに置きたい。モデルトレーニング関連のソースしかないはず
+    
+  - A: Applied dig. Inspected a clean VCS snapshot, architecture, Python project and task references. Confirmed Python is offline OCR preparation, acquisition, training, export and evaluation. Asked whether to move the whole project or only metadata; recommended the whole project under tools/ocr.
+- U2:
+    A
+    
+  - A: Accepted whole-project relocation. Confirmed models/manifests is shared with Rust and root mise/CI runs OCR tests. Asked whether to retain root-owned Python/uv tools or move their ownership to the child project.
+- U3:
+    B. sub directoryにmise toolsを移せば、rootからそのタスクを起動すると自動インストールされる。root taskでmise toolsを意識しなくていい
+    
+  - A: Accepted child-owned Python/uv and automatic task tool preparation. Checked mise monorepo documentation; local help initially encountered a sandbox network denial for mise.jdx.dev. Asked whether to adopt native //tools/ocr: task names or retain forwarding wrappers.
+- U4:
+    A
+    
+  - A: Accepted native task names without wrappers. Presented the complete scope: move metadata, source, tests and virtual environment; child mise owns tools and Python tasks; root test and CI retain OCR coverage; shared manifests and Rust tasks remain root; no algorithm or dependency-version change.
+- U5:
+    A
+    
+  - A: Recorded the agreed decisions and ended design exploration without implementing.
+- U6:
+    実行して
+    
+  - A: Applied develop-repository, observability applicability, independent review and guidance audit. Base was clean main at 580264557653cc66cbb40fe3d61656734a169ad9. Sandbox fetch could not write .git/FETCH_HEAD; approved outside-sandbox retry failed SSH-agent signing. Implemented the agreed relocation of 29 Python files and 23 tasks; only six Python resource-path expressions changed. Regenerated both mise locks with mise, preserving Python/uv lock metadata and all dependency versions; root regeneration normalized the configured libxkbcommon checksum. Created the new child virtual environment and removed the superseded generated root environment after 99 OCR tests passed. Configuration checks and child formatting passed. Full mise run test passed native checks, OCR tests, Rust workspace clippy/tests, then failed during browser readiness: existing helper compiled the skin installer for 21 seconds while its caller waited only 10 seconds. Inspected both scripts and the server source; reran the complete unchanged overlay:web:test task after compilation, passing browser 3, web 8, overlay 91 and CLI integration 2 tests. Fresh read-only reviewer found no actionable issue. Commit hooks passed, but the first commit attempt failed SSH signing with communication-with-agent error. Read-only diagnostics identified 1Password agent.sock, successful public-key listing and existing SSH signing wrapper. Asked the user to confirm retry readiness; build succeeded, changes remained staged, and a blocked handoff reported the outstanding commit. No signing/auth settings changed and no push occurred.
+- U7:
+    commit
+    
+  - A: User requested commit retry. Rechecked the staged scope and unchanged base with vcs.sh snapshot; signed commit succeeded as 740ae28c26f3c70f775f8db10e7683cc17007bc1. Post-commit mise run build passed with embedded OBS assets. Final snapshot was clean and one local commit ahead of the existing origin/main ref; no remote refresh or push was attempted. Reconciled all seven user messages against the runtime transcript before preparing this note.
