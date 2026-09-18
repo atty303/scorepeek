@@ -1,0 +1,19 @@
+Context:
+- User reported that --overlay-wayland-edit no longer opened its editor after the skin API v2 migration.
+- Live diagnostics showed each native canvas worker failing during startup because installed skin ZIPs still declared api_version 1; installed_editor_skins also discarded that store error.
+
+Required contract:
+- An explicitly requested overlay initialization failure must fail scorepeek run instead of leaving the TUI running.
+- A worker or adapter failure after the overlay readiness boundary must remain diagnostic and must not terminate scorepeek run.
+
+Implementation:
+- Overlay children report child_ready only after OBS binds its listener or every initial Wayland surface worker initializes its App.
+- The parent waits up to 30 seconds for child_ready and returns pre-ready child failures; post-ready exits remain handled by the existing poll/warning path.
+- Wayland skin-store errors are propagated, OBS validates configured skin packages before readiness, and run returns requested-overlay startup errors.
+- Explicit installation of a v2 ZIP may atomically replace an older-API package with the same ID.
+
+Verification:
+- mise run test passed, including 474 core tests, 94 overlay tests, 3 browser tests, 99 OCR tests, and 2 overlay integration tests.
+- Actual isolated Wayland run opened three production editor stages, emitted child_ready after all three App initializations, painted all stages, and completed its bounded 8-second run without worker failures.
+- Isolated CLI replacement of a live-format v1 Cyan ZIP returned replaced 2 and then listed v2 release 4.
+- Post-commit mise run build passed.
