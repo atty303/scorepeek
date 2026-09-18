@@ -11,7 +11,12 @@ cargo-dist = "0.32.0"
 hk = "1.54.1"
 "npm:playwright" = "1.63.0"
 rclone = "1.74.2"
-rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
+rust = { version = "1.97.1", components = [
+  "clippy",
+  "rustfmt",
+], targets = [
+  "wasm32-unknown-unknown",
+] }
 taplo = "0.10.0"
 zig = "0.16.0"
 
