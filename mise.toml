@@ -105,18 +105,18 @@ run = "cargo check --locked -p scorepeek-overlay-web --target wasm32-unknown-unk
 description = "Build the real browser assets used by the distributed executable"
 run = "dx bundle --package scorepeek-overlay-web --web --release --locked --debug-symbols false"
 sources = [
-  "Cargo.toml",
-  "Cargo.lock",
-  "scripts/overlay-build.rs",
-  "crates/scorepeek-overlay/Cargo.toml",
-  "crates/scorepeek-overlay/src/**",
-  "crates/scorepeek-overlay-handles/Cargo.toml",
   "crates/scorepeek-overlay-handles/src/**",
-  "crates/scorepeek-overlay-ui/Cargo.toml",
   "crates/scorepeek-overlay-ui/src/**",
   "crates/scorepeek-overlay-ui/styles/**",
-  "crates/scorepeek-overlay-web/Cargo.toml",
   "crates/scorepeek-overlay-web/src/**",
+  "crates/scorepeek-overlay/src/**",
+  "Cargo.lock",
+  "Cargo.toml",
+  "crates/scorepeek-overlay-handles/Cargo.toml",
+  "crates/scorepeek-overlay-ui/Cargo.toml",
+  "crates/scorepeek-overlay-web/Cargo.toml",
+  "crates/scorepeek-overlay/Cargo.toml",
+  "scripts/overlay-build.rs",
 ]
 outputs = ["target/dx/scorepeek-overlay-web/release/web/public/index.html"]
 
