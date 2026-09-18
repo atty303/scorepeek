@@ -123,13 +123,31 @@ outputs = ["target/dx/scorepeek-overlay-web/release/web/public/index.html"]
 [tasks."overlay:web:test"]
 description = "Test the production browser route, embedded assets, and child lifecycle"
 depends = ["overlay:web:browser:test"]
+run = "mise run overlay:web:embedded:test"
+
+[tasks."overlay:web:embedded:test"]
+description = "Test the embedded browser assets and child lifecycle"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run overlay:web:embedded:unit:test
+exec mise run overlay:web:embedded:integration:test
+'''
+
+[tasks."overlay:web:embedded:unit:test"]
+description = "Test embedded browser UI and overlay library assets"
+depends = ["overlay:web:bundle"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 cargo test --locked -p scorepeek-overlay-web
-cargo test --locked -p scorepeek-overlay --features embedded-web --lib
-cargo test --locked -p scorepeek --features embedded-web --test overlay
+exec cargo test --locked -p scorepeek-overlay --features embedded-web --lib
 '''
+
+[tasks."overlay:web:embedded:integration:test"]
+description = "Test embedded browser assets in the scorepeek process"
+depends = ["overlay:web:bundle"]
+run = "cargo test --locked -p scorepeek --features embedded-web --test overlay"
 
 [tasks."overlay:web:browser:install"]
 description = "Install the headless Chromium revision pinned by the repository Playwright tool"
@@ -155,7 +173,14 @@ run = "cargo test --locked -p scorepeek-overlay-handles --lib"
 
 [tasks."overlay:skins:build"]
 description = "Build repository skin ZIP packages without installing them"
-run = "bash scripts/build-skins.sh"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${SCOREPEEK_PREBUILT_SKINS:-0}" == 1 ]]; then
+  exit 0
+fi
+exec bash scripts/build-skins.sh
+'''
 
 [tasks."overlay:skins:preview:generate"]
 description = "Regenerate bundled skin PNG and WebM previews from the production browser renderer"
@@ -222,23 +247,91 @@ fi
 exec hk fix --all
 '''
 
-[tasks.test]
-description = "Run all reproducible checks"
-depends = ["overlay:skins:build"]
+[tasks."test:checks"]
+description = "Run repository checks, Rust lints, and auxiliary tooling tests"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run native:verify
-mise run capture:vulkan:test
-mise run overlay:wayland:build:check
 mise run overlay:web:check
 mise run check README.md
 mise run check
+mise run test:tools
+exec cargo clippy --locked --workspace --all-targets -- -D warnings
+'''
+
+[tasks."test:capture"]
+description = "Run native Vulkan capture artifact and protocol tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run native:verify
+exec mise run capture:vulkan:test
+'''
+
+[tasks."test:runtime"]
+description = "Run non-overlay workspace Rust tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run native:verify
+exec cargo test --locked --workspace --exclude scorepeek-overlay --exclude scorepeek-overlay-web
+'''
+
+[tasks."test:overlay:native"]
+description = "Run native overlay and standalone Wayland tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run native:verify
+mise run overlay:wayland:build:check
+exec scripts/with-isolated-skins.sh cargo test --locked -p scorepeek-overlay
+'''
+
+[tasks."test:overlay:browser"]
+description = "Run browser overlay integration tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run native:verify
+exec scripts/with-isolated-skins.sh mise run overlay:web:browser:test
+'''
+
+[tasks."test:overlay:embedded-unit"]
+description = "Run embedded browser UI and overlay library tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run native:verify
+exec scripts/with-isolated-skins.sh mise run overlay:web:embedded:unit:test
+'''
+
+[tasks."test:overlay:embedded-integration"]
+description = "Run scorepeek embedded browser integration tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run native:verify
+exec scripts/with-isolated-skins.sh mise run overlay:web:embedded:integration:test
+'''
+
+[tasks."test:tools"]
+description = "Run OCR and systemd integration tooling tests"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
 mise run //tools/ocr:test
-mise run catalog:schedule:systemd:verify
-cargo clippy --locked --workspace --all-targets -- -D warnings
-scripts/with-isolated-skins.sh cargo test --locked --workspace
-exec mise run overlay:web:test
+exec mise run catalog:schedule:systemd:verify
+'''
+
+[tasks.test]
+description = "Run all reproducible checks in parallel shards"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run overlay:skins:build
+mise run overlay:web:bundle
+SCOREPEEK_PREBUILT_SKINS=1 mise run test:checks ::: test:capture ::: test:runtime ::: test:overlay:native ::: test:overlay:browser ::: test:overlay:embedded-unit ::: test:overlay:embedded-integration
 '''
 
 [tasks.doctor]

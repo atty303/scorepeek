@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${SCOREPEEK_ISOLATED_SKINS:-0}" == 1 ]]; then
+  exec "$@"
+fi
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 xdg=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-skins.XXXXXX")
+export SCOREPEEK_ISOLATED_SKINS=1
 export MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}"
 cleanup() {
   rm -rf "$xdg"
 }
 trap cleanup EXIT INT TERM
 
-"$root/scripts/build-skins.sh"
+if [[ "${SCOREPEEK_PREBUILT_SKINS:-0}" != 1 ]]; then
+  "$root/scripts/build-skins.sh"
+fi
+export SCOREPEEK_PREBUILT_SKINS=1
 
 export XDG_DATA_HOME="$xdg/data"
 export XDG_CONFIG_HOME="$xdg/config"
