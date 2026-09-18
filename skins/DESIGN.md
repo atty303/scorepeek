@@ -1,7 +1,7 @@
-# Overlay canvas design masters
+# Skin design masters
 
 For new skins and requested redesigns, use the repository skill
-[`create-overlay-skin`](../../../.agents/skills/create-overlay-skin/SKILL.md).
+[`create-overlay-skin`](../.agents/skills/create-overlay-skin/SKILL.md).
 It owns the approved per-field design principles, sourced IIDX knowledge, concept/motion
 selection gates and shared native/browser verification workflow. Existing masters below remain
 the references for their respective skins; adding the skill does not redesign them retroactively.
@@ -9,13 +9,13 @@ the references for their respective skins; adding the skill does not redesign th
 These independently generated mockups define the worlds and information design of the three bundled overlay
 skins. They are the current reference for faithful panel proportions, contours,
 materials, typography hierarchy and information density. Runtime values remain semantic and charts retain their data meaning.
-They are design masters, not package previews. The bundled package previews live under
-`skins/<name>/preview.png` and `preview.webm`; regenerate them from the production browser renderer with
+They are design masters stored with their owning skins, not package previews. The bundled package
+previews are `<name>/preview.png` and `<name>/preview.webm`; regenerate them from the production browser renderer with
 `mise run overlay:skins:preview:generate` after a skin's rendered appearance changes.
 
-- `cyan-system.png`: technical navy, silver and cyan
-- `result-aurora.png`: black-violet glass, silver, gold and aurora light
-- `dj-blackbox.png`: charcoal hardware, engraved divisions, lime and amber lamps
+- [`cyan-system/design.png`](cyan-system/design.png): technical navy, silver and cyan
+- [`result-aurora/design.png`](result-aurora/design.png): black-violet glass, silver, gold and aurora light
+- [`dj-blackbox/design.png`](dj-blackbox/design.png): charcoal hardware, engraved divisions, lime and amber lamps
 
 With background disabled, the canvas is transparent outside individual widgets. The enlarged selection panel in each
 sheet demonstrates edit-only grid and resize chrome; it is not a second display layout.
@@ -36,18 +36,18 @@ material treatment:
 - DJ BLACKBOX: charcoal anodized metal, recessed faceplates, engraved grooves,
   corner fasteners and lime indicator bars.
 
-Each skin's original PNGs under `skins/<name>/resources/` retain these materials. The skin's Wasm
+Each skin's original PNGs under `<name>/resources/` retain these materials. The skin's Wasm
 maps each frame into fixed-aspect corners, independently stretched edge middles and a central
 surface, preserving edge thickness as widgets resize. Raster art owns material detail, while the
 skin DOM/SVG retains live text, chart badges and signal semantics on both backends.
 
 ## Typography material
 
-Large EX SCORE and DJ LEVEL use skin-specific `type-*.png` glyph atlases. Cyan System uses
+Large EX SCORE and DJ LEVEL use each skin's `resources/type.png` glyph atlas. Cyan System uses
 luminous Orbitron silver, Result Aurora uses reflected Oxanium gold with an outlined bevel,
 and DJ Blackbox uses matte Rajdhani silver. Cyan's rank retains the design sheet's gold accent.
 Static headings, chart metadata, judgment names, clear types, history columns and graph legends/axes
-use proportional whole-word `labels-*.png` atlases with semantic role colors. Small labels have a
+use proportional whole-word `resources/labels.png` atlases with semantic role colors. Small labels have a
 thinner material edge to preserve readability. Actual text remains in the DOM for accessibility
 and layout; decorative layers are hidden from accessibility. Unsupported strings remain ordinary text.
 Mixed-language song titles and dynamic detail/history values use ordinary text with Japanese
@@ -64,7 +64,7 @@ Keep the skin's below-baseline metrics synchronized when changing its atlas font
 
 ## Stream composition materials
 
-The `*-background.png` assets fill canvas gaps without game imagery or baked-in widgets.
+The `resources/background.png` assets fill canvas gaps without game imagery or baked-in widgets.
 They are 16:9 textures with no text, logo, border, foreground object, or UI. Runtime composition
 uses the checked-in PNGs in each skin's `resources/`, with a separate slow light layer for optional
 motion. Aperture geometry and frame width remain skin code.

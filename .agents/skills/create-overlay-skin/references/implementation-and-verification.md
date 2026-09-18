@@ -6,19 +6,21 @@ repository rootから次を読む。行番号ではなく型・関数を確認�
 
 | 責務 | 原典 |
 | --- | --- |
-| ZIP manifest・CSS・package resource | `skins/<name>/skin.toml`、`skins/<name>/skin.css` |
-| 共通guest DOM実装 | `skins/guest-core/src/lib.rs` |
+| ZIP manifest・theme・package resource | `skins/<name>/skin.toml`、`theme.css`、`resources/` |
+| skin Wasm実装 | `skins/<name>/src/lib.rs` |
+| 任意の共通実装・authoring tool | `skins/shared/` |
 | Rust ABI型・buffer helper | `crates/scorepeek-skin-sdk/src/lib.rs` |
 | package検証・native Wasmtime/DOM | `crates/scorepeek-overlay/src/skin.rs`、`src/native.rs` |
 | OBS Web Worker/browser DOM | `crates/scorepeek-overlay/src/skin_browser.js`、`src/web.rs` |
 | package build/install | `scripts/build-skins.sh`、`scripts/with-isolated-skins.sh` |
-| versioned authoring contract | `docs/skin-plugin-api-v1.md`、ADR 0143 |
+| versioned authoring contract | `docs/skin-plugin-api-v2.md` |
 | 設定schemaとmanifest property | `crates/scorepeek-overlay/src/config.rs` |
-| masterと素材の由来 | `docs/design/overlay-canvas/README.md` |
+| masterと素材の由来 | `skins/DESIGN.md`、`skins/ASSETS.md` |
 
-skin ID、表示名、release、propertyはmanifestが所有し、editorへ静的enumを追加しない。既存の
-共通guestを使うなら同じWasmをpackageし、独自treeが必要ならv1 ABIに従うguest crateを作る。
-`scripts/build-skins.sh`へsourceと自己完結resourceのpackage手順を追加する。画像・font・licenseは
+skin ID、表示名、release、propertyはmanifestが所有し、editorへ静的enumを追加しない。各skinは
+独立したWasm crateとし、必要ならskin実体を知らない `skins/shared` を実装のショートカットとして使う。
+独自treeもv2 ABIに従う。`skins/<name>/skin.toml` を追加すると `scripts/build-skins.sh` が検出する。
+画像・font・licenseは
 ZIP内へ入れ、通常runtimeのembedded assetへ登録しない。widget resizeで枠厚や文字が一緒に
 伸びないこと、canvas cropと意図したoverflowを両hostで確認する。
 `preview.png`と`preview.webm`はskill本体の共通preview sceneからproduction browser経路で生成する。
@@ -55,7 +57,7 @@ mise run overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:1738
 - 右clickで編集に入り、対象skin・screen/canvasを選ぶ。top-levelとcanvas iframeのDOMを両方読む。composed screenshotを取得して実際に見る。
 - widget選択、移動、四隅resize、manifestで宣言したproperty、EMPTY title有無・aspect、scroll、save/reopen、別変更のdiscardを試す。保存先は一時configだけ。
 - 狙ったskinが全canvasへ反映されたか確認する。一つのcanvasの変更だけで全画面のskin検証済みとしない。
-- 時刻の異なる表示を取得し、動きと安定した実値を確認する。CSS animationは明示motion時刻で、Wasmのscheduled full-tree更新はrender呼出しを伴うcaptureで確認する。ABIは時刻を渡さないため、Wasm側の経過時刻そのものをscenarioのmotion値から決定できるとは扱わない。nativeとbrowserで同じ内容/サイズを比較し、pixel equalityは求めない。
+- 時刻の異なる表示を取得し、動きと安定した実値を確認する。CSS animationは明示motion時刻で、Wasmのscheduled full-tree更新はrender呼出しを伴うcaptureで確認する。v2 ABIの `backend` と `monotonic_ms` を使う最適化とmotionはskinが所有する。nativeとbrowserで同じ内容/サイズを比較し、pixel equalityは求めない。
 - 終了後serverを止め、所有tabを閉じ、viewportを戻し、一時config/scenario/outputをcleanupする。比較証拠を残すなら保持先を明示する。
 
 `overlay:visual:obs` はbundle依存を持つ。backendだけを古いbundleと組み合わせない。
