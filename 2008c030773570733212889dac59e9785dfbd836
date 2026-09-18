@@ -1,0 +1,22 @@
+## User messages
+
+1. `scorepeek runの1時間ほどの稼働でOOMが起きた。確実にメモリ・リソースリークがある。overlayもwayland/obs共に起動していた。まず静的に調査して`
+2. `観測では親processでoverlayではなかったらしい`
+3. `headless_eventsは通常は不要なのにpushしているのか。それは明示的にして、replay/test時もdrainしたほうがいいのでは？`
+4. `そもそもtetst/replay専用経路でなく既存のsocket経由で取得したほうがいいのでは`
+5. `diagnostics.sockがあるだろ`
+6. `修正して`
+
+## Resolution
+
+Static inspection confirmed that production `RoutineOutput` appended a clone of every `RunEvent` to an unbounded `headless_events` vector. Normal `scorepeek run` never drained it, and `FieldObservation` events can carry large catalog-dependent evidence. This matched the parent-process OOM observation; bounded overlay queues were not the cause identified by this change.
+
+The production vector and push were removed with `cfg(test)`. Corpus replay now creates an isolated socket-only diagnostic producer, completes the existing `diagnostics.sock` live handshake before publishing the session start, continuously validates and drains ordered records, immediately drops typed `FieldObservation` events, and retains only compact oracle state. The isolated ring is byte-bounded at 8 MiB and is included in replay memory accounting; ordinary run diagnostics remain at 128 MiB. Oversized run-event rejection markers, malformed records, gaps, and early disconnects fail replay closed. Replay diagnostics no longer persist a second NDJSON copy.
+
+Optional replay traces are fed from the same socket through per-session bounded nonblocking queues, exclude field observations, share a 256 MiB output budget, and report queue/I/O/sync/capacity failures in trace status without changing the oracle. Success, startup failure, active-session failure, finalizer failure, and observer-spawn failure paths finish diagnostics and reap observer/trace writer threads before releasing the active-session memory reservation. Regression tests cover oversized markers, malformed field observations, socket-only operation, stalled trace writers, error-path cleanup, and injected observer-spawn failure.
+
+Independent full-diff reviews found and prompted fixes for the oversized marker key, persistent replay diagnostic accumulation, synchronous trace backpressure, error-path detached threads, validation-before-drop, and observer-spawn cleanup. The final review reported no findings.
+
+Validation on the final source: `cargo check -p scorepeek -p scorepeek-corpus --all-targets`, strict clippy for both packages, `mise run check`, targeted Unix-socket/resource tests, and the complete `mise run test` all passed. The final complete suite included 476 scorepeek library tests, 125 scorepeek-corpus library tests, browser 3/3, native/fake-Wayland coverage, and OCR 99/99. The required post-commit `mise run build` passed and refreshed `target/debug/scorepeek`.
+
+Sandbox notes: Unix-domain socket tests failed inside the restricted sandbox with `EPERM` and were rerun successfully outside it. The first post-commit build completed bundling but failed when mise attempted to write `~/.local/state/mise/task-sources`; rerunning the same approved build outside the sandbox succeeded. A persistent sandbox policy would need to allow Unix socket bind/connect for test processes and write access to the mise task-source cache path; no repository workaround was retained.
