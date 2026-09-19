@@ -11,6 +11,7 @@ Evidence:
 - mise downloaded dx-x86_64-unknown-linux-gnu.zip and logged that dioxus-cli 0.7.10 was installed from a native cargo binary artifact; the installed dx reported dioxus 0.7.10.
 - mise run check, mise tasks validate, independent review, and the required post-commit mise run build succeeded.
 - The first sandboxed post-commit build completed bundling but could not update ~/.local/state/mise/task-sources because that cache was read-only; the same build succeeded with the scoped host execution path.
+- After this commit was created, the shared worktree and origin/main were concurrently advanced to 114d175 with f05c06c as its parent; this task did not create or push that later commit.
 
 Authority: mise.toml owns repository-scoped tool installation policy; dioxus-cli remains pinned at 0.7.10 and mise.lock remains unchanged.
 
