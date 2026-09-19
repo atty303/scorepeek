@@ -1,0 +1,173 @@
+Task: Implement the agreed GitHub Pages catalog distribution, publisher, client updater, monitoring, and synthetic test contracts while keeping catalog generation out of the distributed CLI.
+Anchor: 7be79d82fc1aea41212c7ce8a0249ed9f6a42e1c
+Base: 657497cd045e861c7e7c9c3e40401268af1162c8
+Workline: main
+Commits: 7be79d82fc1aea41212c7ce8a0249ed9f6a42e1c implements the complete catalog distribution slice.
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; investigate-problem; independent code review; maintain-agent-guidance audit.
+Conditions: durable implementation; repository-only changes; no push, deploy, release, or external service mutation; real source fetches used only for verification; generated catalogs and raw snapshots remained uncommitted.
+Evidence: Full mise run test passed in the target-equivalent environment; workspace Clippy with warnings denied and mise run check passed. A live zero-build fetched Tachi 17967, Textage 19206, and dqn/iidxapi 1881 records, produced SQLite SHA-256 e03148af224e76522130e1d8a5e3a58797389d3568e15cb15f915a0087602fcc and semantic digest 2303bfb5cfb8d4a1bdaf807be1de8689d2dbeaadc1bfe04f645b34dbb2ed0e0d, quarantined 744 provisional and 84 conflicting records, and passed fresh-directory publisher verification. Independent final review reported no important findings.
+Authority: Commit 7be79d82fc1aea41212c7ce8a0249ed9f6a42e1c source, tests, workflow, and living documentation are the current implementation authority; GitHub Pages behavior remains unverified until an explicitly authorized deployment.
+Transcript:
+- U1:
+    ## まとめ
+    
+    ### 決まったこと
+    
+    - **配布先**
+    
+      - GitHub Releasesは使わず、GitHub Pagesから配布する。
+      - 将来作るscorepeekのランディングページと同じPagesサイトを使う。
+      - ランディングページは今回まだ作らない。
+      - Pagesのdeployは一つのworkflowにまとめ、サイトとcatalogを一体で公開する。
+    
+    - **公開URL**
+    
+      - schemaごとに固定URLを持つ。現行schemaは例として`/catalog/v1/catalog.zip`。
+      - schema negotiation用のindex APIは作らない。
+      - client binaryは対応schemaの既定URLを持つ。
+      - custom catalog URLはZIPそのものを指す。
+      - custom URL利用者は、対応schemaを変更するとき自分でURLを変更する。
+    
+    - **生成と公開**
+    
+      - catalogは毎日一回、自動生成する。
+      - manual workflowでも再生成できる。
+      - landing pageだけの変更ではsourceへ接続せず、現在公開中のcatalog一式をそのまま次のPages成果物へ引き継ぐ。
+      - 有効な候補ができた場合は、人手の承認なしでstableへ公開する。
+      - Tachi、Textage、dqn/iidxapiの現在のsnapshotから毎回ゼロ構築する。
+      - 前回のcatalogを生成時のbaseにはしない。
+      - source側で行われた楽曲の修正・削除は、次の正常な生成結果へそのまま反映する。
+      - 同じTachi song IDから生成する`ScorepeekSongId`はゼロ構築でも変わらない。
+      - いずれかのsourceの取得、parse、source policy検証、catalog全体のinvariant検証に失敗した場合は公開せず、現在のPages catalogを維持する。
+      - record単位の`ProvisionalWithoutTachiAnchor`、`AmbiguousIdentity`、cross-sourceの`ConflictingChart`は除外でき、残りの正常なcatalogは公開できる。
+      - 除外理由と件数はworkflow summaryに記録する。
+      - publisherはZIPを生成後、新しい一時directoryへ展開し、SQLite digestと完全なcatalog検証を本番用loaderで実行してからdeployする。
+      - deploy後にPagesから再ダウンロードして検証する処理は置かない。
+    
+    - **不要な再ダウンロードの防止**
+    
+      - 毎日のworkflowでは候補SQLiteを生成し、完全検証まで実行する。
+      - 公開中catalogと次のいずれも変わらなければ、catalog ZIPを更新しない。
+        - `scorepeek run`から観測可能なcatalog内容のsemantic digest
+        - 明示的な`artifact_revision`
+        - `THIRD_PARTY_NOTICES.md`
+      - no-op時は現在のZIPとHTTP validatorを維持し、その日のsource確認結果はworkflow runにだけ記録する。
+      - semantic digestは、`scorepeek run`が参照可能な全レコード・全フィールドを決定的な順序へ正規化して計算する。
+      - semantic digestの対象に`doctor`、catalog管理コマンド、source revision、lineage、provenance、evidence、quarantine詳細、生成日時、workflow情報は含めない。
+      - 採用された楽曲・譜面の追加、修正、削除はsemantic changeになる。
+      - 除外されたrecordの理由やsource metadataだけの変化はsemantic changeにしない。
+      - SQLiteの索引や格納方法など、論理データに現れない変更を配布するときはschema単位の`artifact_revision`を明示的に上げる。
+      - `THIRD_PARTY_NOTICES.md`だけの変更でも新しいZIPを公開する。
+    
+    - **配布物**
+    
+      - ZIPには次の3ファイルを入れる。
+        - `catalog.sqlite3`
+        - `manifest.json`
+        - `THIRD_PARTY_NOTICES.md`
+      - ZIP自体の外部digestやsidecar fileは作らない。
+      - ZIPの展開可能性とCRCは通常のZIP処理で確認する。
+      - `manifest.json`には少なくとも、schema、SQLite SHA-256、semantic digest、`artifact_revision`、`generator_commit`を持たせる。
+      - 既定の公式CIでは`workflow_run_url`も必須とする。
+      - custom catalogと`file://` catalogでは`workflow_run_url`を任意にする。
+      - `generator_commit`はcustom catalogでも必須にする。
+      - `published_at`を持たせる場合も診断情報に限定し、更新順序の判定には使わない。
+      - clientが検証したSQLite SHA-256を、local content-addressed store、診断、Event API上のcatalog identityとして使う。
+    
+    - **lineage**
+    
+      - sourceごとの詳細なrevision、content hash、evidenceはSQLite内を原典とする。
+      - `scorepeek run`はlineageを参照しない。
+      - lineageや`doctor`から見える情報はsemantic digestの対象外とする。
+      - workflow runには、人間向けのsource lineage、検証結果、除外件数を記録する。
+      - manifestから該当workflow runへリンクする。
+      - workflow URLは一時的・best-effortな参照であり、永続的な証明とはしない。
+      - no-op時は新しいSQLiteを公開しないため、公開中SQLiteのlineageはそのartifactを生成した時点のままになる。最新の日次確認はworkflow run側に残る。
+    
+    - **clientの更新動作**
+    
+      - active catalogがない初回起動では、`scorepeek run`が同期的にdownload、展開、digest検証、activateを行う。
+      - 初回取得に失敗した場合は`run`を開始しない。
+      - active catalogがある場合は、それを直ちに読み込んで`run`を開始する。
+      - 前回確認から24時間以上経過していれば、起動後に低priorityのbackground updateを開始する。
+      - background updateはdownload、展開、digest検証、atomic activationまで完了させる。
+      - 実行中の`run`は起動時に読み込んだcatalogを使い続け、新しいcatalogは次回の`run`から使う。
+      - 同じURLに対するbackground updateが失敗しても、現在の`run`とactive catalogには影響させない。
+      - update失敗後は24時間待たず、次の`scorepeek run`起動時に再試行する。
+      - 条件付きGETでは保存済みの`ETag`または`Last-Modified`を送る。
+      - `304 Not Modified`ならZIPを再取得しない。
+      - serverがvalidatorを提供しない、または対応しない場合は通常のGETへ戻る。
+      - sequence番号や単調増加versionは設けない。
+      - 異なる有効なartifact digestであれば、過去のcatalogへの切り戻しも受け入れる。
+    
+    - **client側の検証境界**
+    
+      - remote ZIPは選択されたpublisherからの信頼済み入力として扱う。
+      - clientは必要なentry、entry名、個数、展開size上限、ZIP展開、CRC、SQLite SHA-256を確認する。
+      - clientはSQLiteの全record、source evidence、domain整合性を再検証しない。
+      - catalog内容の完全検証はpublisher側だけで行う。
+      - digest不一致や不完全な展開ではactivateせず、既存active catalogを維持する。
+      - activationはstagingを使ってatomicに行う。
+    
+    - **custom catalog URL**
+    
+      - 専用のsetter CLIは設けない。
+      - 通常のconfig fileに`catalog.url`を持たせる。
+      - 一時的な上書きとして`SCOREPEEK_CATALOG_URL`を使えるようにする。
+      - 優先順位は環境変数、config file、binary既定URLの順。
+      - 環境変数による上書きはconfig fileを書き換えない。
+      - HTTPS、開発・E2E用のloopback HTTP、`file://`を許可する。
+      - effective URLが前回のactive catalogのURLから変わった場合は、新URLからの取得とactivateが成功するまで`run`を開始しない。
+      - URL変更時に旧URL由来のactive catalogへfallbackしない。
+    
+    - **署名と信頼**
+    
+      - 独立した電子署名は導入しない。
+      - GitHub repository、Actions、Pagesをpublisherの信頼境界とする。
+      - SHA-256は転送・展開・保存上の整合性確認であり、publisherの真正性を追加証明するものとは扱わない。
+    
+    - **旧schema**
+    
+      - 現行schemaでは最新catalogだけを配布する。
+      - schemaを更新したら、旧schema向けには最後のcatalog ZIPを凍結して残す。
+      - 旧schemaを日次で再生成しない。
+      - 新しいPages成果物を作る際、現在のPagesから旧ZIPを取得してbyte-for-byteで引き継ぐ。
+      - 旧ZIPはopaqueなbytesとして扱い、展開、manifest読込、digest検証、旧clientによる読込試験は行わない。
+      - 旧ZIPを取得できなければ、意図せず配布対象から消さないようdeployを止める。
+      - 旧ZIP用の別backupは設けず、Pages上のobjectが残る範囲でbest-effortに維持する。
+    
+    - **第三者通知**
+    
+      - catalogの利用条件をscorepeek本体のMIT licenseと混同しない。
+      - `THIRD_PARTY_NOTICES.md`をZIPへ同梱し、将来のランディングページからも参照できるようにする。
+      - clientで利用許諾promptは表示しない。
+      - Textageを含むcatalogは、連絡への返答を公開条件にせず配布対象とする。
+      - sourceごとの条件、credit、linkを通知に保持する。
+    
+    - **運用監視**
+    
+      - 毎日のscheduled buildが失敗した場合は、通常のGitHub Actions通知とworkflow summaryを使う。
+      - scheduled catalog workflowが3回連続で失敗したら、markerで重複を防いだGitHub issueを自動作成する。
+      - 成功したscheduled runは、catalogがno-opでも連続失敗回数をresetし、該当issueをcloseする。
+      - web-only deployとmanual runの失敗は、この連続失敗回数へ含めない。
+      - client側では最終成功、現在のcatalog digest、直近の失敗をstructured diagnosticsへ記録し、`doctor`またはstatus表示から確認できるようにする。
+    
+    - **テスト用catalog**
+    
+      - 通常テストはPages、実source、配布中catalogへ接続しない。
+      - テストごとに小さな合成`Catalog`を作り、一時directoryへ実形式のSQLiteを生成する。
+      - 配布E2Eでは、本番と同じpackaging codeからZIPを生成する。
+      - `file://`またはloopback HTTPを使い、download、conditional GET、ZIP展開、digest検証、activateまで試験する。
+      - 初回取得、`304`、digest不一致、壊れたZIP、size制限、URL変更、失敗時のactive catalog維持、atomic activationを合成artifactで検証する。
+      - repositoryへ生成済みの実catalog ZIPをfixtureとしてcommitしない。
+      - 通常テストをproduction Pages catalogへ依存させない。
+      - 実sourceからのゼロ構築と完全検証は、日次publisher workflow自身が本番経路として確認する。
+      - 凍結した旧schema ZIPはtest対象にせず、取得してopaqueに引き継げることだけをdeploy条件とする。
+    
+    
+    
+    実装して
+  - A: Took the required clean VCS snapshot at base 657497cd, read the repository and domain authorities plus development and observability guidance, inspected the existing local catalog federation and runtime startup paths, and decomposed the durable implementation across publisher, artifact, client update, Pages, diagnostics, monitoring, and tests. The user then added a crate-boundary constraint before implementation was finalized.
+- U2:
+    catalog生成は別crateにして配布cliには含めないようにしておいて
+  - A: Implemented a separate scorepeek-catalog core crate whose generation surface is feature-gated, and a scorepeek-catalog-publisher crate that exclusively owns live acquisition, adapters, zero-build federation, packaging, and publisher verification; the distributed scorepeek dependency graph does not enable generation. Added the single Pages workflow with daily/manual/site-only behavior, strict current/frozen artifact carry-forward, no-op preservation, and scheduled failure issue management. Added the exact three-entry ZIP manifest contract, semantic and artifact revision selection, notices, full publisher validation, bounded client verification and storage, URL precedence and policy, conditional GET, atomic activation, 24-hour background update semantics, URL-change fail-closed behavior, and structured diagnostics. Replaced the old host systemd sync path and updated living docs. Added synthetic artifact/update/store regression tests including CRC, digest, redirects, 304 races, lock recovery, active-catalog preservation, and atomicity. Addressed two independent review rounds covering redirect trust, URL leakage, state races, update lock startup blocking, stale validators, crash recovery, and terminal diagnostics; final review found no important issue. Passed targeted catalog and publisher tests, normal scorepeek check, mise run check, full workspace Clippy, the complete mise run test suite, a live three-source zero-build plus fresh-directory verification, and the required post-commit mise run build. The initial Git commit and post-commit build writes were sandbox-denied at .git/index.lock and mise task-source state; both were rerun through approved target-equivalent prefixes. Created local commit 7be79d82 and left the tree clean and one commit ahead of origin/main without push or deployment.
