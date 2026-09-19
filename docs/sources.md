@@ -1,24 +1,35 @@
 # External IIDX source policy
 
 This document is the source of truth for automated catalog inputs, lineage,
-field authority, and reuse boundaries. It records the initial research state on
-2026-08-15 and the first live contract observed on 2026-08-16; adapters must pin
-an immutable revision or content digest rather than assuming that a live page
-still has the shape described here.
+field authority, and reuse boundaries. Adapters must pin an immutable revision
+or content digest rather than assuming that a live page still has the shape
+described here.
 
 This is a conservative engineering policy, not a legal conclusion. The
 non-distributed `scorepeek-catalog-publisher` crate fetches source data in the
 daily GitHub Actions job. Raw snapshots remain ephemeral/private build inputs;
 the Pages artifact contains accepted normalized catalog assertions and carries
-`THIRD_PARTY_NOTICES.md` separately from the scorepeek software license.
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) separately from the
+scorepeek software license.
+
+The project's source-permission requirements for providing this generated
+catalog to scorepeek users are satisfied for the three automated inputs below.
+Tachi and dqn/iidxapi are used under their published Unlicense and ISC terms
+without separate contact. Textage's usage clarification covers the inquiry
+about processing metadata and providing an application-specific database;
+the administrator's response and source notices are linked in
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md#textage).
+Distribution retains the source credits and applicable license notices.
+The catalog is not relicensed under the application's planned MIT license, and
+this policy does not grant a blanket right to redistribute the combined catalog.
 
 ## Automated inputs
 
 | Source | Lineage | Automated role | Fields used | Access and reuse boundary |
 | --- | --- | --- | --- | --- |
 | [Tachi IIDX seeds](https://github.com/zkldi/Tachi/tree/main/db/seeds) | game MDB | General-IIDX identity and chart anchor | source-scoped song/chart IDs, exact titles, artist, version, play type, difficulty, level, notes, product availability | The README describes seeds as Unlicense/source-of-truth data, while the current path is `db/seeds`; preserve exact revision/provenance and the Tachi notice. The [MDB cookbook](https://github.com/zkldi/Tachi/blob/main/docs/src/contributing/cookbook/iidx-mdb.md) is recorded as lineage evidence. |
-| [Textage](https://textage.cc/score/index.html) | Textage capture/manual data | Independent corroboration and display variants | title, artist, BPM, version, SP/DP level and notes, INFINITAS flag | The [site readme](https://textage.cc/score/readme.html) permits common-sense use and recommends a link but is not a standard data license. Fetch [title](https://textage.cc/score/titletbl.js), [availability](https://textage.cc/score/actbl.js), and [chart](https://textage.cc/score/datatbl.js) bytes locally; do not republish them. |
-| [dqn/iidxapi](https://github.com/dqn/iidxapi) | official INFINITAS HTML | Positive INFINITAS roster/pack signal | exact title, artist, pack name | The adapter output has no stable song identity or chart data. Treat it as corroboration of the official page, preserve its content hash, and do not redistribute the derived roster. [Current JSON endpoint](https://dqn.github.io/iidxapi/infinitas/music.json) |
+| [Textage](https://textage.cc/score/index.html) | Textage capture/manual data | Independent corroboration and display variants | title, artist, BPM, version, SP/DP level and notes, INFINITAS flag | Use the [site readme](https://textage.cc/score/readme.html) and [administrator clarification](https://textage.cc/bbs/index.php?res=765&disp=1) as the basis for providing accepted normalized metadata in the catalog. Avoid excessive load; scorepeek's stated acquisition frequency is once per day. Credit and link Textage. The [title](https://textage.cc/score/titletbl.js), [availability](https://textage.cc/score/actbl.js), and [chart](https://textage.cc/score/datatbl.js) files remain build inputs, not distributed source tables. |
+| [dqn/iidxapi](https://github.com/dqn/iidxapi) | official INFINITAS HTML | Positive INFINITAS roster/pack signal | exact title, artist, pack name | Use the upstream [ISC declaration](https://github.com/dqn/iidxapi#license) with project credit and applicable license notices. Preserve the content hash and distribute accepted normalized roster/pack evidence in the catalog; the raw [JSON snapshot](https://dqn.github.io/iidxapi/infinitas/music.json) remains a build input. The adapter output has no stable song identity or chart data. |
 
 The dqn/iidxapi contract inspected at repository commit
 `6f76e8e0286f8a91a688a549e023ce5261b4b7c2` is a top-level JSON array whose

@@ -10,6 +10,7 @@ __pycache__/
 /artifacts/
 /upstream-cache/
 *.onnx
+!/models/numeric-fixed-slot-hog-mlp-runtime-v3/inference.onnx
 *.ort
 *.pdmodel
 /models/artifacts/

@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek::public_main()
+    scorepeek::dev_main()
 }

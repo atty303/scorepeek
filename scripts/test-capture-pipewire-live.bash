@@ -3,7 +3,6 @@ set -euo pipefail
 
 scorepeek_bin=${1:-target/debug/scorepeek}
 node_name=${SCOREPEEK_PIPEWIRE_TEST_NODE:-scorepeek-live-test}
-numeric_model_bundle=${SCOREPEEK_NUMERIC_MODEL_BUNDLE:-}
 source_data_home=${XDG_DATA_HOME:-${HOME}/.local/share}
 test_root=$(mktemp -d)
 scorepeek_pid=
@@ -32,13 +31,8 @@ trap cleanup EXIT
 command -v gst-launch-1.0 >/dev/null
 command -v zig >/dev/null
 test -x "${scorepeek_bin}"
-test -d "${numeric_model_bundle}" || {
-  echo "SCOREPEEK_NUMERIC_MODEL_BUNDLE must name the registered private numeric-model bundle" >&2
-  exit 1
-}
 mkdir -p "${test_root}/data/scorepeek"
 ln -s "${source_data_home}/scorepeek/catalog" "${test_root}/data/scorepeek/catalog"
-XDG_DATA_HOME="${test_root}/data" "${scorepeek_bin}" numeric-model install --bundle "${numeric_model_bundle}" >/dev/null
 read -r -a pipewire_flags <<<"$(scripts/pkg-config-scorepeek.bash --cflags libpipewire-0.3)"
 ZIG_LOCAL_CACHE_DIR="${test_root}/zig-cache" ZIG_GLOBAL_CACHE_DIR="${test_root}/zig-global-cache" zig cc scripts/pipewire-contract-source.c -o "${test_root}/pipewire-contract-source" "${pipewire_flags[@]}" /usr/lib64/libpipewire-0.3.so.0
 

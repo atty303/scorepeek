@@ -1,22 +1,15 @@
 //! Offline, read-only evaluation using only the two registered recognition bundles.
 use scorepeek::recognition::{
-    MusicSelectBestCrops, NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256,
-    RegisteredDynamicTitleRuntime, RegisteredNumericRuntime, resolve_music_select_best,
+    MusicSelectBestCrops, RegisteredDynamicTitleRuntime, RegisteredNumericRuntime,
+    resolve_music_select_best,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let numeric_root = args
-        .next()
-        .ok_or("expected registered numeric bundle directory")?;
     let text_root = args
         .next()
         .ok_or("expected registered text bundle directory")?;
-    let mut numeric = RegisteredNumericRuntime::load(
-        std::path::Path::new(&numeric_root),
-        NUMERIC_MODEL_MANIFEST_BYTES,
-        NUMERIC_MODEL_MANIFEST_SHA256,
-    )?;
+    let mut numeric = RegisteredNumericRuntime::load_embedded()?;
     let mut text = RegisteredDynamicTitleRuntime::load(std::path::Path::new(&text_root))?;
     for name in args {
         let (_, pixels) = qoi::decode_to_vec(std::fs::read(&name)?)?;

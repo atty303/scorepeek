@@ -30,7 +30,6 @@ const MAX_VALIDATOR_BYTES: usize = 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ConfigFile {
     catalog: Option<CatalogConfig>,
 }
@@ -181,6 +180,14 @@ pub fn resolve_effective_url(config_path: &Path) -> Result<EffectiveUrl, UpdateE
         }
     };
     parse_url(configured.as_deref().unwrap_or(DEFAULT_CATALOG_URL))
+}
+
+/// Validates one configured catalog URL without consulting environment or filesystem state.
+///
+/// # Errors
+/// Returns an error outside the accepted HTTPS, loopback HTTP, and `file://` URL contract.
+pub fn validate_configured_url(value: &str) -> Result<(), UpdateError> {
+    parse_url(value).map(|_| ())
 }
 
 #[must_use]

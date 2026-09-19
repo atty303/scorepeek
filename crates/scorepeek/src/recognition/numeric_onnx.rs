@@ -1,6 +1,4 @@
 use std::fmt::Write as _;
-use std::fs;
-use std::path::Path;
 use std::time::Instant;
 
 use crate::catalog::Difficulty;
@@ -30,6 +28,10 @@ pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
 ));
 pub const NUMERIC_MODEL_MANIFEST_SHA256: &str =
     "3427a05c5360880b6facca83e565e6426aaf38c917494b2ae90f982da1fdfd91";
+pub const NUMERIC_MODEL_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../models/numeric-fixed-slot-hog-mlp-runtime-v3/inference.onnx"
+));
 const MAX_NUMERIC_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 const NUMERIC_FEATURE_DIMENSIONS_I64: i64 = 2_244;
 const NUMERIC_OUTPUT_CLASSES_I64: i64 = 11;
@@ -310,33 +312,24 @@ pub struct RegisteredNumericRuntime {
 }
 
 impl RegisteredNumericRuntime {
-    /// Loads one manifest-bound private numeric model without download or fallback.
+    /// Loads the repository-registered numeric model embedded in the binary.
     ///
     /// # Errors
-    ///
-    /// Returns an error when the manifest, model bytes, or ONNX tensor contract is invalid.
-    pub fn load(
-        bundle: &Path,
-        manifest_bytes: &[u8],
-        expected_manifest_sha256: &str,
+    /// Returns an error when the committed manifest, model bytes, or ONNX tensor contract is
+    /// invalid.
+    pub fn load_embedded() -> Result<Self, OnnxParityError> {
+        let contract =
+            registered_contract(NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256)?;
+        Self::from_model_bytes(contract, NUMERIC_MODEL_BYTES)
+    }
+
+    fn from_model_bytes(
+        contract: NumericModelContract,
+        model_bytes: &[u8],
     ) -> Result<Self, OnnxParityError> {
-        if !bundle.is_absolute()
-            || encode_sha256(manifest_bytes) != expected_manifest_sha256
-            || manifest_bytes.last() != Some(&b'\n')
+        if u64::try_from(model_bytes.len()).ok() != Some(contract.model_bytes)
+            || encode_sha256(model_bytes) != contract.model_sha256
         {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        let contract: NumericModelContract = serde_json::from_slice(manifest_bytes)?;
-        if !contract.validate() {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        let model_path = bundle.join(&contract.model_filename);
-        let metadata = model_path.metadata()?;
-        if !metadata.is_file() || metadata.len() != contract.model_bytes {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        let model_bytes = fs::read(&model_path)?;
-        if encode_sha256(&model_bytes) != contract.model_sha256 {
             return Err(OnnxParityError::InvalidArtifact);
         }
         let session = Session::builder()?
@@ -350,7 +343,7 @@ impl RegisteredNumericRuntime {
             .map_err(|error| OnnxParityError::Ort(error.into()))?
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|error| OnnxParityError::Ort(error.into()))?
-            .commit_from_memory(&model_bytes)?;
+            .commit_from_memory(model_bytes)?;
         if session.inputs().len() != 1
             || session.outputs().len() != 1
             || !matches!(
@@ -531,6 +524,22 @@ impl RegisteredNumericRuntime {
         };
         Ok(observation)
     }
+}
+
+fn registered_contract(
+    manifest_bytes: &[u8],
+    expected_manifest_sha256: &str,
+) -> Result<NumericModelContract, OnnxParityError> {
+    if encode_sha256(manifest_bytes) != expected_manifest_sha256
+        || manifest_bytes.last() != Some(&b'\n')
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let contract: NumericModelContract = serde_json::from_slice(manifest_bytes)?;
+    contract
+        .validate()
+        .then_some(contract)
+        .ok_or(OnnxParityError::InvalidArtifact)
 }
 
 fn select_numeric_fields(
@@ -805,9 +814,8 @@ mod tests {
         let mut bytes = serde_json::to_vec(&contract).unwrap();
         bytes.push(b'\n');
         let digest = encode_sha256(&bytes);
-        let bundle = tempfile::tempdir().unwrap();
         assert!(matches!(
-            RegisteredNumericRuntime::load(bundle.path(), &bytes, &digest),
+            registered_contract(&bytes, &digest),
             Err(OnnxParityError::InvalidArtifact)
         ));
 
@@ -817,9 +825,21 @@ mod tests {
         bytes.push(b'\n');
         let digest = encode_sha256(&bytes);
         assert!(matches!(
-            RegisteredNumericRuntime::load(bundle.path(), &bytes, &digest),
+            registered_contract(&bytes, &digest),
             Err(OnnxParityError::InvalidArtifact)
         ));
+    }
+
+    #[test]
+    fn embedded_numeric_artifacts_match_the_registered_contract() {
+        let contract =
+            registered_contract(NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256)
+                .unwrap();
+        assert_eq!(
+            u64::try_from(NUMERIC_MODEL_BYTES.len()).unwrap(),
+            contract.model_bytes
+        );
+        assert_eq!(encode_sha256(NUMERIC_MODEL_BYTES), contract.model_sha256);
     }
 
     #[test]

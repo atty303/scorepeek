@@ -27,6 +27,13 @@ pub const RING_BYTES: usize = 128 * 1024 * 1024;
 pub const ISOLATED_RING_BYTES: usize = 8 * 1024 * 1024;
 pub const RETAINED_RUNS: usize = 10;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InspectionFormat {
+    Human,
+    Json,
+    Ndjson,
+}
+
 const MAX_CLIENTS: usize = 8;
 const MAX_REQUEST_BYTES: usize = 1024;
 #[derive(Clone)]
@@ -845,6 +852,21 @@ fn join_thread(thread: &mut Option<JoinHandle<()>>) {
 ///
 /// Returns an error when the selected run cannot be resolved or its stream is invalid.
 pub fn inspect_latest(store: &Path, run_id: Option<&str>) -> Result<i32, String> {
+    inspect_latest_with_format(store, run_id, InspectionFormat::Ndjson)
+}
+
+/// Prints a finite diagnostic snapshot in the requested presentation format and returns its
+/// semantic exit status.
+///
+/// # Errors
+///
+/// Returns an error when the selected run cannot be resolved, its stream is invalid, or output
+/// fails.
+pub fn inspect_latest_with_format(
+    store: &Path,
+    run_id: Option<&str>,
+    format: InspectionFormat,
+) -> Result<i32, String> {
     let root = match run_id {
         Some(run_id) => {
             validate_run_id(run_id)?;
@@ -852,7 +874,7 @@ pub fn inspect_latest(store: &Path, run_id: Option<&str>) -> Result<i32, String>
         }
         None => latest_run(store)?,
     };
-    inspect_run(&root)
+    inspect_run(&root, format)
 }
 
 fn validate_run_id(run_id: &str) -> Result<(), String> {
@@ -925,7 +947,7 @@ fn run_order(run_id: &str) -> Result<(u64, u32, u32), String> {
     clippy::too_many_lines,
     reason = "the scan and exact snapshot copy share one file boundary and validation state"
 )]
-fn inspect_run(root: &Path) -> Result<i32, String> {
+fn inspect_run(root: &Path, format: InspectionFormat) -> Result<i32, String> {
     let run_id = root
         .file_name()
         .and_then(|name| name.to_str())
@@ -999,10 +1021,6 @@ fn inspect_run(root: &Path) -> Result<i32, String> {
         "tail_in_progress": tail && active,
         "source": "disk"
     });
-    let stdout = io::stdout();
-    let mut output = stdout.lock();
-    serde_json::to_writer(&mut output, &header).map_err(|error| error.to_string())?;
-    output.write_all(b"\n").map_err(|error| error.to_string())?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
     let complete_len = if tail {
@@ -1024,9 +1042,95 @@ fn inspect_run(root: &Path) -> Result<i32, String> {
     };
     file.seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
-    io::copy(&mut (&mut file).take(complete_len), &mut output)
-        .map_err(|error| error.to_string())?;
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    match format {
+        InspectionFormat::Ndjson => {
+            serde_json::to_writer(&mut output, &header).map_err(|error| error.to_string())?;
+            output.write_all(b"\n").map_err(|error| error.to_string())?;
+            io::copy(&mut (&mut file).take(complete_len), &mut output)
+                .map_err(|error| error.to_string())?;
+        }
+        InspectionFormat::Json => {
+            output
+                .write_all(b"{\"schema\":\"scorepeek-diagnostic-inspection-v1\",\"header\":")
+                .map_err(|error| error.to_string())?;
+            serde_json::to_writer(&mut output, &header).map_err(|error| error.to_string())?;
+            output
+                .write_all(b",\"records\":[")
+                .map_err(|error| error.to_string())?;
+            write_json_records(BufReader::new((&mut file).take(complete_len)), &mut output)?;
+            output
+                .write_all(b"]}\n")
+                .map_err(|error| error.to_string())?;
+        }
+        InspectionFormat::Human => {
+            writeln!(output, "scorepeek diagnostic inspection")
+                .map_err(|error| error.to_string())?;
+            writeln!(output, "  run: {run_id}").map_err(|error| error.to_string())?;
+            writeln!(output, "  active: {active}").map_err(|error| error.to_string())?;
+            writeln!(output, "  partial: {}", header["partial"])
+                .map_err(|error| error.to_string())?;
+            writeln!(output, "  records: {}", next.saturating_sub(oldest))
+                .map_err(|error| error.to_string())?;
+            writeln!(output, "events:").map_err(|error| error.to_string())?;
+            write_human_records(BufReader::new((&mut file).take(complete_len)), &mut output)?;
+        }
+    }
     Ok(i32::from(partial || (!active && (tail || !finished))))
+}
+
+fn write_json_records(
+    mut reader: impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<(), String> {
+    let mut first = true;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        if !first {
+            output.write_all(b",").map_err(|error| error.to_string())?;
+        }
+        first = false;
+        output
+            .write_all(line.strip_suffix(b"\n").unwrap_or(&line))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn write_human_records(
+    mut reader: impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<(), String> {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        let value: Value = serde_json::from_slice(&line)
+            .map_err(|_| "diagnostic stream contains a malformed interior record".to_owned())?;
+        let sequence = value["sequence"].as_u64().unwrap_or_default();
+        let operation = value["operation"].as_str().unwrap_or("unknown");
+        write!(output, "  {sequence}: {operation}").map_err(|error| error.to_string())?;
+        for key in ["stage", "status", "error_type"] {
+            if let Some(detail) = value["data"][key].as_str() {
+                write!(output, " {key}={detail}").map_err(|error| error.to_string())?;
+            }
+        }
+        writeln!(output).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn run_is_active(root: &Path) -> Result<bool, String> {
@@ -1483,7 +1587,7 @@ mod tests {
         let root = temporary.path().join("run-1");
         fs::create_dir(&root).unwrap();
         fs::write(root.join(STREAM_NAME), b"{\"sequence\":1}\n{\"sequence\":2").unwrap();
-        assert_eq!(inspect_run(&root).unwrap(), 1);
+        assert_eq!(inspect_run(&root, InspectionFormat::Ndjson).unwrap(), 1);
     }
 
     #[test]
@@ -1492,7 +1596,7 @@ mod tests {
         let root = temporary.path().join("run-1");
         fs::create_dir(&root).unwrap();
         fs::write(root.join(STREAM_NAME), b"{\"sequence\":1}\n").unwrap();
-        assert_eq!(inspect_run(&root).unwrap(), 1);
+        assert_eq!(inspect_run(&root, InspectionFormat::Ndjson).unwrap(), 1);
     }
 
     #[test]
@@ -1503,9 +1607,9 @@ mod tests {
             .write_all(b"{\"sequence\":1,\"operation\":\"diagnostic_run_started\"}\n")
             .unwrap();
         stream.flush().unwrap();
-        assert_eq!(inspect_run(&root).unwrap(), 0);
+        assert_eq!(inspect_run(&root, InspectionFormat::Ndjson).unwrap(), 0);
         active_lock.unlock().unwrap();
-        assert_eq!(inspect_run(&root).unwrap(), 1);
+        assert_eq!(inspect_run(&root, InspectionFormat::Ndjson).unwrap(), 1);
     }
 
     #[test]

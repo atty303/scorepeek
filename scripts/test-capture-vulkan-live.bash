@@ -2,7 +2,6 @@
 set -euo pipefail
 
 scorepeek_bin=${1:-target/debug/scorepeek}
-numeric_model_bundle=${SCOREPEEK_NUMERIC_MODEL_BUNDLE:-}
 source_data_home=${XDG_DATA_HOME:-${HOME}/.local/share}
 test_root=$(mktemp -d)
 manifest_dir=$(realpath target/vulkan-capture/share/vulkan/explicit_layer.d)
@@ -34,13 +33,8 @@ for command in gamescope vkcube obs-vkcapture; do
   command -v "${command}" >/dev/null
 done
 test -x "${scorepeek_bin}"
-test -d "${numeric_model_bundle}" || {
-  echo "SCOREPEEK_NUMERIC_MODEL_BUNDLE must name the registered private numeric-model bundle" >&2
-  exit 1
-}
 mkdir -p "${test_root}/data/scorepeek"
 ln -s "${source_data_home}/scorepeek/catalog" "${test_root}/data/scorepeek/catalog"
-XDG_DATA_HOME="${test_root}/data" "${scorepeek_bin}" numeric-model install --bundle "${numeric_model_bundle}" >/dev/null
 
 start_scorepeek() {
   local state_root=$1

@@ -40,7 +40,7 @@ doctor_output="$(env -i \
   XDG_DATA_HOME="$work_dir/data" \
   XDG_CACHE_HOME="$work_dir/cache" \
   PATH=/usr/bin:/bin \
-  "$binary" doctor)"
+  "$binary" doctor --format json)"
 case "$doctor_output" in
   *'"schema":"scorepeek-target-inventory-v1"'*) ;;
   *)

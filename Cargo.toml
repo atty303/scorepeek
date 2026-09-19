@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/scorepeek", "crates/scorepeek-catalog", "crates/scorepeek-catalog-publisher", "crates/scorepeek-corpus", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/shared", "skins/cyan-system", "skins/result-aurora", "skins/dj-blackbox"]
+members = ["crates/scorepeek", "crates/scorepeek-catalog", "crates/scorepeek-catalog-publisher", "crates/scorepeek-corpus", "crates/scorepeek-dev", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/shared", "skins/cyan-system", "skins/result-aurora", "skins/dj-blackbox"]
 resolver = "3"
 
 [workspace.package]
@@ -22,6 +22,9 @@ inherits = "release"
 lto = "thin"
 
 [workspace.dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+clap_complete_nushell = "4.6.2"
 chrono = "0.4.45"
 dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
 encoding_rs = "0.8.35"

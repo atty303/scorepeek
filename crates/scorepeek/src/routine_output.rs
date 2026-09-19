@@ -2627,6 +2627,18 @@ pub struct RoutineOutput {
     diagnostics: Option<RunDiagnostics>,
 }
 
+pub struct RoutineOutputStartError {
+    message: String,
+    diagnostics: RunDiagnostics,
+}
+
+impl RoutineOutputStartError {
+    #[must_use]
+    pub fn into_parts(self) -> (String, RunDiagnostics) {
+        (self.message, self.diagnostics)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[allow(
     clippy::struct_field_names,
@@ -2764,12 +2776,16 @@ impl RoutineOutput {
         })
     }
 
+    /// Starts the public run output while retaining diagnostic ownership on failure.
+    ///
+    /// # Panics
+    /// Panics only if the internal constructor loses diagnostics that this entry point supplied.
     pub fn start(
         invocation_id: String,
         profile_sha256: String,
         recording_enabled: bool,
         diagnostics: RunDiagnostics,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, RoutineOutputStartError> {
         let state = Arc::new(Mutex::new(RunViewState::new(
             invocation_id,
             profile_sha256,
@@ -2777,14 +2793,27 @@ impl RoutineOutput {
         )));
         let channel = EventChannel::start(Arc::clone(&state));
         let display = if io::stdout().is_terminal() {
-            Display::Tui(TerminalGuard::new()?)
+            match TerminalGuard::new() {
+                Ok(guard) => Display::Tui(guard),
+                Err(message) => {
+                    return Err(RoutineOutputStartError {
+                        message,
+                        diagnostics,
+                    });
+                }
+            }
         } else {
             Display::Plain {
                 output: BufWriter::new(io::stdout()),
                 last_line: None,
             }
         };
-        Self::from_channel(state, channel, Some(display), Some(diagnostics))
+        Self::from_channel(state, channel, Some(display), Some(diagnostics)).map_err(
+            |(message, diagnostics)| RoutineOutputStartError {
+                message,
+                diagnostics: diagnostics.expect("start supplied diagnostic ownership"),
+            },
+        )
     }
 
     fn from_channel(
@@ -2792,14 +2821,14 @@ impl RoutineOutput {
         channel: Result<EventChannel, String>,
         display: Option<Display>,
         diagnostics: Option<RunDiagnostics>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, (String, Option<RunDiagnostics>)> {
         let channel = match channel {
             Ok(channel) => Some(channel),
             Err(error) => {
-                state
-                    .lock()
-                    .map_err(|_| "run view state lock was poisoned".to_owned())?
-                    .channel_start_failure = Some(error);
+                let Ok(mut state) = state.lock() else {
+                    return Err(("run view state lock was poisoned".to_owned(), diagnostics));
+                };
+                state.channel_start_failure = Some(error);
                 None
             }
         };
@@ -2838,8 +2867,13 @@ impl RoutineOutput {
             headless_events: Vec::new(),
             diagnostics,
         };
-        output.refresh()?;
-        Ok(output)
+        match output.refresh() {
+            Ok(()) => Ok(output),
+            Err(message) => {
+                let diagnostics = output.diagnostics.take();
+                Err((message, diagnostics))
+            }
+        }
     }
 
     #[must_use]
@@ -5739,7 +5773,8 @@ mod tests {
         let state = state();
         let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state));
         assert!(channel.is_err());
-        let mut output = RoutineOutput::from_channel(state, channel, None, None).unwrap();
+        let mut output = RoutineOutput::from_channel(state, channel, None, None)
+            .unwrap_or_else(|(error, _)| panic!("{error}"));
         let path = temporary.path().join("scores.sqlite3");
         output.enable_scores(&path).unwrap();
         prepare_accepted_attempt(&mut output);

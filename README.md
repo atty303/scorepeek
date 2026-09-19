@@ -45,6 +45,74 @@ url = "https://example.invalid/catalog/v1/catalog.zip"
 `SCOREPEEK_CATALOG_URL` is a temporary higher-priority override. HTTPS,
 loopback HTTP for development, and `file://` artifacts are supported.
 
+## Command line
+
+Running `scorepeek` without arguments prints top-level help and succeeds. The public commands are
+`run`, `doctor`, `config`, `diagnostic`, `skin`, and `completion`.
+
+```text
+scorepeek run --capture pipewire --node-name gamescope
+scorepeek run --capture vulkan-layer
+scorepeek doctor
+scorepeek doctor --format json
+scorepeek config path
+scorepeek config show
+scorepeek config check
+scorepeek diagnostic observe
+scorepeek diagnostic inspect --latest
+scorepeek diagnostic inspect --latest --format json
+scorepeek skin list
+scorepeek completion nushell
+```
+
+The optional config file defaults to `$XDG_CONFIG_HOME/scorepeek/config.toml` (or
+`$HOME/.config/scorepeek/config.toml`). Scorepeek never creates it. `--config FILE` selects a
+different file, and `SCOREPEEK_CONFIG` selects one when the CLI option is absent. `config show`
+prints only the file content; it does not show merged environment or CLI values.
+
+```toml
+[capture]
+backend = "pipewire"
+node_name = "gamescope"
+
+[crop]
+left = 0
+top = 0
+right = 0
+bottom = 0
+
+[scores]
+enabled = true
+database = "/absolute/path/to/scores.sqlite3"
+
+[overlay]
+wayland = true
+wayland_edit = false
+obs = false
+config = "/absolute/path/to/overlay.toml"
+
+[recording]
+enabled = true
+memory_mib = 2048
+
+[catalog]
+url = "https://example.invalid/catalog/v1/catalog.zip"
+```
+
+Run settings are merged in the order `config < SCOREPEEK_* environment < CLI`. The supported run
+environment variables are `SCOREPEEK_CAPTURE`, `SCOREPEEK_PIPEWIRE_NODE_NAME`,
+`SCOREPEEK_CROP_LEFT`, `SCOREPEEK_CROP_TOP`, `SCOREPEEK_CROP_RIGHT`,
+`SCOREPEEK_CROP_BOTTOM`, `SCOREPEEK_SCORES_ENABLED`, `SCOREPEEK_SCORES_DB`,
+`SCOREPEEK_OVERLAY_WAYLAND`, `SCOREPEEK_OVERLAY_WAYLAND_EDIT`, `SCOREPEEK_OVERLAY_OBS`,
+`SCOREPEEK_OVERLAY_CONFIG`, `SCOREPEEK_RECORDING_ENABLED`, and
+`SCOREPEEK_RECORDING_MEMORY_MIB`; catalog URL continues to use `SCOREPEEK_CATALOG_URL`. Selecting a
+capture backend at a higher-precedence layer clears the lower layer's backend-specific settings,
+so a PipeWire node name is never inherited by `vulkan-layer`.
+
+Normal query output is human-readable. `doctor`, `config path`, `config show`, `config check`, and
+`skin list` accept `--format json`, as does `diagnostic inspect`. `diagnostic observe` remains
+streaming NDJSON.
+
 ### Local processing, local records
 
 Recognition runs on your machine, and your scores are saved locally. No cloud

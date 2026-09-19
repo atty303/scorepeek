@@ -22,6 +22,15 @@ license merely because they are packaged for use by scorepeek.
   it does not present these tables under a standard open-data license. This
   catalog contains only the accepted normalized assertions required by
   scorepeek and does not redistribute the source JavaScript tables.
+- Usage clarification: On 2026-09-19, in response to our inquiry about
+  processing song metadata and providing an application-specific database to
+  users, the Textage administrator confirmed that chart-page data may
+  currently be used without prior contact, provided that it does not place
+  excessive load on the site. Scorepeek stated that it would fetch the data
+  once per day.
+- References: [inquiry](https://textage.cc/bbs/index.php?res=763&disp=1),
+  [administrator response](https://textage.cc/bbs/index.php?res=765&disp=1), and
+  [follow-up](https://textage.cc/bbs/index.php?res=766&disp=1).
 
 ## dqn/iidxapi
 

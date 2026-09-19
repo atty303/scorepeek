@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use scorepeek::recognition::RegisteredNumericRuntime;
 use scorepeek::recognition::ScreenFieldObservationError;
-use scorepeek::recognition::{NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256};
 
 use super::DiagnosticScreenFieldObservation;
 use super::field_observer::{
@@ -495,10 +495,8 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         };
         Self::start_with_capacity(root, descriptor, policy, capacity, |binding| {
             let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
-            let numeric_runtime = scorepeek::numeric_model_store::active_registered(
-                NUMERIC_MODEL_MANIFEST_BYTES,
-                NUMERIC_MODEL_MANIFEST_SHA256,
-            )?;
+            let numeric_runtime = RegisteredNumericRuntime::load_embedded()
+                .map_err(RegisteredScreenFieldObserverLoadError::NumericModel)?;
             RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
         })
     }
@@ -529,10 +527,8 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
             capacity,
             |binding| {
                 let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
-                let numeric_runtime = scorepeek::numeric_model_store::active_registered(
-                    NUMERIC_MODEL_MANIFEST_BYTES,
-                    NUMERIC_MODEL_MANIFEST_SHA256,
-                )?;
+                let numeric_runtime = RegisteredNumericRuntime::load_embedded()
+                    .map_err(RegisteredScreenFieldObserverLoadError::NumericModel)?;
                 RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
             },
         )
@@ -550,10 +546,8 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         let capacity = shared.text_workers().saturating_mul(2);
         Self::start_unmanaged_with_capacity(root, descriptor, policy, capacity, move |binding| {
-            let numeric_runtime = scorepeek::numeric_model_store::active_registered(
-                NUMERIC_MODEL_MANIFEST_BYTES,
-                NUMERIC_MODEL_MANIFEST_SHA256,
-            )?;
+            let numeric_runtime = RegisteredNumericRuntime::load_embedded()
+                .map_err(RegisteredScreenFieldObserverLoadError::NumericModel)?;
             shared.observer(binding, numeric_runtime)
         })
     }

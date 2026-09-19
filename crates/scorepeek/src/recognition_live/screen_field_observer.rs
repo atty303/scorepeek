@@ -65,7 +65,7 @@ pub struct SharedRegisteredScreenFieldResources {
 #[derive(Debug)]
 pub enum RegisteredScreenFieldObserverLoadError {
     Resources(RegisteredResourceLoadError),
-    NumericModel(scorepeek::numeric_model_store::NumericModelStoreError),
+    NumericModel(OnnxParityError),
     CandidateDomain(CatalogCandidateDomainError),
     TextRuntime(OnnxParityError),
 }
@@ -74,9 +74,8 @@ impl fmt::Display for RegisteredScreenFieldObserverLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Resources(error) => error.fmt(formatter),
-            Self::NumericModel(error) => error.fmt(formatter),
+            Self::NumericModel(error) | Self::TextRuntime(error) => error.fmt(formatter),
             Self::CandidateDomain(error) => error.fmt(formatter),
-            Self::TextRuntime(error) => error.fmt(formatter),
         }
     }
 }
@@ -98,14 +97,6 @@ impl From<CatalogCandidateDomainError> for RegisteredScreenFieldObserverLoadErro
 impl From<OnnxParityError> for RegisteredScreenFieldObserverLoadError {
     fn from(error: OnnxParityError) -> Self {
         Self::TextRuntime(error)
-    }
-}
-
-impl From<scorepeek::numeric_model_store::NumericModelStoreError>
-    for RegisteredScreenFieldObserverLoadError
-{
-    fn from(error: scorepeek::numeric_model_store::NumericModelStoreError) -> Self {
-        Self::NumericModel(error)
     }
 }
 

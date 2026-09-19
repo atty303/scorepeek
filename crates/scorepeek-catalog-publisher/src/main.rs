@@ -1,8 +1,9 @@
-use std::env;
-use std::ffi::{OsStr, OsString};
+#[cfg(test)]
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::{Args, Parser, Subcommand};
 use scorepeek::catalog::CatalogStore;
 use scorepeek::catalog::artifact::{self, ArtifactManifest};
 use serde::Serialize;
@@ -23,60 +24,56 @@ struct BuildSummary {
 }
 
 fn main() -> ExitCode {
-    let args = env::args_os().skip(1).collect::<Vec<_>>();
-    match run(&args) {
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let code = if error.use_stderr() { 2 } else { 0 };
+            let _ = error.print();
+            return ExitCode::from(code);
+        }
+    };
+    let result = match cli.command {
+        Command::Build(options) => build(options),
+        Command::Select(options) => select(&options),
+        Command::Verify(options) => verify(&options),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("scorepeek catalog publisher failed: {error}");
-            ExitCode::from(2)
+            ExitCode::from(1)
         }
     }
 }
 
-fn run(args: &[OsString]) -> Result<(), String> {
-    match args {
-        [command, rest @ ..] if command == "build" => build(parse_build(rest)?),
-        [command, rest @ ..] if command == "select" => select(&parse_select(rest)?),
-        [command, rest @ ..] if command == "verify" => verify(&parse_verify(rest)?),
-        [command] if command == "--help" || command == "-h" => {
-            print_usage();
-            Ok(())
-        }
-        _ => Err("usage: scorepeek-catalog-publisher --help".to_owned()),
-    }
+#[derive(Parser)]
+#[command(name = "scorepeek-catalog-publisher", version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    Build(BuildOptions),
+    Select(SelectOptions),
+    Verify(VerifyOptions),
+}
+
+#[derive(Args)]
 struct BuildOptions {
+    #[arg(long, value_parser = absolute_path)]
     output: PathBuf,
+    #[arg(long, value_parser = absolute_path)]
     notices: PathBuf,
+    #[arg(long, value_parser = absolute_path)]
     work_directory: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     artifact_revision: u64,
+    #[arg(long)]
     generator_commit: String,
+    #[arg(long)]
     workflow_run_url: String,
-}
-
-fn parse_build(args: &[OsString]) -> Result<BuildOptions, String> {
-    let values = exact_flags(
-        args,
-        &[
-            "--output",
-            "--notices",
-            "--work-directory",
-            "--artifact-revision",
-            "--generator-commit",
-            "--workflow-run-url",
-        ],
-    )?;
-    Ok(BuildOptions {
-        output: absolute(values[0], "output")?,
-        notices: absolute(values[1], "notices")?,
-        work_directory: absolute(values[2], "work directory")?,
-        artifact_revision: text(values[3], "artifact revision")?
-            .parse()
-            .map_err(|_| "artifact revision must be a positive integer".to_owned())?,
-        generator_commit: text(values[4], "generator commit")?.to_owned(),
-        workflow_run_url: text(values[5], "workflow run URL")?.to_owned(),
-    })
 }
 
 fn build(options: BuildOptions) -> Result<(), String> {
@@ -133,24 +130,16 @@ fn build(options: BuildOptions) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Args)]
 struct SelectOptions {
+    #[arg(long, value_parser = absolute_path)]
     candidate: PathBuf,
+    #[arg(long, value_parser = absolute_path)]
     current: PathBuf,
+    #[arg(long, value_parser = absolute_path)]
     output: PathBuf,
+    #[arg(long, value_parser = absolute_path)]
     work_directory: PathBuf,
-}
-
-fn parse_select(args: &[OsString]) -> Result<SelectOptions, String> {
-    let values = exact_flags(
-        args,
-        &["--candidate", "--current", "--output", "--work-directory"],
-    )?;
-    Ok(SelectOptions {
-        candidate: absolute(values[0], "candidate")?,
-        current: absolute(values[1], "current")?,
-        output: absolute(values[2], "output")?,
-        work_directory: absolute(values[3], "work directory")?,
-    })
 }
 
 fn select(options: &SelectOptions) -> Result<(), String> {
@@ -171,17 +160,12 @@ fn select(options: &SelectOptions) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Args)]
 struct VerifyOptions {
+    #[arg(long, value_parser = absolute_path)]
     artifact: PathBuf,
+    #[arg(long, value_parser = absolute_path)]
     output_directory: PathBuf,
-}
-
-fn parse_verify(args: &[OsString]) -> Result<VerifyOptions, String> {
-    let values = exact_flags(args, &["--artifact", "--output-directory"])?;
-    Ok(VerifyOptions {
-        artifact: absolute(values[0], "artifact")?,
-        output_directory: absolute(values[1], "output directory")?,
-    })
 }
 
 fn verify(options: &VerifyOptions) -> Result<(), String> {
@@ -195,42 +179,12 @@ fn verify(options: &VerifyOptions) -> Result<(), String> {
     Ok(())
 }
 
-fn exact_flags<'a>(args: &'a [OsString], flags: &[&str]) -> Result<Vec<&'a OsStr>, String> {
-    if args.len() != flags.len() * 2 {
-        return Err("command has a missing or unexpected argument".to_owned());
-    }
-    flags
-        .iter()
-        .enumerate()
-        .map(|(index, expected)| {
-            let flag = &args[index * 2];
-            let value = &args[index * 2 + 1];
-            if flag != expected || value.is_empty() {
-                return Err(format!("expected {expected} VALUE"));
-            }
-            Ok(value.as_os_str())
-        })
-        .collect()
-}
-
-fn absolute(value: &OsStr, label: &str) -> Result<PathBuf, String> {
+fn absolute_path(value: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_absolute() || path.as_os_str().is_empty() {
-        return Err(format!("{label} must be an absolute, non-empty path"));
+        return Err("path must be absolute and non-empty".to_owned());
     }
     Ok(path)
-}
-
-fn text<'a>(value: &'a OsStr, label: &str) -> Result<&'a str, String> {
-    value
-        .to_str()
-        .ok_or_else(|| format!("{label} must be UTF-8"))
-}
-
-fn print_usage() {
-    println!(
-        "Usage:\n  scorepeek-catalog-publisher build --output ZIP --notices FILE --work-directory DIRECTORY --artifact-revision N --generator-commit SHA --workflow-run-url URL\n  scorepeek-catalog-publisher select --candidate ZIP --current ZIP --output ZIP --work-directory DIRECTORY\n  scorepeek-catalog-publisher verify --artifact ZIP --output-directory DIRECTORY"
-    );
 }
 
 #[cfg(test)]
@@ -238,8 +192,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn publisher_commands_require_exact_ordered_flags() {
+    fn publisher_commands_accept_order_independent_named_options() {
         let args = [
+            "scorepeek-catalog-publisher",
+            "select",
             "--candidate",
             "/tmp/candidate.zip",
             "--current",
@@ -250,10 +206,10 @@ mod tests {
             "/tmp/work",
         ]
         .map(OsString::from);
-        assert!(parse_select(&args).is_ok());
+        assert!(Cli::try_parse_from(args.clone()).is_ok());
         let mut swapped = args;
-        swapped.swap(0, 2);
-        assert!(parse_select(&swapped).is_err());
+        swapped.swap(2, 4);
+        assert!(Cli::try_parse_from(swapped).is_ok());
     }
 
     #[test]

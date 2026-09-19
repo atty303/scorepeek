@@ -35,8 +35,8 @@ flowchart LR
 ## Runtime boundary
 
 The ordinary game-session process is Rust. It loads one active catalog, the
-registered PP-OCRv6-small text bundle, the installed private numeric bundle,
-and one explicitly selected capture backend before admitting recognition work. Python is restricted
+registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX
+embedded in the binary, and one explicitly selected capture backend before admitting recognition work. Python is restricted
 to reproducible offline OCR preparation, training, and export tooling.
 
 Catalog generation is not part of the distributed CLI. The separate
@@ -190,8 +190,9 @@ disk degradation, and ten-generation policy are defined in [runtime diagnostics]
 The private corpus imports complete operator-reviewed sessions, retains
 metadata locally, optionally stores canonical Matroska segments in a configured
 S3-compatible object store, and replays through the production recognition and
-temporal path. Real frames, complete labels, generated catalogs, model bytes,
-player data, and credentials stay outside Git. See
+temporal path. Real frames, complete labels, generated catalogs, text-model bytes,
+player data, and credentials stay outside Git. The registered v3 numeric ONNX is the explicitly
+approved repository artifact. See
 [private corpus](private-corpus.md) and
 [recording simulation](recording-simulation.md).
 
@@ -205,7 +206,7 @@ player data, and credentials stay outside Git. See
 | PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
 | Runtime source identity, edge crop, and canonical normalization | Versioned capture profile and normalizer documents |
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek/src` |
-| OCR preprocessing, models, and thresholds | Registered text and numeric bundles |
+| OCR preprocessing, models, and thresholds | Registered text bundle and embedded numeric model artifacts |
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
 | Public live compatibility | Event API v2 typed projection |
 | Durable local score state | `scorepeek-scores` SQLite consumer |

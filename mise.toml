@@ -335,7 +335,7 @@ SCOREPEEK_PREBUILT_SKINS=1 mise run test:checks ::: test:capture ::: test:runtim
 
 [tasks.doctor]
 description = "Print the local target inventory as versioned JSON"
-run = "cargo run --locked --quiet -p scorepeek -- doctor"
+run = "cargo run --locked --quiet -p scorepeek -- doctor --format json"
 
 [tasks."capture:vulkan:build"]
 description = "Build the Scorepeek Vulkan capture layer with pinned Zig"
@@ -391,7 +391,7 @@ description = "Inspect one normalized canonical frame with the shared layout"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition inspect "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition inspect "$@"
 '''
 
 [tasks."recognition:field-resource-load-gate"]
@@ -399,7 +399,7 @@ description = "Load the exact registered catalog and text runtime through the fi
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition field-resource-load-gate "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition field-resource-load-gate "$@"
 '''
 
 [tasks."recognition:recording-simulation-profile-author"]
@@ -407,7 +407,7 @@ description = "Validate and create a digest-bound private recording simulation p
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition recording-simulation-profile-author "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition recording-simulation-profile-author "$@"
 '''
 
 [tasks."recognition:recording-simulation"]
@@ -415,7 +415,7 @@ description = "Replay a bound canonical recording through the production field o
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition recording-simulation "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition recording-simulation "$@"
 '''
 
 [tasks."recognition:recording-evidence"]
@@ -423,7 +423,7 @@ description = "Replay a bound canonical recording and retain exact recognition e
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition recording-recognition-evidence "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition recording-recognition-evidence "$@"
 '''
 
 [tasks."recognition:recording-recognition-simulation"]
@@ -431,7 +431,7 @@ description = "Replay and require expected result-song recognition with exact re
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition recording-recognition-simulation "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition recording-recognition-simulation "$@"
 '''
 
 [tasks."recognition:crop"]
@@ -439,7 +439,7 @@ description = "Export shared-layout crops from one validated canonical result fr
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition crop "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition crop "$@"
 '''
 
 [tasks."recognition:music-select:crop"]
@@ -447,7 +447,7 @@ description = "Export selected and visible-list title crops from one validated m
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition music-select-crop "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition music-select-crop "$@"
 '''
 
 [tasks."recognition:integrated-context:crop"]
@@ -455,7 +455,7 @@ description = "Export independently measured result or music-select context crop
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition integrated-context-crop "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition integrated-context-crop "$@"
 '''
 
 [tasks."recognition:title:spike"]
@@ -463,7 +463,7 @@ description = "Resolve diagnostic open-text OCR to one exact catalog candidate"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-spike "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition title-spike "$@"
 '''
 
 [tasks."recognition:title:provisional-candidates"]
@@ -471,7 +471,7 @@ description = "Export the active-catalog SP HYPER title domain for private provi
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition provisional-title-candidates "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition provisional-title-candidates "$@"
 '''
 
 [tasks."recognition:title:dictionary:audit"]
@@ -479,7 +479,7 @@ description = "Audit active-catalog title coverage against the registered OCR di
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-dictionary-audit "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition title-dictionary-audit "$@"
 '''
 
 [tasks."recognition:title:model-export:requirements"]
@@ -487,7 +487,7 @@ description = "Write complete active-catalog requirements for a scorepeek-owned 
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-model-export-requirements "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition title-model-export-requirements "$@"
 '''
 
 [tasks."corpus:music-list:observation-draft:inspect"]
@@ -579,7 +579,7 @@ description = "Verify scorepeek-owned Paddle and ONNX tensor and dictionary cont
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-model-contract-parity "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition title-model-contract-parity "$@"
 '''
 
 [tasks."ocr:official-onnx:decode-dynamic"]
@@ -587,7 +587,7 @@ description = "Run a registered dynamic ONNX bundle over digest-bound crops"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-official-dynamic-onnx-decode "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition title-official-dynamic-onnx-decode "$@"
 '''
 
 [tasks."ocr:parity:run"]
@@ -595,7 +595,7 @@ description = "Run Rust/Paddle/ONNX parity and diagnostic active-catalog title s
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-onnx-parity "$@"
+exec cargo run --locked --quiet -p scorepeek-dev -- recognition title-onnx-parity "$@"
 '''
 
 [tasks."corpus:synthetic:render"]
