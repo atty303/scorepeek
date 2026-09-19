@@ -102,7 +102,7 @@ run = "dist build"
 
 [tasks."release:build"]
 description = "Build and verify GitHub Release artifacts for a supplied version"
-depends = ["overlay:web:bundle"]
+depends = ["overlay:skins:build", "overlay:web:bundle"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -267,7 +267,7 @@ exec cargo run --locked -p scorepeek --features embedded-web -- run --overlay-wa
 
 [tasks."dist:test"]
 description = "Build and smoke-test the local Linux x86-64 release archive"
-depends = ["overlay:web:bundle"]
+depends = ["overlay:skins:build", "overlay:web:bundle"]
 run = "scripts/test-dist-artifact.bash"
 
 [tasks.fix]
