@@ -1,0 +1,143 @@
+Task: restore the agreed scheduled release trigger and audit the implementation against the release plan
+Anchor: f7f9c68dc8e94c32c2587e89555642bceb4bfffd
+Base: fae0105f28dcd423db9e2104e61da374d2092faf
+Worktree: main
+Commits: f7f9c68dc8e94c32c2587e89555642bceb4bfffd replaces the main-push release trigger with the agreed daily Asia/Tokyo schedule and documents manual dispatch
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; review; atty303 engineering policy
+Environment: durable Scorepeek caller workflow; GitHub Actions is the external state-changing boundary; no push or live release was authorized in this cycle
+Evidence: the original design transcript fixed the caller schedule at cron 17 4 * * * with timezone Asia/Tokyo and retained workflow_dispatch; GitHub's current workflow syntax supports IANA timezone schedules; targeted and repository-wide mise run check passed including actionlint; fresh independent review found no actionable issue; post-commit mise run build passed in the normally permissioned target environment after the sandbox alone rejected mise task-source cache writes
+Evidence: the read-only plan audit found remaining repository-template differences outside this commit: its caller documentation still shows a main push trigger; the action performs custom branch and HEAD/GITHUB_SHA checks; rollback intentionally retains semantic-release notes; failure summaries do not enumerate successful rollback targets/results; and the planned hermetic coverage lacks dedicated shallow-fetch, full mocked-GitHub lifecycle, and secret-output tests. The later explicit no-checksum decision supersedes the original SHA256SUMS requirement.
+Authority: .github/workflows/release.yml and README.md define Scorepeek's current release trigger; repository-template source, tests, and docs define the central action
+Transcript:
+- U1: 予定ではschedule実行でon pushじゃなかったはず。修正して
+  - A: Confirmed the current workflow's main-push trigger caused the observed release. Recovered the agreed daily 04:17 Asia/Tokyo schedule from the original design record, verified current GitHub support for timezone-aware schedules, replaced push with schedule while retaining manual dispatch, updated README, ran targeted and full checks, obtained an independent clean review, committed the change, and completed the required post-commit build.
+- U2:
+    計画とずれがあったら報告して
+
+
+
+    **配置と呼び出し**
+
+    - 中央実装は公開repo `atty303/repository-template`に置く。
+    - reusable workflowやcomposite actionではなく、`runs.using: node24`の単一JavaScript actionにする。
+    - callerは任意のmise-action、設定、forkを先行stepで使用できる。
+    - callerは中央actionをfull commit SHAでpinする。
+    - 中央action用のversion tagは作らず、SHA更新は当面手動。
+    - caller workflowのtemplate fileやgeneratorはまだ作らず、完全な利用例をdocumentationへ載せる。
+
+    **caller workflow**
+    ```arduino
+    checkout
+    → caller固有のmise setup
+    → 中央release action
+    ```
+
+    - `actions/checkout`は通常のshallow checkoutでよい。
+    - `persist-credentials: false`とし、release処理はcheckout credentialへ依存しない。
+    - permissionsは`contents: write`だけ必須。
+    - OIDC利用時のみ`id-token: write`、GitHub Packages利用時のみ`packages: write`を追加する。
+    - registry credentialはcallerがaction stepの任意の環境変数へ直接設定する。
+    - 中央actionはfnoxや`FNOX_AGE_KEY`を認識しない。
+    - scheduleは毎日04:17 Asia/Tokyo、手動`workflow_dispatch`も提供する。
+    - 同一concurrency group、`cancel-in-progress: false`とする。
+
+    **中央actionの配布**
+
+    - semantic-release、公式plugins、独自CalVer処理、artifact検証、rollback処理をRollupで単一bundleへ含める。
+    - pluginは文字列によるruntime解決ではなく、sourceから明示的にimportしてinlineで渡す。
+    - `src`、lockfile、bundle設定、生成済み`dist/index.js`を同じcommitへ含める。
+    - CIで再bundle後に差分がないことを検証する。
+    - caller側でNode setupや`npm ci`は行わない。
+    - 初期対応runnerは`ubuntu-latest`のみ。
+
+    **GitHub認証とGit履歴**
+
+    - `github-token` inputの既定値を`${{ github.token }}`にする。
+    - fetch、tag push、GitHub Release APIのすべてに同じtokenを使う。
+    - actionがshallow repositoryを検出し、default branchの必要な履歴とrelease tagを取得する。
+    - GitHub repositoryのdefault branchだけをrelease branchとする。
+    - 非default branchから呼ばれた場合は、bootstrap、build、publishを行わず正常なno-opとする。
+    - 独自の`GITHUB_REF`や`HEAD == GITHUB_SHA`強制検証は行わず、semantic-releaseのbranch判定に任せる。
+
+    **versioning**
+
+    - callerが`versioning: semver | calver`を選ぶ。
+    - libraryはSemVer、appは原則CalVer。
+    - release tagがない場合、default branchのfirst-parentを最後まで辿ったinitial commitへ`v0.0.0`を作成し、そのrunを継続する。
+    - `v0.0.0`だけが存在する状態では、SemVerとCalVerのどちらも初回選択できる。
+    - 実release後はversioning modeを変更できない。
+    - default branchのHEADから到達可能な`v<version>` tagだけをrelease履歴として扱う。
+    - 他branchやunrelated historyのtagは無視する。
+
+    CalVerは次の形式です。
+    ```
+    YYYY.M.COUNTER
+    ```
+
+    - timezoneはAsia/Tokyo。
+    - その月の最初は`0`。
+    - 同じ月のreleaseごとに加算する。
+    - 新しい月は`0`へ戻る。
+    - 最新CalVerより現在年月が過去ならfailする。
+    - 例: `2026.9.0`、`2026.9.1`、`2026.10.0`。
+
+    **commitとrelease notes**
+
+    - release対象は`feat`、`fix`、`perf`、`revert`、breaking change。
+    - `docs`、`test`、`ci`、`build`、`chore`、通常の`refactor`はreleaseしない。
+    - Conventional Commitsでないcommitはwarningを出して無視する。
+    - commit logを公式commit analyzerとrelease-notes generatorで処理する。
+    - PRだけには依存しない。
+    - CHANGELOG、version更新commit、mainへの書き戻しは作らない。
+    - GitHub issue、PR comment、成功・失敗通知も作らない。
+
+    **buildとpublish**
+    ```yaml
+    release:build <version> <output-directory>
+    release:publish <version> <artifact-directory>  # optional
+    ```
+
+    - `release:build`は必須。
+    - `release:publish`はmiseの正確なtask一覧に存在する場合だけ実行する。
+    - actionはbuild前に`.release/artifacts`を空にする。
+    - artifactは直下のregular fileだけを許可する。
+    - 1つ以上必須で、directoryとsymlinkは禁止する。
+    - actionが`SHA256SUMS`を生成する。
+    - registry publishは同一version・同一内容なら成功するidempotent契約とする。
+    - cargo-distなどのbuild toolにはGitHub操作をさせない。
+
+    **release順序と回復**
+    ```arduino
+    version・notes決定
+    → release:build
+    → artifact検証
+    → tag作成
+    → optional release:publish
+    → artifact付きGitHub Release
+    ```
+
+    - GitHub Releaseは即時公開、非draft、非prerelease。
+    - titleとtagは`v<version>`。
+    - `latest`はGitHubの自動判定に任せる。
+    - current runが新規作成したtag、Git note、partial GitHub Release、assetだけをfailure時にrollbackする。
+    - 既存resourceは削除しない。
+    - registryへ既に公開されたpackageは削除せず、再実行時のidempotent publishで回復する。
+    - rollback後は次のscheduled/manual runで同じversionを再計算できる。
+
+    **将来のmatrix build**
+
+    - semantic-releaseをphase分割しない。
+    - 中央actionも1つのまま維持する。
+    - 将来、`release:build`が`workflow_dispatch`でmatrix build workflowを起動し、完了を待ってartifactを取得する。
+    - artifact取得後、元のsemantic-release lifecycleをそのまま継続する。
+
+    **検証と表示**
+
+    - CIは一時Git repository、bare remote、mock GitHub APIを使うhermetic integration testにする。
+    - CalVer、SemVer、bootstrap、mode固定、shallow fetch、task呼び出し、artifact検証、rollback、bundle単体実行、secret非出力を検証する。
+    - 実GitHubでのpilotは別途明示承認を得て1回実施する。
+    - logはphase単位でgroup化する。
+    - no-releaseは1行で正常終了する。
+    - release成功・失敗時だけJob Summaryを作る。
+    - 失敗時summaryにはrollback対象と結果を載せるが、credential値は出さない。
+  - A: Audited the current repository-template action, tests, documentation, and Scorepeek caller against the supplied plan. Distinguished the later user-authorized no-checksum/server-digest design from accidental drift. Kept this change scoped to Scorepeek's schedule correction and reserved other plan differences for explicit follow-up rather than modifying another repository without authorization.
