@@ -1,0 +1,18 @@
+Task: Deduplicate scorepeek repository agent guidance
+Anchor: 267708d6f9a15cdd865296f127fb3005395c47ca
+Base: 933f5ddb3f711e79e1164fadee07a2777ef87b13
+Workline: codex/deduplicate-agent-guidance from origin/main in an isolated temporary worktree
+Commits: 267708d6f9a15cdd865296f127fb3005395c47ca removes obsolete inf-notebook and globally owned guidance while retaining scorepeek-specific rules
+Guidance: repository AGENTS.md; global AGENTS.md; maintain-agent-guidance; develop-repository; investigate-problem; review; atty303 engineering policy
+Execution: original main was ahead of origin/main with unrelated release work, so it was preserved unchanged; remote code and notes were fetched; no push or other external state change was performed
+Verification: git diff --check; mise run check -- AGENTS.md; fresh independent review of exact diff; mise run build passed outside the sandbox after the sandbox run failed only on the read-only mise task-source state
+Authority: current global guidance and skills own general workflow policy; AGENTS.md owns only scorepeek-specific orientation, contracts, inclusion boundaries, and verification gates
+Transcript:
+- U1: [$maintain-agent-guidance](/var/home/atty/.agents/skills/maintain-agent-guidance/SKILL.md) scorepeekのagents.mdにvcs規則があるか？
+  - A: Read the current repository and global guidance in a read-only audit. The initial answer incorrectly mixed globally applied rules with repository-specific rules and classified the VCS guidance as already resolved.
+- U2: いや、それらはglobalのほうで、repo固有じゃないでしょ
+  - A: Acknowledged the distinction, compared the repository file with global AGENTS.md and develop-repository, and corrected the answer: most of the repository Version control section duplicated global policy, while the post-commit scorepeek build, inf-notebook restriction, and artifact-inclusion boundaries were repository-specific. No files were changed.
+- U3:
+    inf-notebookの規則はもう古いので削除。他の重複も削除。
+    他にglobalと重複している指示はないか？
+  - A: Classified the durable guidance-only change, inspected the repository snapshot, fetched origin and remote notes, and found unrelated release changes plus one local commit on main. Created an isolated branch from origin/main, audited the full repository guidance against global AGENTS.md, develop-repository, and the atty303 engineering policy, then removed the obsolete inf-notebook rules and generic duplicates covering current-tree history, repository state, documentation updates, Git workflow, credential handling, standard mise/hk entry points, temporary cleanup, and target-environment claims. Retained scorepeek-specific orientation, fail-closed recognition, catalog/capture/OCR contracts, repository-inclusion boundaries, trusted-input validation, diagnostics, overlay verification, live-target authority, and post-commit build. `git diff --check` and `mise run check -- AGENTS.md` passed. A fresh independent reviewer reported no findings and matched the exact diff hash. Committed the single-file change as 267708d. The sandbox build completed the overlay bundle but failed to write mise task-source state; investigation attributed this to the sandbox boundary, and the identical elevated `mise run build` passed.
