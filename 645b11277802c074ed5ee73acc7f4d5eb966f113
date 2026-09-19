@@ -1,0 +1,53 @@
+# Task cycle: clap CLI redesign and embedded numeric runtime
+
+- Started from `7be79d82fc1aea41212c7ce8a0249ed9f6a42e1c` on `main`, with a clean working tree and `origin/main` at the same commit.
+- Final implementation commit: `645b11277802c074ed5ee73acc7f4d5eb966f113`.
+- Applied repository guidance plus the `develop-repository`, `design-program-observability`, `investigate-problem`, and `maintain-agent-guidance` skills. Two independent review agents audited the CLI/config and model/diagnostic portions.
+
+## User request
+
+以下実装して。
+
+## まとめ
+
+### 決まったこと
+
+- CLI parserは`clap`のderive APIへ移行する。
+- 既存CLI構文との後方互換性は保証せず、公開CLIを再設計する。
+- 対象は`scorepeek`、`scorepeek-corpus`、`scorepeek-catalog-publisher`、非自明な専用開発binaryとする。
+- 単純なexampleは標準ライブラリによる引数処理のままとする。
+- 低レベルなrecognition、capture、gate操作は、用途ごとのexample、test、専用binaryへ分離する。
+- 公開コマンドは`run`、`doctor`、`config`、`diagnostic`、`skin`、`completion`とする。
+- 引数なしの`scorepeek`はtop-level helpを表示し、正常終了する。
+- capture方式は`scorepeek run --capture pipewire|vulkan-layer`で選択する。
+- config fileは任意とし、自動生成しない。
+- configは`[run]`で包まず、top-levelの`[capture]`、`[crop]`、`[scores]`、`[overlay]`、`[recording]`、既存の`[catalog]`で構成する。
+- 設定precedenceは`config < SCOREPEEK_*環境変数 < CLI`とする。
+- capture方式を上書きした場合、別方式固有の設定は継承しない。
+- `config path`、`config show`、`config check`を提供する。
+- `config show`はmerge後の実効値ではなく、config fileに記述された内容だけを表示する。
+- 通常出力はhuman-readableをdefaultとし、対応する照会コマンドに`--format json`を提供する。
+- `diagnostic observe`はstreaming NDJSONを維持する。
+- `completion`はBash、Zsh、Fish、Elvish、PowerShell、Nushellに対応する。
+- 終了コードは`0`成功、`1`実行・設定・外部境界のfailure、`2`usage error、`130`interruptとする。
+- 現行v3 numeric ONNXとruntime manifestを正式なrepository artifactとしてcommitする。
+- ONNXはrawのままbinaryへ埋め込む。
+- numeric model storeと`numeric-model install`を廃止する。
+- CLI parseは独立したdiagnostic recordingの対象外とする。
+- `run`はconfig読込前に既存diagnostic streamを開始し、config以降のfailure stageを保持する。
+
+## Implementation and verification history
+
+1. Took the required VCS snapshot, read the repository living documentation and relevant skill instructions, then identified the existing handwritten parsers, runtime/config boundaries, diagnostic lifecycle, numeric model store, distribution layout, and tests.
+2. Added workspace `clap` derive and completion dependencies. Reworked `scorepeek`, `scorepeek-corpus`, and `scorepeek-catalog-publisher` into typed derive parsers. Moved the nontrivial developer interface into the non-distributed `scorepeek-dev` package while leaving simple examples on standard-library argument handling.
+3. Limited the public `scorepeek` surface to `run`, `doctor`, `config`, `diagnostic`, `skin`, and `completion`; made no-argument invocation print top-level help successfully; added the six requested completion shells and the 0/1/2/130 exit contract.
+4. Replaced the old run wrapper with optional strict top-level configuration sections, config/environment/CLI precedence, capture-backend override isolation, raw-file `config show`, and `config path/show/check`. Kept query output human-readable by default with JSON formats where applicable, and retained NDJSON for `diagnostic observe`.
+5. Reworked run startup so diagnostic ownership begins before config path/load/merge and survives all subsequent startup failures. Added signal settlement across early initialization, routine output creation, overlay/controller setup, Vulkan listener setup, and background catalog activity; ensured a single cancelled terminal record and exit 130 on interrupt.
+6. Committed the registered v3 ONNX artifact, verified its SHA-256 against the runtime manifest, embedded both files directly, and removed the numeric model store, arbitrary local model loading, install command, and related scripts/docs.
+7. Updated README, architecture, diagnostics, sources, third-party notices, mise tasks, live capture scripts, and distribution checks to describe and exercise the new contracts.
+8. Independent reviews initially found distribution leakage of the dev binary, non-JSON doctor gating, a non-UTF-8 config-path panic, premature config resolution for unrelated commands, recording-disable and Wayland-edit merge bugs, corpus policy usage classification, and incomplete interrupt settlement. Each finding was fixed and covered or reverified; the final reviews reported no important findings.
+9. Passed `cargo check --workspace --all-targets --all-features`, `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`, `mise run check`, targeted application tests, `mise run dist:test`, and the full `mise run test`. The release archive contained only `README.md` and `scorepeek`, and the embedded-web doctor gate passed.
+10. The sandbox could build project outputs but could not write mise task-source state under the user state directory; the required release/full gates and post-commit build were rerun with narrowly scoped elevated execution. `mise run build` passed after the commit and refreshed `target/debug/scorepeek` from the committed source.
+11. The final durable-guidance audit classified all task-specific learnings as already resolved in source, tests, living documentation, or existing workflow guidance; no additional guidance change was proposed.
+
+No remote push, release, deployment, live Bazzite/Gamescope/OBS mutation, or external service change was performed.
