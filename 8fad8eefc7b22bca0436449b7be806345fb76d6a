@@ -1,0 +1,26 @@
+Task: Publish and live-verify the Scorepeek CalVer release
+Anchor: 8fad8eefc7b22bca0436449b7be806345fb76d6a
+Base: fb0334f71093e1e3753461b7e91f386acf0a8379
+Line: main
+Commits: f05c06c enables mise native binstall; 114d175 improves release diagnostics; a7f030d pins local-only bootstrap handling; c0a185f pins the bundled conventional preset; 063cf8f builds overlay skins before release verification; 8fad8ee pins semantic-release-native CalVer calculation
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; review; maintain-agent-guidance; atty303 engineering policy
+Environment: durable Scorepeek caller workflow on GitHub-hosted Ubuntu; CalVer release mode; monorepo_root=true mise tasks; caller-owned mise setup; cargo-dist local artifacts only
+
+Evidence:
+- Intermediate Scorepeek release run 35446607273 succeeded after the skin dependency fix, and its matching CI run 35446607314 passed all seven jobs while Pages run 35446607329 completed assemble and deploy. That run nevertheless revealed an incorrect v0.1.0 release caused by semantic-release plugin-context cloning.
+- The action-owned v0.1.0 release and tag were deleted after marker and ownership confirmation; remote tags were empty and the public release endpoint returned 404 before the corrected rerun.
+- The final workflow pins repository-template action commit 16aaaafee2e5921602a9a3690717881a2bf5d272, whose remote main ref was read back at that exact SHA.
+- The one-line final workflow change passed targeted actionlint and a fresh independent review with no actionable findings. The required post-commit mise run build succeeded and rebuilt target/debug/scorepeek from the committed source.
+- The final live GitHub Actions release, complete CI/Pages readback, published artifact checksum, extracted binary version, and absence of bootstrap/bridge remote tags remain the completion oracle after this note is written.
+
+Authority: Scorepeek's release workflow owns checkout, permissions, caller-specific mise setup, and the CalVer mode selection. The SHA-pinned central action owns release analysis, tag/release lifecycle, notes, and rollback; Scorepeek's root release:build task owns cargo-dist artifacts and smoke verification.
+
+Transcript:
+- U1: pushしてrelease確認
+  - A: Pushed the prepared Scorepeek changes and monitored the release, CI, and Pages workflows. Used each live release failure as the oracle, fixed the clean-runner skin dependency locally, and identified the later v0.1.0 semantic-release calculation defect in the central action.
+- U2: ci setup高速化だから含めてpushしていい
+  - A: Included the reviewed mise native-binstall setup optimization in the authorized push; kept it as its own commit and verified the final SHA's jobs independently.
+- U3: annotaed tagじゃないとダメなの？
+  - A: Confirmed that Scorepeek does not need a published annotated bootstrap tag; release calculation can use action-owned local lightweight tags that are removed before publishing.
+- U4: それでいいよ
+  - A: Pinned Scorepeek to the corrected central action SHA, passed the targeted workflow check and fresh review, committed 8fad8ee, and completed the required post-commit build before the final push and live release verification.
