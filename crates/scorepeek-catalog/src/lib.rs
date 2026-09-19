@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
@@ -13,7 +14,7 @@ pub enum SourceId {
 }
 
 impl SourceId {
-    pub(crate) const COUNT: usize = 3;
+    pub const COUNT: usize = 3;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -25,7 +26,7 @@ pub enum LineageId {
 }
 
 impl LineageId {
-    pub(crate) const COUNT: usize = 3;
+    pub const COUNT: usize = 3;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -42,7 +43,8 @@ pub struct SourcePolicy {
 }
 
 impl SourcePolicy {
-    pub(super) const fn for_id(source_id: SourceId) -> Self {
+    #[must_use]
+    pub const fn for_id(source_id: SourceId) -> Self {
         match source_id {
             SourceId::Tachi => Self::tachi(),
             SourceId::Textage => Self::textage(),
@@ -50,7 +52,8 @@ impl SourcePolicy {
         }
     }
 
-    pub(crate) const fn tachi() -> Self {
+    #[must_use]
+    pub const fn tachi() -> Self {
         Self {
             source_id: SourceId::Tachi,
             lineage_id: LineageId::GameMdb,
@@ -75,7 +78,8 @@ impl SourcePolicy {
         }
     }
 
-    pub(crate) const fn textage() -> Self {
+    #[must_use]
+    pub const fn textage() -> Self {
         Self {
             source_id: SourceId::Textage,
             lineage_id: LineageId::Textage,
@@ -102,7 +106,8 @@ impl SourcePolicy {
         }
     }
 
-    pub(crate) const fn dqn() -> Self {
+    #[must_use]
+    pub const fn dqn() -> Self {
         Self {
             source_id: SourceId::DqnIidxapi,
             lineage_id: LineageId::OfficialInfinitasHtml,
@@ -132,33 +137,33 @@ pub enum Completeness {
 
 #[derive(Clone, Debug)]
 pub struct SourceSnapshot {
-    pub(super) policy: SourcePolicy,
-    pub(super) evidence: SourceEvidence,
-    pub(crate) observations: Vec<SourceObservation>,
+    pub policy: SourcePolicy,
+    pub evidence: SourceEvidence,
+    pub observations: Vec<SourceObservation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SourceEvidence {
-    pub(super) source_id: SourceId,
-    pub(super) lineage_id: LineageId,
-    pub(super) revision_strategy: RevisionStrategy,
-    pub(super) revision: String,
-    pub(super) content_sha256: String,
-    pub(super) byte_size: usize,
-    pub(super) record_count: usize,
-    pub(super) parser_version: String,
-    pub(super) declared_scope: String,
-    pub(super) completeness: Completeness,
-    pub(super) field_authority: Vec<String>,
-    pub(super) freshness: String,
-    pub(super) rights_and_provenance: String,
+    pub source_id: SourceId,
+    pub lineage_id: LineageId,
+    pub revision_strategy: RevisionStrategy,
+    pub revision: String,
+    pub content_sha256: String,
+    pub byte_size: usize,
+    pub record_count: usize,
+    pub parser_version: String,
+    pub declared_scope: String,
+    pub completeness: Completeness,
+    pub field_authority: Vec<String>,
+    pub freshness: String,
+    pub rights_and_provenance: String,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct EvidenceId {
-    pub(super) source_id: SourceId,
-    pub(super) revision: String,
-    pub(super) content_sha256: String,
+    pub source_id: SourceId,
+    pub revision: String,
+    pub content_sha256: String,
 }
 
 impl SourceSnapshot {
@@ -203,14 +208,14 @@ impl SourceEvidence {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum SourceObservation {
+pub enum SourceObservation {
     Tachi(TachiObservation),
     Textage(TextageObservation),
     Dqn(DqnObservation),
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TachiObservation {
+pub struct TachiObservation {
     pub source_song_id: String,
     pub title_variants: BTreeSet<SourceTitleObservation>,
     pub artist: String,
@@ -220,13 +225,13 @@ pub(crate) struct TachiObservation {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct SourceTitleObservation {
+pub struct SourceTitleObservation {
     pub value: String,
     pub kind: DisplayVariantKind,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct TextageObservation {
+pub struct TextageObservation {
     pub source_song_id: String,
     pub title: String,
     pub artist: String,
@@ -239,7 +244,7 @@ pub(crate) struct TextageObservation {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct DqnObservation {
+pub struct DqnObservation {
     pub title: String,
     pub artist: String,
     pub pack: Option<String>,
@@ -276,7 +281,7 @@ pub struct Chart {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SourceChartObservation {
+pub struct SourceChartObservation {
     pub chart: Chart,
     pub source_chart_id: String,
     pub product_versions: BTreeSet<String>,
@@ -301,7 +306,8 @@ impl ScorepeekSongId {
         self.0
     }
 
-    pub(super) const fn from_uuid(value: Uuid) -> Self {
+    #[must_use]
+    pub const fn from_uuid(value: Uuid) -> Self {
         Self(value)
     }
 }
@@ -342,33 +348,32 @@ pub enum InfinitasStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogSong {
-    pub(super) song_id: ScorepeekSongId,
-    pub(super) tachi_source_id: String,
-    pub(super) title_variants: BTreeSet<DisplayVariant>,
-    pub(super) artist: String,
-    pub(super) version: String,
-    pub(super) charts: BTreeMap<ChartKey, Chart>,
-    pub(super) chart_assertions: BTreeMap<ChartKey, BTreeSet<ChartAssertion>>,
-    pub(super) infinitas_status: InfinitasStatus,
-    pub(super) source_bindings: BTreeMap<SourceId, BTreeSet<String>>,
-    pub(super) binding_evidence: BTreeMap<(SourceId, String), BTreeSet<EvidenceId>>,
-    pub(super) binding_attributes:
-        BTreeMap<(SourceId, String, EvidenceId), BTreeMap<String, String>>,
-    pub(super) tachi_primary_infinitas: bool,
+    pub song_id: ScorepeekSongId,
+    pub tachi_source_id: String,
+    pub title_variants: BTreeSet<DisplayVariant>,
+    pub artist: String,
+    pub version: String,
+    pub charts: BTreeMap<ChartKey, Chart>,
+    pub chart_assertions: BTreeMap<ChartKey, BTreeSet<ChartAssertion>>,
+    pub infinitas_status: InfinitasStatus,
+    pub source_bindings: BTreeMap<SourceId, BTreeSet<String>>,
+    pub binding_evidence: BTreeMap<(SourceId, String), BTreeSet<EvidenceId>>,
+    pub binding_attributes: BTreeMap<(SourceId, String, EvidenceId), BTreeMap<String, String>>,
+    pub tachi_primary_infinitas: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct Catalog {
-    pub(super) songs: BTreeMap<ScorepeekSongId, CatalogSong>,
-    pub(super) source_evidence: BTreeMap<EvidenceId, SourceEvidence>,
-    pub(super) latest_evidence: BTreeMap<SourceId, EvidenceId>,
-    pub(super) dqn_bindings: BTreeMap<ExactTitleArtist, DqnBinding>,
+    pub songs: BTreeMap<ScorepeekSongId, CatalogSong>,
+    pub source_evidence: BTreeMap<EvidenceId, SourceEvidence>,
+    pub latest_evidence: BTreeMap<SourceId, EvidenceId>,
+    pub dqn_bindings: BTreeMap<ExactTitleArtist, DqnBinding>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub(super) struct DqnBinding {
-    pub(super) song_id: ScorepeekSongId,
-    pub(super) evidence_packs: BTreeMap<EvidenceId, BTreeSet<Option<String>>>,
+pub struct DqnBinding {
+    pub song_id: ScorepeekSongId,
+    pub evidence_packs: BTreeMap<EvidenceId, BTreeSet<Option<String>>>,
 }
 
 impl CatalogSong {
@@ -399,6 +404,7 @@ impl CatalogSong {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "generation")]
 pub struct FederationInput {
     pub tachi: Option<SourceSnapshot>,
     pub textage: Option<SourceSnapshot>,
@@ -406,12 +412,14 @@ pub struct FederationInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(feature = "generation")]
 pub struct FederationOutput {
     pub catalog: Catalog,
     pub quarantine: Vec<QuarantineEntry>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[cfg(feature = "generation")]
 pub struct QuarantineEntry {
     pub source_id: SourceId,
     pub source_key: String,
@@ -420,6 +428,7 @@ pub struct QuarantineEntry {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg(feature = "generation")]
 pub enum QuarantineReason {
     SourcePolicyMismatch,
     ProvisionalWithoutTachiAnchor,
@@ -432,9 +441,9 @@ pub enum QuarantineReason {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub(super) struct ExactTitleArtist {
-    pub(super) title: String,
-    pub(super) artist: String,
+pub struct ExactTitleArtist {
+    pub title: String,
+    pub artist: String,
 }
 
 impl Catalog {
@@ -448,7 +457,64 @@ impl Catalog {
         &self.source_evidence
     }
 
+    /// Returns the versioned digest of every catalog value observable by `scorepeek run`.
+    ///
+    /// Source lineage, evidence, source-local bindings, quarantine state, and storage details are
+    /// deliberately excluded. The encoded projection is ordered by the catalog's `BTreeMap` and
+    /// `BTreeSet` keys, so rebuilding from the same accepted semantic records is stable.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if serialization of the fixed, infallible semantic projection or writing to an
+    /// in-memory `String` unexpectedly fails.
     #[must_use]
+    pub fn semantic_digest(&self) -> String {
+        #[derive(Serialize)]
+        struct SemanticCatalog<'a> {
+            schema: &'static str,
+            songs: Vec<SemanticSong<'a>>,
+        }
+
+        #[derive(Serialize)]
+        struct SemanticSong<'a> {
+            song_id: ScorepeekSongId,
+            titles: Vec<(DisplayVariantKind, &'a str)>,
+            artist: &'a str,
+            charts: Vec<&'a Chart>,
+            infinitas_status: InfinitasStatus,
+        }
+
+        let songs = self
+            .songs
+            .values()
+            .map(|song| SemanticSong {
+                song_id: song.song_id,
+                titles: song
+                    .title_variants
+                    .iter()
+                    .map(|variant| (variant.kind, variant.value.as_str()))
+                    .collect(),
+                artist: &song.artist,
+                charts: song.charts.values().collect(),
+                infinitas_status: song.infinitas_status,
+            })
+            .collect();
+        let encoded = serde_json::to_vec(&SemanticCatalog {
+            schema: "scorepeek-catalog-runtime-semantics-v1",
+            songs,
+        })
+        .expect("the semantic catalog projection is serializable");
+        let digest = Sha256::digest(encoded);
+        let mut value = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            use std::fmt::Write as _;
+            write!(value, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        value
+    }
+
+    #[must_use]
+    #[cfg(feature = "generation")]
     pub fn federate(&self, input: FederationInput) -> FederationOutput {
         let mut catalog = self.clone();
         let mut quarantine = Vec::new();
@@ -466,7 +532,13 @@ impl Catalog {
         }
     }
 
-    pub(super) fn validate(&self) -> Result<(), String> {
+    /// Validates the complete runtime catalog invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when any song, chart, source policy, identity,
+    /// or cross-reference invariant is invalid.
+    pub fn validate(&self) -> Result<(), String> {
         validate_source_evidence(&self.source_evidence, &self.latest_evidence)?;
         validate_songs(&self.songs, &self.source_evidence)?;
         validate_dqn_bindings(&self.songs, &self.dqn_bindings, &self.source_evidence)
@@ -778,8 +850,9 @@ fn validate_textage_attributes(
         .and_then(|value| value.parse::<u16>().ok());
     if attributes.len() != 3
         || flag.is_none()
-        || minimum.is_none_or(|value| value == 0)
+        || minimum.is_none()
         || maximum.is_none()
+        || (minimum == Some(0)) != (maximum == Some(0))
         || minimum > maximum
     {
         return Err(format!("song {song_id:?} has invalid Textage attributes"));
@@ -821,6 +894,7 @@ fn validate_catalog_text(field: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "generation")]
 fn apply_tachi(
     catalog: &mut Catalog,
     snapshot: Option<SourceSnapshot>,
@@ -856,6 +930,7 @@ fn apply_tachi(
     catalog.latest_evidence.insert(SourceId::Tachi, evidence_id);
 }
 
+#[cfg(feature = "generation")]
 fn apply_tachi_record(
     catalog: &mut Catalog,
     record: TachiObservation,
@@ -958,6 +1033,7 @@ fn apply_tachi_record(
     );
 }
 
+#[cfg(feature = "generation")]
 fn add_tachi_title_variants(
     song: &mut CatalogSong,
     variants: BTreeSet<SourceTitleObservation>,
@@ -974,6 +1050,7 @@ fn add_tachi_title_variants(
     }
 }
 
+#[cfg(feature = "generation")]
 fn add_title_variant(
     song: &mut CatalogSong,
     source_id: SourceId,
@@ -994,6 +1071,7 @@ fn add_title_variant(
     }
 }
 
+#[cfg(feature = "generation")]
 fn add_binding_attributes(
     song: &mut CatalogSong,
     source_id: SourceId,
@@ -1027,6 +1105,7 @@ fn add_binding_attributes(
     );
 }
 
+#[cfg(feature = "generation")]
 fn apply_textage(
     catalog: &mut Catalog,
     snapshot: Option<SourceSnapshot>,
@@ -1132,6 +1211,7 @@ fn apply_textage(
         .insert(SourceId::Textage, evidence_id);
 }
 
+#[cfg(feature = "generation")]
 fn apply_dqn(
     previous: &Catalog,
     catalog: &mut Catalog,
@@ -1217,6 +1297,7 @@ fn apply_dqn(
         .insert(SourceId::DqnIidxapi, evidence_id);
 }
 
+#[cfg(feature = "generation")]
 fn verified_snapshot(
     snapshot: Option<SourceSnapshot>,
     expected: &SourcePolicy,
@@ -1234,6 +1315,7 @@ fn verified_snapshot(
     Some(snapshot)
 }
 
+#[cfg(feature = "generation")]
 fn source_is_healthy(
     catalog: &Catalog,
     snapshot: &SourceSnapshot,
@@ -1257,6 +1339,7 @@ fn source_is_healthy(
     true
 }
 
+#[cfg(feature = "generation")]
 fn textage_matches(catalog: &Catalog, record: &TextageObservation) -> Vec<ScorepeekSongId> {
     let title = nfc(&record.title);
     let artist = nfc(&record.artist);
@@ -1278,6 +1361,7 @@ fn textage_matches(catalog: &Catalog, record: &TextageObservation) -> Vec<Scorep
         .collect()
 }
 
+#[cfg(feature = "generation")]
 fn matching_chart_count(song: &CatalogSong, charts: &[SourceChartObservation]) -> usize {
     charts
         .iter()
@@ -1289,6 +1373,7 @@ fn matching_chart_count(song: &CatalogSong, charts: &[SourceChartObservation]) -
         .count()
 }
 
+#[cfg(feature = "generation")]
 fn find_binding(catalog: &Catalog, source: SourceId, key: &str) -> Option<ScorepeekSongId> {
     catalog.songs.values().find_map(|song| {
         song.source_bindings
@@ -1298,6 +1383,7 @@ fn find_binding(catalog: &Catalog, source: SourceId, key: &str) -> Option<Scorep
     })
 }
 
+#[cfg(feature = "generation")]
 fn has_chart_conflict(song: &CatalogSong, charts: &[SourceChartObservation]) -> bool {
     charts.iter().any(|observation| {
         song.charts
@@ -1306,6 +1392,7 @@ fn has_chart_conflict(song: &CatalogSong, charts: &[SourceChartObservation]) -> 
     })
 }
 
+#[cfg(feature = "generation")]
 fn add_charts(
     song: &mut CatalogSong,
     charts: Vec<SourceChartObservation>,
@@ -1332,6 +1419,7 @@ fn add_charts(
     }
 }
 
+#[cfg(feature = "generation")]
 fn prune_unreferenced_evidence(catalog: &mut Catalog) {
     let mut referenced: BTreeSet<_> = catalog.latest_evidence.values().cloned().collect();
     for song in catalog.songs.values() {
@@ -1356,6 +1444,7 @@ fn prune_unreferenced_evidence(catalog: &mut Catalog) {
         .retain(|evidence_id, _| referenced.contains(evidence_id));
 }
 
+#[cfg(feature = "generation")]
 fn exact_title_artist(title: &str, artist: &str) -> ExactTitleArtist {
     ExactTitleArtist {
         title: nfc(title),
@@ -1363,6 +1452,7 @@ fn exact_title_artist(title: &str, artist: &str) -> ExactTitleArtist {
     }
 }
 
+#[cfg(feature = "generation")]
 fn unique_title_artist_match(
     catalog: &Catalog,
     tuple: &ExactTitleArtist,
@@ -1373,6 +1463,7 @@ fn unique_title_artist_match(
     }
 }
 
+#[cfg(feature = "generation")]
 fn title_artist_matches(catalog: &Catalog, tuple: &ExactTitleArtist) -> Vec<ScorepeekSongId> {
     catalog
         .songs
@@ -1392,6 +1483,7 @@ const fn identity_variant(variant: &DisplayVariant) -> bool {
     !matches!(variant.kind, DisplayVariantKind::SearchTerm)
 }
 
+#[cfg(feature = "generation")]
 fn refresh_infinitas_status(catalog: &mut Catalog) {
     let dqn_song_ids: BTreeSet<_> = catalog
         .dqn_bindings
@@ -1412,6 +1504,7 @@ fn nfc(value: &str) -> String {
     value.nfc().collect()
 }
 
+#[cfg(feature = "generation")]
 fn entry(source_id: SourceId, source_key: String, reason: QuarantineReason) -> QuarantineEntry {
     QuarantineEntry {
         source_id,

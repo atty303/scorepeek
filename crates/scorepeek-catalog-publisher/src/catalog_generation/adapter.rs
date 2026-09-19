@@ -7,10 +7,12 @@ use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use super::federation::TextageObservation;
 use super::federation::{
     Chart, ChartKey, Difficulty, DisplayVariantKind, DqnObservation, LineageId, PlayType,
     RevisionStrategy, SourceChartObservation, SourceEvidence, SourceId, SourceObservation,
-    SourcePolicy, SourceSnapshot, SourceTitleObservation, TachiObservation, TextageObservation,
+    SourcePolicy, SourceSnapshot, SourceTitleObservation, TachiObservation,
 };
 
 pub(super) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -84,6 +86,7 @@ pub enum AdapterError {
         resource: &'static str,
         detail: String,
     },
+    #[cfg(test)]
     InvalidSchema {
         expected: &'static str,
         actual: String,
@@ -128,6 +131,7 @@ impl fmt::Display for AdapterError {
             Self::InvalidJavaScript { resource, detail } => {
                 write!(formatter, "invalid {resource} assignment data: {detail}")
             }
+            #[cfg(test)]
             Self::InvalidSchema { expected, actual } => {
                 write!(
                     formatter,
@@ -174,11 +178,14 @@ impl Error for AdapterError {
     }
 }
 
+#[cfg(test)]
 pub struct TachiFixtureAdapter;
 pub struct TachiLiveAdapter;
+#[cfg(test)]
 pub struct TextageFixtureAdapter;
 pub struct DqnLiveAdapter;
 
+#[cfg(test)]
 impl TachiFixtureAdapter {
     /// Parses the bounded, synthetic Tachi fixture contract.
     ///
@@ -362,6 +369,7 @@ fn tachi_title_variants(
     Ok(variants)
 }
 
+#[cfg(test)]
 impl TextageFixtureAdapter {
     /// Parses the bounded, synthetic Textage fixture contract.
     ///
@@ -379,10 +387,12 @@ impl TextageFixtureAdapter {
             if !source_ids.insert(record.source_song_id.clone()) {
                 return Err(AdapterError::DuplicateSourceId(record.source_song_id));
             }
-            if record.bpm_min == 0 || record.bpm_min > record.bpm_max {
+            if (record.bpm_min == 0) != (record.bpm_max == 0) || record.bpm_min > record.bpm_max {
                 return Err(AdapterError::InvalidField {
                     field: "bpm",
-                    detail: "minimum must be positive and no greater than maximum".to_owned(),
+                    detail:
+                        "must be either the unknown 0 sentinel or a positive nondecreasing range"
+                            .to_owned(),
                 });
             }
             observations.push(SourceObservation::Textage(TextageObservation {
@@ -672,6 +682,7 @@ fn tachi_bundle_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>)
     hex_digest(&digest.finalize())
 }
 
+#[cfg(test)]
 fn parse_fixture<T>(bytes: &[u8], expected_schema: &'static str) -> Result<T, AdapterError>
 where
     T: DeserializeOwned + Fixture,
@@ -738,6 +749,7 @@ pub(super) fn validate_text(field: &'static str, value: String) -> Result<String
     Ok(value)
 }
 
+#[cfg(test)]
 fn validate_charts(records: &[FixtureChart]) -> Result<Vec<SourceChartObservation>, AdapterError> {
     let mut keys = BTreeSet::new();
     let mut charts = Vec::with_capacity(records.len());
@@ -803,17 +815,20 @@ fn validate_hex(value: &str, length: usize, label: &'static str) -> Result<(), A
     Ok(())
 }
 
+#[cfg(test)]
 trait Fixture {
     fn schema(&self) -> &str;
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(test)]
 struct TachiFixture {
     schema: String,
     records: Vec<TachiRecord>,
 }
 
+#[cfg(test)]
 impl Fixture for TachiFixture {
     fn schema(&self) -> &str {
         &self.schema
@@ -822,6 +837,7 @@ impl Fixture for TachiFixture {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(test)]
 struct TachiRecord {
     source_song_id: String,
     title: String,
@@ -973,11 +989,13 @@ impl TachiDifficulty {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(test)]
 struct TextageFixture {
     schema: String,
     records: Vec<TextageRecord>,
 }
 
+#[cfg(test)]
 impl Fixture for TextageFixture {
     fn schema(&self) -> &str {
         &self.schema
@@ -986,6 +1004,7 @@ impl Fixture for TextageFixture {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(test)]
 struct TextageRecord {
     source_song_id: String,
     title: String,
@@ -1019,6 +1038,7 @@ where
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(test)]
 struct FixtureChart {
     play_type: PlayType,
     difficulty: Difficulty,

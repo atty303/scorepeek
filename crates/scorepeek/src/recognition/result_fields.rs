@@ -610,10 +610,9 @@ fn unknown(reason: ResultChartUnknownReason, matching_charts: Vec<Chart>) -> Res
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-    use crate::catalog::{FederationInput, SourceRevision, TachiFixtureAdapter};
+    use crate::catalog::ChartKey;
+    use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
 
     fn text(value: &str) -> DynamicTextObservation {
         DynamicTextObservation {
@@ -649,38 +648,22 @@ mod tests {
     }
 
     fn single_chart_catalog() -> Catalog {
-        let bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-tachi-fixture-v1",
-            "records": [{
-                "source_song_id": "result-chart",
-                "title": "RESULT CHART",
-                "title_kind": "in_game_display",
-                "artist": "ARTIST",
-                "version": "SYNTHETIC",
-                "charts": [{
-                    "play_type": "single",
-                    "difficulty": "hyper",
-                    "level": 8,
-                    "notes": 764,
-                    "source_chart_id": "sph",
-                    "product_versions": ["synthetic-v1"],
-                    "primary": true
-                }],
-                "primary_infinitas": true
-            }]
-        }))
-        .unwrap();
-        let snapshot = TachiFixtureAdapter::parse(
-            &bytes,
-            SourceRevision::git_commit("0123456789abcdef0123456789abcdef01234567").unwrap(),
-        )
-        .unwrap();
-        Catalog::default()
-            .federate(FederationInput {
-                tachi: Some(snapshot),
-                ..FederationInput::default()
-            })
-            .catalog
+        catalog_from_tachi(&[SyntheticTachiRecord {
+            id: "result-chart",
+            title: "RESULT CHART",
+            title_kind: crate::catalog::DisplayVariantKind::InGameDisplay,
+            artist: "ARTIST",
+            version: "SYNTHETIC",
+            charts: vec![Chart {
+                key: ChartKey {
+                    play_type: PlayType::Single,
+                    difficulty: Difficulty::Hyper,
+                },
+                level: 8,
+                notes: 764,
+            }],
+            primary_infinitas: true,
+        }])
     }
 
     #[test]

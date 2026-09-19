@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/scorepeek", "crates/scorepeek-corpus", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/shared", "skins/cyan-system", "skins/result-aurora", "skins/dj-blackbox"]
+members = ["crates/scorepeek", "crates/scorepeek-catalog", "crates/scorepeek-catalog-publisher", "crates/scorepeek-corpus", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/shared", "skins/cyan-system", "skins/result-aurora", "skins/dj-blackbox"]
 resolver = "3"
 
 [workspace.package]

@@ -559,10 +559,9 @@ fn levenshtein_distance_row(left: &[char], right: &[char], row: &mut [usize]) ->
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-    use crate::catalog::{FederationInput, SourceRevision, TachiFixtureAdapter};
+    use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
+    use crate::catalog::{Chart, ChartKey, Difficulty, PlayType};
     use crate::recognition::{
         DynamicTextObservation, MusicSelectScreenFieldObservations, ResultScreenFieldObservations,
     };
@@ -574,23 +573,8 @@ mod tests {
         ])
     }
 
-    fn catalog_from_records(records: &[serde_json::Value]) -> Catalog {
-        let bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-tachi-fixture-v1",
-            "records": records,
-        }))
-        .unwrap();
-        let snapshot = TachiFixtureAdapter::parse(
-            &bytes,
-            SourceRevision::git_commit("0123456789abcdef0123456789abcdef01234567").unwrap(),
-        )
-        .unwrap();
-        Catalog::default()
-            .federate(FederationInput {
-                tachi: Some(snapshot),
-                ..FederationInput::default()
-            })
-            .catalog
+    fn catalog_from_records(records: &[SyntheticTachiRecord<'_>]) -> Catalog {
+        catalog_from_tachi(records)
     }
 
     #[test]
@@ -609,24 +593,23 @@ mod tests {
         assert_eq!(cat.artist.exact, ["ALPHA"]);
     }
 
-    fn tachi_record(id: &str, title: &str, artist: &str) -> serde_json::Value {
-        json!({
-            "source_song_id": id,
-            "title": title,
-            "title_kind": "in_game_display",
-            "artist": artist,
-            "version": "SYNTHETIC",
-            "charts": [{
-                "play_type": "single",
-                "difficulty": "normal",
-                "level": 1,
-                "notes": 1,
-                "source_chart_id": "spn",
-                "product_versions": ["synthetic-v1"],
-                "primary": true
+    fn tachi_record<'a>(id: &'a str, title: &'a str, artist: &'a str) -> SyntheticTachiRecord<'a> {
+        SyntheticTachiRecord {
+            id,
+            title,
+            title_kind: crate::catalog::DisplayVariantKind::InGameDisplay,
+            artist,
+            version: "SYNTHETIC",
+            charts: vec![Chart {
+                key: ChartKey {
+                    play_type: PlayType::Single,
+                    difficulty: Difficulty::Normal,
+                },
+                level: 1,
+                notes: 1,
             }],
-            "primary_infinitas": true
-        })
+            primary_infinitas: true,
+        }
     }
 
     fn text(value: &str) -> DynamicTextObservation {
@@ -852,7 +835,7 @@ mod tests {
     #[test]
     fn search_term_only_song_fails_domain_construction_without_panicking() {
         let mut record = tachi_record("search-only", "SEARCH ALIAS", "ARTIST");
-        record["title_kind"] = json!("search_term");
+        record.title_kind = crate::catalog::DisplayVariantKind::SearchTerm;
         let catalog = catalog_from_records(&[record]);
         let song_id = *catalog.songs().keys().next().unwrap();
         assert_eq!(

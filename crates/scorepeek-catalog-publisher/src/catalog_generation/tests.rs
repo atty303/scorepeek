@@ -765,6 +765,39 @@ fn dqn_nullable_pack_evidence_survives_catalog_snapshot_round_trip() {
 }
 
 #[test]
+fn runtime_semantic_digest_ignores_lineage_but_tracks_song_changes() {
+    let records = [tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false)];
+    let first = catalog_with_tachi(&records);
+    let fixture = fixture("scorepeek-tachi-fixture-v1", &records);
+    let later_snapshot = TachiFixtureAdapter::parse(
+        &serde_json::to_vec(&fixture).unwrap(),
+        SourceRevision::git_commit("1123456789abcdef0123456789abcdef01234567").unwrap(),
+    )
+    .unwrap();
+    let later = Catalog::default()
+        .federate(FederationInput {
+            tachi: Some(later_snapshot),
+            ..FederationInput::default()
+        })
+        .catalog;
+    assert_ne!(first.source_evidence(), later.source_evidence());
+    assert_eq!(first.semantic_digest(), later.semantic_digest());
+
+    let changed = catalog_with_tachi(&[tachi_record(
+        "anchor-1",
+        "ALPHA REVISED",
+        "ARTIST A",
+        "V1",
+        false,
+    )]);
+    assert_ne!(first.semantic_digest(), changed.semantic_digest());
+    assert_ne!(
+        first.semantic_digest(),
+        Catalog::default().semantic_digest()
+    );
+}
+
+#[test]
 fn source_record_count_regression_is_quarantined() {
     let base = catalog_with_tachi(&[
         tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false),

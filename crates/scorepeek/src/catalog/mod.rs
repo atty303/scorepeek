@@ -1,29 +1,18 @@
-mod acquisition;
-mod adapter;
-mod federation;
+pub mod artifact;
 mod store;
-mod sync;
-mod tachi_acquisition;
-mod textage_acquisition;
-mod textage_adapter;
+#[cfg(test)]
+pub(crate) mod test_support;
+pub mod update;
 
-pub use acquisition::DqnAcquisitionError;
-pub use adapter::{
-    AdapterError, DqnLiveAdapter, SourceRevision, TachiFixtureAdapter, TachiLiveAdapter,
-    TextageFixtureAdapter,
-};
+mod federation {
+    pub use scorepeek_catalog::*;
+}
+
 pub use federation::{
     Catalog, CatalogSong, Chart, ChartAssertion, ChartKey, Difficulty, DisplayVariant,
-    DisplayVariantKind, EvidenceId, FederationInput, FederationOutput, InfinitasStatus, LineageId,
-    PlayType, QuarantineEntry, QuarantineReason, RevisionStrategy, ScorepeekSongId, SourceEvidence,
-    SourceId, SourcePolicy, SourceSnapshot,
+    DisplayVariantKind, DqnObservation, EvidenceId, InfinitasStatus, LineageId, PlayType,
+    RevisionStrategy, ScorepeekSongId, SourceChartObservation, SourceEvidence, SourceId,
+    SourceObservation, SourcePolicy, SourceSnapshot, SourceTitleObservation, TachiObservation,
+    TextageObservation,
 };
-pub use store::{ActiveCatalog, CatalogStore, CatalogStoreError, CatalogUpdate};
-pub use sync::{
-    CatalogSync, CatalogSyncError, CatalogSyncResult, CatalogSyncSource, CatalogSyncSummary,
-};
-pub use tachi_acquisition::{TachiAcquisitionError, TachiResource};
-pub use textage_acquisition::{TextageAcquisitionError, TextageResource};
-
-#[cfg(test)]
-mod tests;
+pub use store::{ActiveCatalog, CatalogOrigin, CatalogStore, CatalogStoreError, CatalogUpdate};

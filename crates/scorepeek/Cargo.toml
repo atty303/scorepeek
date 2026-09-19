@@ -10,6 +10,7 @@ dist = true
 
 [dependencies]
 scorepeek-overlay = { path = "../scorepeek-overlay" }
+scorepeek-catalog = { path = "../scorepeek-catalog" }
 scorepeek-scores = { path = "../scorepeek-scores" }
 scorepeek-vulkan-capture = { path = "../scorepeek-vulkan-capture" }
 encoding_rs.workspace = true
@@ -25,13 +26,19 @@ serde_json.workspace = true
 sha2.workspace = true
 signal-hook.workspace = true
 tempfile.workspace = true
+toml.workspace = true
 unicode-normalization.workspace = true
 ureq.workspace = true
+url.workspace = true
 uuid.workspace = true
 x11rb.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+scorepeek-catalog = { path = "../scorepeek-catalog", features = ["generation"] }
 
 [features]
 embedded-web = ["scorepeek-overlay/embedded-web"]

@@ -28,6 +28,17 @@ events continue to expose only the digests.
 Capture diagnostic events carrying these stage distributions use the
 `scorepeek-capture-diagnostic-v2` schema.
 
+Catalog acquisition records `catalog_update` operations for URL resolution,
+conditional fetch, ZIP extraction/digest verification, and atomic activation.
+Attributes contain only the effective URL SHA-256 fingerprint, catalog digest,
+mode, stage, status, and stable error type; raw URLs and response bodies are
+not recorded. `$XDG_DATA_HOME/scorepeek/catalog/update-state.json` retains the
+last successful check, active digest and URL fingerprint, optional HTTP
+validators, and the latest typed failure. `scorepeek doctor` exposes those
+fields without validator values. A background failure does not affect the
+active invocation, and its failure state makes the next invocation retry
+without waiting another 24 hours.
+
 `$XDG_RUNTIME_DIR/scorepeek/diagnostics.sock` is independent of public `events.sock`. An observer
 requests either live-only delivery or an explicit replay window before the server sends data.
 Live-only delivery starts with the first record produced after the request. A replay receives the

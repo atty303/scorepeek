@@ -38,6 +38,16 @@ pub struct CatalogStore {
 pub struct ActiveCatalog {
     pub digest: String,
     pub catalog: Catalog,
+    pub origin: Option<CatalogOrigin>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogOrigin {
+    pub source_url_sha256: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub last_success_unix_seconds: u64,
 }
 
 pub struct CatalogUpdate {
@@ -154,6 +164,24 @@ impl CatalogStore {
     /// Returns an error when the manifest or snapshot is malformed, missing, or has a digest that
     /// does not match its content-addressed path.
     pub fn load_active(&self) -> Result<Option<ActiveCatalog>, CatalogStoreError> {
+        self.load_active_with_validation(true)
+    }
+
+    /// Loads the publisher-trusted active catalog without re-adjudicating source/domain
+    /// invariants. `SQLite` identity, bounded reads, row types, references, and content digest are
+    /// still enforced because they are required to construct the runtime catalog.
+    ///
+    /// # Errors
+    /// Returns an error when the manifest, content digest, `SQLite` identity, or required runtime
+    /// rows cannot be loaded.
+    pub fn load_active_for_run(&self) -> Result<Option<ActiveCatalog>, CatalogStoreError> {
+        self.load_active_with_validation(false)
+    }
+
+    fn load_active_with_validation(
+        &self,
+        validate_domain: bool,
+    ) -> Result<Option<ActiveCatalog>, CatalogStoreError> {
         let Some(manifest) = self.read_manifest()? else {
             return Ok(None);
         };
@@ -163,7 +191,10 @@ impl CatalogStore {
                 "snapshot_path does not match catalog_digest".to_owned(),
             ));
         }
-        self.load_generation(&manifest.catalog_digest).map(Some)
+        let mut active =
+            self.load_generation_with_validation(&manifest.catalog_digest, validate_domain)?;
+        active.origin = manifest.origin;
+        Ok(Some(active))
     }
 
     /// Loads and verifies one exact content-addressed catalog generation.
@@ -172,6 +203,25 @@ impl CatalogStore {
     /// Returns an error when the digest is invalid or its snapshot is malformed, missing, or has
     /// different content.
     pub fn load_generation(&self, digest: &str) -> Result<ActiveCatalog, CatalogStoreError> {
+        self.load_generation_with_validation(digest, true)
+    }
+
+    /// Loads one exact publisher-trusted generation for a running invocation.
+    ///
+    /// # Errors
+    /// Returns an error when its digest, `SQLite` identity, or required runtime rows are invalid.
+    pub fn load_generation_for_run(
+        &self,
+        digest: &str,
+    ) -> Result<ActiveCatalog, CatalogStoreError> {
+        self.load_generation_with_validation(digest, false)
+    }
+
+    fn load_generation_with_validation(
+        &self,
+        digest: &str,
+        validate_domain: bool,
+    ) -> Result<ActiveCatalog, CatalogStoreError> {
         validate_digest(digest)?;
         let snapshot_path = self.root.join("content").join(digest).join(SNAPSHOT_FILE);
         let actual_digest = digest_file(&snapshot_path)?;
@@ -180,11 +230,79 @@ impl CatalogStore {
                 "content digest is {actual_digest}, expected {digest}"
             )));
         }
-        let catalog = read_snapshot(&snapshot_path)?;
+        let catalog = read_snapshot(&snapshot_path, validate_domain)?;
         Ok(ActiveCatalog {
             digest: digest.to_owned(),
             catalog,
+            origin: None,
         })
+    }
+
+    /// Returns the immutable `SQLite` path for one validated digest.
+    ///
+    /// # Errors
+    /// Returns an error when the digest is malformed. The returned path may not exist yet.
+    pub fn snapshot_path(&self, digest: &str) -> Result<PathBuf, CatalogStoreError> {
+        validate_digest(digest)?;
+        Ok(self.root.join("content").join(digest).join(SNAPSHOT_FILE))
+    }
+
+    /// Installs publisher-verified `SQLite` bytes and atomically makes them active.
+    ///
+    /// This boundary intentionally checks bounded regular-file input and SHA-256 only. Complete
+    /// catalog validation belongs to the publisher; the ordinary runtime loader still parses the
+    /// selected `SQLite` when a run opens it.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid digest, oversized or non-file input, digest mismatch,
+    /// capacity exhaustion, concurrent activation, or durability failure.
+    pub fn install_verified_snapshot(
+        &self,
+        source: &Path,
+        expected_digest: &str,
+    ) -> Result<String, CatalogStoreError> {
+        self.install_verified_snapshot_from(source, expected_digest, None)
+    }
+
+    /// Installs publisher-verified bytes together with their acquisition identity.
+    ///
+    /// The digest and origin are committed by the same active-manifest rename so a reader can
+    /// never attribute one catalog generation to another URL or validator set.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::install_verified_snapshot`], plus invalid origin data.
+    pub fn install_verified_snapshot_from(
+        &self,
+        source: &Path,
+        expected_digest: &str,
+        origin: Option<CatalogOrigin>,
+    ) -> Result<String, CatalogStoreError> {
+        validate_digest(expected_digest)?;
+        validate_origin(origin.as_ref())?;
+        self.begin_update()?
+            .install_snapshot(source, expected_digest, origin)
+    }
+
+    /// Atomically refreshes acquisition metadata for the currently active generation.
+    ///
+    /// # Errors
+    /// Returns an error if the expected generation is no longer active or the manifest cannot be
+    /// durably replaced.
+    pub fn refresh_active_origin(
+        &self,
+        expected_digest: &str,
+        origin: CatalogOrigin,
+    ) -> Result<String, CatalogStoreError> {
+        validate_digest(expected_digest)?;
+        validate_origin(Some(&origin))?;
+        let update = self.begin_update()?;
+        if update.base_digest() != Some(expected_digest) {
+            return Err(CatalogStoreError::BaseDigestChanged {
+                expected: Some(expected_digest.to_owned()),
+                actual: update.base_digest.clone(),
+            });
+        }
+        update.activate_digest(expected_digest.to_owned(), Some(origin), &mut |_| Ok(()))
     }
 
     fn content_dir(&self) -> PathBuf {
@@ -232,6 +350,7 @@ impl CatalogStore {
                 manifest.schema
             )));
         }
+        validate_origin(manifest.origin.as_ref())?;
         Ok(Some(manifest))
     }
 }
@@ -290,10 +409,71 @@ impl CatalogUpdate {
         File::open(self.store.content_dir())?.sync_all()?;
         checkpoint(PublishPoint::ContentParentSynced)?;
 
+        let digest = self.activate_digest(digest, None, &mut checkpoint)?;
+        Ok(ActiveCatalog {
+            digest,
+            catalog: catalog.clone(),
+            origin: None,
+        })
+    }
+
+    fn install_snapshot(
+        self,
+        source: &Path,
+        expected_digest: &str,
+        origin: Option<CatalogOrigin>,
+    ) -> Result<String, CatalogStoreError> {
+        validate_snapshot_file(source)?;
+        let staging = Builder::new()
+            .prefix(SNAPSHOT_STAGING_PREFIX)
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(self.store.content_dir())?;
+        let staging_snapshot = staging.path().join(SNAPSHOT_FILE);
+        let input = File::open(source)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staging_snapshot)?;
+        let copied = io::copy(&mut input.take(MAX_SNAPSHOT_BYTES + 1), &mut output)?;
+        if copied > MAX_SNAPSHOT_BYTES {
+            return Err(CatalogStoreError::CapacityExceeded);
+        }
+        output.sync_all()?;
+        File::open(staging.path())?.sync_all()?;
+        let actual = digest_file(&staging_snapshot)?;
+        if actual != expected_digest {
+            return Err(CatalogStoreError::InvalidSnapshot(format!(
+                "content digest is {actual}, expected {expected_digest}"
+            )));
+        }
+        let destination = self.store.content_dir().join(expected_digest);
+        if destination.exists() {
+            let existing = destination.join(SNAPSHOT_FILE);
+            if digest_file(&existing)? != expected_digest {
+                return Err(CatalogStoreError::InvalidSnapshot(
+                    "existing content-addressed destination has different bytes".to_owned(),
+                ));
+            }
+        } else {
+            ensure_snapshot_capacity(&self.store.content_dir(), staging.path(), copied)?;
+            fs::rename(staging.path(), &destination)?;
+            File::open(self.store.content_dir())?.sync_all()?;
+        }
+        self.activate_digest(expected_digest.to_owned(), origin, &mut |_| Ok(()))
+    }
+
+    fn activate_digest(
+        self,
+        digest: String,
+        origin: Option<CatalogOrigin>,
+        checkpoint: &mut impl FnMut(PublishPoint) -> io::Result<()>,
+    ) -> Result<String, CatalogStoreError> {
         let manifest = ActiveManifest {
             schema: MANIFEST_SCHEMA.to_owned(),
             catalog_digest: digest.clone(),
             snapshot_path: format!("content/{digest}/{SNAPSHOT_FILE}"),
+            origin,
         };
         let mut temporary = Builder::new()
             .prefix(MANIFEST_STAGING_PREFIX)
@@ -321,11 +501,27 @@ impl CatalogUpdate {
         checkpoint(PublishPoint::ManifestParentSynced)?;
 
         drop(self.lock);
-        Ok(ActiveCatalog {
-            digest,
-            catalog: catalog.clone(),
-        })
+        Ok(digest)
     }
+}
+
+/// Runs the complete production loader and invariant validation against a publisher candidate.
+///
+/// # Errors
+/// Returns an error for an invalid digest, digest mismatch, malformed `SQLite`, or catalog invariant
+/// failure.
+pub fn validate_publisher_snapshot(
+    path: &Path,
+    expected_digest: &str,
+) -> Result<Catalog, CatalogStoreError> {
+    validate_digest(expected_digest)?;
+    let actual = digest_file(path)?;
+    if actual != expected_digest {
+        return Err(CatalogStoreError::InvalidSnapshot(format!(
+            "content digest is {actual}, expected {expected_digest}"
+        )));
+    }
+    read_snapshot(path, true)
 }
 
 fn recover_staging(content_directory: &Path, manifest_directory: &Path) -> io::Result<()> {
@@ -422,6 +618,34 @@ struct ActiveManifest {
     schema: String,
     catalog_digest: String,
     snapshot_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<CatalogOrigin>,
+}
+
+fn validate_origin(origin: Option<&CatalogOrigin>) -> Result<(), CatalogStoreError> {
+    const MAX_VALIDATOR_BYTES: usize = 1024;
+    let Some(origin) = origin else {
+        return Ok(());
+    };
+    let valid_digest = origin.source_url_sha256.len() == 64
+        && origin
+            .source_url_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    let valid_header = |value: Option<&str>| {
+        value.is_none_or(|value| {
+            value.len() <= MAX_VALIDATOR_BYTES && !value.chars().any(char::is_control)
+        })
+    };
+    if !valid_digest
+        || !valid_header(origin.etag.as_deref())
+        || !valid_header(origin.last_modified.as_deref())
+    {
+        return Err(CatalogStoreError::InvalidManifest(
+            "catalog origin violates its schema".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -829,7 +1053,7 @@ fn write_dqn_rows(transaction: &Transaction<'_>, catalog: &Catalog) -> Result<()
     Ok(())
 }
 
-fn read_snapshot(path: &Path) -> Result<Catalog, CatalogStoreError> {
+fn read_snapshot(path: &Path, validate_domain: bool) -> Result<Catalog, CatalogStoreError> {
     validate_snapshot_file(path)?;
     let connection = Connection::open_with_flags(
         path,
@@ -909,9 +1133,11 @@ fn read_snapshot(path: &Path) -> Result<Catalog, CatalogStoreError> {
     read_binding_evidence(&connection, &mut catalog)?;
     read_binding_attributes(&connection, &mut catalog)?;
     read_dqn_bindings(&connection, &mut catalog)?;
-    catalog
-        .validate()
-        .map_err(CatalogStoreError::InvalidSnapshot)?;
+    if validate_domain {
+        catalog
+            .validate()
+            .map_err(CatalogStoreError::InvalidSnapshot)?;
+    }
     Ok(catalog)
 }
 
@@ -1544,7 +1770,8 @@ mod tests {
         symlink(&target, &alias).unwrap();
         super::create_private_directory(&alias).unwrap();
     }
-    use crate::catalog::{Catalog, FederationInput, SourceRevision, TachiFixtureAdapter};
+    use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi, federate_tachi};
+    use crate::catalog::{Catalog, Chart, ChartKey, Difficulty, PlayType};
 
     const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -1715,27 +1942,9 @@ mod tests {
 
     #[test]
     fn snapshot_round_trip_preserves_distinct_revisions_for_identical_bytes() {
-        let fixture = synthetic_tachi_fixture("ALPHA");
-        let bytes = serde_json::to_vec(&fixture).unwrap();
-        let first =
-            TachiFixtureAdapter::parse(&bytes, SourceRevision::git_commit(REVISION).unwrap())
-                .unwrap();
-        let second = TachiFixtureAdapter::parse(
-            &bytes,
-            SourceRevision::git_commit("1123456789abcdef0123456789abcdef01234567").unwrap(),
-        )
-        .unwrap();
-        let catalog = Catalog::default()
-            .federate(FederationInput {
-                tachi: Some(first),
-                ..FederationInput::default()
-            })
-            .catalog
-            .federate(FederationInput {
-                tachi: Some(second),
-                ..FederationInput::default()
-            })
-            .catalog;
+        let records = [synthetic_tachi_record("ALPHA")];
+        let first = federate_tachi(&Catalog::default(), &records, REVISION);
+        let catalog = federate_tachi(&first, &records, "1123456789abcdef0123456789abcdef01234567");
         let root = TempDir::new().unwrap();
         let active = CatalogStore::new(root.path())
             .begin_update()
@@ -1848,6 +2057,7 @@ mod tests {
             schema: super::MANIFEST_SCHEMA.to_owned(),
             catalog_digest: digest.clone(),
             snapshot_path: format!("content/{digest}/catalog.sqlite3"),
+            origin: None,
         };
         fs::write(
             root.path().join("manifests/active.json"),
@@ -1888,6 +2098,7 @@ mod tests {
             schema: super::MANIFEST_SCHEMA.to_owned(),
             catalog_digest: digest.clone(),
             snapshot_path: format!("content/{digest}/catalog.sqlite3"),
+            origin: None,
         };
         fs::write(
             root.path().join("manifests/active.json"),
@@ -1929,6 +2140,7 @@ mod tests {
             schema: super::MANIFEST_SCHEMA.to_owned(),
             catalog_digest: digest.clone(),
             snapshot_path: format!("content/{digest}/catalog.sqlite3"),
+            origin: None,
         };
         fs::write(
             root.path().join("manifests/active.json"),
@@ -1966,6 +2178,7 @@ mod tests {
             schema: super::MANIFEST_SCHEMA.to_owned(),
             catalog_digest: digest.clone(),
             snapshot_path: format!("content/{digest}/catalog.sqlite3"),
+            origin: None,
         };
         fs::write(
             root.path().join("manifests/active.json"),
@@ -1981,37 +2194,35 @@ mod tests {
     }
 
     fn synthetic_catalog(title: &str) -> Catalog {
-        let fixture = synthetic_tachi_fixture(title);
-        let snapshot = TachiFixtureAdapter::parse(
-            &serde_json::to_vec(&fixture).unwrap(),
-            SourceRevision::git_commit(REVISION).unwrap(),
-        )
-        .unwrap();
-        Catalog::default()
-            .federate(FederationInput {
-                tachi: Some(snapshot),
-                ..FederationInput::default()
-            })
-            .catalog
+        catalog_from_tachi(&[synthetic_tachi_record(title)])
     }
 
-    fn synthetic_tachi_fixture(title: &str) -> serde_json::Value {
-        json!({
-            "schema": "scorepeek-tachi-fixture-v1",
-            "records": [{
-                "source_song_id": "anchor-1",
-                "title": title,
-                "title_kind": "in_game_display",
-                "artist": "SYNTHETIC ARTIST",
-                "version": "SYNTHETIC VERSION",
-                "charts": [
-                    { "play_type": "single", "difficulty": "normal", "level": 4, "notes": 400,
-                      "source_chart_id": "spn", "product_versions": ["synthetic-v1"], "primary": true },
-                    { "play_type": "single", "difficulty": "hyper", "level": 8, "notes": 800,
-                      "source_chart_id": "sph", "product_versions": ["synthetic-v1"], "primary": true }
-                ],
-                "primary_infinitas": false
-            }]
-        })
+    fn synthetic_tachi_record(title: &str) -> SyntheticTachiRecord<'_> {
+        SyntheticTachiRecord {
+            id: "anchor-1",
+            title,
+            title_kind: crate::catalog::DisplayVariantKind::InGameDisplay,
+            artist: "SYNTHETIC ARTIST",
+            version: "SYNTHETIC VERSION",
+            charts: vec![
+                Chart {
+                    key: ChartKey {
+                        play_type: PlayType::Single,
+                        difficulty: Difficulty::Normal,
+                    },
+                    level: 4,
+                    notes: 400,
+                },
+                Chart {
+                    key: ChartKey {
+                        play_type: PlayType::Single,
+                        difficulty: Difficulty::Hyper,
+                    },
+                    level: 8,
+                    notes: 800,
+                },
+            ],
+            primary_infinitas: false,
+        }
     }
 }

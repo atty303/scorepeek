@@ -336,10 +336,10 @@ fn parse_chart_data_row(row: &[JsAtom]) -> Result<ChartDataRow, AdapterError> {
     let bpm_max = maximum
         .parse::<u16>()
         .map_err(|_| invalid_field("datatbl BPM", "maximum is not a positive integer"))?;
-    if bpm_min == 0 || bpm_min > bpm_max {
+    if (bpm_min == 0) != (bpm_max == 0) || bpm_min > bpm_max {
         return Err(invalid_field(
             "datatbl BPM",
-            "minimum must be positive and no greater than maximum",
+            "must be either the unknown 0 sentinel or a positive nondecreasing range",
         ));
     }
     Ok(ChartDataRow {
@@ -838,6 +838,42 @@ mod tests {
         assert_eq!((record.bpm_min, record.bpm_max), (120, 120));
         assert!(record.infinitas_flag);
         assert_eq!(record.charts.len(), 7);
+    }
+
+    #[test]
+    fn preserves_the_textage_unknown_bpm_sentinel() {
+        let unknown = parse_chart_data_row(&[
+            JsAtom::Integer(0),
+            JsAtom::Integer(100),
+            JsAtom::Integer(200),
+            JsAtom::Integer(300),
+            JsAtom::Integer(400),
+            JsAtom::Integer(0),
+            JsAtom::Integer(0),
+            JsAtom::Integer(210),
+            JsAtom::Integer(310),
+            JsAtom::Integer(410),
+            JsAtom::Integer(0),
+            JsAtom::String("0".to_owned()),
+        ])
+        .unwrap();
+        assert_eq!((unknown.bpm_min, unknown.bpm_max), (0, 0));
+
+        let mixed = parse_chart_data_row(&[
+            JsAtom::Integer(0),
+            JsAtom::Integer(100),
+            JsAtom::Integer(200),
+            JsAtom::Integer(300),
+            JsAtom::Integer(400),
+            JsAtom::Integer(0),
+            JsAtom::Integer(0),
+            JsAtom::Integer(210),
+            JsAtom::Integer(310),
+            JsAtom::Integer(410),
+            JsAtom::Integer(0),
+            JsAtom::String("0～120".to_owned()),
+        ]);
+        assert!(matches!(mixed, Err(AdapterError::InvalidField { .. })));
     }
 
     #[test]

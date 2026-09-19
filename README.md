@@ -31,6 +31,20 @@ game's internal data. It matches OCR readings against song catalogs fetched
 online. New songs do not need their own set of training images, reducing the
 upkeep needed as the catalogs grow.
 
+The official catalog is distributed from the project's GitHub Pages site and
+updated automatically. `scorepeek run` downloads it on first use, then checks
+in the background after 24 hours while continuing to use the catalog selected
+at invocation start. A custom ZIP URL can be set in
+`$XDG_CONFIG_HOME/scorepeek/config.toml`:
+
+```toml
+[catalog]
+url = "https://example.invalid/catalog/v1/catalog.zip"
+```
+
+`SCOREPEEK_CATALOG_URL` is a temporary higher-priority override. HTTPS,
+loopback HTTP for development, and `file://` artifacts are supported.
+
 ### Local processing, local records
 
 Recognition runs on your machine, and your scores are saved locally. No cloud

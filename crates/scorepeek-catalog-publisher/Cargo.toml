@@ -1,0 +1,19 @@
+[package]
+name = "scorepeek-catalog-publisher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+scorepeek = { path = "../scorepeek" }
+scorepeek-catalog = { path = "../scorepeek-catalog", features = ["generation"] }
+encoding_rs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

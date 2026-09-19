@@ -1,0 +1,5 @@
+# One schema path per line after it is superseded, for example:
+# catalog/v1/catalog.zip
+#
+# Entries are fetched byte-for-byte from the currently published Pages site.
+# The current schema is not listed here.

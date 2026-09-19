@@ -316,12 +316,11 @@ exec scripts/with-isolated-skins.sh mise run overlay:web:embedded:integration:te
 '''
 
 [tasks."test:tools"]
-description = "Run OCR and systemd integration tooling tests"
+description = "Run offline OCR tooling tests"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-mise run //tools/ocr:test
-exec mise run catalog:schedule:systemd:verify
+exec mise run //tools/ocr:test
 '''
 
 [tasks.test]
@@ -368,10 +367,6 @@ run = "scripts/test-capture-vulkan-live.bash"
 [tasks."native:verify"]
 description = "Verify the pinned PipeWire SDK and host native build prerequisites"
 run = "scripts/verify-pipewire-build-environment.bash"
-
-[tasks."catalog:sync"]
-description = "Synchronize and conditionally activate the live catalog"
-run = "cargo run --locked --quiet -p scorepeek -- catalog sync"
 
 [tasks."corpus:test"]
 description = "Replay the complete active frame-first private regression suite"
@@ -610,26 +605,6 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- synthetic render "$@"
 '''
-
-[tasks."catalog:schedule:systemd:verify"]
-description = "Validate the daily user schedule units"
-run = "scripts/verify-user-schedule.bash"
-
-[tasks."catalog:schedule:systemd:test:live"]
-description = "Test a scheduled sync and concurrent manual sync in isolated storage"
-run = "scripts/test-user-schedule-live.bash"
-
-[tasks."catalog:schedule:systemd:install"]
-description = "Install and enable the daily user schedule"
-run = "scripts/install-user-schedule.bash"
-
-[tasks."catalog:schedule:systemd:start:transient"]
-description = "Start a daily user timer without persisting unit files"
-run = "scripts/start-transient-user-schedule.bash"
-
-[tasks."catalog:schedule:systemd:disable"]
-description = "Stop transient scheduling and disable the installed daily timer"
-run = "scripts/disable-user-schedule.bash"
 
 [tasks."ocr:select-best:probe"]
 description = "Read private canonical QOI frames with the registered SELECT best recognizers"

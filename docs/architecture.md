@@ -39,6 +39,24 @@ registered PP-OCRv6-small text bundle, the installed private numeric bundle,
 and one explicitly selected capture backend before admitting recognition work. Python is restricted
 to reproducible offline OCR preparation, training, and export tooling.
 
+Catalog generation is not part of the distributed CLI. The separate
+`scorepeek-catalog-publisher` workspace crate owns live-source acquisition,
+zero-build federation, package creation, and publisher validation. GitHub
+Actions publishes the selected three-file ZIP through the single Pages
+workflow.
+
+On first use, `scorepeek run` synchronously acquires and atomically activates
+the effective catalog URL before capture starts. With a matching active URL it
+starts immediately, keeps that exact SQLite digest for the entire invocation,
+and starts a background update when the last successful check is at least 24
+hours old or the previous check failed. A completed background activation is
+used only by the next invocation. `SCOREPEEK_CATALOG_URL` overrides
+`catalog.url` in `$XDG_CONFIG_HOME/scorepeek/config.toml`, which overrides the
+built-in `/catalog/v1/catalog.zip` Pages URL. HTTPS, loopback HTTP for tests,
+and `file://` are accepted. Changing the effective URL requires successful
+activation from the new URL and never falls back to the previous URL's active
+catalog.
+
 The offline Python project lives in `tools/ocr/`, including its source, tests,
 `pyproject.toml`, `uv.lock`, and local `.venv`. Its `mise.toml` owns the pinned
 Python and uv tools and the offline tasks. From the repository root, run
@@ -181,8 +199,9 @@ player data, and credentials stay outside Git. See
 
 | Concern | Current owner |
 | --- | --- |
-| External catalog bytes | Private source cache on each operator host |
-| Catalog parsing, federation, quarantine, activation | `scorepeek::catalog` |
+| External source bytes and catalog generation | `scorepeek-catalog-publisher` in GitHub Actions |
+| Pages packaging, validation, and no-op selection | `scorepeek-catalog-publisher` and `.github/workflows/catalog-pages.yml` |
+| Client ZIP verification, content store, and activation | `scorepeek::catalog` |
 | PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
 | Runtime source identity, edge crop, and canonical normalization | Versioned capture profile and normalizer documents |
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek/src` |

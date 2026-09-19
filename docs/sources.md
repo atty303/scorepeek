@@ -6,15 +6,17 @@ field authority, and reuse boundaries. It records the initial research state on
 an immutable revision or content digest rather than assuming that a live page
 still has the shape described here.
 
-This is a conservative engineering policy, not a legal conclusion. scorepeek
-fetches third-party data on each user's machine and does not republish raw or
-normalized source snapshots.
+This is a conservative engineering policy, not a legal conclusion. The
+non-distributed `scorepeek-catalog-publisher` crate fetches source data in the
+daily GitHub Actions job. Raw snapshots remain ephemeral/private build inputs;
+the Pages artifact contains accepted normalized catalog assertions and carries
+`THIRD_PARTY_NOTICES.md` separately from the scorepeek software license.
 
 ## Automated inputs
 
 | Source | Lineage | Automated role | Fields used | Access and reuse boundary |
 | --- | --- | --- | --- | --- |
-| [Tachi IIDX seeds](https://github.com/zkldi/Tachi/tree/main/db/seeds) | game MDB | General-IIDX identity and chart anchor | source-scoped song/chart IDs, exact titles, artist, version, play type, difficulty, level, notes, product availability | The README describes seeds as Unlicense/source-of-truth data, while the current path is `db/seeds`; keep local snapshots and provenance, and confirm scope before any redistribution. The [MDB cookbook](https://github.com/zkldi/Tachi/blob/main/docs/src/contributing/cookbook/iidx-mdb.md) is recorded as lineage evidence. |
+| [Tachi IIDX seeds](https://github.com/zkldi/Tachi/tree/main/db/seeds) | game MDB | General-IIDX identity and chart anchor | source-scoped song/chart IDs, exact titles, artist, version, play type, difficulty, level, notes, product availability | The README describes seeds as Unlicense/source-of-truth data, while the current path is `db/seeds`; preserve exact revision/provenance and the Tachi notice. The [MDB cookbook](https://github.com/zkldi/Tachi/blob/main/docs/src/contributing/cookbook/iidx-mdb.md) is recorded as lineage evidence. |
 | [Textage](https://textage.cc/score/index.html) | Textage capture/manual data | Independent corroboration and display variants | title, artist, BPM, version, SP/DP level and notes, INFINITAS flag | The [site readme](https://textage.cc/score/readme.html) permits common-sense use and recommends a link but is not a standard data license. Fetch [title](https://textage.cc/score/titletbl.js), [availability](https://textage.cc/score/actbl.js), and [chart](https://textage.cc/score/datatbl.js) bytes locally; do not republish them. |
 | [dqn/iidxapi](https://github.com/dqn/iidxapi) | official INFINITAS HTML | Positive INFINITAS roster/pack signal | exact title, artist, pack name | The adapter output has no stable song identity or chart data. Treat it as corroboration of the official page, preserve its content hash, and do not redistribute the derived roster. [Current JSON endpoint](https://dqn.github.io/iidxapi/infinitas/music.json) |
 
@@ -45,10 +47,8 @@ title is `in_game_display`, `altTitles` are `alternate_display`, and
 identity and OCR lexicons. A primary imported chart whose `versions` contains
 `inf` is positive Tachi INFINITAS evidence. The three exact files are cached as
 one framed content-digested bundle; repository scripts and downloaded code are
-never executed. A later Git commit remains recorded as the latest source
-snapshot, but an unchanged title, chart, or binding assertion reuses its
-existing evidence instead of adding a full revision-wide duplicate. Changed
-assertions retain their new evidence independently.
+never executed. Each publication candidate contains only the evidence from the
+three snapshots used for that zero build.
 
 The live Textage contract inspected at framed bundle SHA-256
 `3c1291f96946279512632ec69e5bf0f8d49ff0b7e301e43457bfe36bd5ad4f81`
@@ -71,6 +71,8 @@ internal whitespace, and HTML fragments in the selected title value. The
 adapter imports only standard SP BEGINNER/NORMAL/
 HYPER/ANOTHER/LEGGENDARIA and DP NORMAL/HYPER/ANOTHER/LEGGENDARIA slots for
 which both a positive level and note count exist. Partial slots remain unknown.
+The `datatbl` value `"0"` is preserved as Textage's unknown-BPM sentinel;
+otherwise BPM must be a positive nondecreasing value or range.
 The availability bitfield contributes a corroborating INFINITAS flag but cannot
 establish catalog availability by itself. The three inputs are cached together
 under their framed content digest with at most 64 private bundles or 64 MiB.
@@ -78,11 +80,36 @@ under their framed content digest with at most 64 private bundles or 64 MiB.
 A dqn row has no stable key. Its raw NFC `(title, artist)` tuple can contribute
 positive availability only when it resolves to exactly one active
 Tachi-anchored record. This is secondary evidence, not an identity merge. Zero
-or multiple matches are quarantined. On every later snapshot, every previously
-accepted tuple must still be present and resolve to the same Tachi ID; if any
-does not, all new dqn bindings from that snapshot stay quarantined and the
-previous accepted set remains unchanged. scorepeek does not infer whether a
-disappearance and addition represent a rename, removal, or unrelated new song.
+or multiple matches are quarantined. No previous dqn binding set is used as a
+generation base; disappearance and correction are reflected by the next valid
+zero-built candidate without inferring a rename.
+
+## Generation and distribution
+
+The daily and manual publisher workflow resolves all three current snapshots,
+strictly parses them, federates from `Catalog::default()`, writes SQLite, and
+runs the production loader plus complete catalog invariants in a fresh
+directory. A failure in acquisition, parsing, source policy, or whole-catalog
+validation prevents deployment. Individual
+`provisional_without_tachi_anchor`, `ambiguous_identity`, and
+`conflicting_chart` records may be excluded; every other quarantine reason
+blocks publication. Counts and source lineage are written to the Actions run
+summary.
+
+The current schema is published at `/catalog/v1/catalog.zip` on the same GitHub
+Pages site that owns the future landing page. The ZIP contains exactly
+`catalog.sqlite3`, `manifest.json`, and `THIRD_PARTY_NOTICES.md`. The manifest
+binds the SQLite SHA-256, runtime semantic digest, schema artifact revision,
+generator commit, and official workflow run URL. Detailed source revisions,
+hashes, provenance, and evidence remain in SQLite. The workflow URL is a
+best-effort human reference, not permanent proof.
+
+Every candidate is generated and completely validated even when it is a
+publication no-op. The existing ZIP bytes are retained when runtime semantics,
+`artifact_revision`, and notices are all unchanged. Source-only lineage,
+quarantine detail, timestamps, storage layout, and other non-runtime metadata
+do not affect the semantic digest. A schema's artifact revision is incremented
+when logically invisible SQLite storage changes must be distributed.
 
 ## Reference-only sources
 
@@ -114,12 +141,12 @@ and cannot corroborate Textage independently.
   plus source IDs, source revision, parser version, and field provenance.
 - Treat mirrors, forks, and downstream databases as the same `lineage_id` as
   their input. Agreement within one lineage is one observation, not a quorum.
-- A missing record means `unknown` unless the source policy explicitly marks
-  the snapshot exhaustive and a removal protocol has been defined. v1 has no
-  automatic deletion based only on absence.
-- Schema drift, duplicate source IDs, truncated data, count regression, invalid
-  domains, or a non-immutable revision invalidates that source snapshot without
-  replacing its last-known-good observation set.
+- Each valid build represents the current snapshots only. Source corrections
+  and removals therefore flow into the next accepted catalog; the previously
+  published ZIP remains active when the candidate build fails.
+- Schema drift, duplicate source IDs, truncated data, invalid domains, or a
+  non-immutable revision invalidates the complete candidate and leaves the
+  published Pages artifact unchanged.
 
 ## Federation and OCR boundary
 
@@ -130,9 +157,6 @@ lexicon. Exact display variants enter the lexicon only after their source
 binding is resolved without fuzzy identity matching.
 
 Each accepted catalog assertion records its contributing source revision and
-lineage, and the catalog separately records the latest accepted source
-revision. Identical assertions are normalized across revisions so a source
-commit that leaves them unchanged cannot cause unbounded snapshot growth. A UI
-may show provenance and quarantine diagnostics, but stable recognition events
-expose only the internal song ID, accepted exact display title, catalog digest,
-and INFINITAS status.
+lineage. A UI may show provenance and quarantine diagnostics, but stable
+recognition events expose only the internal song ID, accepted exact display
+title, catalog digest, and INFINITAS status.

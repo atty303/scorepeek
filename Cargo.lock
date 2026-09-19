@@ -4503,6 +4503,7 @@ dependencies = [
  "ratatui",
  "rusqlite",
  "rustix",
+ "scorepeek-catalog",
  "scorepeek-overlay",
  "scorepeek-scores",
  "scorepeek-vulkan-capture",
@@ -4511,10 +4512,38 @@ dependencies = [
  "sha2 0.11.0",
  "signal-hook 0.4.4",
  "tempfile",
+ "toml",
  "unicode-normalization",
  "ureq",
+ "url",
  "uuid",
  "x11rb",
+ "zip",
+]
+
+[[package]]
+name = "scorepeek-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "scorepeek-catalog-publisher"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "scorepeek",
+ "scorepeek-catalog",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]

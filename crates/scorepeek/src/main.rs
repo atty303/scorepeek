@@ -27,7 +27,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use scorepeek::catalog::CatalogStore;
-use scorepeek::catalog::{CatalogSync, CatalogSyncError};
 use scorepeek::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
 };
@@ -242,7 +241,6 @@ fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
         return result;
     }
     match args {
-        [catalog, sync] if catalog == "catalog" && sync == "sync" => sync_catalog(),
         [
             recognition,
             inspect,
@@ -836,17 +834,53 @@ fn run_routine_live_session(
             env::var_os("HOME").as_deref(),
         )
     })?;
-    run_startup_stage(&diagnostic_sink, "active_catalog", || {
-        CatalogStore::new(&catalog_root)
-            .load_active()
-            .map_err(|error| format!("active catalog load failed: {error}"))?
-            .ok_or_else(|| {
-                format!(
-                    "catalog store {} has no active catalog; transfer or sync the catalog first",
-                    catalog_root.display()
-                )
-            })
+    let effective_catalog_url = run_startup_stage(&diagnostic_sink, "catalog_url", || {
+        scorepeek::catalog::update::resolve_effective_url(
+            &scorepeek::catalog::update::default_config_path(),
+        )
+        .map_err(|error| error.to_string())
     })?;
+    let prepared_catalog = run_startup_stage(&diagnostic_sink, "active_catalog", || {
+        scorepeek::catalog::update::prepare(&catalog_root, &effective_catalog_url, |event| {
+            record_catalog_update(&diagnostic_sink, &event);
+        })
+        .map_err(|error| error.to_string())
+    })?;
+    let run_catalog_digest = prepared_catalog.active.digest;
+    let background_catalog_update = prepared_catalog.background_due.then(|| {
+        let background_root = catalog_root.clone();
+        let background_url = effective_catalog_url.clone();
+        let background_sink = diagnostic_sink.clone();
+        std::thread::Builder::new()
+            .name("catalog-update-low-priority".to_owned())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let _ = scorepeek::catalog::update::update_background(
+                    &background_root,
+                    &background_url,
+                    |event| record_catalog_update(&background_sink, &event),
+                );
+            })
+    });
+    let background_catalog_update = match background_catalog_update {
+        Some(Ok(handle)) => Some(handle),
+        Some(Err(error)) => {
+            diagnostic_sink.record(
+                "catalog_update",
+                &serde_json::json!({
+                    "mode": "background",
+                    "stage": "resolve",
+                    "status": "error",
+                    "error_type": "worker_start_failed",
+                    "source_url_sha256": effective_catalog_url.fingerprint(),
+                }),
+                true,
+            );
+            eprintln!("scorepeek: background catalog update unavailable: {error}");
+            None
+        }
+        None => None,
+    };
     if recording_enabled {
         run_startup_stage(&diagnostic_sink, "canonical_recorder", || {
             canonical_recording::CanonicalRecordingWorker::preflight()
@@ -1098,16 +1132,6 @@ fn run_routine_live_session(
                 node_id,
                 generation,
             } => {
-                let Ok(Some(active)) = CatalogStore::new(&catalog_root).load_active() else {
-                    announce_watcher_state(
-                        &mut announced,
-                        routine_watcher::WatcherState::CatalogUnavailable,
-                        "active catalog is temporarily unavailable; scorepeek will retry",
-                        &mut output,
-                    )?;
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    continue;
-                };
                 let session_id = format!("{invocation_id}-session-{generation}");
                 let diagnostic_run_root = output.diagnostic_run_root().map(Path::to_path_buf);
                 let session_paths = match state
@@ -1127,7 +1151,7 @@ fn run_routine_live_session(
                     &catalog_root,
                     &session_id,
                     &build_sha256,
-                    &active.digest,
+                    &run_catalog_digest,
                     "disabled",
                     recognition_root,
                 );
@@ -1296,8 +1320,20 @@ fn run_routine_live_session(
             reason: "signal".to_owned(),
         },
     })?;
+    if let Some(handle) = background_catalog_update {
+        let _ = handle.join();
+    }
     output.finish_diagnostics("cancel");
     Ok(())
+}
+
+fn record_catalog_update(
+    sink: &diagnostic_stream::DiagnosticSink,
+    event: &scorepeek::catalog::update::UpdateEvent,
+) {
+    if let Ok(value) = serde_json::to_value(event) {
+        sink.record("catalog_update", &value, true);
+    }
 }
 
 fn routine_session_disposition(
@@ -2545,10 +2581,38 @@ fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
                 "registered_manifest_sha256": recognition::NUMERIC_MODEL_MANIFEST_SHA256,
             }),
         };
+        let catalog = catalog_paths(
+            env::var_os("XDG_DATA_HOME").as_deref(),
+            env::var_os("XDG_CACHE_HOME").as_deref(),
+            env::var_os("HOME").as_deref(),
+        )
+        .and_then(|(store_root, _)| {
+            let active = CatalogStore::new(&store_root)
+                .load_active_for_run()
+                .map_err(|error| error.to_string())?;
+            let state = scorepeek::catalog::update::load_state(&store_root)
+                .map_err(|error| error.to_string())?;
+            Ok(serde_json::json!({
+                "status": if active.is_some() { "active" } else { "unavailable" },
+                "active_catalog_sha256": active.as_ref().map(|catalog| catalog.digest.as_str()),
+                "source_url_sha256": state.source_url_sha256,
+                "last_success_unix_seconds": state.last_success_unix_seconds,
+                "etag_present": state.etag.is_some(),
+                "last_modified_present": state.last_modified.is_some(),
+                "last_failure": state.last_failure,
+            }))
+        })
+        .unwrap_or_else(|error| {
+            serde_json::json!({
+                "status": "unavailable",
+                "reason": error,
+            })
+        });
         let report = serde_json::json!({
-            "schema": "scorepeek-doctor-v2",
+            "schema": "scorepeek-doctor-v3",
             "target_inventory": target_inventory,
             "numeric_model": numeric_model,
+            "catalog": catalog,
         });
         println!(
             "{}",
@@ -3527,30 +3591,6 @@ fn parse_f64(value: &OsStr, label: &str) -> Result<f64, String> {
         .map_err(|_| format!("{label} must be a decimal number"))
 }
 
-fn sync_catalog() -> Result<(), String> {
-    let xdg_data_home = env::var_os("XDG_DATA_HOME");
-    let xdg_cache_home = env::var_os("XDG_CACHE_HOME");
-    let home = env::var_os("HOME");
-    let (store_root, cache_root) = catalog_paths(
-        xdg_data_home.as_deref(),
-        xdg_cache_home.as_deref(),
-        home.as_deref(),
-    )?;
-    let result = CatalogSync::new(store_root, cache_root)
-        .sync()
-        .map_err(|error| catalog_sync_error(&error))?;
-    println!(
-        "{}",
-        serde_json::to_string(&result.into_summary())
-            .map_err(|error| format!("catalog sync result encoding failed: {error}"))?
-    );
-    Ok(())
-}
-
-fn catalog_sync_error(error: &CatalogSyncError) -> String {
-    format!("scorepeek catalog sync failed: {error}")
-}
-
 fn catalog_paths(
     xdg_data_home: Option<&OsStr>,
     xdg_cache_home: Option<&OsStr>,
@@ -3588,7 +3628,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek catalog sync\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -3602,29 +3642,32 @@ fn print_usage() {
 mod tests {
     use super::{
         CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
-        LIVE_SESSION_FLAGS, LiveSessionEmission, PrivatePublicationPoint, catalog_paths,
-        catalog_sync_error, command_flag_values, initialize_routine_model,
-        live_session_event_value, optional_recognition_root, parse_diagnostic_recording_policy,
-        parse_routine_run_options, prepare_live_diagnostic_root, publish_private_file,
-        publish_private_file_with, routine_session_disposition, run_command,
-        run_event_from_live_emission, run_startup_stage, run_with_model_initializer,
+        LIVE_SESSION_FLAGS, PrivatePublicationPoint, catalog_paths, command_flag_values,
+        initialize_routine_model, live_session_event_value, optional_recognition_root,
+        parse_diagnostic_recording_policy, parse_routine_run_options, prepare_live_diagnostic_root,
+        publish_private_file, publish_private_file_with, routine_session_disposition, run_command,
+        run_startup_stage, run_with_model_initializer,
     };
+    use super::{LiveSessionEmission, run_event_from_live_emission};
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
     use scorepeek::capture::{
         CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
         CaptureDiagnosticStatus,
     };
+    use scorepeek::catalog::Catalog;
     use scorepeek::catalog::{
-        AdapterError, Catalog, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
-        FederationInput, SourceRevision, TachiAcquisitionError, TachiFixtureAdapter, TachiResource,
-        TextageAcquisitionError, TextageResource,
+        Chart, ChartKey, Difficulty, DisplayVariantKind, LineageId, PlayType, RevisionStrategy,
+        SourceChartObservation, SourceEvidence, SourceId, SourceObservation, SourcePolicy,
+        SourceSnapshot, SourceTitleObservation, TachiObservation,
     };
     use scorepeek::recognition::{
         CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
         ScreenFieldObservations,
     };
+    use scorepeek_catalog::FederationInput;
     use std::cell::Cell;
+    use std::collections::BTreeSet;
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -3964,46 +4007,6 @@ mod tests {
                 None,
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn catalog_sync_errors_retain_actionable_causes() {
-        let adapter = catalog_sync_error(&CatalogSyncError::DqnAcquisition(
-            DqnAcquisitionError::Adapter(AdapterError::DuplicateRecord(
-                "SOURCE SENTINEL".to_owned(),
-            )),
-        ));
-        assert_eq!(
-            adapter,
-            "scorepeek catalog sync failed: dqn response validation failed: duplicate source record SOURCE SENTINEL"
-        );
-
-        let tachi = catalog_sync_error(&CatalogSyncError::TachiAcquisition(
-            TachiAcquisitionError::Transport(TachiResource::Songs, "TRANSPORT SENTINEL".to_owned()),
-        ));
-        assert_eq!(
-            tachi,
-            "scorepeek catalog sync failed: Tachi songs seed acquisition failed: TRANSPORT SENTINEL"
-        );
-
-        let textage = catalog_sync_error(&CatalogSyncError::TextageAcquisition(
-            TextageAcquisitionError::Transport(
-                TextageResource::Title,
-                "TEXTAGE SENTINEL".to_owned(),
-            ),
-        ));
-        assert_eq!(
-            textage,
-            "scorepeek catalog sync failed: Textage title table transport failed: TEXTAGE SENTINEL"
-        );
-
-        let store = catalog_sync_error(&CatalogSyncError::Store(
-            CatalogStoreError::InvalidSnapshot("SNAPSHOT SENTINEL".to_owned()),
-        ));
-        assert_eq!(
-            store,
-            "scorepeek catalog sync failed: invalid catalog snapshot: SNAPSHOT SENTINEL"
         );
     }
 
@@ -4407,17 +4410,33 @@ mod tests {
         );
     }
 
-    fn catalog_from_records(records: &[serde_json::Value]) -> Catalog {
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "schema": "scorepeek-tachi-fixture-v1",
-            "records": records,
-        }))
-        .unwrap();
-        let snapshot = TachiFixtureAdapter::parse(
-            &bytes,
-            SourceRevision::git_commit("0123456789abcdef0123456789abcdef01234567").unwrap(),
-        )
-        .unwrap();
+    fn catalog_from_records(records: &[SourceObservation]) -> Catalog {
+        let policy = SourcePolicy::tachi();
+        let mut field_authority = policy
+            .field_authority
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
+        field_authority.sort();
+        let snapshot = SourceSnapshot {
+            policy: policy.clone(),
+            evidence: SourceEvidence {
+                source_id: SourceId::Tachi,
+                lineage_id: LineageId::GameMdb,
+                revision_strategy: RevisionStrategy::GitCommit,
+                revision: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+                content_sha256: "a".repeat(64),
+                byte_size: records.len(),
+                record_count: records.len(),
+                parser_version: policy.parser_version.to_owned(),
+                declared_scope: policy.declared_scope.to_owned(),
+                completeness: policy.completeness,
+                field_authority,
+                freshness: policy.freshness.to_owned(),
+                rights_and_provenance: policy.rights_and_provenance.to_owned(),
+            },
+            observations: records.to_vec(),
+        };
         Catalog::default()
             .federate(FederationInput {
                 tachi: Some(snapshot),
@@ -4426,23 +4445,29 @@ mod tests {
             .catalog
     }
 
-    fn tachi_record(id: &str, title: &str, artist: &str) -> serde_json::Value {
-        serde_json::json!({
-            "source_song_id": id,
-            "title": title,
-            "title_kind": "in_game_display",
-            "artist": artist,
-            "version": "SYNTHETIC",
-            "charts": [{
-                "play_type": "single",
-                "difficulty": "normal",
-                "level": 1,
-                "notes": 1,
-                "source_chart_id": "spn",
-                "product_versions": ["synthetic-v1"],
-                "primary": true
+    fn tachi_record(id: &str, title: &str, artist: &str) -> SourceObservation {
+        SourceObservation::Tachi(TachiObservation {
+            source_song_id: id.to_owned(),
+            title_variants: BTreeSet::from([SourceTitleObservation {
+                value: title.to_owned(),
+                kind: DisplayVariantKind::InGameDisplay,
+            }]),
+            artist: artist.to_owned(),
+            version: "SYNTHETIC".to_owned(),
+            charts: vec![SourceChartObservation {
+                chart: Chart {
+                    key: ChartKey {
+                        play_type: PlayType::Single,
+                        difficulty: Difficulty::Normal,
+                    },
+                    level: 1,
+                    notes: 1,
+                },
+                source_chart_id: "spn".to_owned(),
+                product_versions: BTreeSet::from(["synthetic-v1".to_owned()]),
+                primary: true,
             }],
-            "primary_infinitas": true
+            primary_infinitas: true,
         })
     }
 

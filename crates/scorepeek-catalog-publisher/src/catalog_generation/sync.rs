@@ -134,21 +134,19 @@ impl CatalogSync {
         let tachi = acquire_tachi(tachi_transport, &self.cache_root)?;
         let textage = acquire_textage(textage_transport, &self.cache_root)?;
         let dqn = acquire_dqn(dqn_transport, &self.cache_root)?;
-        let base = self
-            .store
-            .load_active()?
-            .map_or_else(Catalog::default, |active| active.catalog);
-        let output = base.federate(FederationInput {
+        // Every candidate is rebuilt from the three current snapshots. The active catalog is an
+        // availability fallback only; it is never an input to identity, deletion, or evidence.
+        let output = Catalog::default().federate(FederationInput {
             tachi: Some(tachi.snapshot),
             textage: Some(textage.snapshot),
             dqn: Some(dqn.snapshot),
         });
         let blocked = output.quarantine.iter().any(|entry| {
-            matches!(
+            !matches!(
                 entry.reason,
-                QuarantineReason::SourcePolicyMismatch
-                    | QuarantineReason::DqnBindingRegression
-                    | QuarantineReason::SourceHealthRegression
+                QuarantineReason::ProvisionalWithoutTachiAnchor
+                    | QuarantineReason::AmbiguousIdentity
+                    | QuarantineReason::ConflictingChart
             )
         });
         let active_catalog_digest = if blocked {
@@ -217,10 +215,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::catalog::acquisition::DqnHttpResponse;
-    use crate::catalog::adapter::MAX_SOURCE_BYTES;
-    use crate::catalog::tachi_acquisition::{TachiHttpResponse, TachiResource};
-    use crate::catalog::textage_acquisition::{TextageHttpResponse, TextageResource};
+    use crate::catalog_generation::acquisition::DqnHttpResponse;
+    use crate::catalog_generation::adapter::MAX_SOURCE_BYTES;
+    use crate::catalog_generation::tachi_acquisition::{TachiHttpResponse, TachiResource};
+    use crate::catalog_generation::textage_acquisition::{TextageHttpResponse, TextageResource};
 
     const GIT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -452,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_wide_regressions_do_not_activate_a_candidate() {
+    fn every_snapshot_is_zero_built_and_current_removals_activate() {
         let roots = Roots::new();
         let alpha = dqn_bytes("ALPHA", "ARTIST A");
         let accepted =
@@ -460,18 +458,18 @@ mod tests {
         let accepted_digest = accepted.active_catalog_digest.unwrap();
 
         let beta = dqn_bytes("BETA", "ARTIST B");
-        let binding_regression =
+        let replacement =
             sync_with_dqn(&roots, &response(200, Some(beta.len() as u64), beta)).unwrap();
-        assert!(!binding_regression.activated);
-        assert_eq!(
-            binding_regression.active_catalog_digest.as_deref(),
+        assert!(replacement.activated);
+        assert_ne!(
+            replacement.active_catalog_digest.as_deref(),
             Some(accepted_digest.as_str())
         );
         assert!(
-            binding_regression
+            replacement
                 .quarantine
                 .iter()
-                .all(|entry| entry.reason == QuarantineReason::DqnBindingRegression)
+                .all(|entry| { entry.reason == QuarantineReason::ProvisionalWithoutTachiAnchor })
         );
 
         let two_records = serde_json::to_vec(&json!([
@@ -488,17 +486,14 @@ mod tests {
         let larger_digest = larger.active_catalog_digest.unwrap();
 
         let alpha = dqn_bytes("ALPHA", "ARTIST A");
-        let health_regression =
+        let reduced =
             sync_with_dqn(&roots, &response(200, Some(alpha.len() as u64), alpha)).unwrap();
-        assert!(!health_regression.activated);
-        assert_eq!(
-            health_regression.active_catalog_digest.as_deref(),
+        assert!(reduced.activated);
+        assert_ne!(
+            reduced.active_catalog_digest.as_deref(),
             Some(larger_digest.as_str())
         );
-        assert_eq!(
-            health_regression.quarantine[0].reason,
-            QuarantineReason::SourceHealthRegression
-        );
+        assert!(reduced.quarantine.is_empty());
     }
 
     struct Roots {

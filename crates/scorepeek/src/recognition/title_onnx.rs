@@ -591,13 +591,15 @@ impl RegisteredRecognitionResources {
         }
         validate_registered_resource_directory(catalog_root, "catalog store")?;
         validate_registered_resource_directory(bundle_root, "model bundle")?;
-        let active = CatalogStore::new(catalog_root)
-            .load_active()
-            .map_err(RegisteredResourceLoadError::Catalog)?
-            .ok_or(RegisteredResourceLoadError::CatalogUnavailable)?;
-        if active.digest != expected_catalog_sha256 {
-            return Err(RegisteredResourceLoadError::CatalogBindingMismatch);
-        }
+        let active = match CatalogStore::new(catalog_root)
+            .load_generation_for_run(expected_catalog_sha256)
+        {
+            Ok(active) => active,
+            Err(CatalogStoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RegisteredResourceLoadError::CatalogUnavailable);
+            }
+            Err(error) => return Err(RegisteredResourceLoadError::Catalog(error)),
+        };
         let title_runtime = RegisteredDynamicTitleRuntime::load(bundle_root)
             .map_err(RegisteredResourceLoadError::Runtime)?;
         Ok(Self {
@@ -2070,7 +2072,7 @@ mod tests {
             .unwrap()
             .publish(&Catalog::default())
             .unwrap();
-        let mismatch = load_error(RegisteredRecognitionResources::load(
+        let unavailable_generation = load_error(RegisteredRecognitionResources::load(
             catalog_root.path(),
             bundle.path(),
             &"3".repeat(64),
@@ -2079,8 +2081,8 @@ mod tests {
         ));
         assert_ne!(active.digest, "3".repeat(64));
         assert_eq!(
-            mismatch.error_type(),
-            RegisteredResourceLoadErrorType::CatalogBindingMismatch
+            unavailable_generation.error_type(),
+            RegisteredResourceLoadErrorType::CatalogUnavailable
         );
     }
 
