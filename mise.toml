@@ -4,6 +4,9 @@ monorepo_root = true
 [monorepo]
 config_roots = ["tools/ocr"]
 
+[settings]
+cargo.binstall_native = true
+
 [tools]
 "cargo:dioxus-cli" = "0.7.10"
 actionlint = "1.7.12"
