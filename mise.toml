@@ -103,7 +103,15 @@ run = "cargo check --locked -p scorepeek-overlay-web --target wasm32-unknown-unk
 
 [tasks."overlay:web:bundle"]
 description = "Build the real browser assets used by the distributed executable"
-run = "dx bundle --package scorepeek-overlay-web --web --release --locked --debug-symbols false"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+readonly complete="target/dx/scorepeek-overlay-web/release/web/.scorepeek-bundle-complete"
+rm -f -- "$complete"
+rm -rf -- target/dx/scorepeek-overlay-web/release/web/public
+dx bundle --package scorepeek-overlay-web --web --release --locked --debug-symbols false
+touch "$complete"
+'''
 sources = [
   "crates/scorepeek-overlay-handles/src/**",
   "crates/scorepeek-overlay-ui/src/**",
@@ -118,7 +126,10 @@ sources = [
   "crates/scorepeek-overlay/Cargo.toml",
   "scripts/overlay-build.rs",
 ]
-outputs = ["target/dx/scorepeek-overlay-web/release/web/public/index.html"]
+outputs = [
+  "target/dx/scorepeek-overlay-web/release/web/.scorepeek-bundle-complete",
+  "target/dx/scorepeek-overlay-web/release/web/public/index.html",
+]
 
 [tasks."overlay:web:test"]
 description = "Test the production browser route, embedded assets, and child lifecycle"
