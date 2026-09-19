@@ -1,0 +1,26 @@
+Task: Add the generic CalVer release workflow to Scorepeek
+
+Anchor: fb0334f71093e1e3753461b7e91f386acf0a8379
+Base: 2cf75a60bb247ef8facfcd48a2778d8a6fb5e3cb
+Line: main
+Commits: fb0334f71093e1e3753461b7e91f386acf0a8379 ci: add CalVer release workflow
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; investigate-problem; review; atty303 engineering policy
+Environment: local Linux x86-64 workspace; cargo-dist 0.32.0; mise monorepo_root=true; central release action pinned to repository-template bc38d10a96dc4fe4af772b689f309ff5b1a9da43
+
+Evidence:
+- repository-template bc38d10a96dc4fe4af772b689f309ff5b1a9da43 was pushed to origin/main; GitHub Actions run 35442684294 completed successfully.
+- mise tasks --json exposed the caller task as //:release:build, matching the central action monorepo contract.
+- A real local release build for 2026.9.0 produced exactly the Linux x86-64 archive and cargo-dist checksum as direct regular files; the extracted binary reported scorepeek 2026.9.0 and the checksum and smoke tests passed.
+- crates/scorepeek/Cargo.toml and Cargo.lock contents, sizes, and mtimes were restored after the build-time version injection.
+- mise run check and the final mise run test completed successfully. A fresh independent review found no actionable issue.
+- No Scorepeek push, tag, GitHub Release, registry publication, or live deployment was performed.
+
+Authority: The caller workflow owns checkout, prerequisites, mise setup, permissions, and release serialization. The pinned central action owns Conventional Commit analysis, Asia/Tokyo CalVer selection, tags, notes, rollback, and GitHub Releases. Scorepeek's root mise release:build task owns its local cargo-dist artifact and smoke-test contract.
+
+Transcript:
+- U1: scorerpeekにrelease workflowを追加する。calverで。
+  - A: Added a SHA-pinned CalVer caller workflow and a monorepo-root release:build task that injects the release version only during cargo-dist build, verifies the resulting binary and archive, restores source files, and emits the archive plus checksum.
+- U2: templateはpushしといて
+  - A: Pushed the generic action and its follow-up bare-remote CI fix to repository-template, then verified the replacement remote CI run succeeded.
+- U3: ok
+  - A: Used normal Git for the approved template CI repair because the previously referenced wrapper script was absent. Scorepeek remained local-only.
