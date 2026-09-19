@@ -33,7 +33,7 @@ jobs:
           cache: true
 
       - name: Release
-        uses: atty303/repository-template/.github/actions/release@97f1e8094c7526878f50165c88ee6ec630fff247
+        uses: atty303/repository-template/.github/actions/release@16aaaafee2e5921602a9a3690717881a2bf5d272
         with:
           versioning: calver
           github-token: ${{ github.token }}
