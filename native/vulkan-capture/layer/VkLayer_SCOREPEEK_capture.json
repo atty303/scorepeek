@@ -3,7 +3,7 @@
   "layer": {
     "name": "VK_LAYER_SCOREPEEK_capture",
     "type": "GLOBAL",
-    "library_path": "../../../lib/libscorepeek_vulkan_capture.so",
+    "library_path": "../../scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so",
     "api_version": "1.4.0",
     "implementation_version": "1",
     "description": "Scorepeek pre-compositor-scale Vulkan capture"

@@ -19,9 +19,10 @@ If that feature cannot be enabled, capture stays disabled
 without changing the application's device-creation result. There is no external semaphore and no
 frame ring or catch-up queue.
 
-`mise run build` builds both Scorepeek and the layer with pinned Zig. Development artifacts live
-under `target/vulkan-capture`; release installation layout is intentionally deferred until the
-first release.
+Every Scorepeek binary build invokes pinned Zig for a ReleaseFast, stripped layer and embeds that
+library and the manifest as a deflate ZIP. `mise run capture:vulkan:build` also publishes the
+development layout under `target/vulkan-capture`. A distributed binary installs its embedded copy
+only when `scorepeek vulkan-layer install` is run; `scorepeek run` never installs or updates it.
 
 For a development run, start `scorepeek run --capture vulkan-layer` and scope the explicit layer
 to the game process after Gamescope's `--`:
@@ -35,6 +36,11 @@ When `APPLICATION` is started by `umu-run`, expose the socket directory to Press
 ```text
 env PRESSURE_VESSEL_FILESYSTEMS_RW="$XDG_RUNTIME_DIR/scorepeek" VK_LAYER_PATH="$PWD/target/vulkan-capture/share/vulkan/explicit_layer.d" VK_INSTANCE_LAYERS=VK_LAYER_SCOREPEEK_capture umu-run APPLICATION
 ```
+
+After `scorepeek vulkan-layer install`, Vulkan Loader's standard explicit-layer discovery replaces
+the development-only `VK_LAYER_PATH` setting. Activation still requires
+`VK_INSTANCE_LAYERS=VK_LAYER_SCOREPEEK_capture`, and Pressure Vessel still requires the socket
+exposure setting shown above.
 
 The layer is compatible with `obs-vkcapture`; set its normal activation variable alongside these
 values when OBS capture is also required. Scorepeek does not start or stop Gamescope, Steam,

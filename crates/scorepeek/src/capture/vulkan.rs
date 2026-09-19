@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(manifest["layer"]["type"], "GLOBAL");
         assert_eq!(
             manifest["layer"]["library_path"],
-            "../../../lib/libscorepeek_vulkan_capture.so"
+            "../../scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so"
         );
         assert_eq!(manifest["layer"]["implementation_version"], "1");
     }

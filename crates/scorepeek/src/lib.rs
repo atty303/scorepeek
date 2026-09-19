@@ -41,6 +41,7 @@ pub mod screen_episode;
 pub mod song_context;
 pub mod temporal_recognition;
 pub mod timeline_driver;
+mod vulkan_layer;
 
 pub use application::{dev_main, public_main};
 

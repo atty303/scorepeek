@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .link_libcpp = true,
         .pic = true,
+        .strip = true,
     });
     layer_module.addIncludePath(vkroots.path(""));
     layer_module.addIncludePath(vulkan_headers.path("include"));
@@ -30,7 +31,11 @@ pub fn build(b: *std.Build) void {
         .root_module = layer_module,
     });
     layer.setVersionScript(b.path("layer/exports.map"));
-    b.installArtifact(layer);
+    const install_layer = b.addInstallFile(
+        layer.getEmittedBin(),
+        "share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so",
+    );
+    b.getInstallStep().dependOn(&install_layer.step);
     b.installFile(
         "layer/VkLayer_SCOREPEEK_capture.json",
         "share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json",

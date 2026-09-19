@@ -48,13 +48,15 @@ loopback HTTP for development, and `file://` artifacts are supported.
 ## Command line
 
 Running `scorepeek` without arguments prints top-level help and succeeds. The public commands are
-`run`, `doctor`, `config`, `diagnostic`, `skin`, and `completion`.
+`run`, `doctor`, `config`, `diagnostic`, `skin`, `vulkan-layer`, and `completion`.
 
 ```text
 scorepeek run --capture pipewire --node-name gamescope
 scorepeek run --capture vulkan-layer
 scorepeek doctor
 scorepeek doctor --format json
+scorepeek vulkan-layer install
+scorepeek vulkan-layer uninstall
 scorepeek config path
 scorepeek config show
 scorepeek config check
@@ -64,6 +66,22 @@ scorepeek diagnostic inspect --latest --format json
 scorepeek skin list
 scorepeek completion nushell
 ```
+
+`scorepeek vulkan-layer install` installs the explicit capture layer embedded in this exact
+Scorepeek binary. It atomically updates
+`$XDG_DATA_HOME/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json` and
+`$XDG_DATA_HOME/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so`; when `XDG_DATA_HOME` is
+unset, `$HOME/.local/share` is used. The manifest refers to the library by a relative path, so the
+Vulkan Loader discovers it without `VK_LAYER_PATH`. Installation and updates occur only when this
+command is run. `scorepeek run` never changes the installed layer.
+
+The layer remains explicit. Launch the game through the operator's existing Gamescope, Steam,
+Proton, or umu configuration with `VK_INSTANCE_LAYERS=VK_LAYER_SCOREPEEK_capture`. Pressure Vessel
+must still be configured there to expose `$XDG_RUNTIME_DIR/scorepeek`. Scorepeek does not launch or
+configure those programs. `scorepeek vulkan-layer uninstall` removes only the Scorepeek manifest
+and library; it leaves the shared Vulkan manifest directory in place. `scorepeek doctor` reports
+whether the two installed files are absent, match this binary's embedded SHA-256 payload, differ
+from it, or form an invalid installation.
 
 The optional config file defaults to `$XDG_CONFIG_HOME/scorepeek/config.toml` (or
 `$HOME/.config/scorepeek/config.toml`). Scorepeek never creates it. `--config FILE` selects a

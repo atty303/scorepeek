@@ -75,6 +75,13 @@ treats each producer lifetime as a distinct capture
 generation, and performs bounded ordered teardown on source loss or process
 termination.
 
+Every supported Linux x86-64 Scorepeek binary embeds a stripped explicit Vulkan layer and its
+relative-path manifest as one deflate ZIP. The separate `vulkan-layer install` operation publishes
+the library and manifest into the user's fixed XDG data locations with same-filesystem atomic
+renames; `uninstall` removes the manifest before the library. The run path never installs, updates,
+or validates that payload. A connected development or previously installed layer is accepted by
+the Vulkan capture protocol version alone, without a build identity or payload digest handshake.
+
 ## Capture and canonical frame
 
 PipeWire and the Vulkan layer are opaque peer capture backends. PipeWire uses

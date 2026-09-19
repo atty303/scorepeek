@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use crate::{
     canonical_recording, capture_live, diagnostic_recording, diagnostic_stream, inventory,
     live_control, local_profiles, recognition_artifact, recognition_live, recording_simulation,
-    routine_output, routine_watcher,
+    routine_output, routine_watcher, vulkan_layer,
 };
 use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
 use scorepeek::catalog::CatalogStore;
@@ -61,6 +61,11 @@ enum PublicCommand {
     Skin {
         #[command(subcommand)]
         command: SkinCommand,
+    },
+    /// Install or remove the embedded explicit Vulkan capture layer.
+    VulkanLayer {
+        #[command(subcommand)]
+        command: VulkanLayerCommand,
     },
     /// Generate shell completion source on stdout.
     Completion {
@@ -176,6 +181,14 @@ enum SkinCommand {
     Install { package: PathBuf },
     Uninstall { id: String },
     List(FormatArgs),
+}
+
+#[derive(Clone, Copy, Subcommand)]
+enum VulkanLayerCommand {
+    /// Install the embedded layer for Vulkan Loader discovery by this user.
+    Install,
+    /// Remove the Scorepeek-managed manifest and layer library.
+    Uninstall,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -713,6 +726,7 @@ fn dispatch_public(cli: PublicCli) -> Result<(), String> {
         }
         PublicCommand::Diagnostic { command } => run_diagnostic_command(command),
         PublicCommand::Skin { command } => run_skin_command(command),
+        PublicCommand::VulkanLayer { command } => run_vulkan_layer_command(command),
         PublicCommand::Completion { shell } => {
             generate_completion(shell);
             Ok(())
@@ -1211,6 +1225,25 @@ fn run_skin_command(command: SkinCommand) -> Result<(), String> {
                     serde_json::to_string(&installed)
                         .map_err(|error| format!("skin list serialization failed: {error}"))?
                 ),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_vulkan_layer_command(command: VulkanLayerCommand) -> Result<(), String> {
+    match command {
+        VulkanLayerCommand::Install => {
+            match vulkan_layer::install().map_err(|error| error.to_string())? {
+                vulkan_layer::InstallOutcome::Installed => println!("installed"),
+                vulkan_layer::InstallOutcome::Updated => println!("updated"),
+                vulkan_layer::InstallOutcome::Unchanged => println!("unchanged"),
+            }
+        }
+        VulkanLayerCommand::Uninstall => {
+            match vulkan_layer::uninstall().map_err(|error| error.to_string())? {
+                vulkan_layer::UninstallOutcome::Uninstalled => println!("uninstalled"),
+                vulkan_layer::UninstallOutcome::NotInstalled => println!("not installed"),
             }
         }
     }
@@ -3924,11 +3957,14 @@ fn collect_doctor_report() -> Result<serde_json::Value, String> {
         }))
     })
     .unwrap_or_else(|error| serde_json::json!({"status": "unavailable", "reason": error}));
+    let vulkan_layer = serde_json::to_value(vulkan_layer::inspect())
+        .map_err(|error| format!("doctor report serialization failed: {error}"))?;
     Ok(serde_json::json!({
-        "schema": "scorepeek-doctor-v4",
+        "schema": "scorepeek-doctor-v5",
         "target_inventory": target_inventory,
         "numeric_model": numeric_model,
         "catalog": catalog,
+        "vulkan_layer": vulkan_layer,
     }))
 }
 
@@ -3962,6 +3998,12 @@ fn print_doctor(format: OutputFormat) -> Result<(), String> {
                 } else {
                     "unavailable"
                 }
+            );
+            println!(
+                "  Vulkan layer: {}",
+                report["vulkan_layer"]["status"]
+                    .as_str()
+                    .unwrap_or("unknown")
             );
         }
     }
@@ -4943,7 +4985,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek vulkan-layer install\n  scorepeek vulkan-layer uninstall\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -4991,13 +5033,14 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn public_cli_exposes_only_the_six_application_commands() {
+    fn public_cli_exposes_only_the_seven_application_commands() {
         for command in [
             "run",
             "doctor",
             "config",
             "diagnostic",
             "skin",
+            "vulkan-layer",
             "completion",
         ] {
             let result = PublicCli::try_parse_from(["scorepeek", command, "--help"]);

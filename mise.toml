@@ -86,7 +86,7 @@ exec mise run dist:plan
 [tasks.build]
 description = "Build the runnable debug CLI with the embedded OBS UI"
 depends = ["overlay:web:bundle"]
-run = "mise run capture:vulkan:build && cargo build --locked -p scorepeek --features embedded-web"
+run = "cargo build --locked -p scorepeek --features embedded-web"
 
 [tasks."dist:plan"]
 description = "Inspect the local cargo-dist release plan"
@@ -339,7 +339,7 @@ run = "cargo run --locked --quiet -p scorepeek -- doctor --format json"
 
 [tasks."capture:vulkan:build"]
 description = "Build the Scorepeek Vulkan capture layer with pinned Zig"
-run = "zig build --build-file native/vulkan-capture/build.zig --cache-dir target/vulkan-capture-cache --global-cache-dir target/vulkan-capture-global-cache --release=fast --prefix target/vulkan-capture"
+run = "zig build --build-file native/vulkan-capture/build.zig --cache-dir target/vulkan-capture-cache --global-cache-dir target/vulkan-capture-global-cache --release=fast -Dtarget=x86_64-linux-gnu -Dcpu=baseline --prefix target/vulkan-capture"
 
 [tasks."capture:vulkan:test"]
 description = "Verify the layer manifest, ELF boundary, and Rust protocol/import contracts"
@@ -347,13 +347,17 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run capture:vulkan:build
-test -f target/vulkan-capture/lib/libscorepeek_vulkan_capture.so
+test -f target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so
 test -f target/vulkan-capture/share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json
 cmp native/vulkan-capture/layer/VkLayer_SCOREPEEK_capture.json target/vulkan-capture/share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json
-readelf -d target/vulkan-capture/lib/libscorepeek_vulkan_capture.so | grep -q 'libc.so'
-! readelf -d target/vulkan-capture/lib/libscorepeek_vulkan_capture.so | grep -Eq 'libstdc\+\+|libc\+\+'
+readelf -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -q 'libc.so'
+! readelf -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq 'libstdc\+\+|libc\+\+'
+! readelf -S target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -q '\.symtab'
+readelf -h target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq 'Machine:.*X86-64'
+! objdump -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq '%[yz]mm|[[:space:]]v[a-z][a-z0-9]+'
 cargo test --locked -p scorepeek-vulkan-capture
 cargo test --locked -p scorepeek capture::vulkan
+cargo test --locked -p scorepeek vulkan_layer
 '''
 
 [tasks."capture:pipewire:test:live"]
