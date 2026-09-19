@@ -1,0 +1,13 @@
+Task: Simplify the README and add the third-party notices link
+Anchor: 933f5dd
+Base: 420f178cf1817e7c023769ec22b969c1b2748812
+Line: main
+Commits: 933f5dd docs: focus README on product overview
+Guidance: repository AGENTS.md; develop-repository; review
+Execution: Initial sandboxed build could not write the mise task-sources state; the identical host-authorized mise run build succeeded.
+Authority: README.md and THIRD_PARTY_NOTICES.md at commit 933f5dd
+Transcript:
+- U1: readmeにthird party noticeへのリンクを最後に追記
+  - A: Inspected the repository snapshot, current README, architecture, source policy, notices, and the pre-existing README working-tree diff. Added a final Third-party notices section linking to THIRD_PARTY_NOTICES.md. The scoped repository check and an independent review passed. Left the change uncommitted because the same file contained pre-existing edits not yet authorized for inclusion.
+- U2: 既存編集は意図どおりだからcommitして
+  - A: Treated the complete README diff as user-authorized, reran the scoped checks, and obtained a fresh independent review. The reviewer found that `> ![NOTICE]` was invalid Markdown, so it was corrected to portable `> **NOTICE**`; checks and delta review then passed. Committed the complete README change as 933f5dd. The required post-commit build failed only in the sandbox because mise state was read-only, then succeeded unchanged in the host-authorized environment.
