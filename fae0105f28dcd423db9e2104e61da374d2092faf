@@ -1,0 +1,13 @@
+Task: stop generating and publishing release checksum files
+Anchor: fae0105f28dcd423db9e2104e61da374d2092faf
+Base: 8fad8eefc7b22bca0436449b7be806345fb76d6a
+Worktree: main
+Commits: fae0105f28dcd423db9e2104e61da374d2092faf disables cargo-dist checksums, publishes one archive, and pins the digest-verifying generic action
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; investigate-problem; review
+Environment: durable Scorepeek release caller; repository-template commit 00351cee0fe0ce1f9a9facd30a39830905db5ca5 is local and must be pushed before this commit; no push or release was authorized in this cycle
+Evidence: dist plan listed only the Linux archive; release:build 2026.9.1 produced exactly one archive, verified contents and embedded version, and left no .sha256; mise run check passed; post-commit mise run build passed; fresh independent review reported no actionable findings
+Evidence: full mise run test did not complete cleanly: one run hit the unrelated timing-sensitive canonical_recording broken-child test, which passed alone and on retry; the retry and isolated rerun then hit the unrelated overlay browser feed with received_records=0. No files in either failing path were changed.
+Authority: current Cargo.toml, mise tasks, artifact test script, workflow, and README define the Scorepeek release contract
+Transcript:
+- U1: SHA256SUMと.sha256を作りたくない。この方針で改善して
+  - A: Set cargo-dist checksum to "false", changed release:build to copy only scorepeek-x86_64-unknown-linux-gnu.tar.xz, added a regression assertion that cargo-dist does not recreate the legacy .sha256, updated release documentation, and pinned the locally committed generic action that verifies GitHub's server-reported digest. Verified the local release artifact boundary and committed locally. The first sandboxed mise runs could not update the home task-source cache; equivalent normally permissioned reruns succeeded. No push or live release was performed.
