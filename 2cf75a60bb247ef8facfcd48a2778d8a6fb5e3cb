@@ -1,0 +1,19 @@
+Task: Reduce the distributed scorepeek binary by removing stale embedded Web generations and ELF symbols
+Anchor: 2cf75a60bb247ef8facfcd48a2778d8a6fb5e3cb
+Base: 933f5ddb3f711e79e1164fadee07a2777ef87b13
+Line: main
+Commits: 2cf75a60bb247ef8facfcd48a2778d8a6fb5e3cb build: shrink the distributed binary
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; review; atty303 engineering policy
+Environment: local Linux x86-64 workspace; cargo-dist 0.32.0; Dioxus CLI 0.7.10; sandbox denied Git and mise state writes, so approved target-equivalent execution was used without expanding product authority
+
+Evidence:
+- Before the change, the local dist binary was 124340544 bytes and not stripped; the embedded Web public directory contained 41 files totaling 22749239 bytes, of which the active index graph used 1130263 bytes.
+- After the change, public contains one index, one JavaScript file, and one Wasm file totaling about 1.08 MiB; the dist binary is 80415024 bytes and stripped, with no symtab, strtab, or debug section; the final tar.xz is 21963596 bytes.
+- A failure-state trial removed the completion stamp and assets while leaving index.html. A normal non-forced bundle reran instead of skipping and restored all three assets plus the zero-byte completion stamp.
+- `mise run check Cargo.toml mise.toml`, `mise run test`, and the final-snapshot `mise run dist:test` passed. The distribution checksum, archive inventory, CLI, embedded overlay, and Vulkan layer smoke checks passed. Two independent fresh reviews completed; the first identified the partial-output freshness issue fixed by the completion stamp, and the final review found no actionable issue.
+
+Authority: Current Cargo.toml and mise.toml define the distribution strip profile and Web bundle publication contract; repository source and tests define runtime behavior.
+
+Transcript:
+- U1: 両方やって
+  - A: Treated this as authorization to implement both diagnosed size reductions. Refreshed the clean main snapshot at 933f5dd, read the repository development and observability guidance, and classified the durable local build change as outside runtime telemetry scope. Added dist-profile symbol stripping and cleaned the Dioxus public output before bundling. Rebuilt the Web bundle to three active files, rebuilt the cargo-dist artifact, and measured the binary reduction from 124340544 to 80415024 bytes. Ran targeted checks, `mise run dist:test`, and `mise run test`. The first fresh review found that a failed bundle could leave index.html and be skipped as fresh; verified the fixed Dioxus ordering, added a success-only completion stamp, reproduced the index-only failure state, and confirmed a normal retry rebuilt it. Re-ran targeted checks and dist smoke tests, then obtained a second fresh full review with no actionable findings. Committed only Cargo.toml and mise.toml as 2cf75a6 and ran the required post-commit `mise run build`. No push, release, deployment, or live target mutation was performed.
