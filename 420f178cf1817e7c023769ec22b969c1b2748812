@@ -1,0 +1,78 @@
+Task: Embed and explicitly manage the scorepeek Vulkan capture layer
+Anchor: 420f178cf1817e7c023769ec22b969c1b2748812
+Base: 645b11277802c074ed5ee73acc7f4d5eb966f113
+Line: main
+Commits:
+- 420f178cf1817e7c023769ec22b969c1b2748812 feat: embed and manage Vulkan capture layer
+
+Guidance:
+- Repository AGENTS.md
+- develop-repository
+- design-program-observability
+- investigate-problem
+- develop-repository review protocol
+- maintain-agent-guidance
+
+Authority and result:
+- The user's fixed distribution, path, lifecycle, doctor-state, and protocol-compatibility decisions were authoritative.
+- Linux x86-64 scorepeek builds now compile and strip the explicit Vulkan layer, package the manifest and shared object in a deflate ZIP, and embed that ZIP in every supported scorepeek binary.
+- The cargo-dist archive remains scorepeek plus README only.
+- `scorepeek vulkan-layer install` and `uninstall` implement fixed XDG paths, relative manifest lookup, same-filesystem atomic replacement, unchanged detection, manifest-first removal, and mutation locking without deleting shared directories.
+- Doctor schema v5 reports not-installed, matching, differing, and invalid states from extracted embedded SHA-256 values and validated installed content.
+- Runtime Vulkan admission remains based on the existing protocol version; no build ID or payload/source hash was added.
+- README and architecture documentation retain VK_INSTANCE_LAYERS, launcher, Gamescope, Steam, Proton, umu, and Pressure Vessel configuration as external responsibilities.
+
+Review and verification:
+- Independent review found host-native ISA leakage, incomplete manifest validation, and an install/uninstall race. The final change uses an x86-64 baseline Zig target, validates the required manifest schema, serializes lifecycle inspection/mutation, and adds regression coverage.
+- Final checks passed: `mise run check`, `mise run capture:vulkan:test`, `mise run dist:test`, `mise run test:checks`, `mise run test:runtime`, and post-commit `mise run build`.
+- The filesystem sandbox could not create `.git/index.lock`, and sandboxed socket/cache constraints affected target-equivalent tests; the approved VCS wrapper and verification tasks were rerun outside the sandbox without changing task scope.
+- No deploy, push, Gamescope launch, Steam/Proton/umu launch, live Vulkan Loader connection, or live game validation was performed.
+- No additional durable-guidance candidate remained: the reusable invariants are enforced in source, tests, build tasks, and living documentation.
+
+Transcript:
+- U1:
+    実装して。
+    
+    ## まとめ
+    
+    ### 決まったこと
+    
+    - Vulkan layer は explicit layer のまま配布する。
+    - 現行の対象は Linux x86-64 とする。
+    - サポート対象の debug/release を含むすべての scorepeek binary に layer を内包する。
+    - `.so` は build 時に strip し、manifest とともに ZIP/deflate 形式で binary へ埋め込む。
+    - cargo-dist archive へ `.so` や manifest を別ファイルとして追加しない。配布物は scorepeek binary と README のままにする。
+    - CLI は次のコマンドを提供する。
+      - `scorepeek vulkan-layer install`
+      - `scorepeek vulkan-layer uninstall`
+    - 配置は `install` の明示実行時だけ行う。`scorepeek run` は自動配置・自動更新しない。
+    - manifest の配置先は次とする。
+      - `$XDG_DATA_HOME/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json`
+      - `XDG_DATA_HOME` 未設定時は `$HOME/.local/share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json`
+    - `.so` の配置先は次とする。
+      - `$XDG_DATA_HOME/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so`
+      - `XDG_DATA_HOME` 未設定時は `$HOME/.local/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so`
+    - manifest は配置済み `.so` を相対パスで参照する。
+    - Vulkan Loader の標準 discovery を使うため、配置後の起動では `VK_LAYER_PATH` を不要にする。
+    - layer は explicit なので、利用時には引き続き外部の起動設定で `VK_INSTANCE_LAYERS=VK_LAYER_SCOREPEEK_capture` を指定する。
+    - Gamescope、Steam、Proton、umu、およびゲームの起動は CLI の責務に含めない。
+    - Pressure Vessel への scorepeek socket 公開設定も既存の外部起動設定として維持する。
+    - manifest と `.so` は固定パスで管理する。version ごとの世代ディレクトリは作らない。
+    - install は同一 filesystem 上の一時ファイルから rename して原子的に更新する。
+    - 埋め込み payload と同一なら `unchanged` とする。
+    - scorepeek 固有の2ファイルは CLI の管理対象とする。
+      - install は既存内容が異なっても置換する。
+      - uninstall は manifest を先に削除し、その後 `.so` を削除する。
+      - 共有の `vulkan/explicit_layer.d` ディレクトリは削除しない。
+    - `scorepeek doctor` は配置状態を次のように区別する。
+      - 未配置
+      - 埋め込み payload と一致
+      - 異なる payload
+      - manifest または配置が不正
+    - `doctor` の配置状態判定では、展開後の manifest と `.so` を埋め込み SHA-256 と比較する。
+    - `scorepeek run` は配置元や payload の SHA-256 を実行時互換性の条件にしない。
+    - 実際に接続した layer は、既存 Vulkan capture protocol version が一致すれば受け入れる。
+    - protocol に新しい build ID は追加しない。
+    - 開発用 `VK_LAYER_PATH` や更新前から動作中のゲームも、protocol version が一致する限り利用可能とする。
+- A1:
+    Implemented the complete requested explicit-layer distribution and lifecycle contract. Added deterministic embedded ZIP payloads, explicit install/uninstall commands, hash-backed doctor state, portability and concurrency safeguards, living documentation, packaged-binary tests, and retained protocol-only runtime compatibility. Independent review findings were resolved, all final repository gates passed, the change was committed locally, and no remote or live target operation was performed.
