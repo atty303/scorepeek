@@ -1,12 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly version="0.1.0"
+if (( $# > 1 )); then
+  echo 'usage: scripts/test-dist-artifact.bash [VERSION]' >&2
+  exit 2
+fi
+
+readonly version="${1:-0.1.0}"
 readonly target="x86_64-unknown-linux-gnu"
 readonly archive="target/distrib/scorepeek-${target}.tar.xz"
 readonly checksum="${archive}.sha256"
+readonly work_dir="$(mktemp -d)"
 
-dist build
+restore_source() {
+  if [[ -f "$work_dir/scorepeek-Cargo.toml" ]]; then
+    cp -p -- "$work_dir/scorepeek-Cargo.toml" crates/scorepeek/Cargo.toml
+    cp -p -- "$work_dir/Cargo.lock" Cargo.lock
+  fi
+  rm -rf -- "$work_dir"
+}
+trap restore_source EXIT
+
+dist_args=(build --artifacts=local)
+if (( $# == 1 )); then
+  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf 'release version must contain three numeric components: %s\n' "$version" >&2
+    exit 2
+  fi
+  cp -p -- crates/scorepeek/Cargo.toml "$work_dir/scorepeek-Cargo.toml"
+  cp -p -- Cargo.lock "$work_dir/Cargo.lock"
+  sed -i "0,/^version = \".*\"$/s//version = \"${version}\"/" crates/scorepeek/Cargo.toml
+  cargo metadata --format-version=1 --no-deps >/dev/null
+  dist_args+=(--tag "v${version}")
+fi
+dist "${dist_args[@]}"
 
 test -f "$archive"
 test -f "$checksum"
@@ -23,8 +50,6 @@ if [[ "${members[*]}" != "${expected_members[*]}" ]]; then
   exit 1
 fi
 
-work_dir="$(mktemp -d)"
-trap 'rm -rf -- "$work_dir"' EXIT
 tar -xJf "$archive" -C "$work_dir"
 
 readonly root="$work_dir/scorepeek-${target}"
@@ -42,7 +67,10 @@ run_scorepeek() {
 }
 
 version_output="$($binary --version)"
-test "$version_output" = "scorepeek $version"
+if [[ "$version_output" != "scorepeek $version" ]]; then
+  printf 'archive version mismatch: expected %q, got %q\n' "scorepeek $version" "$version_output" >&2
+  exit 1
+fi
 
 doctor_output="$(run_scorepeek doctor --format json)"
 case "$doctor_output" in

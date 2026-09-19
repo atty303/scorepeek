@@ -97,6 +97,26 @@ description = "Build the local Linux x86-64 release archive and checksum"
 depends = ["overlay:web:bundle"]
 run = "dist build"
 
+[tasks."release:build"]
+description = "Build and verify GitHub Release artifacts for a supplied version"
+depends = ["overlay:web:bundle"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+if (( $# != 2 )); then
+  echo 'usage: mise run release:build -- VERSION OUTPUT_DIRECTORY' >&2
+  exit 2
+fi
+readonly version="$1"
+readonly output_directory="$2"
+readonly target="x86_64-unknown-linux-gnu"
+readonly archive="target/distrib/scorepeek-${target}.tar.xz"
+readonly checksum="${archive}.sha256"
+
+scripts/test-dist-artifact.bash "$version"
+cp -- "$archive" "$checksum" "$output_directory/"
+'''
+
 [tasks."overlay:web:check"]
 description = "Type-check the shared browser UI without bundling assets"
 run = "cargo check --locked -p scorepeek-overlay-web --target wasm32-unknown-unknown"

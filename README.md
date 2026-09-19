@@ -15,8 +15,8 @@
 | ![Cyan System overlay preview](skins/cyan-system/preview.png) | ![Result Aurora overlay preview](skins/result-aurora/preview.png) | ![DJ Blackbox overlay preview](skins/dj-blackbox/preview.png) |
 
 > **NOTICE**
-> Scorepeek is in active development and is not yet ready for distribution or
-general use.
+> Scorepeek is in active development. Published builds are early releases and
+are not yet ready for general use.
 
 ## What you get
 
@@ -54,6 +54,12 @@ useful for everyday play when you are not streaming.
 Choose the information you want to see, move and resize widgets in the visual
 editor, and decide which game screens show them. Install skins or create your
 own; the three previews above are examples, not a fixed set of styles.
+
+## Releases
+
+GitHub Releases use `YYYY.M.COUNTER` CalVer, starting at counter `0` each month.
+Each release contains the Linux x86-64 archive and checksums produced by the
+repository's verified cargo-dist build.
 
 ## Third-party notices
 
