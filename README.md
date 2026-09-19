@@ -58,8 +58,9 @@ own; the three previews above are examples, not a fixed set of styles.
 ## Releases
 
 GitHub Releases use `YYYY.M.COUNTER` CalVer, starting at counter `0` each month.
-Each release contains the Linux x86-64 archive and checksums produced by the
-repository's verified cargo-dist build.
+Each release contains the Linux x86-64 archive produced by the repository's
+verified cargo-dist build. Release automation verifies its locally computed
+SHA-256 against the digest recorded by GitHub after upload.
 
 ## Third-party notices
 

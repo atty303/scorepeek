@@ -8,7 +8,7 @@ rust-version = "1.97.1"
 
 [workspace.metadata.dist]
 cargo-dist-version = "0.32.0"
-checksum = "sha256"
+checksum = "false"
 ci = []
 hosting = []
 installers = []

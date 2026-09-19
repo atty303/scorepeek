@@ -96,7 +96,7 @@ description = "Inspect the local cargo-dist release plan"
 run = "dist plan"
 
 [tasks."dist:build"]
-description = "Build the local Linux x86-64 release archive and checksum"
+description = "Build the local Linux x86-64 release archive"
 depends = ["overlay:web:bundle"]
 run = "dist build"
 
@@ -114,10 +114,9 @@ readonly version="$1"
 readonly output_directory="$2"
 readonly target="x86_64-unknown-linux-gnu"
 readonly archive="target/distrib/scorepeek-${target}.tar.xz"
-readonly checksum="${archive}.sha256"
 
 scripts/test-dist-artifact.bash "$version"
-cp -- "$archive" "$checksum" "$output_directory/"
+cp -- "$archive" "$output_directory/"
 '''
 
 [tasks."overlay:web:check"]

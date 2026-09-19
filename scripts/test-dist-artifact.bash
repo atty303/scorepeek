@@ -9,7 +9,7 @@ fi
 readonly version="${1:-0.1.0}"
 readonly target="x86_64-unknown-linux-gnu"
 readonly archive="target/distrib/scorepeek-${target}.tar.xz"
-readonly checksum="${archive}.sha256"
+readonly legacy_checksum="${archive}.sha256"
 readonly work_dir="$(mktemp -d)"
 
 restore_source() {
@@ -22,6 +22,7 @@ restore_source() {
 trap restore_source EXIT
 
 dist_args=(build --artifacts=local)
+rm -f -- "$legacy_checksum"
 if (( $# == 1 )); then
   if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     printf 'release version must contain three numeric components: %s\n' "$version" >&2
@@ -36,8 +37,7 @@ fi
 dist "${dist_args[@]}"
 
 test -f "$archive"
-test -f "$checksum"
-(cd "$(dirname "$archive")" && sha256sum --check "$(basename "$checksum")")
+test ! -e "$legacy_checksum"
 
 mapfile -t members < <(tar -tJf "$archive" | sed '/\/$/d' | sort)
 expected_members=(
