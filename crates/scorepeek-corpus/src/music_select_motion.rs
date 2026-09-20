@@ -1804,6 +1804,7 @@ fn resolve_stored_music_select(
     let observations = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
         best: scorepeek::recognition::MusicSelectBestObservation::default(),
         play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),
+        play_side: scorepeek::recognition::MusicSelectPlaySideObservation::default(),
         central_title: dynamic(text("central_title")),
         artist: dynamic(text("artist")),
         selected_difficulty: MusicSelectDifficultyObservation {
@@ -3209,7 +3210,7 @@ mod tests {
             OBSERVATION_SCHEMA.to_owned()
         )));
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v22".to_owned()
+            "scorepeek-recognition-observation-v23".to_owned()
         )));
     }
 

@@ -679,6 +679,7 @@ mod tests {
                     artist: text(value),
                     play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),
                     selected_difficulty: crate::recognition::test_music_select_difficulty(None),
+                    play_side: crate::recognition::test_music_select_play_side(None),
                     active_list_title: text(value),
                 });
             let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =
@@ -713,6 +714,7 @@ mod tests {
                 selected_difficulty: crate::recognition::test_music_select_difficulty(Some(
                     crate::catalog::Difficulty::Hyper,
                 )),
+                play_side: crate::recognition::test_music_select_play_side(None),
                 active_list_title: text("BAT"),
             });
         let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =

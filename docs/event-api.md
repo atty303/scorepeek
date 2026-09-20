@@ -18,7 +18,7 @@ or result-local revision exists. Every state transition has its own envelope eve
 | `event` | Additional fields and meaning |
 | --- | --- |
 | `result_changed` | `source_sequence`, `state`. The state is `inactive`, `provisional`, `retracted`, or `confirmed`. Provisional, retracted, and confirmed states carry the same complete `song` and `scorepeek-result-detected-v2` `result` payload; retracted also carries a bounded `reason`. |
-| `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation only. |
+| `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation plus the stable MUSIC SELECT `play_side` (`one_player` or `two_player`). |
 | `music_select_best_observed` | Nullable supplemental SELECT-best snapshot. It is not a play. |
 | `screen_state_changed` | Nullable semantic screen presentation state. |
 | `status_changed` | Current watcher, capture, dependency, recording, and score-store readiness. |

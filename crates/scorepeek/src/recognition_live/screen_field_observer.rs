@@ -6,10 +6,10 @@ use scorepeek::recognition::{
     ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
     ScreenFieldObservationError, ScreenFieldObservations, ScreenSongResolution,
     assist_unknown_result_song_with_chart, matching_observed_chart_songs,
-    observe_music_select_difficulty, observe_music_select_play_type,
-    observe_result_fields_with_numeric, observed_result_difficulty, resolve_clear_type,
-    resolve_music_select_song, resolve_result_chart, resolve_result_performance,
-    resolve_result_song,
+    observe_music_select_difficulty, observe_music_select_play_side,
+    observe_music_select_play_type, observe_result_fields_with_numeric, observed_result_difficulty,
+    resolve_clear_type, resolve_music_select_song, resolve_result_chart,
+    resolve_result_performance, resolve_result_song,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -1124,6 +1124,7 @@ impl RegisteredScreenFieldObserver {
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
         use scorepeek::recognition::ScreenTextField;
         let selected_difficulty = observe_music_select_difficulty(&crops.difficulty_markers);
+        let play_side = observe_music_select_play_side(&crops.play_side);
         let play_type = observe_music_select_play_type(&crops.play_type).map_err(|_| {
             ScreenFieldObservationError::new(
                 ScreenTextField::MusicSelectArtist,
@@ -1200,6 +1201,7 @@ impl RegisteredScreenFieldObserver {
                 )?,
                 play_type,
                 selected_difficulty,
+                play_side,
                 active_list_title: selected,
             },
         );
@@ -1428,6 +1430,7 @@ mod tests {
             artist: text("artist"),
             play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),
             selected_difficulty: music_select_difficulty(Difficulty::Hyper),
+            play_side: scorepeek::recognition::test_music_select_play_side(None),
             active_list_title: text("TITLE"),
         });
         let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());

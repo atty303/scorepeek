@@ -19,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v22";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v23";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -149,6 +149,7 @@ enum StoredFields<'a> {
         artist: StoredText<'a>,
         play_type: &'a scorepeek::recognition::MusicSelectPlayTypeObservation,
         selected_difficulty: &'a scorepeek::recognition::MusicSelectDifficultyObservation,
+        play_side: &'a scorepeek::recognition::MusicSelectPlaySideObservation,
         active_list_title: StoredText<'a>,
     },
 }
@@ -953,6 +954,7 @@ impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
                 artist: StoredText::from(&fields.artist),
                 play_type: &fields.play_type,
                 selected_difficulty: &fields.selected_difficulty,
+                play_side: &fields.play_side,
                 active_list_title: StoredText::from(&fields.active_list_title),
             },
         }
@@ -1135,6 +1137,7 @@ mod tests {
             artist: text("artist"),
             play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),
             selected_difficulty: music_select_difficulty(scorepeek::catalog::Difficulty::Hyper),
+            play_side: scorepeek::recognition::test_music_select_play_side(None),
             active_list_title: text("VISIBLE TITLE"),
         })
     }
@@ -1435,7 +1438,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v22"));
+        assert!(stored.contains("scorepeek-recognition-observation-v23"));
         assert!(stored.contains("\"processing_timing\""));
         assert!(stored.contains("\"field_status\":\"completed\""));
         assert!(stored.contains("\"frame_total_us\":0"));

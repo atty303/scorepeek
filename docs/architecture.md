@@ -136,7 +136,8 @@ difficulty, level, and notes as independently attributable evidence. Ambiguity,
 conflict, insufficient margin, or missing required evidence produces a typed
 unknown rather than a guess.
 
-MUSIC SELECT identity, supplemental self-best values, RESULT recognition, and
+MUSIC SELECT identity includes independently measured footer play side, selected chart context,
+and its stability gate. Supplemental self-best values, RESULT recognition, and
 play-attempt resolution have separate state. Supplemental best values never
 become song-identity or attempt-acceptance evidence. Current field
 applicability and acceptance rules are defined in

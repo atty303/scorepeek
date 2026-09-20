@@ -844,6 +844,10 @@ mod tests {
                 .into_iter()
                 .all(|(_, crop)| !crop.pixels().is_empty())
         );
+        assert_eq!(
+            scorepeek::recognition::observe_music_select_play_side(&crops.play_side).known(),
+            None
+        );
         assert!(!crops.active_list_title.pixels().is_empty());
     }
 

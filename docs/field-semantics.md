@@ -70,6 +70,7 @@ not get guessed values and do not block the shared result payload.
 | Field | Applicability predicate | Evidence required for `known` |
 | --- | --- | --- |
 | music-select state | Precondition for every music-select event | Unique layout/state anchors; rapid scroll, transition, overlay, and unknown classes reject |
+| play side | Always | Exactly one fixed footer label, `PLAYER 01 SIDE` on the left or `PLAYER 02 SIDE` on the right, exceeds the calibrated bright-pixel minimum and winner margin; the same side must occur twice with no opposite observation in the episode |
 | play mode | Always | The fixed SELECT badge matches exactly one registered SP/DP template above minimum score and winner margin; the same type must occur twice with no opposite observation in the episode |
 | song | Always | Accepted central title and artist consistent with play mode, selected difficulty, selected level, and the active right-list title when readable |
 | selected difficulty and level | Always | Unique selected state and complete level consistent with the accepted catalog chart |
@@ -79,10 +80,11 @@ not get guessed values and do not block the shared result payload.
 | DJ level | Derived presentation | Calculated from EX SCORE and catalog notes; never OCR input. |
 
 `music_selection_changed` is a UI-only lifecycle. `Selected` requires a unique catalog song/chart
-under title, artist, selected difficulty, and stable SELECT play type. The resolver emits no initial
-unknown, deduplicates equal states, emits unresolved after losing a previously selected chart, and
-emits episode-ended unresolved at SELECT finalization. This state cannot satisfy RESULT presence,
-attempt linkage, numeric stability, or `result_changed` acceptance.
+under title, artist, selected difficulty, stable SELECT play side, and stable SELECT play type. The
+resolver emits no initial unknown, deduplicates equal states, emits unresolved after losing a
+previously selected chart, and emits episode-ended unresolved at SELECT finalization. This state
+cannot satisfy RESULT presence, attempt linkage, numeric stability, or `result_changed` acceptance;
+RESULT playside remains on its separately admitted contract above.
 
 A general-IIDX title whose INFINITAS status is `unknown` may be accepted only by
 the separately calibrated stricter title/context policy. The event preserves

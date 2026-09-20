@@ -2687,7 +2687,7 @@ fn normalize_observation_stream(bytes: &[u8]) -> Result<(Vec<u8>, u64), CorpusEr
         let schema = value["schema"].as_str().ok_or_else(|| {
             CorpusError::InvalidRequest("corpus observation schema is unavailable".into())
         })?;
-        if schema != "scorepeek-recognition-observation-v22" {
+        if schema != "scorepeek-recognition-observation-v23" {
             return invalid("corpus observation source schema differs");
         }
         let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
@@ -6258,7 +6258,7 @@ mod tests {
         let event = serde_json::json!({
             "schema":"scorepeek-diagnostic-event-v1", "run_id":run_id, "sequence":1,
             "observed_unix_us":1, "operation":"run_event", "data":{
-                "schema":"scorepeek-run-event-v12", "event":"session_started",
+                "schema":"scorepeek-run-event-v13", "event":"session_started",
                 "session_id":session_id, "capture_generation":1,
                 "capture_profile_sha256":"1".repeat(64),
                 "normalizer_artifact_sha256":"2".repeat(64)
@@ -6306,7 +6306,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v12", "event":"session_started",
+                    "schema":"scorepeek-run-event-v13", "event":"session_started",
                     "session_id":session_id, "capture_generation":1,
                     "capture_profile_sha256":"1".repeat(64),
                     "normalizer_artifact_sha256":"2".repeat(64)
@@ -6328,7 +6328,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v12", "event":"recording_completed",
+                    "schema":"scorepeek-run-event-v13", "event":"recording_completed",
                     "session_id":session_id, "directory":canonical.parent().unwrap()
                 }
             }),
@@ -6427,7 +6427,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v12", "event":"session_started",
+                    "schema":"scorepeek-run-event-v13", "event":"session_started",
                     "session_id":session_id, "capture_generation":1,
                     "capture_profile_sha256":"1".repeat(64),
                     "normalizer_artifact_sha256":"2".repeat(64)
@@ -6449,7 +6449,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v12", "event":"field_observation",
+                    "schema":"scorepeek-run-event-v13", "event":"field_observation",
                     "session_id":session_id, "capture_generation":1, "sequence":1,
                     "monotonic_start_ms":90, "monotonic_end_ms":100, "screen":"result",
                     "fields":{"screen":"result"},
@@ -6461,7 +6461,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":4, "observed_unix_us":4, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v12", "event":"recording_completed",
+                    "schema":"scorepeek-run-event-v13", "event":"recording_completed",
                     "session_id":session_id, "directory":canonical.parent().unwrap()
                 }
             }),

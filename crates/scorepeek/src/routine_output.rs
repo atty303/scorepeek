@@ -32,7 +32,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
     ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
-    PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
+    PlaySide, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
     ResultPerformanceResolution, ResultTiming, SupplementalResultValue, resolve_result_performance,
 };
 use scorepeek::temporal_recognition::{
@@ -50,7 +50,7 @@ const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
 const SOCKET_NAME: &str = "events.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v12";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v13";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -536,6 +536,7 @@ pub enum MusicSelectionState {
     },
     Selected {
         scorepeek_song_id: ScorepeekSongId,
+        play_side: PlaySide,
         play_type: PlayType,
         difficulty: Difficulty,
         level: u8,
@@ -641,6 +642,7 @@ struct HypothesisAccumulator {
     candidates: BTreeMap<JointKey, AccumulatedHypothesis>,
     select_difficulty: Option<CurrentSelectionDifficulty>,
     select_play_types: BTreeMap<PlayType, u64>,
+    select_play_sides: BTreeMap<PlaySide, u64>,
     result_chart_factors: BTreeMap<ResultChartFactor, u64>,
     has_result_evidence: bool,
     first_observation_ms: Option<u64>,
@@ -1036,6 +1038,16 @@ impl HypothesisAccumulator {
             .and_then(|(play_type, observations)| (*observations >= 2).then_some(*play_type))
     }
 
+    fn resolved_select_play_side(&self) -> Option<PlaySide> {
+        if self.select_play_sides.len() != 1 {
+            return None;
+        }
+        self.select_play_sides
+            .iter()
+            .next()
+            .and_then(|(play_side, observations)| (*observations >= 2).then_some(*play_side))
+    }
+
     fn observe_select_difficulty(
         &mut self,
         difficulty: Difficulty,
@@ -1115,6 +1127,7 @@ struct SelectionEpochTracker {
     successor_songs: BTreeSet<ScorepeekSongId>,
     pending_difficulty: Option<CurrentSelectionDifficulty>,
     play_types: BTreeMap<PlayType, u64>,
+    play_sides: BTreeMap<PlaySide, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1154,9 +1167,14 @@ impl SelectionEpochTracker {
         evidence: &JointEvidenceObservation,
         difficulty: Option<Difficulty>,
         play_type: Option<PlayType>,
+        play_side: Option<PlaySide>,
     ) -> Vec<SelectionDifficultyTransition> {
         if let Some(play_type) = play_type {
             let count = self.play_types.entry(play_type).or_default();
+            *count = count.saturating_add(1);
+        }
+        if let Some(play_side) = play_side {
+            let count = self.play_sides.entry(play_side).or_default();
             *count = count.saturating_add(1);
         }
         let transitions = self.observe_selection_at(sequence, monotonic_ms, evidence, difficulty);
@@ -1166,6 +1184,12 @@ impl SelectionEpochTracker {
         self.successor
             .select_play_types
             .clone_from(&self.play_types);
+        self.incumbent
+            .select_play_sides
+            .clone_from(&self.play_sides);
+        self.successor
+            .select_play_sides
+            .clone_from(&self.play_sides);
         transitions
     }
 
@@ -1284,7 +1308,7 @@ impl SelectionEpochTracker {
         evidence: &JointEvidenceObservation,
         difficulty: Option<Difficulty>,
     ) -> Vec<SelectionDifficultyTransition> {
-        self.observe_at_with_play_type(sequence, monotonic_ms, evidence, difficulty, None)
+        self.observe_at_with_play_type(sequence, monotonic_ms, evidence, difficulty, None, None)
     }
 
     fn observe_difficulty_only(
@@ -1371,6 +1395,7 @@ impl MusicSelectResolver {
         evidence: &JointEvidenceObservation,
         difficulty: Option<Difficulty>,
         play_type: Option<PlayType>,
+        play_side: Option<PlaySide>,
     ) {
         self.selection_epochs.observe_at_with_play_type(
             sequence,
@@ -1378,6 +1403,7 @@ impl MusicSelectResolver {
             evidence,
             difficulty,
             play_type,
+            play_side,
         );
     }
 
@@ -1440,6 +1466,7 @@ impl MusicSelectResolver {
         let summary = accumulator.summary();
         let selected = summary.selected.as_ref()?;
         let play_type = summary.select_play_type?;
+        let play_side = accumulator.resolved_select_play_side()?;
         let difficulty = accumulator.select_difficulty?.difficulty;
         if summary.support < JOINT_ACCEPT_SUPPORT
             || summary.song_margin < JOINT_ACCEPT_MARGIN
@@ -1451,6 +1478,7 @@ impl MusicSelectResolver {
         }
         Some(MusicSelectionState::Selected {
             scorepeek_song_id: selected.song_id,
+            play_side,
             play_type,
             difficulty,
             level: selected.chart.level,
@@ -1626,6 +1654,7 @@ impl RunEvent {
                     "artist": fields.artist.open_text,
                     "play_type": fields.play_type,
                     "selected_difficulty": fields.selected_difficulty,
+                    "play_side": fields.play_side,
                     "active_list_title": fields.active_list_title.open_text,
                     "title_evidence": observation.title_evidence(),
                 }),
@@ -3869,6 +3898,7 @@ impl RoutineOutput {
             joint_evidence,
             selected_difficulty(fields),
             selected_play_type(fields),
+            selected_play_side(fields),
         );
         let current_observation = !self.semantic_episode_suspended
             && self
@@ -3880,6 +3910,7 @@ impl RoutineOutput {
             joint_evidence,
             selected_difficulty(fields),
             selected_play_type(fields),
+            selected_play_side(fields),
         );
         for transition in difficulty_transitions {
             self.publish_one(&RunEvent {
@@ -4793,6 +4824,15 @@ fn selected_play_type(fields: &Value) -> Option<PlayType> {
     }
 }
 
+fn selected_play_side(fields: &Value) -> Option<PlaySide> {
+    let value = fields.pointer("/play_side/state")?.get("value")?.as_str()?;
+    match value {
+        "one_player" => Some(PlaySide::OnePlayer),
+        "two_player" => Some(PlaySide::TwoPlayer),
+        _ => None,
+    }
+}
+
 fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
     ResultChartFactor {
         play_type: fields.play_type.known().copied(),
@@ -4952,6 +4992,23 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
             format!("{status}:{value} sp={single} dp={double}"),
         ))
     });
+    let play_side = fields.get("play_side").and_then(|observation| {
+        let state = observation.get("state")?;
+        let status = state.get("status")?.as_str()?;
+        let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
+        let winner = observation
+            .get("winner_bright_pixels")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let margin = observation
+            .get("margin")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Some((
+            "play_side".to_owned(),
+            format!("{status}:{value} bright={winner} margin={margin}"),
+        ))
+    });
     let keys = [
         "title",
         "central_title",
@@ -5005,6 +5062,7 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
     marker
         .into_iter()
         .chain(select_play_type)
+        .chain(play_side)
         .chain(title_foreground)
         .chain(keys.into_iter().filter_map(|key| {
             fields
@@ -7875,6 +7933,7 @@ mod tests {
         let candidate = &evidence.candidates[0];
         let selection = MusicSelectionState::Selected {
             scorepeek_song_id: candidate.song_id,
+            play_side: PlaySide::OnePlayer,
             play_type: candidate.chart.key.play_type,
             difficulty: candidate.chart.key.difficulty,
             level: candidate.chart.level,
@@ -8098,6 +8157,7 @@ mod tests {
         for difficulty in [Difficulty::Hyper, Difficulty::Leggendaria] {
             state.latest_music_selection = Some(MusicSelectionState::Selected {
                 scorepeek_song_id,
+                play_side: PlaySide::OnePlayer,
                 play_type: PlayType::Double,
                 difficulty,
                 level: 12,
@@ -9168,6 +9228,9 @@ mod tests {
             },
             "selected_difficulty": {
                 "state": { "status": "known", "value": "hyper" }
+            },
+            "play_side": {
+                "state": { "status": "known", "value": "two_player" }
             }
         });
         let evidence = JointEvidenceObservation {
@@ -9709,7 +9772,13 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(output.music_select_resolver.selected().is_some());
+        assert!(matches!(
+            output.music_select_resolver.selected(),
+            Some(MusicSelectionState::Selected {
+                play_side: PlaySide::TwoPlayer,
+                ..
+            })
+        ));
         output.engine.selection_epochs = SelectionEpochTracker::default();
         assert!(output.music_select_resolver.selected().is_some());
         let mut changed_song = evidence.clone();
@@ -9786,6 +9855,47 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn music_selection_requires_two_equal_play_sides_and_rejects_a_conflict() {
+        let mut resolver = MusicSelectResolver::default();
+        let (mut fields, evidence, _) = music_selection_test_observation();
+        resolver.observe(
+            1,
+            100,
+            &evidence,
+            selected_difficulty(&fields),
+            selected_play_type(&fields),
+            selected_play_side(&fields),
+        );
+        assert!(resolver.selected().is_none());
+        resolver.observe(
+            2,
+            200,
+            &evidence,
+            selected_difficulty(&fields),
+            selected_play_type(&fields),
+            selected_play_side(&fields),
+        );
+        assert!(matches!(
+            resolver.selected(),
+            Some(MusicSelectionState::Selected {
+                play_side: PlaySide::TwoPlayer,
+                ..
+            })
+        ));
+
+        fields["play_side"]["state"]["value"] = json!("one_player");
+        resolver.observe(
+            3,
+            300,
+            &evidence,
+            selected_difficulty(&fields),
+            selected_play_type(&fields),
+            selected_play_side(&fields),
+        );
+        assert!(resolver.selected().is_none());
     }
 
     #[test]

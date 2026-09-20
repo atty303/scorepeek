@@ -4,11 +4,14 @@ use super::{
     Deserialize, Difficulty, Line, MusicSelectionState, PlayType, ScorepeekSongId, Serialize,
     SongPresentation, difficulty_label, fitted_value, play_type_label,
 };
-use scorepeek::recognition::{BestClearType, BestValue, MusicSelectBestValues, StableBestField};
+use scorepeek::recognition::{
+    BestClearType, BestValue, MusicSelectBestValues, PlaySide, StableBestField,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BestChart {
     pub scorepeek_song_id: ScorepeekSongId,
+    pub play_side: PlaySide,
     pub play_type: PlayType,
     pub difficulty: Difficulty,
     pub notes: u32,
@@ -19,6 +22,7 @@ impl BestChart {
     pub(super) fn from_selection(selection: MusicSelectionState) -> Option<Self> {
         let MusicSelectionState::Selected {
             scorepeek_song_id,
+            play_side,
             play_type,
             difficulty,
             notes,
@@ -30,6 +34,7 @@ impl BestChart {
         };
         Some(Self {
             scorepeek_song_id,
+            play_side,
             play_type,
             difficulty,
             notes,
@@ -325,6 +330,13 @@ fn output_line(state: &MusicSelectResolverState) -> String {
     }
 }
 
+const fn play_side_label(play_side: PlaySide) -> &'static str {
+    match play_side {
+        PlaySide::OnePlayer => "1P",
+        PlaySide::TwoPlayer => "2P",
+    }
+}
+
 pub fn lines(state: &MusicSelectResolverState, width: usize) -> Vec<Line<'static>> {
     if !state.active {
         return vec![Line::from("inactive")];
@@ -359,12 +371,13 @@ pub fn lines(state: &MusicSelectResolverState, width: usize) -> Vec<Line<'static
         |c| {
             fitted_value(
                 &format!(
-                    "{}{} {} / ",
+                    "{}{} {} {} / ",
                     if state.identity_status != SelectIdentityStatus::Resolved || state.suspended {
                         "held "
                     } else {
                         ""
                     },
+                    play_side_label(c.play_side),
                     play_type_label(c.play_type),
                     difficulty_label(c.difficulty)
                 ),
@@ -410,6 +423,7 @@ mod tests {
         let song = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         BestChart {
             scorepeek_song_id: song,
+            play_side: PlaySide::OnePlayer,
             play_type: PlayType::Single,
             difficulty,
             notes: 1000,
@@ -496,7 +510,7 @@ mod tests {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert!(text.contains("held SP HYPER"));
+            assert!(text.contains("held 1P SP HYPER"));
             assert!(text.contains("last r1 S=1500"));
             state.observe(selected(Difficulty::Hyper), values(1500));
             assert!(state.publish_candidate("session", 1, 4, 400).is_none());

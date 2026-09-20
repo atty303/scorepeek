@@ -1,5 +1,5 @@
 {
-  "schema": "scorepeek-integrated-context-layout-v6",
+  "schema": "scorepeek-integrated-context-layout-v7",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
   "canonical_layout_sha256": "d1c56eea0da951b2cd4ac8c05c9dd8b0aac5ae6e97ebf2664070e088b1897de8",
   "result": {
@@ -77,6 +77,24 @@
         "y": 605,
         "width": 128,
         "height": 30
+      }
+    },
+    "play_side": {
+      "predicate_id": "scorepeek-music-select-footer-brightness-v1",
+      "luma_min": 140,
+      "bright_pixel_min": 320,
+      "winner_margin_min": 60,
+      "one_player": {
+        "x": 8,
+        "y": 952,
+        "width": 140,
+        "height": 18
+      },
+      "two_player": {
+        "x": 1772,
+        "y": 952,
+        "width": 140,
+        "height": 18
       }
     },
     "active_list_title": {

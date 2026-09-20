@@ -126,7 +126,7 @@ const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v4.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v6.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v7.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 #[cfg(test)]
 const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
@@ -800,6 +800,7 @@ struct MusicSelectContextLayout {
     legacy_selected_chart: Roi,
     play_type: MusicSelectPlayTypeLayout,
     selected_difficulty: MusicSelectDifficultyLayout,
+    play_side: MusicSelectPlaySideLayout,
     active_list_title: Roi,
 }
 
@@ -827,6 +828,17 @@ struct MusicSelectDifficultyLayout {
     hyper: Roi,
     another: Roi,
     leggendaria: Roi,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MusicSelectPlaySideLayout {
+    predicate_id: String,
+    luma_min: u8,
+    bright_pixel_min: u32,
+    winner_margin_min: u32,
+    one_player: Roi,
+    two_player: Roi,
 }
 
 impl MusicSelectDifficultyLayout {
@@ -861,7 +873,7 @@ impl IntegratedContextLayout {
             .rois()
             .nth(10)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.schema != "scorepeek-integrated-context-layout-v6"
+        if layout.schema != "scorepeek-integrated-context-layout-v7"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
@@ -881,6 +893,8 @@ impl IntegratedContextLayout {
             layout.music_select.artist,
             layout.music_select.legacy_selected_chart,
             layout.music_select.play_type.roi,
+            layout.music_select.play_side.one_player,
+            layout.music_select.play_side.two_player,
             layout.music_select.active_list_title,
         ] {
             roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
@@ -908,6 +922,22 @@ impl IntegratedContextLayout {
             if roi.width != 128 || roi.height != 30 {
                 return Err(RecognitionError::InvalidCanonicalLayout);
             }
+        }
+        let play_side = &layout.music_select.play_side;
+        if play_side.predicate_id != "scorepeek-music-select-footer-brightness-v1"
+            || play_side.luma_min == 0
+            || play_side.bright_pixel_min == 0
+            || play_side.winner_margin_min == 0
+            || play_side.one_player.width != play_side.two_player.width
+            || play_side.one_player.height != play_side.two_player.height
+            || play_side.one_player.y != play_side.two_player.y
+            || play_side.bright_pixel_min
+                > play_side
+                    .one_player
+                    .width
+                    .saturating_mul(play_side.one_player.height)
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
         }
         Ok(layout)
     }
@@ -1160,7 +1190,14 @@ pub struct MusicSelectScreenRgb8Crops {
     pub artist: Rgb8Crop,
     pub play_type: Rgb8Crop,
     pub difficulty_markers: MusicSelectDifficultyMarkerCrops,
+    pub play_side: MusicSelectPlaySideCrops,
     pub active_list_title: Rgb8Crop,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MusicSelectPlaySideCrops {
+    one_player: Rgb8Crop,
+    two_player: Rgb8Crop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1226,6 +1263,87 @@ impl MusicSelectDifficultyObservation {
             MusicSelectDifficultyState::Known(value) => Some(value),
             MusicSelectDifficultyState::Unknown(_) => None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaySide {
+    OnePlayer,
+    TwoPlayer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicSelectPlaySideUnknownReason {
+    NoCandidate,
+    MultipleCandidates,
+    InsufficientMargin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum MusicSelectPlaySideState {
+    Known(PlaySide),
+    Unknown(MusicSelectPlaySideUnknownReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicSelectPlaySideEvidence {
+    pub play_side: PlaySide,
+    pub bright_pixels: u32,
+    pub qualifies: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicSelectPlaySideObservation {
+    pub predicate_id: &'static str,
+    pub state: MusicSelectPlaySideState,
+    pub winner_bright_pixels: u32,
+    pub runner_up_bright_pixels: u32,
+    pub margin: u32,
+    pub sides: [MusicSelectPlaySideEvidence; 2],
+}
+
+impl Default for MusicSelectPlaySideObservation {
+    fn default() -> Self {
+        let sides =
+            [PlaySide::OnePlayer, PlaySide::TwoPlayer].map(|value| MusicSelectPlaySideEvidence {
+                play_side: value,
+                bright_pixels: 0,
+                qualifies: false,
+            });
+        Self {
+            predicate_id: "scorepeek-music-select-footer-brightness-v1",
+            state: MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::NoCandidate),
+            winner_bright_pixels: 0,
+            runner_up_bright_pixels: 0,
+            margin: 0,
+            sides,
+        }
+    }
+}
+
+impl MusicSelectPlaySideObservation {
+    #[must_use]
+    pub const fn known(&self) -> Option<PlaySide> {
+        match self.state {
+            MusicSelectPlaySideState::Known(value) => Some(value),
+            MusicSelectPlaySideState::Unknown(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_music_select_play_side(
+    play_side: Option<PlaySide>,
+) -> MusicSelectPlaySideObservation {
+    MusicSelectPlaySideObservation {
+        state: play_side.map_or(
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::NoCandidate),
+            MusicSelectPlaySideState::Known,
+        ),
+        ..MusicSelectPlaySideObservation::default()
     }
 }
 
@@ -1405,6 +1523,7 @@ pub struct MusicSelectScreenFieldObservations {
     pub artist: DynamicTextObservation,
     pub play_type: MusicSelectPlayTypeObservation,
     pub selected_difficulty: MusicSelectDifficultyObservation,
+    pub play_side: MusicSelectPlaySideObservation,
     pub active_list_title: DynamicTextObservation,
 }
 
@@ -1544,6 +1663,7 @@ pub fn observe_screen_fields<E>(
                 play_type: observe_music_select_play_type(&crops.play_type)
                     .expect("the embedded music-select play-type contract is statically valid"),
                 selected_difficulty: observe_music_select_difficulty(&crops.difficulty_markers),
+                play_side: observe_music_select_play_side(&crops.play_side),
                 active_list_title: observe(
                     ScreenTextField::MusicSelectActiveListTitle,
                     &crops.active_list_title,
@@ -2725,6 +2845,10 @@ pub fn route_screen_rgb8_crops(
                 another: crop(pixels, context.music_select.selected_difficulty.another)?,
                 leggendaria: crop(pixels, context.music_select.selected_difficulty.leggendaria)?,
             },
+            play_side: MusicSelectPlaySideCrops {
+                one_player: crop(pixels, context.music_select.play_side.one_player)?,
+                two_player: crop(pixels, context.music_select.play_side.two_player)?,
+            },
             active_list_title: crop(pixels, context.music_select.active_list_title)?,
         })),
         ScreenClass::ModeSelect
@@ -2788,6 +2912,75 @@ pub fn observe_music_select_difficulty(
         margin_ppm,
         slots,
     }
+}
+
+#[must_use]
+/// Distinguishes 1P and 2P from the mutually exclusive footer labels on MUSIC SELECT.
+pub fn observe_music_select_play_side(
+    crops: &MusicSelectPlaySideCrops,
+) -> MusicSelectPlaySideObservation {
+    let layout = IntegratedContextLayout::load()
+        .expect("the embedded integrated context layout is statically validated");
+    let policy = &layout.music_select.play_side;
+    let mut sides = [
+        MusicSelectPlaySideEvidence {
+            play_side: PlaySide::OnePlayer,
+            bright_pixels: bright_luma_pixels(&crops.one_player, policy.luma_min),
+            qualifies: false,
+        },
+        MusicSelectPlaySideEvidence {
+            play_side: PlaySide::TwoPlayer,
+            bright_pixels: bright_luma_pixels(&crops.two_player, policy.luma_min),
+            qualifies: false,
+        },
+    ];
+    for side in &mut sides {
+        side.qualifies = side.bright_pixels >= policy.bright_pixel_min;
+    }
+    let mut ranked = sides;
+    ranked.sort_by(|left, right| {
+        right
+            .bright_pixels
+            .cmp(&left.bright_pixels)
+            .then_with(|| left.play_side.cmp(&right.play_side))
+    });
+    let winner = ranked[0];
+    let runner_up = ranked[1];
+    let margin = winner.bright_pixels.saturating_sub(runner_up.bright_pixels);
+    let qualifying = sides.iter().filter(|side| side.qualifies).count();
+    let state = match qualifying {
+        0 => MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::NoCandidate),
+        1 if margin < policy.winner_margin_min => {
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::InsufficientMargin)
+        }
+        1 => MusicSelectPlaySideState::Known(winner.play_side),
+        _ => {
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::MultipleCandidates)
+        }
+    };
+    MusicSelectPlaySideObservation {
+        predicate_id: "scorepeek-music-select-footer-brightness-v1",
+        state,
+        winner_bright_pixels: winner.bright_pixels,
+        runner_up_bright_pixels: runner_up.bright_pixels,
+        margin,
+        sides,
+    }
+}
+
+fn bright_luma_pixels(crop: &Rgb8Crop, luma_min: u8) -> u32 {
+    u32::try_from(
+        crop.pixels
+            .chunks_exact(3)
+            .filter(|pixel| {
+                let luma = u32::from(pixel[0]) * 2_126
+                    + u32::from(pixel[1]) * 7_152
+                    + u32::from(pixel[2]) * 722;
+                luma >= u32::from(luma_min) * 10_000
+            })
+            .count(),
+    )
+    .expect("a canonical crop pixel count fits u32")
 }
 
 fn marker_edge_ppm(
@@ -3561,7 +3754,60 @@ mod tests {
             music.selected_difficulty.state,
             MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate)
         );
+        assert_eq!(
+            music.play_side.state,
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::NoCandidate)
+        );
         assert_eq!(music.active_list_title.open_text, "music-3");
+    }
+
+    fn side_crop(bright_pixels: usize) -> Rgb8Crop {
+        let roi = Roi {
+            x: 0,
+            y: 0,
+            width: 140,
+            height: 18,
+        };
+        let mut pixels = vec![0; 140 * 18 * 3];
+        for pixel in pixels.chunks_exact_mut(3).take(bright_pixels) {
+            pixel.fill(200);
+        }
+        Rgb8Crop { roi, pixels }
+    }
+
+    fn side_crops(one_player: usize, two_player: usize) -> MusicSelectPlaySideCrops {
+        MusicSelectPlaySideCrops {
+            one_player: side_crop(one_player),
+            two_player: side_crop(two_player),
+        }
+    }
+
+    #[test]
+    fn music_select_footer_resolves_each_play_side() {
+        assert_eq!(
+            observe_music_select_play_side(&side_crops(380, 250)).known(),
+            Some(PlaySide::OnePlayer)
+        );
+        assert_eq!(
+            observe_music_select_play_side(&side_crops(250, 380)).known(),
+            Some(PlaySide::TwoPlayer)
+        );
+    }
+
+    #[test]
+    fn music_select_footer_fails_closed_for_absence_multiple_and_small_margin() {
+        assert_eq!(
+            observe_music_select_play_side(&side_crops(0, 0)).state,
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::NoCandidate)
+        );
+        assert_eq!(
+            observe_music_select_play_side(&side_crops(330, 330)).state,
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::MultipleCandidates)
+        );
+        assert_eq!(
+            observe_music_select_play_side(&side_crops(330, 290)).state,
+            MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::InsufficientMargin)
+        );
     }
 
     fn marker_crop(columns: usize) -> Rgb8Crop {

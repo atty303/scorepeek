@@ -246,7 +246,7 @@ fn write_session(
                 include_str!("../../scorepeek/src/routine_output/music_select_best.rs"),
                 include_str!("../../scorepeek/src/recognition.rs")
             ).as_bytes()),
-            "integrated_layout_sha256": crate::frame_corpus::digest(include_bytes!("../../scorepeek/src/integrated-context-layout-v6.json")),
+            "integrated_layout_sha256": crate::frame_corpus::digest(include_bytes!("../../scorepeek/src/integrated-context-layout-v7.json")),
             "best_layout_sha256": crate::frame_corpus::digest(include_bytes!("../../scorepeek/src/music-select-best-layout-v1.json")),
             "numeric_manifest_sha256": scorepeek::recognition::NUMERIC_MODEL_MANIFEST_SHA256,
             "text_manifest_sha256": scorepeek::recognition::LIVE_MODEL_BUNDLE_MANIFEST_SHA256,

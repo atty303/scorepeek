@@ -3351,6 +3351,7 @@ fn live_session_event_value(
                         "central_title": fields.central_title.open_text,
                         "artist": fields.artist.open_text,
                         "selected_difficulty": fields.selected_difficulty,
+                        "play_side": fields.play_side,
                         "active_list_title": fields.active_list_title.open_text,
                         "title_evidence": observation.title_evidence(),
                     }),
@@ -5841,7 +5842,7 @@ node_name = "must-not-be-inherited"
             1,
             "the corpus reader rejects mixed-schema sessions"
         );
-        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v12"));
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v13"));
     }
 
     #[test]
@@ -5858,7 +5859,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v12");
+        assert_eq!(value["schema"], "scorepeek-run-event-v13");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -5951,7 +5952,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v12");
+        assert_eq!(value["schema"], "scorepeek-run-event-v13");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);
