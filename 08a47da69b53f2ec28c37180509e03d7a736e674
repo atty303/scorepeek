@@ -1,0 +1,35 @@
+Task: Fix PLAY recognition after the latest 2P recording showed the BPM outline was not detected.
+
+Anchor: 08a47da69b53f2ec28c37180509e03d7a736e674
+Base: d358080
+Worktree: main, local only; no push or deployment; origin/main is five commits behind HEAD.
+
+Authority and scope:
+- The user authorized the source fix and required the new recording plus the existing remote-movie private corpus to determine acceptance.
+- Repository AGENTS.md, investigate-problem, develop-repository, design-program-observability, review, and maintain-agent-guidance governed the work.
+- Runtime source, tests, living documentation, and the trusted private corpus were the implementation and verification authorities.
+
+Outcome:
+- Replaced split connected-component BPM searches with one continuous x=260..1659 search that pairs only cyan top and bottom horizontal edge runs.
+- The predicate accepts the measured 1P center/right, 2P center/left, and DP center positions without deriving play side from BPM position.
+- DETAIL JUDGE and other interior pixels do not participate. Exactly one clustered outline is required; multiple horizontal or vertically separated outlines fail closed as Unknown.
+- Real retained-frame evidence showed top-edge runs across nine rows and bottom-edge runs across seven rows. The final 12-row vertical clustering window covers those slopes while preserving two candidates separated by 70 rows.
+- Added bounded raw diagnostic evidence and versioned the screen-path layout, recognition snapshot, and run-event schema. Updated living documentation and contract fixtures.
+- Included mechanical Clippy cleanups needed by the repository check gate.
+
+Verification:
+- Targeted BPM predicate tests: 5 passed, including all measured positions, DETAIL JUDGE-connected interior, horizontal ambiguity, and same-center vertical ambiguity.
+- cargo clippy --locked -p scorepeek -p scorepeek-corpus --all-targets -- -D warnings: passed.
+- cargo test --locked -p scorepeek -p scorepeek-corpus --all-targets: passed (scorepeek 568, corpus 126, corpus CLI 3).
+- mise run check: passed.
+- Private corpus replay v4: generation a142826ec9b9db9b65ab8fa5d843b1898b7beecf63442f74d58da83429e2f17f; 4 sessions, 22 episodes, 15,971 canonical frames, 28 remote segment downloads, all 4 sessions completed.
+- Fresh review first found horizontal-only clustering could merge vertically distinct candidates. The corrected x/y clustering and real-slope calibration were re-reviewed with no remaining important findings.
+- mise run build after the final commit: passed with embedded-web enabled.
+
+Environment and unresolved harness issue:
+- The managed sandbox denied Unix-socket tests and writes to tool caches outside the workspace, so the package suite, corpus replay, checks, and build were rerun with explicit sandbox-external approval.
+- A prior aggregate mise run test attempt exposed a parallel Cargo feature/build race: the browser shard observed a non-embedded visual_obs binary while other shards were terminated. The browser test passes standalone and all change-relevant gates above pass; this repository-wide orchestration issue was not changed in this task.
+
+Thread transcript:
+- U1: 修正して
+  - A: Implemented the measured edge-only PLAY predicate, added fail-closed clustering and diagnostics, verified all existing private-corpus recordings and package gates, incorporated review feedback, committed locally, and rebuilt the runtime binary.
