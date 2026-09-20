@@ -26,6 +26,13 @@ pub const DEFAULT_RECORDING_MEMORY_MIB: usize = 1024;
 pub const MIN_RECORDING_MEMORY_MIB: usize = 128;
 pub const MAX_RECORDING_MEMORY_MIB: usize = 16 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingRetention {
+    Selective,
+    All,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecordingMemoryLimit {
     bytes: u64,
@@ -203,6 +210,7 @@ impl CanonicalRecordingWorker {
         root: &Path,
         directory_name: &str,
         memory_limit: RecordingMemoryLimit,
+        retention: RecordingRetention,
         capture_identity: Option<RecordingCaptureIdentity>,
     ) -> Result<Self, String> {
         let ffmpeg = inspect_ffmpeg()?;
@@ -235,6 +243,7 @@ impl CanonicalRecordingWorker {
                     worker_memory,
                     Some(tick_index),
                     metadata_memory,
+                    retention,
                     capture_identity,
                 )
                 .run(&receiver)
@@ -397,6 +406,7 @@ struct Recorder {
     dry_run: bool,
     memory: Arc<RecordingMemoryAccount>,
     _metadata_memory: MemoryReservation,
+    retention: RecordingRetention,
     capture_identity: Option<RecordingCaptureIdentity>,
 }
 
@@ -447,6 +457,10 @@ impl TickIndexWriter {
 }
 
 impl Recorder {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the worker passes independent storage, retention, and provenance resources"
+    )]
     fn new(
         directory: PathBuf,
         external_dropped: Arc<AtomicU64>,
@@ -454,6 +468,7 @@ impl Recorder {
         memory: Arc<RecordingMemoryAccount>,
         tick_index: Option<TickIndexWriter>,
         metadata_memory: MemoryReservation,
+        retention: RecordingRetention,
         capture_identity: Option<RecordingCaptureIdentity>,
     ) -> Self {
         Self {
@@ -482,6 +497,7 @@ impl Recorder {
             dry_run: false,
             memory,
             _metadata_memory: metadata_memory,
+            retention,
             capture_identity,
         }
     }
@@ -532,10 +548,11 @@ impl Recorder {
             }
             self.after_remaining = WINDOW_FRAMES - 1;
         }
-        let always = matches!(
-            screen,
-            ScreenClass::MusicSelect | ScreenClass::DecideTransition | ScreenClass::Result
-        );
+        let always = self.retention == RecordingRetention::All
+            || matches!(
+                screen,
+                ScreenClass::MusicSelect | ScreenClass::DecideTransition | ScreenClass::Result
+            );
         let retained =
             self.observed_ticks < WINDOW_FRAMES || always || changed || self.after_remaining > 0;
         if !changed && self.after_remaining > 0 {
@@ -1173,7 +1190,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    fn recorder() -> Recorder {
+    fn recorder_with_retention(retention: RecordingRetention) -> Recorder {
         let memory = Arc::new(RecordingMemoryAccount::new(
             RecordingMemoryLimit::default_limit(),
         ));
@@ -1189,10 +1206,15 @@ mod tests {
             memory,
             None,
             metadata_memory,
+            retention,
             None,
         );
         recorder.dry_run = true;
         recorder
+    }
+
+    fn recorder() -> Recorder {
+        recorder_with_retention(RecordingRetention::Selective)
     }
 
     fn frame(sequence: u64, screen: ScreenClass) -> RecordedFrame {
@@ -1242,6 +1264,27 @@ mod tests {
             ScreenClass::Result,
         ] {
             let mut recorder = recorder();
+            for sequence in 1..=50 {
+                recorder.observe(frame(sequence, screen));
+            }
+            recorder.retain_session_tail();
+            assert!(
+                recorder
+                    .ticks
+                    .iter()
+                    .all(|tick| tick.disposition == "retained")
+            );
+        }
+    }
+
+    #[test]
+    fn all_retention_keeps_stable_interiors() {
+        for screen in [
+            ScreenClass::Play,
+            ScreenClass::ModeSelect,
+            ScreenClass::Unknown,
+        ] {
+            let mut recorder = recorder_with_retention(RecordingRetention::All);
             for sequence in 1..=50 {
                 recorder.observe(frame(sequence, screen));
             }
@@ -1331,6 +1374,7 @@ mod tests {
             root.path(),
             "canonical",
             RecordingMemoryLimit::default_limit(),
+            RecordingRetention::Selective,
             None,
         )
         .unwrap();

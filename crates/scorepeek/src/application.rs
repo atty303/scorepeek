@@ -107,9 +107,12 @@ struct RunArgs {
     no_scores: bool,
     #[arg(long, conflicts_with = "no_scores")]
     scores: bool,
-    #[arg(long, conflicts_with = "no_record")]
+    #[arg(long, conflicts_with_all = ["no_record", "record_all"])]
     record: bool,
-    #[arg(long, conflicts_with = "record")]
+    /// Retain every canonical 10 Hz tick, including stable screen interiors.
+    #[arg(long, conflicts_with_all = ["no_record", "record"])]
+    record_all: bool,
+    #[arg(long, conflicts_with_all = ["record", "record_all"])]
     no_record: bool,
     #[arg(long, value_name = "MIB")]
     record_memory_mib: Option<usize>,
@@ -862,6 +865,7 @@ fn run_public_with_model_initializer(
             "disabled"
         },
         options.recording_memory_limit,
+        options.recording_retention,
         options.scores_db.as_deref(),
         options.no_scores,
         options.overlays,
@@ -987,7 +991,8 @@ fn merge_run_options(config: ConfigFile, cli: RunArgs) -> Result<RoutineRunOptio
     if let Some(value) = environment_recording_memory {
         recording_memory_mib = Some(value);
     }
-    if cli.record {
+    let mut recording_retention = canonical_recording::RecordingRetention::Selective;
+    if cli.record || cli.record_all {
         recording = true;
     } else if cli.no_record {
         recording = false;
@@ -995,6 +1000,9 @@ fn merge_run_options(config: ConfigFile, cli: RunArgs) -> Result<RoutineRunOptio
     }
     if let Some(value) = cli.record_memory_mib {
         recording_memory_mib = Some(value);
+    }
+    if cli.record_all {
+        recording_retention = canonical_recording::RecordingRetention::All;
     }
     if recording_memory_mib.is_some() && !recording {
         return Err("recording memory limit requires recording to be enabled".to_owned());
@@ -1040,6 +1048,7 @@ fn merge_run_options(config: ConfigFile, cli: RunArgs) -> Result<RoutineRunOptio
         no_scores: !scores_enabled,
         recording,
         recording_memory_limit,
+        recording_retention,
     })
 }
 
@@ -1346,6 +1355,7 @@ fn run_with_model_initializer(
                 "disabled"
             },
             options.recording_memory_limit,
+            options.recording_retention,
             options.scores_db.as_deref(),
             options.no_scores,
             options.overlays,
@@ -1883,6 +1893,7 @@ struct RoutineRunOptions {
     no_scores: bool,
     recording: bool,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+    recording_retention: canonical_recording::RecordingRetention,
 }
 
 #[derive(Clone)]
@@ -1989,6 +2000,7 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
     };
     let mut crop_seen = [false; 4];
     let mut recording = false;
+    let mut recording_retention = canonical_recording::RecordingRetention::Selective;
     let mut scores_db = None;
     let mut no_scores = false;
     let mut recording_memory_mib = None;
@@ -2012,6 +2024,10 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
             }
             Some("--overlay-obs") if !overlays.obs => overlays.obs = true,
             Some("--record") if !recording => recording = true,
+            Some("--record-all") if !recording => {
+                recording = true;
+                recording_retention = canonical_recording::RecordingRetention::All;
+            }
             Some("--no-scores") if !no_scores => no_scores = true,
             Some("--scores-db") if scores_db.is_none() => {
                 index += 1;
@@ -2082,7 +2098,7 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
         return Err("--scores-db conflicts with --no-scores".to_owned());
     }
     if recording_memory_mib.is_some() && !recording {
-        return Err("--record-memory-mib requires --record".to_owned());
+        return Err("--record-memory-mib requires --record or --record-all".to_owned());
     }
     let recording_memory_limit = canonical_recording::RecordingMemoryLimit::from_mib(
         recording_memory_mib.unwrap_or(canonical_recording::DEFAULT_RECORDING_MEMORY_MIB),
@@ -2113,6 +2129,7 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
         no_scores,
         recording,
         recording_memory_limit,
+        recording_retention,
     })
 }
 
@@ -2126,6 +2143,7 @@ fn run_routine_live_session(
     crop: scorepeek::capture::EdgeCrop,
     recording: &str,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+    recording_retention: canonical_recording::RecordingRetention,
     scores_db: Option<&Path>,
     no_scores: bool,
     overlays: OverlayOptions,
@@ -2137,6 +2155,15 @@ fn run_routine_live_session(
 ) -> Result<(), String> {
     let recording_enabled = recording == "enabled";
     let diagnostic_sink = diagnostics.sink();
+    diagnostic_sink.record(
+        "canonical_recording_config",
+        &serde_json::json!({
+            "enabled": recording_enabled,
+            "retention": recording_retention,
+            "memory_limit_bytes": recording_memory_limit.bytes(),
+        }),
+        true,
+    );
     let catalog_paths_result = run_startup_stage(&diagnostic_sink, "catalog_paths", || {
         catalog_paths(
             env::var_os("XDG_DATA_HOME").as_deref(),
@@ -2569,6 +2596,7 @@ fn run_routine_live_session(
                     bundle,
                     false,
                     recording_memory_limit,
+                    recording_retention,
                     session_paths.as_ref().map(|paths| paths.root.as_path()),
                     Some(&session_id),
                     Some(node_id),
@@ -2871,6 +2899,7 @@ fn run_live_session(
         bundle_root,
         persist_recognition,
         canonical_recording::RecordingMemoryLimit::default_limit(),
+        canonical_recording::RecordingRetention::Selective,
         None,
         None,
         None,
@@ -2893,6 +2922,7 @@ fn execute_live_session(
     bundle_root: &Path,
     persist_recognition: bool,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+    recording_retention: canonical_recording::RecordingRetention,
     canonical_recording_root: Option<&Path>,
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
@@ -2975,6 +3005,7 @@ fn execute_live_session(
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit,
+            recording_retention,
             runtime_capture,
         },
         stop,
@@ -3619,6 +3650,7 @@ fn run_capture_field_observation(
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit: canonical_recording::RecordingMemoryLimit::default_limit(),
+            recording_retention: canonical_recording::RecordingRetention::Selective,
             runtime_capture: capture_live::RuntimeCaptureInput::LegacyGamescope {
                 binding_path: Path::new(binding),
                 expected_binding_sha256: &binding_digest,
@@ -4985,7 +5017,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek vulkan-layer install\n  scorepeek vulkan-layer uninstall\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek vulkan-layer install\n  scorepeek vulkan-layer uninstall\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record | --record-all] [--record-memory-mib MIB]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -5471,6 +5503,10 @@ node_name = "must-not-be-inherited"
         let parsed = parse_routine_run_options(&record).unwrap();
         assert!(parsed.recording);
         assert_eq!(
+            parsed.recording_retention,
+            crate::canonical_recording::RecordingRetention::Selective
+        );
+        assert_eq!(
             parsed.recording_memory_limit.bytes(),
             1024_u64 * 1024 * 1024
         );
@@ -5488,6 +5524,13 @@ node_name = "must-not-be-inherited"
                 .bytes(),
             2048_u64 * 1024 * 1024
         );
+        let record_all = ["--capture", "vulkan-layer", "--record-all"].map(OsString::from);
+        let parsed = parse_routine_run_options(&record_all).unwrap();
+        assert!(parsed.recording);
+        assert_eq!(
+            parsed.recording_retention,
+            crate::canonical_recording::RecordingRetention::All
+        );
     }
 
     #[test]
@@ -5496,6 +5539,11 @@ node_name = "must-not-be-inherited"
             vec![OsString::from("--no-recording")],
             vec![OsString::from("--record-attempts")],
             vec![OsString::from("--record"), OsString::from("--record")],
+            vec![OsString::from("--record"), OsString::from("--record-all")],
+            vec![
+                OsString::from("--record-all"),
+                OsString::from("--record-all"),
+            ],
             vec![
                 OsString::from("--record-memory-mib"),
                 OsString::from("1024"),

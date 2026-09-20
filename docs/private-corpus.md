@@ -7,14 +7,15 @@ objects, or deduplicate frames by pixel content.
 
 ## Recording boundary
 
-`scorepeek run` always saves one non-video diagnostic NDJSON stream. `scorepeek run --record` also
-starts the canonical session recorder; it does not enable a second diagnostic format. Runtime QOI
-generation is absent, so canonical video is the session's only retained frame authority.
+`scorepeek run` always saves one non-video diagnostic NDJSON stream. `scorepeek run --record` and
+`scorepeek run --record-all` also start the canonical session recorder; neither enables a second
+diagnostic format. Runtime QOI generation is absent, so canonical video is the session's only
+retained frame authority.
 
 Recording preflight requires a PATH-resolved FFmpeg that exposes
 `libx264rgb`. The artifact records the executable digest and first version line. The logically
 unbounded recorder uses one shared 1024 MiB memory account by default; use
-`--record-memory-mib MIB` with `--record` to change it. The TUI shows current, limit, high-water,
+`--record-memory-mib MIB` with either recording flag to change it. The TUI shows current, limit, high-water,
 and dropped-frame values. A memory-limit admission loss, encoder failure, publication failure, or
 shutdown timeout marks the recording partial but does not change screen resolution, attempt
 finalization, or domain event emission.
@@ -28,6 +29,8 @@ screen, active semantic episode ID, and either `retained` or a typed intentional
 It retains every `MusicSelect`, `DecideTransition`, and `Result` frame. It retains the session's
 first and last ten ticks and ten-tick windows around all raw-screen changes, including entry to and
 exit from `Unknown`. Only stable `Play`, `ModeSelect`, and `Unknown` interiors are elided.
+Use `--record-all` for calibration captures that must retain every 10 Hz due tick, including those
+stable interiors. Its diagnostic stream records the effective `all` retention mode before capture.
 
 Retained frames are lossless RGB Matroska segments in tick-index order. Intentional sequence gaps
 remain inside a segment; 600 retained frames, chronology reset, or session end closes it. The

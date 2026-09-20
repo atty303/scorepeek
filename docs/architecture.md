@@ -191,7 +191,8 @@ are in [overlay visual debugging](overlay-visual-debugging.md).
 ## Diagnostics and private corpus
 
 Every `run` writes one invocation-level structured diagnostic stream without changing recognition
-or event authority. `--record` adds canonical video only. The separate live socket, 128 MiB ring,
+or event authority. `--record` adds selectively retained canonical video and `--record-all` retains
+every canonical 10 Hz due tick; neither changes recognition or event authority. The separate live socket, 128 MiB ring,
 disk degradation, and ten-generation policy are defined in [runtime diagnostics](diagnostics.md).
 
 The private corpus imports complete operator-reviewed sessions, retains

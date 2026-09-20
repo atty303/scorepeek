@@ -73,6 +73,8 @@ from the run-directory lock rather than socket availability. Interior malformed 
 gaps fail. The active-inclusive latest ten invocation
 directories are retained; the next start removes the oldest completed invocation and its video.
 
-`--record` only adds canonical video below `sessions/<capture-session-id>/canonical/`. Runtime
+`--record` adds selectively retained canonical video below
+`sessions/<capture-session-id>/canonical/`; `--record-all` retains every canonical 10 Hz due tick
+for calibration captures. Runtime
 artifacts carry binding identities but no content digests. Corpus import computes video digests as
 it reads the bytes for validation and transfer.
