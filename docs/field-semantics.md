@@ -58,7 +58,7 @@ DETAIL JUDGE overlap, do not participate, and BPM position never implies play si
 | notes | Always | Complete positive integer consistent with the recognized result layout |
 | current score | Always | Complete non-negative value satisfying `score <= 2 * notes` |
 | judgments | Always | All five of `pgreat`, `great`, `good`, `bad`, and `poor` are complete, each is at most notes, and `current score == 2 * pgreat + great`; their sum is not constrained to notes |
-| clear | Always for the admitted result layout | One registered clear-type value from the exact `CLEAR TYPE` field, never the result background |
+| clear | Always for the admitted result layout | One registered clear-type value from the exact `CLEAR TYPE` field, never the result background. The field is expected to be blank during the initial RESULT transition; those observations provide no clear-type evidence and later frames must establish the value. |
 | miss count, fast, slow, combo break | Supplemental result values | Complete non-negative value at most notes, a displayed dash as `not_displayed`, or an explicit `unknown(reason)`; unknown does not block the event |
 | previous best clear/score/miss | Reference snapshot | Each field is independently `known`, `not_displayed`, or `unknown(reason)`; recognized `NO PLAY` normalizes all three to `not_played`; score is at most `2 * notes` and miss is at most notes |
 | DJ level, score delta, NEW RECORD, percentage | Derived or excluded | Do not save from OCR; derive from score, notes, and previous score when needed |
@@ -71,14 +71,24 @@ not require selection linkage, observed gameplay, or final attempt confirmation.
 `result_changed` requires that same stable payload to remain accepted at semantic RESULT close;
 missing gameplay or selection linkage does not invalidate an otherwise complete attempt, while song
 conflict or an abandoned attempt suppresses confirmation. Supplemental and previous-best unknowns do
-not get guessed values and do not block the shared result payload.
+not get guessed values and do not block the shared result payload. After numeric acceptance, one
+different complete mandatory observation is retained only as a challenger: it neither retracts the
+provisional result nor blocks confirmation at RESULT close. Two fresh matching observations of the
+same challenger replace the accepted payload, retract the old provisional, and publish the newly
+resolved provisional. Mandatory challenger repetition is counted independently from supplemental
+fields; supplemental changes retain their own two-matching-observation stabilization and never
+cause a retraction. A different song identity is not a numeric challenger and remains a linkage
+conflict.
 
-The common RESULT header and title/artist/chart ROIs are screen-global. Clear, score, previous-best,
-judgment, FAST/SLOW, combo-break, and play-option ROIs are panel-local with origins `x=0` and
-`x=1360`. The screen predicate supplies `ResultPanelSide` to the crop router; cropping never
-re-detects the side. Only field observations whose side equals the stabilized episode side enter
-semantic accumulation. One opposite observation is discarded, unknown observations preserve the
-stable side, and two opposite observations retract a provisional result as an episode conflict.
+The common RESULT header and title/artist/chart ROIs are screen-global. Clear, previous-clear, and
+play-option ROIs are panel-local with origins `x=0` and
+`x=1360`. Numeric fields use separately measured right-side origins: score/current/previous/miss
+and combo-break use `x=1350`, judgments use `x=1349`, and FAST/SLOW use `x=1344`; all left-side
+numeric origins remain `x=0`. The screen predicate supplies `ResultPanelSide` to the crop router;
+cropping never re-detects the side. Only field observations whose side equals the stabilized
+episode side enter semantic accumulation. One opposite observation is discarded, unknown
+observations preserve the stable side, and two opposite observations retract a provisional result
+as an episode conflict.
 
 ## Music select
 

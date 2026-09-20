@@ -446,6 +446,45 @@ impl SharedRegisteredScreenFieldResources {
         })
     }
 
+    /// Loads another immutable catalog while reusing an existing registered text pool.
+    ///
+    /// Offline corpus replay uses this when one suite contains sessions captured against
+    /// different catalog generations. Text inference is catalog-independent, while candidate
+    /// projection remains bound to the catalog recorded by each session.
+    ///
+    /// # Errors
+    /// Returns the registered resource error when the descriptor binding or catalog generation
+    /// cannot be loaded.
+    pub fn load_sharing_text_pool(
+        descriptor: &crate::diagnostic_recording::DiagnosticRunDescriptor,
+        catalog_root: &Path,
+        bundle_root: &Path,
+        shared: &Self,
+    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
+        if descriptor.binding.model_sha256 != shared.model_sha256 {
+            return Err(RegisteredResourceLoadError::ModelBindingMismatch.into());
+        }
+        if descriptor.binding.runtime_sha256 != shared.runtime_sha256 {
+            return Err(RegisteredResourceLoadError::RuntimeBindingMismatch.into());
+        }
+        verify_title_evidence_manifest()?;
+        let resources = RegisteredRecognitionResources::load(
+            catalog_root,
+            bundle_root,
+            &descriptor.binding.catalog_sha256,
+            &descriptor.binding.model_sha256,
+            &descriptor.binding.runtime_sha256,
+        )?;
+        let (catalog, _unused_title_runtime) = resources.into_catalog_and_title_runtime();
+        Ok(Self {
+            catalog_sha256: descriptor.binding.catalog_sha256.clone(),
+            model_sha256: descriptor.binding.model_sha256.clone(),
+            runtime_sha256: descriptor.binding.runtime_sha256.clone(),
+            catalog,
+            text_pool: Arc::clone(&shared.text_pool),
+        })
+    }
+
     #[must_use]
     pub fn text_workers(&self) -> usize {
         self.text_pool.configuration().workers
@@ -1411,6 +1450,14 @@ mod tests {
         assert_eq!(resolve_clear_type("F-COMBO"), Some("F-COMBO"));
         assert_eq!(resolve_clear_type(""), None);
         assert_eq!(resolve_clear_type("UNRELATED"), None);
+    }
+
+    #[test]
+    fn initial_blank_result_clear_type_remains_absent_evidence() {
+        let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
+        let fields = ScreenFieldObservations::Result(ResultScreenFieldObservations::default());
+        let output = RegisteredScreenFieldObservation::from_fields(&domain, fields);
+        assert_eq!(output.clear_type(), None);
     }
 
     #[test]

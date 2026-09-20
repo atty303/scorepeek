@@ -677,12 +677,69 @@ struct CanonicalReplayEnvironment<'a> {
     segment_resolver: &'a SegmentResolver,
 }
 
+type SharedReplayFields =
+    scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources;
+
+struct ReplaySharedResources {
+    by_catalog: Mutex<BTreeMap<String, Arc<SharedReplayFields>>>,
+    catalog_root: PathBuf,
+    bundle: PathBuf,
+}
+
+impl ReplaySharedResources {
+    fn new(
+        catalog_sha256: String,
+        resources: Arc<SharedReplayFields>,
+        catalog_root: &Path,
+        bundle: &Path,
+    ) -> Self {
+        Self {
+            by_catalog: Mutex::new(BTreeMap::from([(catalog_sha256, resources)])),
+            catalog_root: catalog_root.to_owned(),
+            bundle: bundle.to_owned(),
+        }
+    }
+
+    fn for_session(
+        &self,
+        session_index: usize,
+        session: &CaptureSession,
+        binding: &SessionBinding,
+    ) -> Result<Arc<SharedReplayFields>, CorpusError> {
+        let mut by_catalog = self
+            .by_catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(resources) = by_catalog.get(&session.catalog_sha256) {
+            return Ok(Arc::clone(resources));
+        }
+        let shared = by_catalog
+            .values()
+            .next()
+            .expect("replay shared resources are bootstrapped");
+        let descriptor = replay_descriptor(session_index, session, binding);
+        let resources = SharedReplayFields::load_sharing_text_pool(
+            &descriptor,
+            &self.catalog_root,
+            &self.bundle,
+            shared,
+        )
+        .map_err(|error| {
+            CorpusError::InvalidReplay(format!(
+                "shared production recognizer could not load catalog {}: {error}",
+                session.catalog_sha256
+            ))
+        })?;
+        let resources = Arc::new(resources);
+        by_catalog.insert(session.catalog_sha256.clone(), Arc::clone(&resources));
+        Ok(resources)
+    }
+}
+
 struct ReplayStepContext<'a> {
     store: &'a Path,
     diagnostic_root: &'a Path,
-    shared: &'a Arc<
-        scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
-    >,
+    shared: &'a Arc<ReplaySharedResources>,
     decode_activity: &'a Arc<ReplayDecodeActivity>,
     preprocess_pool: &'a ReplayPreprocessPool,
     outstanding_limit: usize,
@@ -2932,7 +2989,9 @@ pub fn replay_corpus_with_options(
                     .result_resolution()
                     .and_then(scorepeek::recognition::ResultSongResolution::accepted_song_id)
                     .map(|song| song.as_uuid().to_string());
-                if output.clear_type() != Some(episode.expected_clear_type.as_str())
+                let clear_type_matches = !episode_requires_clear_type(episode)
+                    || output.clear_type() == Some(episode.expected_clear_type.as_str());
+                if !clear_type_matches
                     || observed_song.as_deref() != Some(&episode.expected_song_id)
                 {
                     replay_failures.push(format!(
@@ -3658,7 +3717,19 @@ fn replay_canonical_suite(
             environment.bundle,
             text_workers,
         ) {
-            Ok(shared) => break (source, prepared, Arc::new(shared)),
+            Ok(shared) => {
+                let catalog_sha256 = prepared.session.catalog_sha256.clone();
+                break (
+                    source,
+                    prepared,
+                    Arc::new(ReplaySharedResources::new(
+                        catalog_sha256,
+                        Arc::new(shared),
+                        environment.catalog_root,
+                        environment.bundle,
+                    )),
+                );
+            }
             Err(error) => bootstrap_failures.push((
                 source.index,
                 source.session_sha256.clone(),
@@ -4331,11 +4402,15 @@ fn execute_replay_step(
     match scheduled.work {
         ReplayWork::Queued(source) => {
             let prepared = load_prepared_replay_session(context.store, &source)?;
+            let shared =
+                context
+                    .shared
+                    .for_session(prepared.index, &prepared.session, &prepared.binding)?;
             let mut runtime = start_replay_session(
                 context.store,
                 context.diagnostic_root,
                 prepared,
-                Arc::clone(context.shared),
+                shared,
                 context.decode_activity,
                 source.memory_wait_us,
                 context.trace,
@@ -4359,11 +4434,15 @@ fn execute_replay_step(
             )
         }
         ReplayWork::Prepared(prepared, memory_wait_us) => {
+            let shared =
+                context
+                    .shared
+                    .for_session(prepared.index, &prepared.session, &prepared.binding)?;
             let mut runtime = start_replay_session(
                 context.store,
                 context.diagnostic_root,
                 *prepared,
-                Arc::clone(context.shared),
+                shared,
                 context.decode_activity,
                 memory_wait_us,
                 context.trace,
@@ -5139,12 +5218,7 @@ fn validate_semantic_oracle(
     let accepted = label
         .episodes
         .iter()
-        .filter(|episode| {
-            episode
-                .attempt
-                .as_ref()
-                .is_some_and(|attempt| matches!(attempt.outcome, AttemptOutcome::Accepted))
-        })
+        .filter(|episode| episode_expects_result_event(episode))
         .collect::<Vec<_>>();
     if emitted.len() != accepted.len() {
         failures.push(format!(
@@ -5183,6 +5257,20 @@ fn validate_semantic_oracle(
         }
         actual_by_key.insert(attempt.attempt_key.clone(), event.attempt_id);
     }
+}
+
+fn episode_expects_result_event(episode: &RegressionEpisode) -> bool {
+    episode
+        .attempt
+        .as_ref()
+        .is_some_and(|attempt| matches!(attempt.outcome, AttemptOutcome::Accepted))
+}
+
+fn episode_requires_clear_type(episode: &RegressionEpisode) -> bool {
+    episode
+        .attempt
+        .as_ref()
+        .is_none_or(|attempt| !matches!(attempt.outcome, AttemptOutcome::NoResult))
 }
 
 fn validate_music_selection_oracle(
@@ -7104,6 +7192,48 @@ mod tests {
             }),
             play_options: Some(vec![PlayOption::Random, PlayOption::Legacy]),
         }
+    }
+
+    fn episode_with_outcome(outcome: AttemptOutcome) -> RegressionEpisode {
+        RegressionEpisode {
+            episode_id: "result-1".to_owned(),
+            expected_song_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+            expected_clear_type: "FAILED".to_owned(),
+            expected_result: expected_result(),
+            stable_sequences: vec![4],
+            attempt: Some(AttemptTruth {
+                attempt_key: "attempt-1".to_owned(),
+                parent_attempt_key: None,
+                select_span: Some(SequenceSpan {
+                    first_sequence: 1,
+                    last_sequence: 1,
+                }),
+                decide_span: Some(SequenceSpan {
+                    first_sequence: 2,
+                    last_sequence: 2,
+                }),
+                play_span: Some(SequenceSpan {
+                    first_sequence: 3,
+                    last_sequence: 3,
+                }),
+                result_span: SequenceSpan {
+                    first_sequence: 4,
+                    last_sequence: 4,
+                },
+                outcome,
+            }),
+        }
+    }
+
+    #[test]
+    fn no_result_retains_field_truth_without_requiring_clear_type_or_an_event() {
+        let accepted = episode_with_outcome(AttemptOutcome::Accepted);
+        assert!(episode_requires_clear_type(&accepted));
+        assert!(episode_expects_result_event(&accepted));
+
+        let no_result = episode_with_outcome(AttemptOutcome::NoResult);
+        assert!(!episode_requires_clear_type(&no_result));
+        assert!(!episode_expects_result_event(&no_result));
     }
 
     #[test]

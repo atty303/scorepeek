@@ -27,8 +27,10 @@ or result-local revision exists. Every state transition has its own envelope eve
 
 The result transition is explicit. Capture-session start and PLAY start publish `inactive`.
 Recognition publishes `provisional` as soon as the complete result resolves; contradictory evidence
-publishes `retracted` with the revoked payload; re-resolution publishes another `provisional`; normal
-semantic RESULT finalization publishes `confirmed`. If the result resolves only during close-time
+must stabilize across two fresh matching observations before it publishes `retracted` with the
+revoked payload; re-resolution publishes another `provisional`. A single contradictory complete
+observation remains a challenger, and normal semantic RESULT finalization confirms the previously
+stable payload. If the result resolves only during close-time
 drain, provisional is published immediately before confirmed. Confirmed is terminal for that attempt.
 Session finish retains the last result state; the next admitted session publishes inactive.
 

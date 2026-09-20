@@ -7,6 +7,10 @@
     "presence": { "warm_pixels_min": 3000, "horizontal_edge_pixels_min": 490 },
     "header": { "x": 600, "y": 0, "width": 720, "height": 80 },
     "panel_origins": { "left": 0, "right": 1360 },
+    "numeric_panel_origins": {
+      "left": { "score": 0, "judgment": 0, "timing": 0, "combo_break": 0 },
+      "right": { "score": 1350, "judgment": 1349, "timing": 1344, "combo_break": 1350 }
+    },
     "upper_panel_edge": { "x": 0, "y": 450, "width": 560, "height": 2 },
     "lower_panel_edge": { "x": 0, "y": 654, "width": 560, "height": 2 },
     "title": { "x": 660, "y": 950, "width": 600, "height": 50 },

@@ -546,6 +546,51 @@ struct ResultPanelOrigins {
     right: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResultNumericFieldOrigins {
+    score: u32,
+    judgment: u32,
+    timing: u32,
+    combo_break: u32,
+}
+
+impl ResultNumericFieldOrigins {
+    const fn get(self, field: NumericField) -> u32 {
+        match field {
+            NumericField::CurrentScore
+            | NumericField::PreviousScore
+            | NumericField::PreviousMissCount
+            | NumericField::MissCount => self.score,
+            NumericField::Pgreat
+            | NumericField::Great
+            | NumericField::Good
+            | NumericField::Bad
+            | NumericField::Poor => self.judgment,
+            NumericField::Fast | NumericField::Slow => self.timing,
+            NumericField::ComboBreak => self.combo_break,
+            NumericField::Level | NumericField::Notes => 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResultNumericPanelOrigins {
+    left: ResultNumericFieldOrigins,
+    right: ResultNumericFieldOrigins,
+}
+
+impl ResultNumericPanelOrigins {
+    const fn get(self, side: ResultPanelSide, field: NumericField) -> u32 {
+        match side {
+            ResultPanelSide::Left => self.left,
+            ResultPanelSide::Right => self.right,
+        }
+        .get(field)
+    }
+}
+
 impl ResultPanelOrigins {
     const fn get(self, side: ResultPanelSide) -> u32 {
         match side {
@@ -561,6 +606,7 @@ pub struct ResultLayout {
     presence: ResultPresencePredicate,
     pub header: Roi,
     panel_origins: ResultPanelOrigins,
+    numeric_panel_origins: ResultNumericPanelOrigins,
     pub upper_panel_edge: Roi,
     pub lower_panel_edge: Roi,
     pub title: Roi,
@@ -2050,98 +2096,122 @@ impl CanonicalLayout {
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
+        layout.validate_result()?;
+        layout.validate_music_select()?;
+        Ok(layout)
+    }
+
+    fn validate_result(&self) -> Result<(), RecognitionError> {
         for roi in [
-            layout.result.header,
-            layout.result.title,
-            layout.result.artist,
-            layout.result.difficulty,
-            layout.result.level,
-            layout.result.notes,
-            layout.music_select.header,
-            layout.music_select.label,
-            layout.music_select.level_column,
-            layout.music_select.selected_title,
+            self.result.header,
+            self.result.title,
+            self.result.artist,
+            self.result.difficulty,
+            self.result.level,
+            self.result.notes,
         ] {
-            roi.validate(layout.width, layout.height)?;
+            roi.validate(self.width, self.height)?;
         }
         for side in [ResultPanelSide::Left, ResultPanelSide::Right] {
-            let origin_x = layout.result.panel_origins.get(side);
+            let origin_x = self.result.panel_origins.get(side);
             for roi in [
-                layout.result.upper_panel_edge,
-                layout.result.lower_panel_edge,
-                layout.result.clear_type,
-                layout.result.current_score,
-                layout.result.previous_clear_type,
-                layout.result.previous_score,
-                layout.result.previous_miss_count,
-                layout.result.miss_count,
-                layout.result.pgreat,
-                layout.result.great,
-                layout.result.good,
-                layout.result.bad,
-                layout.result.poor,
-                layout.result.fast,
-                layout.result.slow,
-                layout.result.combo_break,
-                layout.result.play_options,
+                self.result.upper_panel_edge,
+                self.result.lower_panel_edge,
+                self.result.clear_type,
+                self.result.previous_clear_type,
+                self.result.play_options,
             ] {
                 roi.translated_x(origin_x)?
-                    .validate(layout.width, layout.height)?;
+                    .validate(self.width, self.height)?;
+            }
+            for (field, roi) in [
+                (NumericField::CurrentScore, self.result.current_score),
+                (NumericField::PreviousScore, self.result.previous_score),
+                (
+                    NumericField::PreviousMissCount,
+                    self.result.previous_miss_count,
+                ),
+                (NumericField::MissCount, self.result.miss_count),
+                (NumericField::Pgreat, self.result.pgreat),
+                (NumericField::Great, self.result.great),
+                (NumericField::Good, self.result.good),
+                (NumericField::Bad, self.result.bad),
+                (NumericField::Poor, self.result.poor),
+                (NumericField::Fast, self.result.fast),
+                (NumericField::Slow, self.result.slow),
+                (NumericField::ComboBreak, self.result.combo_break),
+            ] {
+                roi.translated_x(self.result.numeric_panel_origins.get(side, field))?
+                    .validate(self.width, self.height)?;
             }
         }
-        for roi in layout.music_select.list_titles.rois() {
-            roi.validate(layout.width, layout.height)?;
-        }
-        let header_pixels = layout
+        let header_pixels = self
             .result
             .header
             .width
-            .checked_mul(layout.result.header.height)
+            .checked_mul(self.result.header.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.result.presence.warm_pixels_min == 0
-            || layout.result.presence.horizontal_edge_pixels_min == 0
-            || layout.result.presence.warm_pixels_min > header_pixels
-            || layout.result.panel_origins.left != 0
-            || layout.result.panel_origins.right != 1_360
-            || layout.result.upper_panel_edge.height != 2
-            || layout.result.lower_panel_edge.height != 2
-            || layout.result.presence.horizontal_edge_pixels_min
-                > layout.result.upper_panel_edge.width
-            || layout.result.presence.horizontal_edge_pixels_min
-                > layout.result.lower_panel_edge.width
+        if self.result.presence.warm_pixels_min == 0
+            || self.result.presence.horizontal_edge_pixels_min == 0
+            || self.result.presence.warm_pixels_min > header_pixels
+            || self.result.panel_origins.left != 0
+            || self.result.panel_origins.right != 1_360
+            || self.result.numeric_panel_origins.left.score != 0
+            || self.result.numeric_panel_origins.left.judgment != 0
+            || self.result.numeric_panel_origins.left.timing != 0
+            || self.result.numeric_panel_origins.left.combo_break != 0
+            || self.result.upper_panel_edge.height != 2
+            || self.result.lower_panel_edge.height != 2
+            || self.result.presence.horizontal_edge_pixels_min > self.result.upper_panel_edge.width
+            || self.result.presence.horizontal_edge_pixels_min > self.result.lower_panel_edge.width
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
-        let header_pixels = layout
+        Ok(())
+    }
+
+    fn validate_music_select(&self) -> Result<(), RecognitionError> {
+        for roi in [
+            self.music_select.header,
+            self.music_select.label,
+            self.music_select.level_column,
+            self.music_select.selected_title,
+        ] {
+            roi.validate(self.width, self.height)?;
+        }
+        for roi in self.music_select.list_titles.rois() {
+            roi.validate(self.width, self.height)?;
+        }
+        let header_pixels = self
             .music_select
             .header
             .width
-            .checked_mul(layout.music_select.header.height)
+            .checked_mul(self.music_select.header.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        let level_pixels = layout
+        let level_pixels = self
             .music_select
             .level_column
             .width
-            .checked_mul(layout.music_select.level_column.height)
+            .checked_mul(self.music_select.level_column.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        let label_pixels = layout
+        let label_pixels = self
             .music_select
             .label
             .width
-            .checked_mul(layout.music_select.label.height)
+            .checked_mul(self.music_select.label.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.music_select.list_titles.slots == 0
-            || layout.music_select.list_titles.stride_y == 0
-            || layout.music_select.presence.cyan_header_pixels_min == 0
-            || layout.music_select.presence.colored_level_pixels_min == 0
-            || layout.music_select.presence.bright_label_pixels_min == 0
-            || layout.music_select.presence.cyan_header_pixels_min > header_pixels
-            || layout.music_select.presence.colored_level_pixels_min > level_pixels
-            || layout.music_select.presence.bright_label_pixels_min > label_pixels
+        if self.music_select.list_titles.slots == 0
+            || self.music_select.list_titles.stride_y == 0
+            || self.music_select.presence.cyan_header_pixels_min == 0
+            || self.music_select.presence.colored_level_pixels_min == 0
+            || self.music_select.presence.bright_label_pixels_min == 0
+            || self.music_select.presence.cyan_header_pixels_min > header_pixels
+            || self.music_select.presence.colored_level_pixels_min > level_pixels
+            || self.music_select.presence.bright_label_pixels_min > label_pixels
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
-        Ok(layout)
+        Ok(())
     }
 
     /// Returns the bounded text-presentation regions used by offline music-select motion review.
@@ -3059,6 +3129,80 @@ pub fn export_integrated_context_crops(
     })
 }
 
+fn crop_rgb8(pixels: &[u8], roi: Roi) -> Result<Rgb8Crop, RecognitionError> {
+    Ok(Rgb8Crop {
+        roi,
+        pixels: crop_canonical_pixels(pixels, roi)?,
+    })
+}
+
+fn route_result_rgb8_crops(
+    pixels: &[u8],
+    canonical: &CanonicalLayout,
+    context: &IntegratedContextLayout,
+    panel_side: ResultPanelSide,
+) -> Result<ResultScreenRgb8Crops, RecognitionError> {
+    let origin_x = canonical.result.panel_origins.get(panel_side);
+    let panel = |roi: Roi| roi.translated_x(origin_x);
+    let numeric = |field, roi: Roi| {
+        roi.translated_x(
+            canonical
+                .result
+                .numeric_panel_origins
+                .get(panel_side, field),
+        )
+    };
+    Ok(ResultScreenRgb8Crops {
+        canonical_layout_sha256: CanonicalLayout::sha256(),
+        panel_side,
+        title: crop_rgb8(pixels, canonical.result.title)?,
+        artist: crop_rgb8(pixels, context.result.artist)?,
+        clear_type: crop_rgb8(pixels, panel(canonical.result.clear_type)?)?,
+        difficulty: crop_rgb8(pixels, canonical.result.difficulty)?,
+        play_type: crop_rgb8(pixels, context.result.play_type)?,
+        level: crop_rgb8(pixels, canonical.result.level)?,
+        notes: crop_rgb8(pixels, canonical.result.notes)?,
+        current_score: crop_rgb8(
+            pixels,
+            numeric(NumericField::CurrentScore, canonical.result.current_score)?,
+        )?,
+        previous_clear_type: crop_rgb8(pixels, panel(canonical.result.previous_clear_type)?)?,
+        previous_score: crop_rgb8(
+            pixels,
+            numeric(NumericField::PreviousScore, canonical.result.previous_score)?,
+        )?,
+        previous_miss_count: crop_rgb8(
+            pixels,
+            numeric(
+                NumericField::PreviousMissCount,
+                canonical.result.previous_miss_count,
+            )?,
+        )?,
+        miss_count: crop_rgb8(
+            pixels,
+            numeric(NumericField::MissCount, canonical.result.miss_count)?,
+        )?,
+        pgreat: crop_rgb8(
+            pixels,
+            numeric(NumericField::Pgreat, canonical.result.pgreat)?,
+        )?,
+        great: crop_rgb8(
+            pixels,
+            numeric(NumericField::Great, canonical.result.great)?,
+        )?,
+        good: crop_rgb8(pixels, numeric(NumericField::Good, canonical.result.good)?)?,
+        bad: crop_rgb8(pixels, numeric(NumericField::Bad, canonical.result.bad)?)?,
+        poor: crop_rgb8(pixels, numeric(NumericField::Poor, canonical.result.poor)?)?,
+        fast: crop_rgb8(pixels, numeric(NumericField::Fast, canonical.result.fast)?)?,
+        slow: crop_rgb8(pixels, numeric(NumericField::Slow, canonical.result.slow)?)?,
+        combo_break: crop_rgb8(
+            pixels,
+            numeric(NumericField::ComboBreak, canonical.result.combo_break)?,
+        )?,
+        play_options: crop_rgb8(pixels, panel(canonical.result.play_options)?)?,
+    })
+}
+
 /// Routes one already-classified canonical RGB8 frame to all currently measured field crops for
 /// that screen.
 ///
@@ -3072,13 +3216,6 @@ pub fn route_screen_rgb8_crops(
     pixels: &[u8],
     route: ScreenCropRoute,
 ) -> Result<ScreenRgb8Crops, RecognitionError> {
-    fn crop(pixels: &[u8], roi: Roi) -> Result<Rgb8Crop, RecognitionError> {
-        Ok(Rgb8Crop {
-            roi,
-            pixels: crop_canonical_pixels(pixels, roi)?,
-        })
-    }
-
     let canonical = CanonicalLayout::load()?;
     let context = IntegratedContextLayout::load()?;
     match route {
@@ -3086,61 +3223,35 @@ pub fn route_screen_rgb8_crops(
             let path = ScreenPathLayout::load()?;
             Ok(ScreenRgb8Crops::Title(TitleScreenRgb8Crops {
                 canonical_layout_sha256: CanonicalLayout::sha256(),
-                game_version: crop(pixels, path.title.version)?,
+                game_version: crop_rgb8(pixels, path.title.version)?,
             }))
         }
-        ScreenCropRoute::Result(panel_side) => {
-            let origin_x = canonical.result.panel_origins.get(panel_side);
-            let panel = |roi: Roi| roi.translated_x(origin_x);
-            Ok(ScreenRgb8Crops::Result(ResultScreenRgb8Crops {
-                canonical_layout_sha256: CanonicalLayout::sha256(),
-                panel_side,
-                title: crop(pixels, canonical.result.title)?,
-                artist: crop(pixels, context.result.artist)?,
-                clear_type: crop(pixels, panel(canonical.result.clear_type)?)?,
-                difficulty: crop(pixels, canonical.result.difficulty)?,
-                play_type: crop(pixels, context.result.play_type)?,
-                level: crop(pixels, canonical.result.level)?,
-                notes: crop(pixels, canonical.result.notes)?,
-                current_score: crop(pixels, panel(canonical.result.current_score)?)?,
-                previous_clear_type: crop(pixels, panel(canonical.result.previous_clear_type)?)?,
-                previous_score: crop(pixels, panel(canonical.result.previous_score)?)?,
-                previous_miss_count: crop(pixels, panel(canonical.result.previous_miss_count)?)?,
-                miss_count: crop(pixels, panel(canonical.result.miss_count)?)?,
-                pgreat: crop(pixels, panel(canonical.result.pgreat)?)?,
-                great: crop(pixels, panel(canonical.result.great)?)?,
-                good: crop(pixels, panel(canonical.result.good)?)?,
-                bad: crop(pixels, panel(canonical.result.bad)?)?,
-                poor: crop(pixels, panel(canonical.result.poor)?)?,
-                fast: crop(pixels, panel(canonical.result.fast)?)?,
-                slow: crop(pixels, panel(canonical.result.slow)?)?,
-                combo_break: crop(pixels, panel(canonical.result.combo_break)?)?,
-                play_options: crop(pixels, panel(canonical.result.play_options)?)?,
-            }))
-        }
+        ScreenCropRoute::Result(panel_side) => Ok(ScreenRgb8Crops::Result(
+            route_result_rgb8_crops(pixels, &canonical, &context, panel_side)?,
+        )),
         ScreenCropRoute::MusicSelect => {
             Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
                 best: MusicSelectBestCrops::extract(pixels)?,
                 canonical_layout_sha256: CanonicalLayout::sha256(),
                 integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
-                central_title: crop(pixels, canonical.music_select.selected_title)?,
-                artist: crop(pixels, context.music_select.artist)?,
-                play_type: crop(pixels, context.music_select.play_type.roi)?,
+                central_title: crop_rgb8(pixels, canonical.music_select.selected_title)?,
+                artist: crop_rgb8(pixels, context.music_select.artist)?,
+                play_type: crop_rgb8(pixels, context.music_select.play_type.roi)?,
                 difficulty_markers: MusicSelectDifficultyMarkerCrops {
-                    beginner: crop(pixels, context.music_select.selected_difficulty.beginner)?,
-                    normal: crop(pixels, context.music_select.selected_difficulty.normal)?,
-                    hyper: crop(pixels, context.music_select.selected_difficulty.hyper)?,
-                    another: crop(pixels, context.music_select.selected_difficulty.another)?,
-                    leggendaria: crop(
+                    beginner: crop_rgb8(pixels, context.music_select.selected_difficulty.beginner)?,
+                    normal: crop_rgb8(pixels, context.music_select.selected_difficulty.normal)?,
+                    hyper: crop_rgb8(pixels, context.music_select.selected_difficulty.hyper)?,
+                    another: crop_rgb8(pixels, context.music_select.selected_difficulty.another)?,
+                    leggendaria: crop_rgb8(
                         pixels,
                         context.music_select.selected_difficulty.leggendaria,
                     )?,
                 },
                 play_side: MusicSelectPlaySideCrops {
-                    one_player: crop(pixels, context.music_select.play_side.one_player)?,
-                    two_player: crop(pixels, context.music_select.play_side.two_player)?,
+                    one_player: crop_rgb8(pixels, context.music_select.play_side.one_player)?,
+                    two_player: crop_rgb8(pixels, context.music_select.play_side.two_player)?,
                 },
-                active_list_title: crop(pixels, context.music_select.active_list_title)?,
+                active_list_title: crop_rgb8(pixels, context.music_select.active_list_title)?,
             }))
         }
     }
@@ -4178,22 +4289,29 @@ mod tests {
         }
         for (left, right) in [
             (&left.clear_type, &right.clear_type),
-            (&left.current_score, &right.current_score),
             (&left.previous_clear_type, &right.previous_clear_type),
-            (&left.previous_score, &right.previous_score),
-            (&left.previous_miss_count, &right.previous_miss_count),
-            (&left.miss_count, &right.miss_count),
-            (&left.pgreat, &right.pgreat),
-            (&left.great, &right.great),
-            (&left.good, &right.good),
-            (&left.bad, &right.bad),
-            (&left.poor, &right.poor),
-            (&left.fast, &right.fast),
-            (&left.slow, &right.slow),
-            (&left.combo_break, &right.combo_break),
             (&left.play_options, &right.play_options),
         ] {
             assert_eq!(right.roi.x, left.roi.x + 1_360);
+            assert_eq!(right.roi.y, left.roi.y);
+            assert_eq!(right.roi.width, left.roi.width);
+            assert_eq!(right.roi.height, left.roi.height);
+        }
+        for (left, right, origin) in [
+            (&left.current_score, &right.current_score, 1_350),
+            (&left.previous_score, &right.previous_score, 1_350),
+            (&left.previous_miss_count, &right.previous_miss_count, 1_350),
+            (&left.miss_count, &right.miss_count, 1_350),
+            (&left.pgreat, &right.pgreat, 1_349),
+            (&left.great, &right.great, 1_349),
+            (&left.good, &right.good, 1_349),
+            (&left.bad, &right.bad, 1_349),
+            (&left.poor, &right.poor, 1_349),
+            (&left.fast, &right.fast, 1_344),
+            (&left.slow, &right.slow, 1_344),
+            (&left.combo_break, &right.combo_break, 1_350),
+        ] {
+            assert_eq!(right.roi.x, left.roi.x + origin);
             assert_eq!(right.roi.y, left.roi.y);
             assert_eq!(right.roi.width, left.roi.width);
             assert_eq!(right.roi.height, left.roi.height);

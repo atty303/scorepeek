@@ -1,7 +1,7 @@
 {
   "schema": "scorepeek-result-numeric-character-layout-v3",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
-  "canonical_layout_sha256": "689d09c04cb3432de2ab12249c0134235ea7cd91112adb30cfbd2ba2302ab9c6",
+  "canonical_layout_sha256": "6b2c9ba85e93a3919ba6a837e5e4b82ebcc354aa733046ec55747b33675fe1c1",
   "level": [
     {
       "difficulty": "another",

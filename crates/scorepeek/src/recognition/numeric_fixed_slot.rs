@@ -61,7 +61,10 @@ pub fn extract_fixed_slot_fields(
                 if matches!(field, NumericField::Notes) {
                     0
                 } else {
-                    canonical.result.panel_origins.get(crops.panel_side)
+                    canonical
+                        .result
+                        .numeric_panel_origins
+                        .get(crops.panel_side, field)
                 },
             )?,
         });

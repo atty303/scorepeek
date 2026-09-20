@@ -152,7 +152,11 @@ After all ranges finish, replay reads and hashes the complete assembled file; a 
 still never decoded before complete verification.
 
 OCR may complete out of order but field evidence is committed by admission sequence. All sessions
-share one text pool. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then
+share one text pool. A suite may contain sessions recorded against different immutable catalog
+generations. Replay loads the catalog generation named by each session and binds that session's
+candidate projection to it while continuing to share the catalog-independent text pool. A missing
+or mismatched recorded generation fails replay instead of substituting the currently active
+catalog. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then
 returns that session's ordered state to a FIFO so another ready session can use the slot before the
 next segment. The automatic decoder count is the smaller of the session count and one quarter of
 available parallelism, further constrained by memory; active session state is bounded at twice the
@@ -173,6 +177,9 @@ For every accepted label, replay requires exactly one ordered
 parent relation. The runtime session ID, runtime attempt IDs, emission tick, and diagnostic metadata
 are not truth. Missing, duplicate, extra, payload-different, play-option-order-different, and
 parent-different events fail replay. Non-accepted outcomes require no event.
+`no_result` retains song/chart, numeric, play-option, and screen-layout truth for an attempt whose
+mandatory result fields never became complete. Its stable frames therefore do not require the
+expected clear type to have resolved; producing a public result event still fails the session.
 
 ## Normalization verification
 

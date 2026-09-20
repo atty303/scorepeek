@@ -485,6 +485,20 @@ struct PendingNumericResult {
     observations: u8,
 }
 
+#[derive(Clone, Debug)]
+struct PendingSupplementalResult {
+    performance: ResultPerformanceResolution,
+    source_sequence: u64,
+    observations: u8,
+}
+
+#[derive(Clone, Debug)]
+struct NumericResultTransition {
+    state: NumericResultTemporalState,
+    reason: NumericResultTransitionReason,
+    replaced_accepted: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct PlayOptionsEpisodeAccumulator {
     candidate: Option<Vec<PlayOption>>,
@@ -648,6 +662,35 @@ fn same_numeric_tuple(left: &NumericResultView, right: &NumericResultView) -> bo
                 ResultPerformanceResolution::Accepted { judgments: right, .. }
             ) if left == right
         )
+}
+
+fn retain_supplemental_result(
+    target: &mut ResultPerformanceResolution,
+    retained: &ResultPerformanceResolution,
+) {
+    let (
+        ResultPerformanceResolution::Accepted {
+            miss_count,
+            timing,
+            combo_break,
+            previous_best,
+            ..
+        },
+        ResultPerformanceResolution::Accepted {
+            miss_count: retained_miss_count,
+            timing: retained_timing,
+            combo_break: retained_combo_break,
+            previous_best: retained_previous_best,
+            ..
+        },
+    ) = (target, retained)
+    else {
+        return;
+    };
+    miss_count.clone_from(retained_miss_count);
+    timing.clone_from(retained_timing);
+    combo_break.clone_from(retained_combo_break);
+    previous_best.clone_from(retained_previous_best);
 }
 
 fn candidate_song_presentation(candidate: &JointEvidenceCandidate) -> SongPresentation {
@@ -2795,6 +2838,7 @@ pub struct RoutineOutput {
     next_sequence: u64,
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
+    pending_supplemental_result: Option<PendingSupplementalResult>,
     accepted_numeric_result: Option<NumericResultView>,
     active_provisional_result: Option<ActiveProvisionalResult>,
     music_selection_revision: u64,
@@ -3039,6 +3083,7 @@ impl RoutineOutput {
             engine: ResolverEngine::default(),
             resolver_transitions: BTreeMap::new(),
             pending_numeric_result: None,
+            pending_supplemental_result: None,
             accepted_numeric_result: None,
             active_provisional_result: None,
             music_selection_revision: 0,
@@ -3117,6 +3162,7 @@ impl RoutineOutput {
             engine: ResolverEngine::default(),
             resolver_transitions: BTreeMap::new(),
             pending_numeric_result: None,
+            pending_supplemental_result: None,
             accepted_numeric_result: None,
             active_provisional_result: None,
             music_selection_revision: 0,
@@ -3502,16 +3548,20 @@ impl RoutineOutput {
         sequence: u64,
     ) -> Result<(), String> {
         self.result_episode_finalizing = true;
-        let rejection = match (
-            self.engine.provisional_joint.as_ref(),
-            self.accepted_numeric_result.as_ref(),
-        ) {
-            (None, _) => Some(PlayAttemptReason::JointIdentityUnresolved),
-            (Some(_), None) => Some(PlayAttemptReason::ResultEvidenceUnresolved),
-            (Some(joint), Some(numeric)) if !joint_matches_numeric(joint, numeric) => {
-                Some(PlayAttemptReason::LinkageConflict)
+        let rejection = if self.holds_stable_numeric_result() {
+            None
+        } else {
+            match (
+                self.engine.provisional_joint.as_ref(),
+                self.accepted_numeric_result.as_ref(),
+            ) {
+                (None, _) => Some(PlayAttemptReason::JointIdentityUnresolved),
+                (Some(_), None) => Some(PlayAttemptReason::ResultEvidenceUnresolved),
+                (Some(joint), Some(numeric)) if !joint_matches_numeric(joint, numeric) => {
+                    Some(PlayAttemptReason::LinkageConflict)
+                }
+                (Some(_), Some(_)) => None,
             }
-            (Some(_), Some(_)) => None,
         };
         if let Some(state) = self
             .engine
@@ -3752,7 +3802,7 @@ impl RoutineOutput {
                 .cloned()
                 .collect();
             for evidence in pending {
-                if let Some((state, reason)) = self.observe_numeric_result(
+                if let Some(transition) = self.observe_numeric_result(
                     evidence.sequence,
                     evidence.monotonic_end_ms,
                     Some(candidate),
@@ -3765,12 +3815,23 @@ impl RoutineOutput {
                             session_id: session_id.cloned(),
                             capture_generation,
                             source_sequence: evidence.sequence,
-                            state,
-                            reason,
+                            state: transition.state,
+                            reason: transition.reason,
                             event_suppression_reason: self
                                 .numeric_event_suppression_reason(session_id, capture_generation),
                         },
                     })?;
+                    if transition.replaced_accepted
+                        && let (Some(session_id), Some(capture_generation)) =
+                            (session_id.cloned(), capture_generation)
+                    {
+                        self.withdraw_result_provisional(
+                            session_id,
+                            capture_generation,
+                            evidence.sequence,
+                            ResultRetractionReason::EvidenceUnresolved,
+                        )?;
+                    }
                 }
             }
         }
@@ -3788,7 +3849,7 @@ impl RoutineOutput {
         accepted_joint: Option<&JointEvidenceCandidate>,
         observed_clear_type: Option<String>,
         parsed_result_fields: Option<&ParsedResultFields>,
-    ) -> Option<(NumericResultTemporalState, NumericResultTransitionReason)> {
+    ) -> Option<NumericResultTransition> {
         let chronology_reset = self
             .last_numeric_sequence
             .is_some_and(|last| sequence <= last)
@@ -3803,29 +3864,35 @@ impl RoutineOutput {
         let (Some(candidate), Some(clear_type), Some(parsed)) =
             (accepted_joint, observed_clear_type, parsed_result_fields)
         else {
-            return self.pending_numeric_result.take().map(|_| {
-                (
-                    NumericResultTemporalState::Unknown,
-                    NumericResultTransitionReason::Incomplete,
-                )
-            });
+            return self
+                .pending_numeric_result
+                .take()
+                .map(|_| NumericResultTransition {
+                    state: NumericResultTemporalState::Unknown,
+                    reason: NumericResultTransitionReason::Incomplete,
+                    replaced_accepted: false,
+                });
         };
         let Some(current_score) = parsed.current_score.known().copied() else {
-            return self.pending_numeric_result.take().map(|_| {
-                (
-                    NumericResultTemporalState::Unknown,
-                    NumericResultTransitionReason::Incomplete,
-                )
-            });
+            return self
+                .pending_numeric_result
+                .take()
+                .map(|_| NumericResultTransition {
+                    state: NumericResultTemporalState::Unknown,
+                    reason: NumericResultTransitionReason::Incomplete,
+                    replaced_accepted: false,
+                });
         };
         let performance = resolve_result_performance(parsed, candidate.chart.notes, current_score);
         if !matches!(performance, ResultPerformanceResolution::Accepted { .. }) {
-            return self.pending_numeric_result.take().map(|_| {
-                (
-                    NumericResultTemporalState::Unknown,
-                    NumericResultTransitionReason::Incomplete,
-                )
-            });
+            return self
+                .pending_numeric_result
+                .take()
+                .map(|_| NumericResultTransition {
+                    state: NumericResultTemporalState::Unknown,
+                    reason: NumericResultTransitionReason::Incomplete,
+                    replaced_accepted: false,
+                });
         }
         let view = NumericResultView {
             song_id: candidate.song_id,
@@ -3842,60 +3909,88 @@ impl RoutineOutput {
         &mut self,
         view: NumericResultView,
         chronology_reset: bool,
-    ) -> Option<(NumericResultTemporalState, NumericResultTransitionReason)> {
-        if let Some(accepted) = &self.accepted_numeric_result {
-            if same_numeric_tuple(accepted, &view) {
-                if accepted.performance == view.performance {
-                    self.pending_numeric_result = None;
-                    return None;
-                }
-            } else {
-                self.accepted_numeric_result = None;
-            }
+    ) -> Option<NumericResultTransition> {
+        let replaces_accepted = self
+            .accepted_numeric_result
+            .as_ref()
+            .is_some_and(|accepted| !same_numeric_tuple(accepted, &view));
+        if let Some(accepted) = &self.accepted_numeric_result
+            && same_numeric_tuple(accepted, &view)
+            && accepted.performance == view.performance
+        {
+            self.pending_numeric_result = None;
+            self.pending_supplemental_result = None;
+            return None;
+        }
+        if self
+            .accepted_numeric_result
+            .as_ref()
+            .is_some_and(|accepted| same_numeric_tuple(accepted, &view))
+        {
+            self.pending_numeric_result = None;
+            return self.stabilize_supplemental_result(view);
         }
         let had_conflict = self
             .pending_numeric_result
             .as_ref()
             .is_some_and(|pending| !same_numeric_tuple(&pending.view, &view));
         let transition = match &mut self.pending_numeric_result {
-            Some(pending)
-                if same_numeric_tuple(&pending.view, &view)
-                    && (self.accepted_numeric_result.is_none()
-                        || pending.view.performance == view.performance) =>
-            {
+            Some(pending) if same_numeric_tuple(&pending.view, &view) => {
                 pending.observations = pending.observations.saturating_add(1);
+                let supplemental_stable = pending.view.performance == view.performance;
                 pending.view = view;
                 if pending.observations >= NUMERIC_REQUIRED_OBSERVATIONS {
-                    self.accepted_numeric_result = Some(pending.view.clone());
+                    let mut accepted = pending.view.clone();
+                    if replaces_accepted
+                        && !supplemental_stable
+                        && let Some(previous) = &self.accepted_numeric_result
+                    {
+                        retain_supplemental_result(
+                            &mut accepted.performance,
+                            &previous.performance,
+                        );
+                        self.pending_supplemental_result = Some(PendingSupplementalResult {
+                            performance: pending.view.performance.clone(),
+                            source_sequence: pending.view.source_sequence,
+                            observations: 1,
+                        });
+                    } else {
+                        self.pending_supplemental_result = None;
+                    }
+                    self.accepted_numeric_result = Some(accepted);
                     self.pending_numeric_result = None;
-                    Some((
-                        NumericResultTemporalState::Accepted,
-                        NumericResultTransitionReason::Accepted,
-                    ))
+                    Some(NumericResultTransition {
+                        state: NumericResultTemporalState::Accepted,
+                        reason: NumericResultTransitionReason::Accepted,
+                        replaced_accepted: replaces_accepted,
+                    })
                 } else {
-                    Some((
-                        NumericResultTemporalState::Pending {
+                    Some(NumericResultTransition {
+                        state: NumericResultTemporalState::Pending {
                             observations: pending.observations,
                         },
-                        NumericResultTransitionReason::CandidateRepeated,
-                    ))
+                        reason: NumericResultTransitionReason::CandidateRepeated,
+                        replaced_accepted: false,
+                    })
                 }
             }
             _ => {
+                self.pending_supplemental_result = None;
                 self.pending_numeric_result = Some(PendingNumericResult {
                     view,
                     observations: 1,
                 });
-                Some((
-                    NumericResultTemporalState::Pending { observations: 1 },
-                    if chronology_reset {
+                Some(NumericResultTransition {
+                    state: NumericResultTemporalState::Pending { observations: 1 },
+                    reason: if chronology_reset {
                         NumericResultTransitionReason::ChronologyReset
                     } else if had_conflict {
                         NumericResultTransitionReason::Conflict
                     } else {
                         NumericResultTransitionReason::CandidateStarted
                     },
-                ))
+                    replaced_accepted: false,
+                })
             }
         };
         if self.accepted_numeric_result.is_some() && self.pending_numeric_result.is_some() {
@@ -3903,6 +3998,48 @@ impl RoutineOutput {
         } else {
             transition
         }
+    }
+
+    fn stabilize_supplemental_result(
+        &mut self,
+        view: NumericResultView,
+    ) -> Option<NumericResultTransition> {
+        let repeated = self
+            .pending_supplemental_result
+            .as_ref()
+            .is_some_and(|pending| pending.performance == view.performance);
+        if repeated {
+            let pending = self
+                .pending_supplemental_result
+                .as_mut()
+                .expect("repeated supplemental candidate exists");
+            pending.observations = pending.observations.saturating_add(1);
+            pending.source_sequence = view.source_sequence;
+            if pending.observations >= NUMERIC_REQUIRED_OBSERVATIONS {
+                let pending = self
+                    .pending_supplemental_result
+                    .take()
+                    .expect("accepted supplemental candidate exists");
+                let accepted = self
+                    .accepted_numeric_result
+                    .as_mut()
+                    .expect("supplemental result requires accepted numeric result");
+                accepted.performance = pending.performance;
+                accepted.source_sequence = pending.source_sequence;
+                return Some(NumericResultTransition {
+                    state: NumericResultTemporalState::Accepted,
+                    reason: NumericResultTransitionReason::Accepted,
+                    replaced_accepted: false,
+                });
+            }
+        } else {
+            self.pending_supplemental_result = Some(PendingSupplementalResult {
+                performance: view.performance,
+                source_sequence: view.source_sequence,
+                observations: 1,
+            });
+        }
+        None
     }
 
     fn numeric_event_suppression_reason(
@@ -3958,6 +4095,28 @@ impl RoutineOutput {
             .emitted_attempt_ids
             .contains(&accepted_attempt.attempt_id)
         {
+            return Ok(());
+        }
+        if self.holds_stable_numeric_result() {
+            let Some(candidate) = self
+                .active_provisional_result
+                .clone()
+                .filter(|candidate| candidate.result.attempt_id == accepted_attempt.attempt_id)
+            else {
+                return Ok(());
+            };
+            let source_sequence = numeric.source_sequence.max(fallback_sequence);
+            self.publish_result_state(
+                session_id,
+                capture_generation,
+                source_sequence,
+                ResultState::Confirmed {
+                    song: candidate.song,
+                    result: Box::new(candidate.result),
+                },
+            )?;
+            self.active_provisional_result = None;
+            self.emitted_attempt_ids.insert(accepted_attempt.attempt_id);
             return Ok(());
         }
         if !self
@@ -4018,6 +4177,9 @@ impl RoutineOutput {
         capture_generation: Option<u64>,
         fallback_sequence: u64,
     ) -> Result<(), String> {
+        if self.holds_stable_numeric_result() {
+            return Ok(());
+        }
         let candidate = self
             .engine
             .provisional_joint
@@ -4071,6 +4233,19 @@ impl RoutineOutput {
         Ok(())
     }
 
+    fn holds_stable_numeric_result(&self) -> bool {
+        let (Some(active), Some(accepted), Some(joint)) = (
+            self.active_provisional_result.as_ref(),
+            self.accepted_numeric_result.as_ref(),
+            self.engine.provisional_joint.as_ref(),
+        ) else {
+            return false;
+        };
+        (self.pending_numeric_result.is_some() || self.pending_supplemental_result.is_some())
+            && active.result.scorepeek_song_id == accepted.song_id
+            && joint_matches_numeric(joint, accepted)
+    }
+
     fn withdraw_result_provisional(
         &mut self,
         session_id: String,
@@ -4113,6 +4288,7 @@ impl RoutineOutput {
 
     fn reset_numeric_result(&mut self) {
         self.pending_numeric_result = None;
+        self.pending_supplemental_result = None;
         self.accepted_numeric_result = None;
         self.last_numeric_sequence = None;
         self.last_numeric_monotonic_ms = None;
@@ -6387,6 +6563,7 @@ mod tests {
             next_sequence: 1,
             engine: ResolverEngine::default(),
             pending_numeric_result: None,
+            pending_supplemental_result: None,
             accepted_numeric_result: None,
             active_provisional_result: None,
             music_selection_revision: 0,
@@ -7096,7 +7273,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_mandatory_judgments_still_withdraw_and_block_confirmation() {
+    fn one_changed_mandatory_observation_preserves_and_confirms_stable_result() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         prepare_accepted_attempt(&mut output);
         output.publish(&accepted_result_event(1)).unwrap();
@@ -7118,14 +7295,144 @@ mod tests {
                 SemanticEpisodePhase::Finalized,
             ))
             .unwrap();
-        assert_eq!(output.state.lock().unwrap().result_count, 0);
+        assert_eq!(output.state.lock().unwrap().result_count, 1);
         assert!(output.headless_events.iter().any(|event| matches!(
+            &event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { result, .. },
+                ..
+            } if result.judgments.good == 10
+        )));
+        assert!(!output.headless_events.iter().any(|event| matches!(
             event.kind,
             RunEventKind::ResultChanged {
                 state: ResultState::Retracted { .. },
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn mandatory_challenger_stabilizes_independently_of_supplemental_changes() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        let changed = |sequence, miss_count| {
+            let mut event = accepted_result_event(sequence);
+            let RunEventKind::FieldObservation {
+                fields,
+                parsed_result_fields,
+                ..
+            } = &mut event.kind
+            else {
+                unreachable!();
+            };
+            fields["clear_type"] = Value::String("HARD CLEAR".to_owned());
+            parsed_result_fields.as_mut().unwrap().miss_count =
+                SupplementalResultValue::Known { value: miss_count };
+            event
+        };
+
+        output.publish(&changed(3, 4)).unwrap();
+        output.publish(&changed(4, 5)).unwrap();
+
+        let provisional = output.active_provisional_result.as_ref().unwrap();
+        assert_eq!(provisional.result.clear_type, "HARD CLEAR");
+        assert_eq!(
+            provisional.result.miss_count,
+            SupplementalResultValue::Known { value: 3 }
+        );
+        assert_eq!(
+            output
+                .headless_events
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    RunEventKind::ResultChanged {
+                        state: ResultState::Retracted { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+
+        output.publish(&changed(5, 5)).unwrap();
+        let provisional = output.active_provisional_result.as_ref().unwrap();
+        assert_eq!(
+            provisional.result.miss_count,
+            SupplementalResultValue::Known { value: 5 }
+        );
+    }
+
+    #[test]
+    fn one_different_song_challenger_cannot_confirm_the_stable_result() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+
+        let other_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
+        output.engine.provisional_joint.as_mut().unwrap().song_id = other_song;
+        let mut challenger = output.accepted_numeric_result.clone().unwrap();
+        challenger.song_id = other_song;
+        challenger.source_sequence = 3;
+        assert!(output.stabilize_numeric_result(challenger, false).is_none());
+
+        output
+            .finalize_result_attempt(Some("invocation-1-session-1".to_owned()), Some(1), 4)
+            .unwrap();
+
+        assert_eq!(output.state.lock().unwrap().result_count, 0);
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn one_different_chart_challenger_cannot_confirm_the_stable_result() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+
+        output
+            .engine
+            .provisional_joint
+            .as_mut()
+            .unwrap()
+            .chart
+            .key
+            .difficulty = Difficulty::Another;
+        let mut challenger = output.accepted_numeric_result.clone().unwrap();
+        challenger.chart.key.difficulty = Difficulty::Another;
+        challenger.source_sequence = 3;
+        assert!(output.stabilize_numeric_result(challenger, false).is_none());
+
+        output
+            .finalize_result_attempt(Some("invocation-1-session-1".to_owned()), Some(1), 4)
+            .unwrap();
+
+        assert_eq!(output.state.lock().unwrap().result_count, 0);
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { .. },
+                ..
+            }
+        )));
+        assert!(matches!(
+            output.engine.play_attempt.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.result_relation
+                    == crate::play_attempt::PlayAttemptResultRelation::Conflict
+                    && attempt.reasons.contains(&PlayAttemptReason::LinkageConflict)
+        ));
     }
 
     #[test]
@@ -7143,6 +7450,14 @@ mod tests {
             event
         };
         output.publish(&changed_clear(3)).unwrap();
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted { .. },
+                ..
+            }
+        )));
+        assert!(output.active_provisional_result.is_some());
         output.publish(&changed_clear(4)).unwrap();
 
         let lifecycle = output
