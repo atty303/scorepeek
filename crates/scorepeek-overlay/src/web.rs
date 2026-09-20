@@ -3,24 +3,42 @@ use crate::runtime::Config;
 #[derive(rust_embed::Embed)]
 #[folder = "$SCOREPEEK_WEB_ASSET_DIR/"]
 struct Assets;
+#[cfg(feature = "embedded-web")]
+const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
+#[cfg(all(test, feature = "embedded-web"))]
+#[path = "../../../scripts/overlay-build-assets.rs"]
+#[allow(dead_code)]
+mod overlay_build_assets;
 
 #[cfg(all(test, feature = "embedded-web"))]
 mod tests {
-    use super::Assets;
+    use super::{ASSET_VERSION, Assets};
     #[test]
-    fn real_bundle_contains_html_javascript_and_wasm_with_mime_types() {
+    fn real_bundle_matches_host_identity_and_mime_types() {
         assert_eq!(
             Assets::get("index.html").unwrap().metadata.mimetype(),
             "text/html"
         );
-        for (suffix, mime) in [(".wasm", "application/wasm"), (".js", "text/javascript")] {
-            let path = Assets::iter()
-                .find(|path| path.ends_with(suffix))
-                .expect("real bundle asset");
-            let asset = Assets::get(&path).unwrap();
-            assert_eq!(asset.metadata.mimetype(), mime);
-            assert!(!asset.data.is_empty());
-        }
+        let javascript = Assets::iter()
+            .find(|path| path.ends_with(".js"))
+            .expect("real JavaScript bundle asset");
+        let javascript = Assets::get(&javascript).unwrap();
+        assert_eq!(javascript.metadata.mimetype(), "text/javascript");
+        assert!(!javascript.data.is_empty());
+
+        let wasm = Assets::iter()
+            .filter(|path| path.ends_with(".wasm"))
+            .collect::<Vec<_>>();
+        assert_eq!(wasm.len(), 1, "bundle must contain exactly one WASM asset");
+        let wasm = Assets::get(&wasm[0]).unwrap();
+        assert_eq!(wasm.metadata.mimetype(), "application/wasm");
+        assert!(!wasm.data.is_empty());
+        assert!(
+            wasm.data
+                .windows(ASSET_VERSION.len())
+                .any(|window| window == ASSET_VERSION.as_bytes()),
+            "embedded browser WASM must match the host build identity"
+        );
     }
 }
 
@@ -48,7 +66,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
 
 #[cfg(feature = "embedded-web")]
 mod server {
-    use super::Assets;
+    use super::{ASSET_VERSION, Assets};
     use crate::runtime::{Config, Feed};
     use axum::{
         Router,
@@ -79,8 +97,6 @@ mod server {
         asset_version: String,
         request: serde_json::Value,
     }
-
-    const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
 
     struct EditorConnection {
         shared: Arc<Shared>,

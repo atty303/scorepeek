@@ -146,6 +146,7 @@ sources = [
   "crates/scorepeek-overlay-ui/Cargo.toml",
   "crates/scorepeek-overlay-web/Cargo.toml",
   "crates/scorepeek-overlay/Cargo.toml",
+  "scripts/overlay-build-assets.rs",
   "scripts/overlay-build.rs",
 ]
 outputs = [

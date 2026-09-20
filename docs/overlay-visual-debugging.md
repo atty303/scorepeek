@@ -221,6 +221,10 @@ The overlay backend and browser WASM compile the same SHA-256 build identity fro
 `scripts/overlay-build.rs`. Its inputs cover overlay sources, host styles,
 workspace dependencies and build configuration; this is a build identity, not the
 configuration revision. Rebuild the web bundle before building the embedded backend.
+The embedded backend build observes the bundle completion marker and generated assets,
+requires an absolute asset directory with exactly one browser WASM, and fails if that
+WASM does not contain the host's build identity. This prevents a binary from serving
+browser assets built from a different source revision.
 
 Each stage connection and editing request must match the backend build identity.
 Until the first matching stage arrives, editing is disabled. A mismatch discards the
