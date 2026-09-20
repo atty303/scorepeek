@@ -1,0 +1,21 @@
+Task: lower the RESULT anchor threshold and prove the active private corpus replay succeeds
+Anchor: 7dfb1408b7a60c10acd70a9f254e018c6748c53f
+Base: cdb025de96a4cd1344226aa124f3cd3b86e18115
+Worktree: main, local only, origin/main was seven commits behind after this commit
+Commits: 7dfb140 fix(recognition): admit stable result anchors
+Guidance: repository AGENTS.md; investigate-problem; design-program-observability; develop-repository; review
+Environment: active private corpus generation fd3b1aaa10797492f70a7744350ac38a38b5aa782890113653b368e5ede33bb8; sandbox denied Git metadata writes and Unix-domain sockets, so scoped fetch, replay, package tests, commit, and build used the approved target-environment path
+
+Evidence:
+- Changed only the shared RESULT horizontal-edge minimum from 518 to 512. Left/right panel ROIs, upper/lower AND gating, unique-side fail-closed behavior, and temporal side stabilization remain unchanged.
+- The canonical layout digest became d1901bb441e4a227ae0d357b20997b98134ed676ce440d9f6622c0776307f8f9. Updated the dependent integrated-context layout, numeric character layout, numeric runtime manifest, and embedded manifest digest while preserving crop coordinates and ONNX model bytes.
+- The first replay attempt exposed the stale numeric artifact binding and failed before recognition with NumericModel(InvalidArtifact). After updating the complete registered binding chain, the same production replay exited zero for generation fd3b1aaa10797492f70a7744350ac38a38b5aa782890113653b368e5ede33bb8: 4 sessions, 22 episodes, 15,971 canonical frames, and completed_sessions=4.
+- mise run check passed. The target-environment cargo test -p scorepeek -p scorepeek-corpus green rerun passed scorepeek 560/560, scorepeek-corpus library 126/126, binary 3/3, and doc tests. An earlier run had one known nondeterministic FFmpeg broken-child timing failure; its exact rerun passed before the complete green rerun.
+- Fresh independent review of diff SHA-256 4153780ad8eb2f93d9620c15fb7c144e814648d8ff61453aa363438a847a110c found no actionable issue. Post-commit mise run build succeeded with embedded-web.
+- The repository-wide mise run test remained non-green only because of pre-existing Clippy findings in recognition.rs and the existing 2P application test; parallel overlay tasks were terminated after the check shard failed. The scoped package tests and required corpus replay both passed.
+
+Authority: current source, registered layout/model artifacts, tests, docs/private-corpus.md, and the active private corpus generation are authoritative; this note records the repair and replay evidence.
+
+Transcript:
+- U1: しきい値を修正して。それでreplayが成功することまで確認
+  - A: Applied the investigation, observability, and repository-development contracts; reused the prior production trace as the failure baseline; lowered the shared RESULT edge threshold from 518 to 512; followed the canonical-layout digest through every registered dependent artifact without changing crops or model bytes; diagnosed and repaired the initial stale-binding replay startup failure; obtained an exit-zero active-corpus replay over all four sessions and 15,971 frames; passed checks, the complete scoped package tests, independent review, and the required post-commit build; recorded the pre-existing full-suite Clippy boundary; committed locally without push or deployment.
