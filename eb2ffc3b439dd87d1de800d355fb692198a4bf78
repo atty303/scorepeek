@@ -1,0 +1,33 @@
+Task cycle: implement confirmed 2P PLAY and RESULT design
+
+User request and accepted contract:
+- Implement the already-confirmed design; private corpus import, label application, deployment, and push remain separate checkpoints.
+- PLAY BPM is only a screen predicate. Keep the center/right search ROI (760,940 900x140), add independent left search ROI (260,940 420x140), and return unknown when both contain valid outlines. Never infer play side from BPM position.
+- Separate RESULT panel placement from semantic play side with ResultPanelSide::Left/Right. Use panel origins x=0 and x=1360, panel-local anchors (0,450 560x2) and (0,654 560x2), and global header (600,0 720x80). Route panel-local crops using the predicate-selected side without re-detecting it.
+- Keep title, artist, difficulty, play type, level, and notes global. Shift clear type, current and previous score/clear/miss, judgment counts, FAST/SLOW, combo break, and play options with the panel origin.
+- Map SP left/right to known one_player/two_player, map DP to not_applicable, and do not require SELECT footer play side for DP. Replace the old public string field with an applicability type and bump the result contract without a compatibility branch.
+- Stabilize a RESULT side after two fresh matching sequences in one episode. A single opposite observation drops that frame, unknown preserves state, and two post-stable opposite observations retract the provisional result. Only matching-side observations enter field accumulation. Clear state on another screen, capture gap, binding change, or session end.
+- Derive RESULT side and SP play side from RESULT anchors. Keep an independently complete RESULT when SELECT conflicts, but detach its attempt linkage, record a diagnostic, and invalidate that SELECT context until a new stable selection.
+
+Implementation:
+- Added mutually exclusive dual-ROI PLAY BPM recognition.
+- Added ResultPanelSide routing, temporal stabilization/retraction, right-panel numeric offsets, and RESULT/SELECT mismatch detachment including retry lineage.
+- Added tagged PlaySideApplicability serialization and Event API v3; updated overlay and scores consumers to enforce SP-known/DP-not-applicable invariants and reject legacy strings.
+- Updated corpus validation/replay contracts to accept SP one/two and DP not_applicable without importing or labeling private recordings.
+- Versioned current layout manifests and updated architecture, field-semantics, Event API, and private-corpus documentation.
+
+Review:
+- A fresh review found the production RESULT serializer missing panel_side, fixed-slot right-panel numeric cells not shifted, and stale superseded layout/API artifacts. All were fixed.
+- Delta review found consumer-side applicability was not enforced and the exact JSON contract was underdocumented. Both were fixed.
+- Final delta review reported no actionable findings.
+
+Verification:
+- mise run check passed after the final consumer fixture correction.
+- cargo test --workspace passed before the final consumer-invariant delta. A subsequent full run passed scorepeek (560), corpus, overlay (91), and other workspace suites, then exposed one stale scores fixture; after correction, cargo test -p scorepeek-scores --lib passed 20/20.
+- Targeted production serializer, right-panel numeric extraction, panel-side accumulator, mismatch linkage, corpus applicability, overlay applicability, and scores applicability tests passed.
+- mise run test exposed an existing parallel feature-build race where the browser task selected a non-embedded binary; the isolated browser suite passed 3/3. This task does not change that task-runner race.
+- Post-commit mise run build passed and rebuilt target/debug/scorepeek with embedded-web.
+
+Not performed:
+- No private corpus recording import or label mutation.
+- No live target deployment, real-device validation, push, release, or external-state change.
