@@ -34,6 +34,7 @@ use crate::segment_remote::{RemoteSegment, SegmentRemote};
 
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v4";
+const SESSION_SCHEMA_V3: &str = "scorepeek-private-capture-session-v3";
 const CORPUS_OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v2";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
@@ -275,6 +276,78 @@ struct CaptureSession {
     canonical_frames: Vec<ReviewFrame>,
     normalization_pairs: Vec<NormalizationPair>,
     artifacts: Vec<CorpusArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CaptureSessionV3 {
+    schema: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_sha256: Option<String>,
+    source_kind: SourceKind,
+    source_session_id: String,
+    capture_generation: u64,
+    profile_sha256: String,
+    catalog_sha256: String,
+    recognition_interval_ms: u64,
+    processed_ticks: u64,
+    busy_skips: u64,
+    maximum_consecutive_busy_skips: u64,
+    completeness: String,
+    canonical_frames: Vec<ReviewFrame>,
+    normalization_pairs: Vec<NormalizationPair>,
+    artifacts: Vec<CorpusArtifact>,
+}
+
+impl CaptureSessionV3 {
+    fn into_v4(self) -> CaptureSession {
+        CaptureSession {
+            schema: SESSION_SCHEMA.to_owned(),
+            diagnostic_sha256: self.diagnostic_sha256,
+            source_kind: self.source_kind,
+            source_session_id: self.source_session_id,
+            capture_generation: self.capture_generation,
+            profile_sha256: self.profile_sha256,
+            catalog_sha256: self.catalog_sha256,
+            recognition_interval_ms: self.recognition_interval_ms,
+            processed_ticks: self.processed_ticks,
+            busy_skips: self.busy_skips,
+            maximum_consecutive_busy_skips: self.maximum_consecutive_busy_skips,
+            completeness: self.completeness,
+            game_version: GameVersionState::NotObserved,
+            canonical_frames: self.canonical_frames,
+            normalization_pairs: self.normalization_pairs,
+            artifacts: self.artifacts,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedSessionIdentity {
+    schema: String,
+    source_session_id: String,
+    capture_generation: u64,
+    session_sha256: String,
+}
+
+struct MigrationSessionTarget {
+    session_sha256: String,
+    source_session_id: String,
+    capture_generation: u64,
+}
+
+struct CorpusV3ToV4MigrationPlan {
+    previous_generation_sha256: String,
+    generation_sha256: String,
+    suite: RegressionSuite,
+    session_mapping: BTreeMap<String, MigrationSessionTarget>,
+    publications: Vec<(PathBuf, Vec<u8>)>,
+}
+
+struct MigrationIdentityUpdates {
+    documents: Vec<(PathBuf, Vec<u8>)>,
+    bound_identities: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -552,6 +625,16 @@ pub struct ReviewApplySummary {
     label_sha256: String,
     generation_sha256: String,
     active_entries: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CorpusV3ToV4MigrationSummary {
+    schema: &'static str,
+    previous_generation_sha256: String,
+    generation_sha256: String,
+    migrated_sessions: usize,
+    migrated_labels: usize,
+    updated_identities: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -2137,6 +2220,11 @@ pub fn apply_review(
     labels_path: &Path,
 ) -> Result<ReviewApplySummary, CorpusError> {
     ensure_store(store)?;
+    let _active_writer = ActiveSuiteWriterLock::acquire(store)?;
+    let previous = load_active_suite(store)?;
+    if let Some((_, suite)) = &previous {
+        validate_v4_suite_sessions(store, suite)?;
+    }
     let (draft, _) = read_json::<ReviewDraft>(draft_path)?;
     let (label, label_bytes) = read_json::<RegressionLabel>(labels_path)?;
     validate_label(&draft, &label)?;
@@ -2146,7 +2234,6 @@ pub fn apply_review(
         &store.join("labels").join(format!("{label_sha256}.json")),
         &label_bytes,
     )?;
-    let previous = load_active_suite(store)?;
     let mut entries = previous
         .as_ref()
         .map_or_else(Vec::new, |(_, suite)| suite.entries.clone());
@@ -2179,6 +2266,235 @@ pub fn apply_review(
         generation_sha256,
         active_entries: suite.entries.len(),
     })
+}
+
+fn validate_v4_suite_sessions(store: &Path, suite: &RegressionSuite) -> Result<(), CorpusError> {
+    for entry in &suite.entries {
+        let (document, bytes) = read_json::<Value>(
+            &store
+                .join("sessions")
+                .join(format!("{}.json", entry.session_sha256)),
+        )?;
+        if document.get("schema").and_then(Value::as_str) != Some(SESSION_SCHEMA)
+            || digest(&bytes) != entry.session_sha256
+        {
+            return invalid("active corpus suite requires v3-to-v4 migration before review apply");
+        }
+        serde_json::from_slice::<CaptureSession>(&bytes)?;
+    }
+    Ok(())
+}
+
+/// Rewrites the active v3 corpus generation as v4 with `not_observed` game-version state.
+///
+/// This temporary one-shot entrypoint preserves the immutable v3 objects, publishes new
+/// content-addressed v4 session and label documents, updates matching import identities, and
+/// atomically switches the active suite only after every new document exists.
+///
+/// # Errors
+/// Returns an error without changing the active suite when the source generation is not a complete,
+/// internally bound v3 generation or when publication fails before activation.
+pub fn migrate_active_corpus_v3_to_v4(
+    store: &Path,
+) -> Result<CorpusV3ToV4MigrationSummary, CorpusError> {
+    ensure_store(store)?;
+    let _active_writer = ActiveSuiteWriterLock::acquire(store)?;
+    let (active_generation_sha256, active) = load_active_suite(store)?
+        .ok_or_else(|| CorpusError::InvalidRequest("active corpus suite is absent".to_owned()))?;
+    if let Some(previous_generation_sha256) = &active.previous_generation_sha256
+        && valid_sha256(previous_generation_sha256)
+    {
+        let previous = load_suite_generation(store, previous_generation_sha256)?;
+        if let Ok(plan) =
+            plan_corpus_v3_to_v4_migration(store, previous_generation_sha256.clone(), &previous)
+            && plan.generation_sha256 == active_generation_sha256
+        {
+            return finish_corpus_v3_to_v4_migration(store, plan, false);
+        }
+    }
+    let plan = plan_corpus_v3_to_v4_migration(store, active_generation_sha256, &active)?;
+    finish_corpus_v3_to_v4_migration(store, plan, true)
+}
+
+fn plan_corpus_v3_to_v4_migration(
+    store: &Path,
+    previous_generation_sha256: String,
+    previous: &RegressionSuite,
+) -> Result<CorpusV3ToV4MigrationPlan, CorpusError> {
+    let mut migrated_entries = Vec::with_capacity(previous.entries.len());
+    let mut session_mapping = BTreeMap::new();
+    let mut publications = Vec::with_capacity(previous.entries.len().saturating_mul(2) + 1);
+    for entry in &previous.entries {
+        if !valid_sha256(&entry.session_sha256) || !valid_sha256(&entry.label_sha256) {
+            return invalid("active v3 suite entry digest is invalid");
+        }
+        let session_path = store
+            .join("sessions")
+            .join(format!("{}.json", entry.session_sha256));
+        let (session, session_bytes) = read_json::<CaptureSessionV3>(&session_path)?;
+        if session.schema != SESSION_SCHEMA_V3 || digest(&session_bytes) != entry.session_sha256 {
+            return invalid("active v3 session is invalid");
+        }
+        let source_session_id = session.source_session_id.clone();
+        let capture_generation = session.capture_generation;
+        let session_bytes = canonical_json(&session.into_v4())?;
+        let session_sha256 = digest(&session_bytes);
+        let label_path = store
+            .join("labels")
+            .join(format!("{}.json", entry.label_sha256));
+        let (mut label, label_bytes) = read_regression_label(&label_path)?;
+        if digest(&label_bytes) != entry.label_sha256
+            || label.session_sha256 != entry.session_sha256
+        {
+            return invalid("active v3 label binding is invalid");
+        }
+        label.session_sha256.clone_from(&session_sha256);
+        let label_bytes = canonical_json(&label)?;
+        let label_sha256 = digest(&label_bytes);
+        publications.push((
+            store
+                .join("sessions")
+                .join(format!("{session_sha256}.json")),
+            session_bytes,
+        ));
+        publications.push((
+            store.join("labels").join(format!("{label_sha256}.json")),
+            label_bytes,
+        ));
+        if session_mapping
+            .insert(
+                entry.session_sha256.clone(),
+                MigrationSessionTarget {
+                    session_sha256: session_sha256.clone(),
+                    source_session_id,
+                    capture_generation,
+                },
+            )
+            .is_some()
+        {
+            return invalid("active v3 suite contains a duplicate session");
+        }
+        migrated_entries.push(SuiteEntry {
+            session_sha256,
+            label_sha256,
+        });
+    }
+    migrated_entries.sort_by(|left, right| left.session_sha256.cmp(&right.session_sha256));
+    let suite = RegressionSuite {
+        schema: SUITE_SCHEMA.to_owned(),
+        previous_generation_sha256: Some(previous_generation_sha256.clone()),
+        entries: migrated_entries,
+    };
+    let suite_bytes = canonical_json(&suite)?;
+    let generation_sha256 = digest(&suite_bytes);
+    publications.push((
+        store
+            .join("suites")
+            .join(format!("{generation_sha256}.json")),
+        suite_bytes,
+    ));
+    Ok(CorpusV3ToV4MigrationPlan {
+        previous_generation_sha256,
+        generation_sha256,
+        suite,
+        session_mapping,
+        publications,
+    })
+}
+
+fn finish_corpus_v3_to_v4_migration(
+    store: &Path,
+    plan: CorpusV3ToV4MigrationPlan,
+    activate: bool,
+) -> Result<CorpusV3ToV4MigrationSummary, CorpusError> {
+    let identity_updates = migration_identity_updates(store, &plan.session_mapping)?;
+    for (path, bytes) in &plan.publications {
+        publish_migration_document(path, bytes)?;
+    }
+    for (path, bytes) in &identity_updates.documents {
+        replace_document(path, bytes)?;
+    }
+    if activate {
+        publish_active(store, &plan.generation_sha256)?;
+    }
+    Ok(CorpusV3ToV4MigrationSummary {
+        schema: "scorepeek-private-corpus-v3-to-v4-migration-v1",
+        previous_generation_sha256: plan.previous_generation_sha256,
+        generation_sha256: plan.generation_sha256,
+        migrated_sessions: plan.session_mapping.len(),
+        migrated_labels: plan.suite.entries.len(),
+        updated_identities: identity_updates.bound_identities,
+    })
+}
+
+fn migration_identity_updates(
+    store: &Path,
+    session_mapping: &BTreeMap<String, MigrationSessionTarget>,
+) -> Result<MigrationIdentityUpdates, CorpusError> {
+    let mut updates = Vec::new();
+    let mut bound_identities = 0;
+    let mut paths = fs::read_dir(store.join("identities"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    for path in paths {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+            continue;
+        }
+        let (mut identity, _) = read_json::<OwnedSessionIdentity>(&path)?;
+        if !matches!(
+            identity.schema.as_str(),
+            "scorepeek-private-capture-session-identity-v1"
+                | "scorepeek-private-capture-session-identity-v3"
+                | "scorepeek-private-capture-session-identity-v4"
+        ) {
+            return invalid("capture session identity schema is invalid");
+        }
+        let replacement = session_mapping.get(&identity.session_sha256);
+        let already_rebound = session_mapping
+            .values()
+            .find(|target| target.session_sha256 == identity.session_sha256);
+        let Some(target) = replacement.or(already_rebound) else {
+            continue;
+        };
+        if identity.source_session_id != target.source_session_id
+            || identity.capture_generation != target.capture_generation
+        {
+            return invalid("capture session identity binding differs");
+        }
+        bound_identities += 1;
+        if replacement.is_some() {
+            identity.session_sha256.clone_from(&target.session_sha256);
+            updates.push((path, canonical_json(&identity)?));
+        }
+    }
+    Ok(MigrationIdentityUpdates {
+        documents: updates,
+        bound_identities,
+    })
+}
+
+struct ActiveSuiteWriterLock {
+    directory: File,
+}
+
+impl ActiveSuiteWriterLock {
+    fn acquire(store: &Path) -> Result<Self, CorpusError> {
+        let directory = File::open(store)?;
+        directory.try_lock().map_err(|error| match error {
+            fs::TryLockError::WouldBlock => CorpusError::InvalidRequest(
+                "active corpus suite writer is already running".to_owned(),
+            ),
+            fs::TryLockError::Error(error) => CorpusError::Io(error),
+        })?;
+        Ok(Self { directory })
+    }
+}
+
+impl Drop for ActiveSuiteWriterLock {
+    fn drop(&mut self) {
+        let _ = self.directory.unlock();
+    }
 }
 
 pub fn author_numeric_dataset(
@@ -5969,6 +6285,49 @@ fn publish_document(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
     Ok(())
 }
 
+fn replace_document(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
+    write_atomic_document(path, bytes)
+}
+
+fn publish_migration_document(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
+    let expected = path
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| CorpusError::InvalidRequest("document filename is invalid".to_owned()))?;
+    if expected != digest(bytes) {
+        return invalid("migration document path does not match its content");
+    }
+    if path.exists() && fs::read(path)? == bytes {
+        return Ok(());
+    }
+    write_atomic_document(path, bytes)
+}
+
+fn write_atomic_document(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
+    let name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| CorpusError::InvalidRequest("document filename is invalid".to_owned()))?;
+    let staging = path.with_file_name(format!(".{name}.migration-v3-v4-staging"));
+    if staging.exists() {
+        fs::remove_file(&staging)?;
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staging)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::rename(&staging, path)?;
+    File::open(
+        path.parent()
+            .ok_or_else(|| CorpusError::InvalidRequest("document path has no parent".to_owned()))?,
+    )?
+    .sync_all()?;
+    Ok(())
+}
+
 fn publish_active(store: &Path, generation_sha256: &str) -> Result<(), CorpusError> {
     let path = store.join("active-suite.json");
     let staging = store.join(".active-suite.staging");
@@ -6000,15 +6359,23 @@ fn load_active_suite(store: &Path) -> Result<Option<(String, RegressionSuite)>, 
     if active.schema != ACTIVE_SCHEMA || !valid_sha256(&active.generation_sha256) {
         return invalid("active suite pointer is invalid");
     }
+    let suite = load_suite_generation(store, &active.generation_sha256)?;
+    Ok(Some((active.generation_sha256, suite)))
+}
+
+fn load_suite_generation(
+    store: &Path,
+    generation_sha256: &str,
+) -> Result<RegressionSuite, CorpusError> {
     let (suite, bytes) = read_json::<RegressionSuite>(
         &store
             .join("suites")
-            .join(format!("{}.json", active.generation_sha256)),
+            .join(format!("{generation_sha256}.json")),
     )?;
-    if suite.schema != SUITE_SCHEMA || digest(&bytes) != active.generation_sha256 {
+    if suite.schema != SUITE_SCHEMA || digest(&bytes) != generation_sha256 {
         return invalid("active suite generation is invalid");
     }
-    Ok(Some((active.generation_sha256, suite)))
+    Ok(suite)
 }
 
 fn session_frame_map(session: &CaptureSession) -> BTreeMap<u64, String> {
@@ -6194,6 +6561,259 @@ mod tests {
     use object_store::ObjectStore;
     use object_store::memory::InMemory;
     use std::io::Seek as _;
+
+    #[test]
+    fn v3_to_v4_migration_republishes_the_active_generation_as_not_observed() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let v3 = CaptureSessionV3 {
+            schema: SESSION_SCHEMA_V3.to_owned(),
+            diagnostic_sha256: None,
+            source_kind: SourceKind::LiveRun,
+            source_session_id: "session-1".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "1".repeat(64),
+            catalog_sha256: "2".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            canonical_frames: Vec::new(),
+            normalization_pairs: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let session_bytes = canonical_json(&v3).unwrap();
+        let old_session_sha256 = digest(&session_bytes);
+        let expected_v4_bytes = canonical_json(&v3.clone().into_v4()).unwrap();
+        let expected_v4_sha256 = digest(&expected_v4_bytes);
+        publish_document(
+            &store
+                .join("sessions")
+                .join(format!("{old_session_sha256}.json")),
+            &session_bytes,
+        )
+        .unwrap();
+        let label = RegressionLabel {
+            schema: LABEL_SCHEMA.to_owned(),
+            session_sha256: old_session_sha256.clone(),
+            disposition: LabelDisposition::Include,
+            episodes: Vec::new(),
+            negative_frames: Vec::new(),
+        };
+        let label_bytes = canonical_json(&label).unwrap();
+        let old_label_sha256 = digest(&label_bytes);
+        publish_document(
+            &store
+                .join("labels")
+                .join(format!("{old_label_sha256}.json")),
+            &label_bytes,
+        )
+        .unwrap();
+        let identity_path = store.join("identities").join("identity.json");
+        publish_document(
+            &identity_path,
+            &canonical_json(&OwnedSessionIdentity {
+                schema: "scorepeek-private-capture-session-identity-v1".to_owned(),
+                source_session_id: "session-1".to_owned(),
+                capture_generation: 1,
+                session_sha256: old_session_sha256.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let unrelated_identity_path = store.join("identities").join("unrelated.json");
+        let unrelated_identity = canonical_json(&OwnedSessionIdentity {
+            schema: "scorepeek-private-capture-session-identity-v3".to_owned(),
+            source_session_id: "unrelated".to_owned(),
+            capture_generation: 2,
+            session_sha256: "9".repeat(64),
+        })
+        .unwrap();
+        publish_document(&unrelated_identity_path, &unrelated_identity).unwrap();
+        let old_suite = RegressionSuite {
+            schema: SUITE_SCHEMA.to_owned(),
+            previous_generation_sha256: None,
+            entries: vec![SuiteEntry {
+                session_sha256: old_session_sha256.clone(),
+                label_sha256: old_label_sha256.clone(),
+            }],
+        };
+        let old_suite_bytes = canonical_json(&old_suite).unwrap();
+        let old_generation = digest(&old_suite_bytes);
+        publish_document(
+            &store.join("suites").join(format!("{old_generation}.json")),
+            &old_suite_bytes,
+        )
+        .unwrap();
+        publish_active(&store, &old_generation).unwrap();
+        fs::write(
+            store
+                .join("sessions")
+                .join(format!("{expected_v4_sha256}.json")),
+            b"partial migration output",
+        )
+        .unwrap();
+
+        let summary = migrate_active_corpus_v3_to_v4(&store).unwrap();
+        assert_eq!(summary.previous_generation_sha256, old_generation);
+        assert_eq!(summary.migrated_sessions, 1);
+        assert_eq!(summary.migrated_labels, 1);
+        assert_eq!(summary.updated_identities, 1);
+        let active_after_first_run = fs::read(store.join("active-suite.json")).unwrap();
+        let repeated = migrate_active_corpus_v3_to_v4(&store).unwrap();
+        assert_eq!(repeated.previous_generation_sha256, old_generation);
+        assert_eq!(repeated.generation_sha256, summary.generation_sha256);
+        assert_eq!(repeated.migrated_sessions, summary.migrated_sessions);
+        assert_eq!(repeated.migrated_labels, summary.migrated_labels);
+        assert_eq!(repeated.updated_identities, summary.updated_identities);
+        assert_eq!(
+            fs::read(store.join("active-suite.json")).unwrap(),
+            active_after_first_run
+        );
+        let (generation, suite) = load_active_suite(&store).unwrap().unwrap();
+        assert_eq!(generation, summary.generation_sha256);
+        assert_eq!(
+            suite.previous_generation_sha256,
+            Some(old_generation.clone())
+        );
+        let new_entry = &suite.entries[0];
+        let (session, _) = read_json::<CaptureSession>(
+            &store
+                .join("sessions")
+                .join(format!("{}.json", new_entry.session_sha256)),
+        )
+        .unwrap();
+        assert_eq!(session.schema, SESSION_SCHEMA);
+        assert_eq!(session.game_version, GameVersionState::NotObserved);
+        let (new_label, _) = read_regression_label(
+            &store
+                .join("labels")
+                .join(format!("{}.json", new_entry.label_sha256)),
+        )
+        .unwrap();
+        assert_eq!(new_label.session_sha256, new_entry.session_sha256);
+        let (identity, _) = read_json::<OwnedSessionIdentity>(&identity_path).unwrap();
+        assert_eq!(identity.session_sha256, new_entry.session_sha256);
+        assert_eq!(
+            identity.schema,
+            "scorepeek-private-capture-session-identity-v1"
+        );
+        assert_eq!(
+            fs::read(unrelated_identity_path).unwrap(),
+            unrelated_identity
+        );
+        assert!(
+            read_json::<CaptureSession>(
+                &store
+                    .join("sessions")
+                    .join(format!("{old_session_sha256}.json"))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn active_suite_writer_lock_excludes_a_peer_until_release() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let first = ActiveSuiteWriterLock::acquire(&store).unwrap();
+        assert!(ActiveSuiteWriterLock::acquire(&store).is_err());
+        drop(first);
+        let second = ActiveSuiteWriterLock::acquire(&store).unwrap();
+        drop(second);
+    }
+
+    #[test]
+    fn review_apply_rejects_an_active_v3_suite_before_reading_new_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let v3 = CaptureSessionV3 {
+            schema: SESSION_SCHEMA_V3.to_owned(),
+            diagnostic_sha256: None,
+            source_kind: SourceKind::LiveRun,
+            source_session_id: "session-1".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "1".repeat(64),
+            catalog_sha256: "2".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            canonical_frames: Vec::new(),
+            normalization_pairs: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let session_bytes = canonical_json(&v3).unwrap();
+        let session_sha256 = digest(&session_bytes);
+        publish_document(
+            &store
+                .join("sessions")
+                .join(format!("{session_sha256}.json")),
+            &session_bytes,
+        )
+        .unwrap();
+        let suite = RegressionSuite {
+            schema: SUITE_SCHEMA.to_owned(),
+            previous_generation_sha256: None,
+            entries: vec![SuiteEntry {
+                session_sha256,
+                label_sha256: "3".repeat(64),
+            }],
+        };
+        let suite_bytes = canonical_json(&suite).unwrap();
+        let generation_sha256 = digest(&suite_bytes);
+        publish_document(
+            &store
+                .join("suites")
+                .join(format!("{generation_sha256}.json")),
+            &suite_bytes,
+        )
+        .unwrap();
+        publish_active(&store, &generation_sha256).unwrap();
+
+        let error = apply_review(
+            &store,
+            &root.path().join("missing-draft.json"),
+            &root.path().join("missing-label.json"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires v3-to-v4 migration"));
+        let (active_generation, _) = load_active_suite(&store).unwrap().unwrap();
+        assert_eq!(active_generation, generation_sha256);
+    }
+
+    #[test]
+    fn migration_rejects_an_identity_whose_session_metadata_differs() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let old_session_sha256 = "1".repeat(64);
+        publish_document(
+            &store.join("identities").join("identity.json"),
+            &canonical_json(&OwnedSessionIdentity {
+                schema: "scorepeek-private-capture-session-identity-v4".to_owned(),
+                source_session_id: "wrong-session".to_owned(),
+                capture_generation: 7,
+                session_sha256: old_session_sha256.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mapping = BTreeMap::from([(
+            old_session_sha256,
+            MigrationSessionTarget {
+                session_sha256: "2".repeat(64),
+                source_session_id: "expected-session".to_owned(),
+                capture_generation: 7,
+            },
+        )]);
+        assert!(migration_identity_updates(&store, &mapping).is_err());
+    }
 
     #[test]
     fn replay_observer_rejects_an_oversized_run_event_marker() {

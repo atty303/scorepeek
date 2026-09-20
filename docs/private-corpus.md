@@ -42,6 +42,17 @@ Existing v3 sessions require the one-shot migration command from the separate te
 commit. Because ordinary v3 recordings did not retain TITLE evidence, migration assigns
 `not_observed` rather than inferring a version.
 
+While that temporary commit is checked out, migrate only at the separately approved corpus
+checkpoint:
+
+```text
+scorepeek-corpus corpus migrate-v3-to-v4 --store /absolute/private-corpus-v2
+```
+
+The command republishes the active suite's sessions and labels, updates matching import identities,
+then atomically switches the active generation. Verify the migrated corpus before reverting the
+temporary migration commit.
+
 Retained frames are lossless RGB Matroska segments in tick-index order. Intentional sequence gaps
 remain inside a segment; 600 retained frames, chronology reset, or session end closes it. The
 realtime recorder does not hash video content. After semantic `session_finished`, the TUI shows
