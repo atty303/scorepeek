@@ -1,0 +1,64 @@
+Task: Implement capture-session game-version recognition and a separately committed one-shot private corpus v3-to-v4 migration
+Anchor: f4699c90bce93f3396049814fc62f7b8a694bc25
+Base: f2b8239
+Workline: main, local commits only; unrelated commit 45c1fed from another task entered between the two task commits; origin/main remained at f2b8239
+Commits: a5d6512 feat: identify game version per capture session; f4699c9 chore: add one-shot corpus v4 migration
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review; maintain-agent-guidance pending final assessment
+Execution: local source, tests, and build only; no push, target apply, or real private corpus migration; Git writes, Unix-socket tests, and mise state-cache writes required host execution after sandbox read-only or EPERM failures
+Evidence: The user-provided latest-record measurement covered 2,315 frames; only 59 consecutive frames at 31.6-37.4 seconds matched the final Title predicate, yielding one confirmed episode after the one-second gate and zero false recognitions.
+Evidence: Final implementation and migration reviews reported no findings after fixes for selective-recording retention, predicate independence, identified-value validation, observer gating, atomic migration publication, writer exclusion, historical identities, metadata binding, mixed v3/v4 review prevention, and post-activation idempotent recovery.
+Evidence: Repository checks, locked all-target corpus check, all 130 corpus library tests plus 4 CLI tests and doc tests, prior full non-overlay workspace tests for the implementation commit, and post-commit embedded-web scorepeek builds succeeded. Sandbox-only Unix socket failures passed unchanged under host execution.
+Authority: Current source, tests, living documentation, commits a5d6512 and f4699c9, and the user-confirmed contracts below are authoritative; real corpus migration and target application remain separate ungranted operations.
+Transcript:
+- U1:
+    ## まとめ
+    
+    ### 決まったこと
+    
+    - capture sessionごとにゲームバージョンを認識し、別sessionへは引き継がない。
+    - `ScreenClass::Title` を追加し、既存のscreen episode経路へ載せる。
+    - Title候補はcanonical frameの左上ROI `(16, 8, 280, 45)` で判定する。
+    - version文字列の内容や画素数ではなく、明色文字列の外接矩形を使う。
+      - `x=10–18`
+      - `y=9–15`
+      - `width=232–240`
+      - `height=14–18`
+    - canonical 10 Hzで評価し、10フレーム、すなわち1秒連続した時点で `Title` を確定する。
+    - Title開始は確認時点からとし、最初の候補frameへ遡及させない。
+    - 最新record全2,315フレームでは、最終条件に一致したのは `31.6–37.4秒`の59連続フレームだけだった。1秒確認後のTitle episodeは1件、誤認識は0件。
+    - Title確定後にだけ、既存field OCRと同様のscreen gateを通してversion OCRを開始する。
+    - OCR結果は以下の構造を要求する。
+      - 全20文字
+      - 現在と同じ4か所にコロン
+      - コロン以外はASCII英数字
+      - 現在のprefixや末尾の数字列は固定しない
+    - 異なるsource sequenceで、同じ完全文字列が3回連続したらversionを確定する。同一画素のframeも別sequenceなら数える。
+    - 別の有効文字列が出た場合は連続回数をリセットする。
+    - version確定後、そのcapture sessionではversion OCRを一切scheduleしない。
+    - 保存するversionは、画面から得た完全な文字列だけとする。現在の実測値は `P2D:J:B:A:2026080500`。
+    - すべてのcapture sessionで認識する。
+    - Event APIでは：
+      - snapshotにnullableな現在versionを持つ
+      - session開始時は `null`
+      - 確定時だけ `game_version_changed` を送る
+      - OCR候補や失敗の内部情報は公開しない
+    - SQLiteのscore履歴には保存しない。
+    - canonical recording manifestをv4へ更新し、次の状態を必須にする。
+      - `identified`
+      - `not_observed`
+      - `ambiguous`
+      - `observer_failed`
+    - manifestには判定状態と、`identified` の場合の完全なversion文字列だけを保存する。
+    - 通常の `--record` ではTitle映像を保持せず、manifest metadataだけを残す。
+    - `--record-all` では既存契約どおりTitleを含む全canonical frameを保持する。
+    - private corpusはv4専用へmigrationする。
+      - 既存v3 sessionは、Title動画が保持されていない前提で `game_version: not_observed` とする
+      - 通常のimporterへv3互換readerは残さない
+      - migration codeは通常機能とは別commitにする
+      - 実corpusのmigrationと検証後、そのmigration commitをrevertして一時コードを削除する
+    - 実装、corpus migrationの実行、targetへの適用は、それぞれ別の承認境界とする。
+    
+    
+    
+    実装して
+  - A: Interpreted the request as durable repository implementation while preserving corpus migration execution and target application as separate authority boundaries. Snapshotted and fetched the repository, read current documentation and relevant domain contracts, designed the session-local observation and diagnostic surfaces, and implemented Title classification, gated OCR confirmation, Event API v3 exposure, canonical manifest v4 state, selective versus record-all retention, and private corpus v4-only support. Independent review found and prompted fixes for nine-frame preconfirmation Title retention, unintended predicate coupling, invalid identified deserialization, and bypass of the field-worker busy gate. Committed this slice as a5d6512 and built it. Added a separate operator-only v3-to-v4 migration command that sets historical sessions to not_observed without adding a normal v3 compatibility reader. Multiple fresh reviews prompted atomic recoverable publication, OS-released common writer locking, support for known historical identity schemas, identity metadata checks, exclusion of concurrent active-suite writers, blocking review apply on an active v3 suite, and deterministic idempotent recovery when activation succeeded but the process stopped before reporting success. Final review found no issues. Repository checks and all corpus tests passed; Unix-socket tests that received sandbox EPERM passed unchanged outside the sandbox. Committed the migration as f4699c9 and rebuilt target/debug/scorepeek. Preserved the unrelated intervening 45c1fed commit. Did not run the migration against the real corpus, apply to a target, push, publish, or change external state.
