@@ -31,3 +31,5 @@ Verification:
 Not performed:
 - No private corpus recording import or label mutation.
 - No live target deployment, real-device validation, push, release, or external-state change.
+
+Final verification update: cargo test --workspace passed in full after the final fixture correction. One earlier target-environment run had a single transient canonical_recording child-exit timing failure (559/560); the exact test passed alone and the subsequent complete workspace rerun passed all crates and doc-tests.
