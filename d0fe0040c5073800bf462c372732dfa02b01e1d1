@@ -1,6 +1,9 @@
 Task: restore OBS overlay connectivity after persistent asset version mismatch
 
-Anchor: d0fe004\nBase: 8a57826\nWorktree: main\nCommits: ce8a813 rejects mismatched embedded browser bundles at build time; d0fe004 restores the lint gate for the preceding MUSIC SELECT play-side change
+Anchor: d0fe004
+Base: 8a57826
+Worktree: main
+Commits: ce8a813 rejects mismatched embedded browser bundles at build time; d0fe004 restores the lint gate for the preceding MUSIC SELECT play-side change
 
 Diagnosis: target run run-1789876231-862933739-1647999 had a healthy OBS child and state feed but repeatedly emitted overlay_editor_version=version_mismatch; the served browser WASM carried b9804f2787121dbb27f77ad2e7c045b7dc2ded788879f4c540b92eb57c98cc1d while the host expected af387510424d798e1782f4a21aab5fa201a5cf14c6e6c2a6c70139f58bdc11bd. Reload could only fetch the same mixed embedded bundle.
 
@@ -10,4 +13,7 @@ Evidence: stale pre-rebuild bundles failed cargo check with an actionable mismat
 
 Authority: user requested the fix after confirming reload never recovered. No target deployment, push, or live OBS mutation was authorized or performed.
 
-Transcript:\n- U: version mismatchのままreloadしても解消しない\n- U: 修正して\n  - A: Added a build-time host/browser identity gate so mixed embedded assets cannot ship; retained runtime diagnostics and verified the production browser handshake.
+Transcript:
+- U: version mismatchのままreloadしても解消しない
+- U: 修正して
+  - A: Added a build-time host/browser identity gate so mixed embedded assets cannot ship; retained runtime diagnostics and verified the production browser handshake.
