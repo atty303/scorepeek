@@ -23,11 +23,11 @@ mod replay_trace;
 mod segment_remote;
 mod temporal_evaluation;
 pub use frame_corpus::{
-    CorpusReplayOptions, CorpusReplaySummary, CorpusV3ToV4MigrationSummary,
-    DiagnosticImportSummary, DiagnosticVerificationSummary, NumericDatasetAuthoringSummary,
-    NumericSentinelAuthoringSummary, ReviewApplySummary, apply_review, author_numeric_dataset,
-    author_numeric_sentinel, import_run_diagnostic, inspect_review, migrate_active_corpus_v3_to_v4,
-    replay_corpus, replay_corpus_with_options, verify_run_diagnostic,
+    CorpusReplayOptions, CorpusReplaySummary, DiagnosticImportSummary,
+    DiagnosticVerificationSummary, NumericDatasetAuthoringSummary, NumericSentinelAuthoringSummary,
+    ReviewApplySummary, apply_review, author_numeric_dataset, author_numeric_sentinel,
+    import_run_diagnostic, inspect_review, replay_corpus, replay_corpus_with_options,
+    verify_run_diagnostic,
 };
 pub use media::{CanonicalFrameExtractionSummary, FrameExtractionSummary, MediaProbeSummary};
 pub use music_list::{

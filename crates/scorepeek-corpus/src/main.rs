@@ -8,9 +8,9 @@ use scorepeek_corpus::{
     apply_review, author_numeric_dataset, author_numeric_sentinel,
     evaluate_music_select_correctness, evaluate_music_select_dwell, evaluate_temporal_corpus,
     import_run_diagnostic, inspect_music_list_row_observation_draft, inspect_review,
-    measure_music_list_motion, migrate_active_corpus_v3_to_v4, plan_music_list_motion_review,
-    plan_music_select_motion_review, render_synthetic_title_set, replay_corpus_with_options,
-    verify_music_list_motion, verify_music_list_row_observation_draft, verify_run_diagnostic,
+    measure_music_list_motion, plan_music_list_motion_review, plan_music_select_motion_review,
+    render_synthetic_title_set, replay_corpus_with_options, verify_music_list_motion,
+    verify_music_list_row_observation_draft, verify_run_diagnostic,
 };
 
 #[derive(Parser)]
@@ -59,10 +59,6 @@ struct CorpusArgs {
 
 #[derive(Subcommand)]
 enum CorpusCommand {
-    MigrateV3ToV4 {
-        #[arg(long)]
-        store: PathBuf,
-    },
     ImportDiagnostic {
         #[arg(long)]
         store: PathBuf,
@@ -347,9 +343,6 @@ fn dispatch(command: Command) -> Result<(), String> {
             .map_err(|error| format!("diagnostic verification failed: {error}"))
             .and_then(|value| print_json(&value, "diagnostic verification")),
         Command::Corpus(CorpusArgs { command }) => match command {
-            CorpusCommand::MigrateV3ToV4 { store } => migrate_active_corpus_v3_to_v4(&store)
-                .map_err(|error| format!("v3-to-v4 corpus migration failed: {error}"))
-                .and_then(|value| print_json(&value, "v3-to-v4 corpus migration")),
             CorpusCommand::ImportDiagnostic {
                 store,
                 diagnostic,
@@ -632,21 +625,6 @@ mod tests {
             ])
             .is_ok()
         );
-    }
-
-    #[test]
-    fn temporary_v3_to_v4_migration_requires_the_store() {
-        assert!(
-            Cli::try_parse_from([
-                "scorepeek-corpus",
-                "corpus",
-                "migrate-v3-to-v4",
-                "--store",
-                "/tmp/corpus",
-            ])
-            .is_ok()
-        );
-        assert!(Cli::try_parse_from(["scorepeek-corpus", "corpus", "migrate-v3-to-v4"]).is_err());
     }
 
     #[test]
