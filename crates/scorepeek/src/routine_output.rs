@@ -4957,6 +4957,25 @@ fn family_contribution_labels(
     values
 }
 
+fn important_play_side(fields: &Value) -> Option<(String, String)> {
+    let observation = fields.get("play_side")?;
+    let state = observation.get("state")?;
+    let status = state.get("status")?.as_str()?;
+    let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
+    let winner = observation
+        .get("winner_bright_pixels")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let margin = observation
+        .get("margin")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Some((
+        "play_side".to_owned(),
+        format!("{status}:{value} bright={winner} margin={margin}"),
+    ))
+}
+
 fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
     let marker = fields.get("selected_difficulty").and_then(|observation| {
         let state = observation.get("state")?;
@@ -4992,23 +5011,7 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
             format!("{status}:{value} sp={single} dp={double}"),
         ))
     });
-    let play_side = fields.get("play_side").and_then(|observation| {
-        let state = observation.get("state")?;
-        let status = state.get("status")?.as_str()?;
-        let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
-        let winner = observation
-            .get("winner_bright_pixels")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let margin = observation
-            .get("margin")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        Some((
-            "play_side".to_owned(),
-            format!("{status}:{value} bright={winner} margin={margin}"),
-        ))
-    });
+    let play_side = important_play_side(fields);
     let keys = [
         "title",
         "central_title",
@@ -9772,13 +9775,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(matches!(
-            output.music_select_resolver.selected(),
-            Some(MusicSelectionState::Selected {
-                play_side: PlaySide::TwoPlayer,
-                ..
-            })
-        ));
+        assert_two_player_selection(&output);
         output.engine.selection_epochs = SelectionEpochTracker::default();
         assert!(output.music_select_resolver.selected().is_some());
         let mut changed_song = evidence.clone();
@@ -9855,6 +9852,16 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn assert_two_player_selection(output: &RoutineOutput) {
+        assert!(matches!(
+            output.music_select_resolver.selected(),
+            Some(MusicSelectionState::Selected {
+                play_side: PlaySide::TwoPlayer,
+                ..
+            })
+        ));
     }
 
     #[test]

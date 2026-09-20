@@ -2916,6 +2916,9 @@ pub fn observe_music_select_difficulty(
 
 #[must_use]
 /// Distinguishes 1P and 2P from the mutually exclusive footer labels on MUSIC SELECT.
+///
+/// # Panics
+/// Panics only if the embedded, statically validated recognition layout cannot be loaded.
 pub fn observe_music_select_play_side(
     crops: &MusicSelectPlaySideCrops,
 ) -> MusicSelectPlaySideObservation {
