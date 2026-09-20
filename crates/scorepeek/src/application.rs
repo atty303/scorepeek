@@ -3310,6 +3310,22 @@ fn live_session_event_value(
             }
             value
         }
+        capture_live::GamescopeLiveSessionEvent::GameVersionIdentified {
+            source_sequence,
+            version,
+        } => {
+            let mut value = serde_json::json!({
+                "schema": schema,
+                "event": "game_version_changed",
+                "source_sequence": source_sequence,
+                "version": version,
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+                value["capture_generation"] = routine_generation.into();
+            }
+            value
+        }
         capture_live::GamescopeLiveSessionEvent::Observation {
             screen_episode_id,
             sequence,
@@ -3318,6 +3334,12 @@ fn live_session_event_value(
             output: observation,
         } => {
             let (screen, fields) = match observation.fields() {
+                scorepeek::recognition::ScreenFieldObservations::Title(fields) => (
+                    "title",
+                    serde_json::json!({
+                        "game_version": fields.game_version.open_text,
+                    }),
+                ),
                 scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
                     "result",
                     serde_json::json!({
@@ -3398,6 +3420,14 @@ fn song_resolution_presentation(
     use scorepeek::recognition::{MusicSelectSongResolution, ResultSongResolution};
 
     match observation.song_resolution() {
+        scorepeek::recognition::ScreenSongResolution::Title => {
+            Ok(routine_output::SongResolutionPresentation::Unknown {
+                reason: serde_json::Value::String("not_applicable".to_owned()),
+                selected: None,
+                runner_up: None,
+                evidence_summary: None,
+            })
+        }
         scorepeek::recognition::ScreenSongResolution::Result(resolution) => match resolution {
             ResultSongResolution::Accepted {
                 selected,

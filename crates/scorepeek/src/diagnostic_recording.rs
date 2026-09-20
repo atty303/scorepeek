@@ -276,6 +276,7 @@ pub enum DiagnosticDecisionOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticTextField {
+    TitleGameVersion,
     ResultTitle,
     ResultArtist,
     ResultClearType,
@@ -376,6 +377,9 @@ pub enum DiagnosticDetail {
     ScreenPredicateObservation {
         screen: DiagnosticScreen,
         screen_path_layout_sha256: String,
+        title_bright_bbox: Option<scorepeek::recognition::Roi>,
+        title_bright_channel_min: u8,
+        title_qualifies: bool,
         result_warm_pixels: u32,
         result_warm_pixels_min: u32,
         result_panel_side: scorepeek::recognition::ResultPanelSideState,

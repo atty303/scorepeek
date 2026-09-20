@@ -17,6 +17,7 @@ or result-local revision exists. Every state transition has its own envelope eve
 
 | `event` | Additional fields and meaning |
 | --- | --- |
+| `game_version_changed` | `source_sequence`, `version`. Emitted once, only when three equal structurally valid TITLE OCR observations identify the current capture session's complete 20-character version. |
 | `result_changed` | `source_sequence`, `state`. The state is `inactive`, `provisional`, `retracted`, or `confirmed`. Provisional, retracted, and confirmed states carry the same complete `song` and `scorepeek-result-detected-v3` `result` payload; retracted also carries a bounded `reason`. `result.play_side` is tagged applicability: SP carries `{"status":"known","value":"one_player"}` or `{"status":"known","value":"two_player"}`, while DP carries `{"status":"not_applicable"}`. The former untagged string is not accepted. |
 | `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation plus applicability-tagged `play_side`: SP carries `known(one_player|two_player)`, while DP carries `not_applicable`. |
 | `music_select_best_observed` | Nullable supplemental SELECT-best snapshot. It is not a play. |
@@ -38,7 +39,9 @@ results, not direct rendering of the result event payload.
 ## Snapshot and consumer state
 
 The snapshot contains `schema`, `invocation_id`, `next_sequence`, `status`, one non-null `result`
-record, and nullable `music_selection`, `music_select_best`, and `screen_state` records. Before the
+record, nullable `music_selection`, `music_select_best`, and `screen_state` records, and nullable
+`game_version`. `game_version` is `null` at capture-session start, becomes the exact complete screen
+string after `game_version_changed`, and returns to `null` when that session ends. Before the
 first live transition, `result` is a synthetic sequence-zero inactive record. Replace each slot with
 its corresponding live event and require every live `sequence` to equal `next_sequence`. Reconnect
 and replace local state after a disconnect or gap. `score_store_changed` has no snapshot slot; reread
@@ -56,7 +59,7 @@ queue overflow invalidates existing streams; encoding or socket-worker failure d
 delivery without stopping recognition or the independent score consumer. The runtime replaces only
 a stale socket and removes only the inode it owns.
 
-Raw OCR, candidates, resolver scores, processing timings, paths, and history arrays stay outside the
+Raw OCR, version candidates and failures, resolver scores, processing timings, paths, and history arrays stay outside the
 public API. They are recorded separately in the private runtime diagnostic stream described in
 [runtime diagnostics](diagnostics.md). `diagnostics.sock` does not alter this socket's schema,
 snapshot, queue, reconnect, or delivery contract.
@@ -72,4 +75,5 @@ open, an unclosed provisional row is promoted to confirmed with
 recovery provenance but no synthetic old-session socket event. A database-specific lifetime lock
 admits only one score writer, so another live writer's provisional row cannot be mistaken for crash
 residue. Persistence failure is represented by score-store health/status; the removed
-`result_ingest_changed` lifecycle has no replacement.
+`result_ingest_changed` lifecycle has no replacement. The capture-session game version is socket
+and recording-manifest state only; it is not stored in the SQLite score history.

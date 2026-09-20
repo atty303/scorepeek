@@ -104,6 +104,10 @@ pub(super) struct PublicRecord {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum EventKind {
+    GameVersionChanged {
+        source_sequence: u64,
+        version: String,
+    },
     ScreenStateChanged {
         state: Option<ScreenState>,
     },
@@ -146,6 +150,7 @@ pub(super) struct PublicState {
     music_selection: Option<PublicRecord>,
     music_select_best: Option<PublicRecord>,
     screen_state: Option<PublicRecord>,
+    game_version: Option<String>,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -186,6 +191,7 @@ impl PublicState {
             music_selection: None,
             music_select_best: None,
             screen_state: None,
+            game_version: None,
             started: Instant::now(),
             pending_binding: None,
             score_store_revision: 0,
@@ -281,6 +287,7 @@ impl PublicState {
         matches!(
             event.kind,
             RunEventKind::ResultChanged { .. }
+                | RunEventKind::GameVersionChanged { .. }
                 | RunEventKind::MusicSelectionChanged { .. }
                 | RunEventKind::MusicSelectBestObserved { .. }
                 | RunEventKind::MusicSelectResolverChanged { .. }
@@ -334,6 +341,18 @@ impl PublicState {
             return records;
         }
         let (kind, capture) = match &event.kind {
+            RunEventKind::GameVersionChanged {
+                session_id,
+                capture_generation,
+                source_sequence,
+                version,
+            } => (
+                EventKind::GameVersionChanged {
+                    source_sequence: *source_sequence,
+                    version: version.clone(),
+                },
+                self.capture(Some(session_id), Some(*capture_generation)),
+            ),
             RunEventKind::ResultChanged {
                 session_id,
                 capture_generation,
@@ -412,6 +431,9 @@ impl PublicState {
 
     fn retain(&mut self, record: &PublicRecord) {
         match &record.kind {
+            EventKind::GameVersionChanged { version, .. } => {
+                self.game_version = Some(version.clone());
+            }
             EventKind::ScreenStateChanged { state } => {
                 self.screen_state = state.as_ref().map(|_| record.clone());
             }
@@ -525,6 +547,7 @@ impl PublicState {
     }
 
     fn clear_current(&mut self) {
+        self.game_version = None;
         self.music_selection = None;
         self.music_select_best = None;
         self.screen_state = None;
@@ -594,11 +617,17 @@ pub(super) mod tests {
                 if ["session_active", "session_finished", "stopped"]
                     .contains(&event["status"]["watcher"].as_str().unwrap())
                 {
-                    for slot in ["music_selection", "music_select_best", "screen_state"] {
+                    for slot in [
+                        "music_selection",
+                        "music_select_best",
+                        "screen_state",
+                        "game_version",
+                    ] {
                         snapshot[slot] = Value::Null;
                     }
                 }
             }
+            "game_version_changed" => snapshot["game_version"] = event["version"].clone(),
             "result_changed" => snapshot["result"] = event.clone(),
             "music_selection_changed" => snapshot["music_selection"] = event.clone(),
             "music_select_best_observed" => {
@@ -635,6 +664,12 @@ pub(super) mod tests {
                 state: MusicSelectionState::Unresolved {
                     reason: super::super::MusicSelectionUnresolvedReason::EvidenceUnresolved,
                 },
+            }),
+            run(RunEventKind::GameVersionChanged {
+                session_id: "session".into(),
+                capture_generation: 7,
+                source_sequence: 12,
+                version: "P2D:J:B:A:2026080500".into(),
             }),
             run(RunEventKind::SessionFinished {
                 session_id: "session".into(),

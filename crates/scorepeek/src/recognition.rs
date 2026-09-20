@@ -112,7 +112,7 @@ const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
-const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v5";
+const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v6";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
@@ -125,7 +125,7 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v2.json");
-const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v5.json");
+const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v6.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v8.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 #[cfg(test)]
@@ -657,6 +657,20 @@ struct PlayPresencePredicate {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TitlePresencePredicate {
+    bright_channel_min: u8,
+    bbox_x_min: u32,
+    bbox_x_max: u32,
+    bbox_y_min: u32,
+    bbox_y_max: u32,
+    bbox_width_min: u32,
+    bbox_width_max: u32,
+    bbox_height_min: u32,
+    bbox_height_max: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepeatedRoi {
     x: u32,
     y: u32,
@@ -687,6 +701,7 @@ struct ResultPresencePredicate {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenClass {
+    Title,
     Result,
     MusicSelect,
     ModeSelect,
@@ -697,6 +712,7 @@ pub enum ScreenClass {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScreenCropRoute {
+    Title,
     Result(ResultPanelSide),
     MusicSelect,
 }
@@ -705,6 +721,7 @@ impl ScreenPredicateObservation {
     #[must_use]
     pub const fn crop_route(&self) -> Option<ScreenCropRoute> {
         match self.screen {
+            ScreenClass::Title => Some(ScreenCropRoute::Title),
             ScreenClass::Result => match self.result_presence.panel_side.known() {
                 Some(side) => Some(ScreenCropRoute::Result(side)),
                 None => None,
@@ -766,6 +783,7 @@ pub struct RecognitionSnapshot {
     pub canonical_layout_sha256: String,
     pub screen_path_layout_sha256: String,
     pub screen: ScreenClass,
+    pub title_presence: TitlePresenceEvidence,
     pub result_presence: ResultPresenceEvidence,
     pub music_select_presence: MusicSelectPresenceEvidence,
     pub decide_transition_presence: DecideTransitionPresenceEvidence,
@@ -776,6 +794,7 @@ impl RecognitionSnapshot {
     #[must_use]
     pub const fn crop_route(&self) -> Option<ScreenCropRoute> {
         match self.screen {
+            ScreenClass::Title => Some(ScreenCropRoute::Title),
             ScreenClass::Result => match self.result_presence.panel_side.known() {
                 Some(side) => Some(ScreenCropRoute::Result(side)),
                 None => None,
@@ -797,6 +816,7 @@ impl RecognitionSnapshot {
 pub struct ScreenPredicateObservation {
     pub screen_path_layout_sha256: String,
     pub screen: ScreenClass,
+    pub title_presence: TitlePresenceEvidence,
     pub result_presence: ResultPresenceEvidence,
     pub music_select_presence: MusicSelectPresenceEvidence,
     pub decide_transition_presence: DecideTransitionPresenceEvidence,
@@ -1294,6 +1314,12 @@ pub struct ResultScreenRgb8Crops {
     pub play_options: Rgb8Crop,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleScreenRgb8Crops {
+    pub canonical_layout_sha256: String,
+    pub game_version: Rgb8Crop,
+}
+
 /// Every currently measured music-select field crop used by one selection observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MusicSelectScreenRgb8Crops {
@@ -1499,6 +1525,7 @@ pub(crate) fn test_music_select_difficulty(
     reason = "both variants are short-lived fixed-layout crop views and boxing would add allocation"
 )]
 pub enum ScreenRgb8Crops {
+    Title(TitleScreenRgb8Crops),
     Result(ResultScreenRgb8Crops),
     MusicSelect(MusicSelectScreenRgb8Crops),
 }
@@ -1506,6 +1533,7 @@ pub enum ScreenRgb8Crops {
 /// One text field that can fail without fabricating a partial screen observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScreenTextField {
+    TitleGameVersion,
     MusicSelectBestHeader,
     MusicSelectBestClearType,
     ResultNumericBatch,
@@ -1539,6 +1567,7 @@ impl ScreenTextField {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TitleGameVersion => "title_game_version",
             Self::MusicSelectBestHeader => "music_select_best_header",
             Self::MusicSelectBestClearType => "music_select_best_clear_type",
             Self::ResultNumericBatch => "result_numeric_batch",
@@ -1586,7 +1615,8 @@ impl ScreenTextField {
             | Self::ResultFast
             | Self::ResultSlow => Some(CtcCharacterSet::DigitsAndDashes),
             Self::ResultComboBreak => Some(CtcCharacterSet::DigitsAndDashesUpToThree),
-            Self::ResultNumericBatch
+            Self::TitleGameVersion
+            | Self::ResultNumericBatch
             | Self::ResultTitle
             | Self::ResultArtist
             | Self::ResultClearType
@@ -1642,6 +1672,11 @@ pub struct MusicSelectScreenFieldObservations {
     pub active_list_title: DynamicTextObservation,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TitleScreenFieldObservations {
+    pub game_version: DynamicTextObservation,
+}
+
 /// Complete field-observer output for exactly one classified screen.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(
@@ -1649,6 +1684,7 @@ pub struct MusicSelectScreenFieldObservations {
     reason = "the bounded worker output retains a flat screen-specific observation schema"
 )]
 pub enum ScreenFieldObservations {
+    Title(TitleScreenFieldObservations),
     Result(ResultScreenFieldObservations),
     MusicSelect(MusicSelectScreenFieldObservations),
 }
@@ -1656,6 +1692,7 @@ pub enum ScreenFieldObservations {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "screen", content = "resolution", rename_all = "snake_case")]
 pub enum ScreenSongResolution {
+    Title,
     Result(ResultSongResolution),
     MusicSelect(MusicSelectSongResolution),
 }
@@ -1664,6 +1701,7 @@ impl ScreenFieldObservations {
     #[must_use]
     pub const fn screen(&self) -> ScreenClass {
         match self {
+            Self::Title(_) => ScreenClass::Title,
             Self::Result(_) => ScreenClass::Result,
             Self::MusicSelect(_) => ScreenClass::MusicSelect,
         }
@@ -1672,6 +1710,7 @@ impl ScreenFieldObservations {
     #[must_use]
     pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
         match self {
+            Self::Title(_) => (1, 0),
             Self::Result(_) => (20, 0),
             Self::MusicSelect(_) => (8, 1),
         }
@@ -1730,6 +1769,11 @@ pub fn observe_screen_fields<E>(
         observe_text(field, crop).map_err(|source| ScreenFieldObservationError::new(field, source))
     };
     Ok(match crops {
+        ScreenRgb8Crops::Title(crops) => {
+            ScreenFieldObservations::Title(TitleScreenFieldObservations {
+                game_version: observe(ScreenTextField::TitleGameVersion, &crops.game_version)?,
+            })
+        }
         ScreenRgb8Crops::Result(crops) => {
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
                 panel_side: crops.panel_side,
@@ -1920,6 +1964,13 @@ pub struct ResultPresenceEvidence {
     pub panel_side: ResultPanelSideState,
     pub panels: [ResultPanelPresenceEvidence; 2],
     pub horizontal_edge_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TitlePresenceEvidence {
+    pub bright_bbox: Option<Roi>,
+    pub bright_channel_min: u8,
+    pub qualifies: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2164,9 +2215,17 @@ struct ScreenPathLayout {
     canonical_frame_contract_id: String,
     width: u32,
     height: u32,
+    title: TitleLayout,
     music_select_reference: MusicSelectReferenceLayout,
     decide_transition: DecideTransitionLayout,
     play: PlayLayout,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TitleLayout {
+    version: Roi,
+    presence: TitlePresencePredicate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -2193,12 +2252,28 @@ impl ScreenPathLayout {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
         for roi in [
+            layout.title.version,
             layout.music_select_reference.search_roi,
             layout.decide_transition.splash,
             layout.play.bpm_outline_searches.left,
             layout.play.bpm_outline_searches.center_right,
         ] {
             roi.validate(layout.width, layout.height)?;
+        }
+        let title = layout.title.presence;
+        if title.bright_channel_min == 0
+            || title.bbox_x_min > title.bbox_x_max
+            || title.bbox_y_min > title.bbox_y_max
+            || title.bbox_width_min == 0
+            || title.bbox_width_min > title.bbox_width_max
+            || title.bbox_height_min == 0
+            || title.bbox_height_min > title.bbox_height_max
+            || title.bbox_x_max >= layout.title.version.width
+            || title.bbox_y_max >= layout.title.version.height
+            || title.bbox_width_max > layout.title.version.width
+            || title.bbox_height_max > layout.title.version.height
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
         }
         let decide_pixels = layout
             .decide_transition
@@ -2425,6 +2500,47 @@ fn play_bpm_outline_evidence(
     }
 }
 
+fn title_presence_evidence(
+    pixels: &[u8],
+    layout: &TitleLayout,
+) -> Result<TitlePresenceEvidence, RecognitionError> {
+    let crop = crop_canonical_pixels(pixels, layout.version)?;
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for (index, pixel) in crop.chunks_exact(3).enumerate() {
+        if pixel
+            .iter()
+            .all(|channel| *channel > layout.presence.bright_channel_min)
+        {
+            let index =
+                u32::try_from(index).map_err(|_| RecognitionError::InvalidCanonicalFrame)?;
+            let x = index % layout.version.width;
+            let y = index / layout.version.width;
+            bounds = Some(bounds.map_or((x, y, x, y), |(min_x, min_y, max_x, max_y)| {
+                (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y))
+            }));
+        }
+    }
+    let bright_bbox = bounds.map(|(min_x, min_y, max_x, max_y)| Roi {
+        x: min_x,
+        y: min_y,
+        width: max_x - min_x + 1,
+        height: max_y - min_y + 1,
+    });
+    let qualifies = bright_bbox.is_some_and(|bbox| {
+        (layout.presence.bbox_x_min..=layout.presence.bbox_x_max).contains(&bbox.x)
+            && (layout.presence.bbox_y_min..=layout.presence.bbox_y_max).contains(&bbox.y)
+            && (layout.presence.bbox_width_min..=layout.presence.bbox_width_max)
+                .contains(&bbox.width)
+            && (layout.presence.bbox_height_min..=layout.presence.bbox_height_max)
+                .contains(&bbox.height)
+    });
+    Ok(TitlePresenceEvidence {
+        bright_bbox,
+        bright_channel_min: layout.presence.bright_channel_min,
+        qualifies,
+    })
+}
+
 /// Inspects one canonical frame without accepting an observed-frame representation.
 ///
 /// # Errors
@@ -2439,6 +2555,7 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
         canonical_layout_sha256: CanonicalLayout::sha256(),
         screen_path_layout_sha256: observation.screen_path_layout_sha256,
         screen: observation.screen,
+        title_presence: observation.title_presence,
         result_presence: observation.result_presence,
         music_select_presence: observation.music_select_presence,
         decide_transition_presence: observation.decide_transition_presence,
@@ -2457,7 +2574,7 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
 /// committed layout is invalid.
 #[allow(
     clippy::too_many_lines,
-    reason = "all four independent predicates remain together so classification is based on one measurement pass"
+    reason = "all independent predicates remain together so classification is based on one measurement pass"
 )]
 pub fn inspect_canonical_rgb8(
     pixels: &[u8],
@@ -2467,6 +2584,7 @@ pub fn inspect_canonical_rgb8(
     }
     let layout = CanonicalLayout::load()?;
     let screen_path_layout = ScreenPathLayout::load()?;
+    let title_presence = title_presence_evidence(pixels, &screen_path_layout.title)?;
     let header = crop_canonical_pixels(pixels, layout.result.header)?;
     let mut warm = 0_u32;
     for pixel in header.chunks_exact(3) {
@@ -2616,6 +2734,7 @@ pub fn inspect_canonical_rgb8(
     Ok(ScreenPredicateObservation {
         screen_path_layout_sha256: ScreenPathLayout::sha256(),
         screen,
+        title_presence,
         result_presence: ResultPresenceEvidence {
             warm_pixels: warm,
             warm_pixels_min: layout.result.presence.warm_pixels_min,
@@ -2934,6 +3053,7 @@ pub fn export_integrated_context_crops(
     let output = output.as_ref();
     fs::create_dir(output)?;
     let (integrated_context_layout_sha256, selections) = match routed {
+        ScreenRgb8Crops::Title(_) => return Err(RecognitionError::InvalidCanonicalFrame),
         ScreenRgb8Crops::Result(crops) => (
             IntegratedContextLayout::sha256(),
             vec![(IntegratedContextField::ResultArtist, crops.artist)],
@@ -3028,6 +3148,13 @@ pub fn route_screen_rgb8_crops(
     let canonical = CanonicalLayout::load()?;
     let context = IntegratedContextLayout::load()?;
     match route {
+        ScreenCropRoute::Title => {
+            let path = ScreenPathLayout::load()?;
+            Ok(ScreenRgb8Crops::Title(TitleScreenRgb8Crops {
+                canonical_layout_sha256: CanonicalLayout::sha256(),
+                game_version: crop(pixels, path.title.version)?,
+            }))
+        }
         ScreenCropRoute::Result(panel_side) => {
             let origin_x = canonical.result.panel_origins.get(panel_side);
             let panel = |roi: Roi| roi.translated_x(origin_x);
@@ -3435,7 +3562,8 @@ fn read_integrated_context_crop_artifact(
                 layout.music_select.active_list_title,
             ),
         ],
-        ScreenClass::ModeSelect
+        ScreenClass::Title
+        | ScreenClass::ModeSelect
         | ScreenClass::DecideTransition
         | ScreenClass::Play
         | ScreenClass::Unknown => {
@@ -3675,6 +3803,72 @@ mod tests {
             normalizer_artifact_sha256: "1".repeat(64),
             frame_extraction_sha256: "2".repeat(64),
         }
+    }
+
+    fn paint_title_bbox(pixels: &mut [u8], filled: bool) {
+        let roi = ScreenPathLayout::load().unwrap().title.version;
+        let bbox = Roi {
+            x: 10,
+            y: 9,
+            width: 232,
+            height: 14,
+        };
+        for y in bbox.y..bbox.y + bbox.height {
+            for x in bbox.x..bbox.x + bbox.width {
+                if filled
+                    || x == bbox.x
+                    || x == bbox.x + bbox.width - 1
+                    || y == bbox.y
+                    || y == bbox.y + bbox.height - 1
+                {
+                    let frame_x = usize::try_from(roi.x + x).unwrap();
+                    let frame_y = usize::try_from(roi.y + y).unwrap();
+                    let offset = (frame_y * CANONICAL_WIDTH as usize + frame_x) * 3;
+                    pixels[offset..offset + 3].copy_from_slice(&[255, 255, 255]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn title_presence_uses_the_bright_bounding_box_not_bright_pixel_count() {
+        for filled in [false, true] {
+            let mut pixels = vec![0; CANONICAL_BYTES];
+            paint_title_bbox(&mut pixels, filled);
+            let observation = inspect_canonical_rgb8(&pixels).unwrap();
+            assert_eq!(observation.screen, ScreenClass::Unknown);
+            assert_eq!(
+                observation.title_presence.bright_bbox,
+                Some(Roi {
+                    x: 10,
+                    y: 9,
+                    width: 232,
+                    height: 14,
+                })
+            );
+            assert!(observation.title_presence.qualifies);
+        }
+
+        let mut pixels = vec![0; CANONICAL_BYTES];
+        paint_title_bbox(&mut pixels, false);
+        paint_play_presence(&mut pixels, &ScreenPathLayout::load().unwrap());
+        let overlapping = inspect_canonical_rgb8(&pixels).unwrap();
+        assert_eq!(overlapping.screen, ScreenClass::Play);
+        assert!(overlapping.title_presence.qualifies);
+
+        let mut pixels = vec![0; CANONICAL_BYTES];
+        paint_title_bbox(&mut pixels, false);
+        let roi = ScreenPathLayout::load().unwrap().title.version;
+        let offset = (usize::try_from(roi.y + 8).unwrap() * CANONICAL_WIDTH as usize
+            + usize::try_from(roi.x + 10).unwrap())
+            * 3;
+        pixels[offset..offset + 3].copy_from_slice(&[255, 255, 255]);
+        assert!(
+            !inspect_canonical_rgb8(&pixels)
+                .unwrap()
+                .title_presence
+                .qualifies
+        );
     }
 
     fn paint_result_presence(pixels: &mut [u8], layout: &CanonicalLayout) {

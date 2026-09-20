@@ -17,6 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use scorepeek::catalog::{Difficulty, PlayType};
+use scorepeek::game_version::GameVersionState;
 use scorepeek::recognition::{
     NumericField, PlayOption, PlayOptions, PreviousBest, PreviousBestValue, ResultChartResolution,
     ResultJudgments, ResultPanelSide, ResultPerformanceResolution, ResultTiming, Rgb8Crop,
@@ -32,7 +33,7 @@ use crate::replay_trace::{ReplayTrace, TraceStatus};
 use crate::segment_remote::{RemoteSegment, SegmentRemote};
 
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v3";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v4";
 const CORPUS_OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v2";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
@@ -126,7 +127,7 @@ struct CanonicalRecordingManifest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct CanonicalRecordingManifestV3 {
+struct CanonicalRecordingManifestV4 {
     schema: String,
     completeness: String,
     ffmpeg_sha256: String,
@@ -137,6 +138,7 @@ struct CanonicalRecordingManifestV3 {
     completeness_reasons: Vec<String>,
     memory_limit_bytes: u64,
     memory_high_water_bytes: u64,
+    game_version: GameVersionState,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -160,7 +162,7 @@ struct RunSessionDiagnostic {
     runtime_sha256: String,
     diagnostic_sha256: Option<String>,
     observation_count: u64,
-    canonical: CanonicalRecordingManifestV3,
+    canonical: CanonicalRecordingManifestV4,
     ticks: Vec<CanonicalTick>,
     segment_digests: Vec<String>,
     observations: Vec<u8>,
@@ -269,6 +271,7 @@ struct CaptureSession {
     busy_skips: u64,
     maximum_consecutive_busy_skips: u64,
     completeness: String,
+    game_version: GameVersionState,
     canonical_frames: Vec<ReviewFrame>,
     normalization_pairs: Vec<NormalizationPair>,
     artifacts: Vec<CorpusArtifact>,
@@ -1441,6 +1444,7 @@ fn import_run_diagnostic_with_remote(
         busy_skips: 0,
         maximum_consecutive_busy_skips: 0,
         completeness: "complete".to_owned(),
+        game_version: verified.canonical.game_version.clone(),
         canonical_frames: frames.clone(),
         normalization_pairs: Vec::new(),
         artifacts,
@@ -1704,8 +1708,8 @@ fn read_run_session_diagnostic(
         .join(capture_session_id)
         .join("canonical");
     let (canonical, _) =
-        read_json::<CanonicalRecordingManifestV3>(&canonical_root.join("canonical-manifest.json"))?;
-    if canonical.schema != "scorepeek-canonical-session-recording-v3"
+        read_json::<CanonicalRecordingManifestV4>(&canonical_root.join("canonical-manifest.json"))?;
+    if canonical.schema != "scorepeek-canonical-session-recording-v4"
         || canonical.completeness != "complete"
         || canonical.dropped_frames != 0
         || !canonical.completeness_reasons.is_empty()
@@ -1903,6 +1907,7 @@ pub fn import_diagnostic(
         busy_skips: manifest.busy_skips,
         maximum_consecutive_busy_skips: manifest.maximum_consecutive_busy_skips,
         completeness: manifest.completeness.clone(),
+        game_version: GameVersionState::NotObserved,
         canonical_frames: frames.clone(),
         normalization_pairs,
         artifacts,
@@ -2065,6 +2070,7 @@ fn import_canonical_diagnostic(
         busy_skips: manifest.busy_skips,
         maximum_consecutive_busy_skips: manifest.maximum_consecutive_busy_skips,
         completeness: manifest.completeness.clone(),
+        game_version: GameVersionState::NotObserved,
         canonical_frames: frames.clone(),
         normalization_pairs: Vec::new(),
         artifacts,
@@ -4958,6 +4964,7 @@ fn commit_replay_pending(
 
 fn replay_screen_name(screen: ScreenClass) -> &'static str {
     match screen {
+        ScreenClass::Title => "title",
         ScreenClass::Result => "result",
         ScreenClass::MusicSelect => "music_select",
         ScreenClass::ModeSelect => "mode_select",
@@ -5473,6 +5480,9 @@ fn find_profile_bytes(expected_sha256: &str) -> Result<Vec<u8>, CorpusError> {
 
 fn field_json(fields: &scorepeek::recognition::ScreenFieldObservations) -> Value {
     match fields {
+        scorepeek::recognition::ScreenFieldObservations::Title(fields) => serde_json::json!({
+            "screen":"title", "game_version":fields.game_version.open_text
+        }),
         scorepeek::recognition::ScreenFieldObservations::Result(fields) => serde_json::json!({
             "screen":"result", "title":fields.title.open_text, "artist":fields.artist.open_text,
             "clear_type":fields.clear_type.open_text
@@ -6331,7 +6341,7 @@ mod tests {
         fs::write(
             canonical.join("canonical-manifest.json"),
             canonical_json(&serde_json::json!({
-                "schema":"scorepeek-canonical-session-recording-v3",
+                "schema":"scorepeek-canonical-session-recording-v4",
                 "completeness":"complete",
                 "ffmpeg_sha256":"4".repeat(64),
                 "ffmpeg_version":"test",
@@ -6340,7 +6350,8 @@ mod tests {
                 "dropped_frames":0,
                 "completeness_reasons":[],
                 "memory_limit_bytes":1_073_741_824_u64,
-                "memory_high_water_bytes":0
+                "memory_high_water_bytes":0,
+                "game_version":{"status":"not_observed"}
             }))
             .unwrap(),
         )
@@ -6449,7 +6460,7 @@ mod tests {
         fs::write(
             canonical.join("canonical-manifest.json"),
             canonical_json(&serde_json::json!({
-                "schema":"scorepeek-canonical-session-recording-v3",
+                "schema":"scorepeek-canonical-session-recording-v4",
                 "completeness":"complete",
                 "ffmpeg_sha256":"4".repeat(64),
                 "ffmpeg_version":"test",
@@ -6461,7 +6472,10 @@ mod tests {
                 "dropped_frames":0,
                 "completeness_reasons":[],
                 "memory_limit_bytes":1_073_741_824_u64,
-                "memory_high_water_bytes":6_220_800_u64
+                "memory_high_water_bytes":6_220_800_u64,
+                "game_version":{
+                    "status":"identified", "version":"P2D:J:B:A:2026080500"
+                }
             }))
             .unwrap(),
         )
@@ -6571,7 +6585,11 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(manifest.schema, "scorepeek-canonical-session-recording-v3");
+        assert_eq!(manifest.schema, "scorepeek-canonical-session-recording-v4");
+        assert_eq!(
+            session.game_version,
+            GameVersionState::Identified("P2D:J:B:A:2026080500".to_owned())
+        );
         assert!(manifest.segments[0].raw_rgb24_sha256.is_none());
         assert!(
             session_object_for_source(&store, &session, "recognition/segment-0000.mkv")
@@ -6846,6 +6864,7 @@ mod tests {
             busy_skips: 0,
             maximum_consecutive_busy_skips: 0,
             completeness: "complete".to_owned(),
+            game_version: GameVersionState::NotObserved,
             canonical_frames: Vec::new(),
             normalization_pairs: Vec::new(),
             artifacts: vec![CorpusArtifact {
@@ -6904,6 +6923,7 @@ mod tests {
             busy_skips: 0,
             maximum_consecutive_busy_skips: 0,
             completeness: "complete".to_owned(),
+            game_version: GameVersionState::NotObserved,
             canonical_frames: Vec::new(),
             normalization_pairs: Vec::new(),
             artifacts: vec![CorpusArtifact {
@@ -6955,6 +6975,7 @@ mod tests {
             busy_skips: 0,
             maximum_consecutive_busy_skips: 0,
             completeness: "complete".to_owned(),
+            game_version: GameVersionState::NotObserved,
             canonical_frames: Vec::new(),
             normalization_pairs: Vec::new(),
             artifacts: vec![CorpusArtifact {
@@ -7289,6 +7310,7 @@ mod tests {
             busy_skips: 0,
             maximum_consecutive_busy_skips: 0,
             completeness: "complete".to_owned(),
+            game_version: GameVersionState::NotObserved,
             canonical_frames: vec![ReviewFrame {
                 sequence: 1,
                 artifact_sha256: segment_sha256.clone(),

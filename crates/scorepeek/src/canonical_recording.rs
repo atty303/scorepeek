@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use scorepeek::game_version::GameVersionState;
 use scorepeek::recognition::ScreenClass;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -176,6 +177,7 @@ struct RecordedFrame {
     source_sequence: u64,
     monotonic_ms: u64,
     screen: ScreenClass,
+    title_pixels: bool,
     semantic_episode_id: Option<u64>,
     pixels: Arc<Box<[u8]>>,
     memory: Option<Arc<RecordingMemoryAccount>>,
@@ -192,6 +194,7 @@ impl Drop for RecordedFrame {
 
 enum Message {
     Frame(RecordedFrame),
+    GameVersion(GameVersionState),
 }
 
 pub struct CanonicalRecordingWorker {
@@ -265,6 +268,7 @@ impl CanonicalRecordingWorker {
         &self,
         frame: &BoundCanonicalFrame,
         screen: ScreenClass,
+        title_pixels: bool,
         semantic_episode_id: Option<u64>,
     ) -> bool {
         let frame_bytes = (crate::diagnostic_recording::CANONICAL_BYTES
@@ -280,6 +284,7 @@ impl CanonicalRecordingWorker {
             source_sequence: frame.source_sequence(),
             monotonic_ms: frame.monotonic_end_ms(),
             screen,
+            title_pixels,
             semantic_episode_id,
             pixels: frame.shared_pixels(),
             memory: Some(Arc::clone(&self.memory)),
@@ -298,13 +303,14 @@ impl CanonicalRecordingWorker {
         health_snapshot(&self.memory, &self.dropped)
     }
 
-    pub fn finish(self) -> CanonicalRecordingOutcome {
+    pub fn finish(self, game_version: GameVersionState) -> CanonicalRecordingOutcome {
         let Self {
             sender,
             worker,
             dropped,
             memory,
         } = self;
+        let _ = sender.send(Message::GameVersion(game_version));
         drop(sender);
         if let Ok(mut outcome) = worker.join() {
             outcome.final_health = health_snapshot(&memory, &dropped);
@@ -374,6 +380,7 @@ struct Manifest<'a> {
     memory_limit_bytes: u64,
     memory_high_water_bytes: u64,
     capture_identity: Option<&'a RecordingCaptureIdentity>,
+    game_version: &'a GameVersionState,
 }
 
 #[allow(
@@ -408,6 +415,7 @@ struct Recorder {
     _metadata_memory: MemoryReservation,
     retention: RecordingRetention,
     capture_identity: Option<RecordingCaptureIdentity>,
+    game_version: GameVersionState,
 }
 
 struct PendingFrame {
@@ -499,6 +507,7 @@ impl Recorder {
             _metadata_memory: metadata_memory,
             retention,
             capture_identity,
+            game_version: GameVersionState::NotObserved,
         }
     }
 
@@ -506,6 +515,7 @@ impl Recorder {
         while let Ok(message) = receiver.recv() {
             match message {
                 Message::Frame(frame) => self.observe(frame),
+                Message::GameVersion(state) => self.game_version = state,
             }
         }
         self.retain_session_tail();
@@ -544,7 +554,9 @@ impl Recorder {
             .is_none_or(|previous| previous != screen);
         if changed {
             for buffered in &mut self.ring {
-                buffered.retained = true;
+                if self.retention == RecordingRetention::All || !buffered.frame.title_pixels {
+                    buffered.retained = true;
+                }
             }
             self.after_remaining = WINDOW_FRAMES - 1;
         }
@@ -553,8 +565,11 @@ impl Recorder {
                 screen,
                 ScreenClass::MusicSelect | ScreenClass::DecideTransition | ScreenClass::Result
             );
-        let retained =
-            self.observed_ticks < WINDOW_FRAMES || always || changed || self.after_remaining > 0;
+        let retained = if self.retention == RecordingRetention::Selective && frame.title_pixels {
+            false
+        } else {
+            self.observed_ticks < WINDOW_FRAMES || always || changed || self.after_remaining > 0
+        };
         if !changed && self.after_remaining > 0 {
             self.after_remaining -= 1;
         }
@@ -584,11 +599,16 @@ impl Recorder {
             disposition: if retained {
                 "retained"
             } else {
-                match frame.screen {
-                    ScreenClass::Play => "play_interior",
-                    ScreenClass::ModeSelect => "mode_select_interior",
-                    ScreenClass::Unknown => "unknown_interior",
-                    _ => "retained",
+                if frame.title_pixels {
+                    "title"
+                } else {
+                    match frame.screen {
+                        ScreenClass::Play => "play_interior",
+                        ScreenClass::ModeSelect => "mode_select_interior",
+                        ScreenClass::Unknown => "unknown_interior",
+                        ScreenClass::Title => "title",
+                        _ => "retained",
+                    }
                 }
             },
         };
@@ -608,7 +628,9 @@ impl Recorder {
 
     fn retain_session_tail(&mut self) {
         while let Some(mut pending) = self.ring.pop_front() {
-            pending.retained = true;
+            if self.retention == RecordingRetention::All || !pending.frame.title_pixels {
+                pending.retained = true;
+            }
             self.finalize_tick(pending);
         }
     }
@@ -742,7 +764,7 @@ impl Recorder {
             completeness_reasons.push("no_canonical_ticks");
         }
         let manifest = Manifest {
-            schema: "scorepeek-canonical-session-recording-v3",
+            schema: "scorepeek-canonical-session-recording-v4",
             completeness,
             ffmpeg_sha256: self.ffmpeg.sha256.clone(),
             ffmpeg_version: &self.ffmpeg.version,
@@ -753,6 +775,7 @@ impl Recorder {
             memory_limit_bytes: self.memory.limit,
             memory_high_water_bytes: self.memory.high_water.load(Ordering::Relaxed),
             capture_identity: self.capture_identity.as_ref(),
+            game_version: &self.game_version,
         };
         let mut bytes = serde_json::to_vec(&manifest)
             .map_err(|_| "canonical manifest serialization failed".to_owned())?;
@@ -1223,6 +1246,7 @@ mod tests {
             source_sequence: sequence,
             monotonic_ms: sequence.saturating_mul(100),
             screen,
+            title_pixels: screen == ScreenClass::Title,
             semantic_episode_id: None,
             pixels: Arc::new(Vec::new().into_boxed_slice()),
             memory: None,
@@ -1278,8 +1302,29 @@ mod tests {
     }
 
     #[test]
+    fn selective_retention_never_keeps_title_pixels() {
+        let mut recorder = recorder();
+        for sequence in 1..=9 {
+            let mut candidate = frame(sequence, ScreenClass::Unknown);
+            candidate.title_pixels = true;
+            recorder.observe(candidate);
+        }
+        recorder.observe(frame(10, ScreenClass::Title));
+        recorder.observe(frame(11, ScreenClass::Result));
+        recorder.retain_session_tail();
+
+        assert!(
+            recorder.ticks[..10]
+                .iter()
+                .all(|tick| tick.disposition == "title")
+        );
+        assert_eq!(recorder.ticks[10].disposition, "retained");
+    }
+
+    #[test]
     fn all_retention_keeps_stable_interiors() {
         for screen in [
+            ScreenClass::Title,
             ScreenClass::Play,
             ScreenClass::ModeSelect,
             ScreenClass::Unknown,
@@ -1378,7 +1423,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let outcome = worker.finish();
+        let outcome = worker.finish(GameVersionState::NotObserved);
         assert_eq!(
             outcome.completeness,
             CanonicalRecordingCompleteness::Partial
@@ -1411,6 +1456,7 @@ mod tests {
             source_sequence: 70,
             monotonic_ms: 700,
             screen: ScreenClass::Result,
+            title_pixels: false,
             semantic_episode_id: Some(3),
             pixels: Arc::new(pixels),
             memory: None,

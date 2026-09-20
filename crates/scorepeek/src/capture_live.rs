@@ -34,6 +34,7 @@ use crate::diagnostic_recording::{
     DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
+use crate::game_version::GameVersionResolver;
 use crate::recognition_artifact::{
     RecognitionArtifactEnqueueOutcome, RecognitionArtifactFinishOutcome,
     RecognitionArtifactFinishStatus, RecognitionArtifactRetention, RecognitionArtifactWorker,
@@ -207,6 +208,10 @@ pub enum GamescopeLiveSessionEvent<'a> {
         screen: ScreenClass,
         phase: SemanticScreenEpisodePhase,
     },
+    GameVersionIdentified {
+        source_sequence: u64,
+        version: &'a str,
+    },
     Observation {
         screen_episode_id: u64,
         sequence: u64,
@@ -369,6 +374,7 @@ pub struct GamescopeRecognitionHandoffGateReport {
     diagnostic_frame_queue_full: u64,
     diagnostic_frame_worker_unavailable: u64,
     inspected_frames: u64,
+    title_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
     mode_select_frames: u64,
@@ -405,6 +411,7 @@ pub struct GamescopeFieldObservationGateReport {
     maximum_consecutive_field_observation_busy_skips: u64,
     last_recognition_sequence: Option<u64>,
     inspected_frames: u64,
+    title_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
     mode_select_frames: u64,
@@ -566,6 +573,7 @@ struct HandoffCounters {
 #[derive(Clone, Copy, Default)]
 struct RecognitionHandoffCounters {
     inspected_frames: u64,
+    title_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
     mode_select_frames: u64,
@@ -588,6 +596,7 @@ struct FieldObservationCounters {
     consecutive_field_observation_busy_skips: u64,
     last_recognition_sequence: Option<u64>,
     inspected_frames: u64,
+    title_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
     mode_select_frames: u64,
@@ -1082,6 +1091,7 @@ pub fn run_gamescope_field_observation_gate(
 
     let mut counters = FieldObservationCounters::default();
     let mut pending = Vec::<PendingSessionFieldObservation<RegisteredFieldOutput>>::new();
+    let game_version = GameVersionResolver::default();
     let mut terminal = offer_field_observation_frames(
         &mut lease,
         &mut session,
@@ -1138,7 +1148,7 @@ pub fn run_gamescope_field_observation_gate(
     }
     let artifact_outcome = artifact_worker.map(|worker| worker.finish(terminal.is_none()));
     if let Some(recorder) = canonical_recorder {
-        let _ = recorder.finish();
+        let _ = recorder.finish(game_version.state());
     }
     if artifact_requested && terminal.is_none() {
         terminal = recognition_artifact_error(&counters, artifact_outcome.as_ref())
@@ -1221,6 +1231,7 @@ pub fn run_runtime_live_session(
     let mut counters = FieldObservationCounters::default();
     let mut pending = Vec::<PendingSessionFieldObservation<RegisteredFieldOutput>>::new();
     let mut minimum_event_sequence = None;
+    let mut game_version = GameVersionResolver::default();
     if terminal.is_none() {
         terminal = offer_live_field_observation_frames(
             &mut lease,
@@ -1233,6 +1244,7 @@ pub fn run_runtime_live_session(
             &mut sink,
             emit,
             &mut minimum_event_sequence,
+            &mut game_version,
         );
     }
     let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
@@ -1261,6 +1273,7 @@ pub fn run_runtime_live_session(
         &mut artifact_worker,
         output_available.then_some(emit),
         minimum_event_sequence,
+        Some(&mut game_version),
     );
     if let Some(error) = drain_error {
         if reconnectable_stop_reason(terminal).is_some() {
@@ -1309,7 +1322,7 @@ pub fn run_runtime_live_session(
         if emit(GamescopeLiveSessionEvent::RecordingFinalizing).is_err() {
             terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
         }
-        let outcome = recorder.finish();
+        let outcome = recorder.finish(game_version.state());
         if emit(GamescopeLiveSessionEvent::RecordingHealth {
             snapshot: outcome.final_health,
         })
@@ -1773,6 +1786,7 @@ fn offer_field_observation_frames(
             };
             source.counters.inspected_frames = source.counters.inspected_frames.saturating_add(1);
             let screen_counter = match result.observation.screen() {
+                ScreenClass::Title => &mut source.counters.title_frames,
                 ScreenClass::Result => &mut source.counters.result_frames,
                 ScreenClass::MusicSelect => &mut source.counters.music_select_frames,
                 ScreenClass::ModeSelect => &mut source.counters.mode_select_frames,
@@ -1832,6 +1846,7 @@ fn offer_field_observation_frames(
                 None,
                 None,
                 None,
+                None,
             ) {
                 return Some((error, None));
             }
@@ -1858,6 +1873,7 @@ fn offer_live_field_observation_frames(
     sink: &mut BoundedDiagnosticSink,
     emit: &mut LiveEventEmitter<'_>,
     _minimum_event_sequence: &mut Option<u64>,
+    game_version: &mut GameVersionResolver,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let mut cadence = RecognitionCadence::default();
     let mut episodes = TimelineDriver::default();
@@ -1884,6 +1900,7 @@ fn offer_live_field_observation_frames(
             None,
             Some(emit),
             None,
+            Some(&mut *game_version),
         ) {
             terminal = Some((error, None));
             break 'capture;
@@ -1931,7 +1948,17 @@ fn offer_live_field_observation_frames(
                 }
             }
             let field_busy = pending.len() >= 2;
-            let inspected = if field_busy {
+            let inspected = if game_version.identified().is_some() && field_busy {
+                session.inspect_with_field_policy(
+                    &frame,
+                    crate::recognition_live::FieldInputPolicy::SkipBusyAndTitle,
+                )
+            } else if game_version.identified().is_some() {
+                session.inspect_with_field_policy(
+                    &frame,
+                    crate::recognition_live::FieldInputPolicy::SkipTitle,
+                )
+            } else if field_busy {
                 session.inspect_while_field_busy(&frame)
             } else {
                 session.inspect(&frame)
@@ -1942,6 +1969,7 @@ fn offer_live_field_observation_frames(
             };
             source.counters.inspected_frames = source.counters.inspected_frames.saturating_add(1);
             let screen_counter = match result.observation.screen() {
+                ScreenClass::Title => &mut source.counters.title_frames,
                 ScreenClass::Result => &mut source.counters.result_frames,
                 ScreenClass::MusicSelect => &mut source.counters.music_select_frames,
                 ScreenClass::ModeSelect => &mut source.counters.mode_select_frames,
@@ -1957,7 +1985,12 @@ fn offer_live_field_observation_frames(
                 frame.monotonic_end_ms(),
             );
             if let Some(recorder) = canonical_recorder {
-                let _ = recorder.offer(&frame, screen, timeline_step.active_episode_id);
+                let _ = recorder.offer(
+                    &frame,
+                    screen,
+                    result.observation.predicate().title_presence.qualifies,
+                    timeline_step.active_episode_id,
+                );
             }
             let mut live_timing = LiveEventProcessingTiming::default();
             let mut output_failed = false;
@@ -1993,6 +2026,7 @@ fn offer_live_field_observation_frames(
                                 artifact_worker,
                                 Some(emit),
                                 None,
+                                Some(&mut *game_version),
                             ) {
                                 return Err(error);
                             }
@@ -2117,6 +2151,7 @@ fn offer_live_field_observation_frames(
                         artifact_worker,
                         Some(emit),
                         None,
+                        Some(&mut *game_version),
                     ) {
                         return Some(error);
                     }
@@ -2360,6 +2395,7 @@ fn wait_field_observations(
             Some(remaining),
             None,
             None,
+            None,
         ) {
             return Some((error, None));
         }
@@ -2382,6 +2418,7 @@ fn poll_field_observations(
     wait: Option<Duration>,
     mut emit: Option<&mut LiveEventEmitter<'_>>,
     minimum_event_sequence: Option<u64>,
+    mut game_version: Option<&mut GameVersionResolver>,
 ) -> Option<FieldObservationGateErrorType> {
     let index = 0;
     while !pending.is_empty() {
@@ -2403,6 +2440,7 @@ fn poll_field_observations(
                 let sequence = observation.sequence();
                 let monotonic_start_ms = observation.monotonic_start_ms();
                 let monotonic_end_ms = observation.monotonic_end_ms();
+                let observation_screen = observation.screen();
                 if let Ok(mut output) = observation.into_output() {
                     let late = minimum_event_sequence.is_some_and(|minimum| sequence < minimum);
                     counters.field_ready_success = counters.field_ready_success.saturating_add(1);
@@ -2417,6 +2455,15 @@ fn poll_field_observations(
                         counters.result_observations =
                             counters.result_observations.saturating_add(1);
                     }
+                    let identified_version = match (output.fields(), game_version.as_deref_mut()) {
+                        (
+                            scorepeek::recognition::ScreenFieldObservations::Title(fields),
+                            Some(resolver),
+                        ) => resolver
+                            .observe_candidate(sequence, &fields.game_version.open_text)
+                            .map(str::to_owned),
+                        _ => None,
+                    };
                     let mut output_failed = false;
                     let output_timing = if minimum_event_sequence
                         .is_none_or(|minimum| sequence >= minimum)
@@ -2440,6 +2487,17 @@ fn poll_field_observations(
                     if let Some(output_timing) = output_timing {
                         timing.add_live_processing(output_timing);
                     }
+                    if let (Some(version), Some(emit)) =
+                        (identified_version.as_deref(), emit.as_deref_mut())
+                    {
+                        match emit(GamescopeLiveSessionEvent::GameVersionIdentified {
+                            source_sequence: sequence,
+                            version,
+                        }) {
+                            Ok(output_timing) => timing.add_live_processing(output_timing),
+                            Err(_) => output_failed = true,
+                        }
+                    }
                     timing.finish_wall();
                     output.apply_frame_timing(timing);
                     let _ = session.record_frame_processing_timing(
@@ -2451,7 +2509,9 @@ fn poll_field_observations(
                         },
                         Some(output.processing_timing()),
                     );
-                    if let Some(worker) = artifact_worker {
+                    if observation_screen != ScreenClass::Title
+                        && let Some(worker) = artifact_worker
+                    {
                         let counter = match worker.try_record_in_episode(
                             sequence,
                             screen_episode_id,
@@ -2486,7 +2546,13 @@ fn poll_field_observations(
                         None,
                     );
                     counters.field_ready_failure = counters.field_ready_failure.saturating_add(1);
-                    return Some(FieldObservationGateErrorType::FieldObservationFailed);
+                    if observation_screen == ScreenClass::Title {
+                        if let Some(resolver) = game_version.as_deref_mut() {
+                            resolver.observe_failure(sequence);
+                        }
+                    } else {
+                        return Some(FieldObservationGateErrorType::FieldObservationFailed);
+                    }
                 }
                 if wait.is_some() {
                     return None;
@@ -2514,7 +2580,9 @@ fn wait_live_field_observations(
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     mut emit: Option<&mut LiveEventEmitter<'_>>,
     minimum_event_sequence: Option<u64>,
+    game_version: Option<&mut GameVersionResolver>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let mut game_version = game_version;
     let started = Instant::now();
     while !pending.is_empty() {
         let remaining = DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT.saturating_sub(started.elapsed());
@@ -2529,6 +2597,7 @@ fn wait_live_field_observations(
             Some(remaining),
             emit.as_deref_mut(),
             minimum_event_sequence,
+            game_version.as_deref_mut(),
         ) {
             return Some((error, None));
         }
@@ -2653,6 +2722,7 @@ fn field_observation_report(
             .maximum_consecutive_field_observation_busy_skips,
         last_recognition_sequence: counters.last_recognition_sequence,
         inspected_frames: counters.inspected_frames,
+        title_frames: counters.title_frames,
         result_frames: counters.result_frames,
         music_select_frames: counters.music_select_frames,
         mode_select_frames: counters.mode_select_frames,
@@ -3007,6 +3077,7 @@ fn offer_diagnostic_handoff_frames(
                 counters.record_offer(result.diagnostic_frame);
                 recognition.inspected_frames = recognition.inspected_frames.saturating_add(1);
                 let screen_counter = match result.observation.screen() {
+                    ScreenClass::Title => &mut recognition.title_frames,
                     ScreenClass::Result => &mut recognition.result_frames,
                     ScreenClass::MusicSelect => &mut recognition.music_select_frames,
                     ScreenClass::ModeSelect => &mut recognition.mode_select_frames,
@@ -3133,6 +3204,7 @@ fn recognition_handoff_report(run: HandoffGateRun) -> GamescopeRecognitionHandof
         diagnostic_frame_queue_full: diagnostic.queue_full_frames,
         diagnostic_frame_worker_unavailable: diagnostic.worker_unavailable_frames,
         inspected_frames: recognition.inspected_frames,
+        title_frames: recognition.title_frames,
         result_frames: recognition.result_frames,
         music_select_frames: recognition.music_select_frames,
         mode_select_frames: recognition.mode_select_frames,
@@ -4014,6 +4086,7 @@ mod tests {
                 observed_frames: 3,
                 normalized_frames: 3,
                 inspected_frames: 3,
+                title_frames: 0,
                 result_frames: 1,
                 music_select_frames: 1,
                 unknown_frames: 1,

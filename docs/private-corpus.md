@@ -28,9 +28,19 @@ The canonical recorder indexes every 10 Hz due tick with original sequence, mono
 screen, active semantic episode ID, and either `retained` or a typed intentional-elision reason.
 It retains every `MusicSelect`, `DecideTransition`, and `Result` frame. It retains the session's
 first and last ten ticks and ten-tick windows around all raw-screen changes, including entry to and
-exit from `Unknown`. Only stable `Play`, `ModeSelect`, and `Unknown` interiors are elided.
+exit from `Unknown`. TITLE is the exception: ordinary `--record` always writes its tick metadata with
+the `title` disposition and never retains its pixels, even inside those windows. Stable `Play`,
+`ModeSelect`, and `Unknown` interiors are also elided.
 Use `--record-all` for calibration captures that must retain every 10 Hz due tick, including those
-stable interiors. Its diagnostic stream records the effective `all` retention mode before capture.
+stable interiors and TITLE. Its diagnostic stream records the effective `all` retention mode before capture.
+
+`scorepeek-canonical-session-recording-v4` requires a final `game_version` state of `identified`,
+`not_observed`, `ambiguous`, or `observer_failed`; only `identified` carries the complete version
+string. Corpus sessions use `scorepeek-private-capture-session-v4` and preserve that state. The
+ordinary importer accepts only canonical manifest v4 and corpus session v4; it has no v3 fallback.
+Existing v3 sessions require the one-shot migration command from the separate temporary migration
+commit. Because ordinary v3 recordings did not retain TITLE evidence, migration assigns
+`not_observed` rather than inferring a version.
 
 Retained frames are lossless RGB Matroska segments in tick-index order. Intentional sequence gaps
 remain inside a segment; 600 retained frames, chronology reset, or session end closes it. The

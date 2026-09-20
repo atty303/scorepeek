@@ -371,6 +371,10 @@ fn submit_text_fields(
 ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
     use scorepeek::recognition::ScreenTextField;
     let jobs = match input.crops() {
+        scorepeek::recognition::ScreenRgb8Crops::Title(crops) => vec![(
+            ScreenTextField::TitleGameVersion,
+            crops.game_version.clone(),
+        )],
         scorepeek::recognition::ScreenRgb8Crops::Result(crops) => vec![
             (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
             (ScreenTextField::ResultPlayType, crops.play_type.clone()),
@@ -671,9 +675,13 @@ impl RegisteredScreenFieldObservation {
             ScreenFieldObservations::Result(fields) => {
                 Some(ParsedResultFields::from_observations(fields))
             }
-            ScreenFieldObservations::MusicSelect(_) => None,
+            ScreenFieldObservations::Title(_) | ScreenFieldObservations::MusicSelect(_) => None,
         };
         let song_resolution = match (&fields, &candidates) {
+            (
+                ScreenFieldObservations::Title(_),
+                ScreenCatalogCandidateObservations::Title { .. },
+            ) => ScreenSongResolution::Title,
             (
                 ScreenFieldObservations::Result(fields),
                 ScreenCatalogCandidateObservations::Result { candidates, .. },
@@ -708,7 +716,7 @@ impl RegisteredScreenFieldObservation {
             ScreenFieldObservations::Result(fields) => {
                 resolve_clear_type(&fields.clear_type.open_text)
             }
-            ScreenFieldObservations::MusicSelect(_) => None,
+            ScreenFieldObservations::Title(_) | ScreenFieldObservations::MusicSelect(_) => None,
         };
         let result_chart_resolution = match (&song_resolution, &parsed_result_fields) {
             (ScreenSongResolution::Result(resolution), Some(parsed)) => resolution
@@ -765,14 +773,14 @@ impl RegisteredScreenFieldObservation {
     pub const fn result_resolution(&self) -> Option<&ResultSongResolution> {
         match &self.song_resolution {
             ScreenSongResolution::Result(resolution) => Some(resolution),
-            ScreenSongResolution::MusicSelect(_) => None,
+            ScreenSongResolution::Title | ScreenSongResolution::MusicSelect(_) => None,
         }
     }
 
     #[must_use]
     pub const fn music_select_resolution(&self) -> Option<&MusicSelectSongResolution> {
         match &self.song_resolution {
-            ScreenSongResolution::Result(_) => None,
+            ScreenSongResolution::Title | ScreenSongResolution::Result(_) => None,
             ScreenSongResolution::MusicSelect(resolution) => Some(resolution),
         }
     }
@@ -851,6 +859,7 @@ fn joint_evidence(
         for chart in song.charts().values() {
             let mut family_support = BTreeMap::new();
             match fields {
+                ScreenFieldObservations::Title(_) => {}
                 ScreenFieldObservations::Result(_) => {
                     family_support.insert(EvidenceFamily::ResultTitle, title_support);
                     family_support.insert(EvidenceFamily::ResultArtist, artist_support);
@@ -898,6 +907,7 @@ fn song_supports(
     candidates: &ScreenCatalogCandidateObservations,
 ) -> Vec<(ScorepeekSongId, u16, u16)> {
     match candidates {
+        ScreenCatalogCandidateObservations::Title { .. } => Vec::new(),
         ScreenCatalogCandidateObservations::Result { candidates, .. } => candidates
             .iter()
             .map(|candidate| {
@@ -996,6 +1006,52 @@ struct ObservedFrameFields {
 }
 
 impl RegisteredScreenFieldObserver {
+    fn observe_title(
+        &mut self,
+        sequence: u64,
+        crops: &scorepeek::recognition::TitleScreenRgb8Crops,
+    ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
+        use scorepeek::recognition::ScreenTextField;
+        let pending = if let Some(pending) = self
+            .prefetched_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&sequence)
+        {
+            pending
+        } else {
+            self.text_pool
+                .submit(vec![(
+                    ScreenTextField::TitleGameVersion,
+                    crops.game_version.clone(),
+                )])
+                .map_err(|source| {
+                    ScreenFieldObservationError::new(ScreenTextField::TitleGameVersion, source)
+                })?
+        };
+        let mut text = pending.join().map_err(|source| {
+            ScreenFieldObservationError::new(ScreenTextField::TitleGameVersion, source)
+        })?;
+        let join_started = Instant::now();
+        let game_version =
+            take_text(&mut text, ScreenTextField::TitleGameVersion).map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::TitleGameVersion, source)
+            })?;
+        Ok(ObservedFrameFields {
+            fields: ScreenFieldObservations::Title(
+                scorepeek::recognition::TitleScreenFieldObservations { game_version },
+            ),
+            numeric_batch: None,
+            text_batch_wall_us: text.wall_us,
+            maximum_text_worker_queue_wait_us: text.maximum_queue_wait_us,
+            maximum_text_worker_inference_us: text.maximum_worker_inference_us,
+            text_worker_busy_us: text.worker_busy_us,
+            text_worker_ids: text.worker_ids,
+            join_started,
+            title_evidence: None,
+        })
+    }
+
     fn observe_result(
         &mut self,
         sequence: u64,
@@ -1271,6 +1327,9 @@ impl FieldObserver for RegisteredScreenFieldObserver {
         let frame_started = Instant::now();
         let configuration = self.text_pool.configuration();
         let observed = match input.crops() {
+            scorepeek::recognition::ScreenRgb8Crops::Title(crops) => {
+                self.observe_title(input.sequence(), crops)?
+            }
             scorepeek::recognition::ScreenRgb8Crops::Result(crops) => {
                 self.observe_result(input.sequence(), crops)?
             }

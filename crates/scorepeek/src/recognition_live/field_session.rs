@@ -296,7 +296,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         self.inspect_with_field_policy(frame, FieldInputPolicy::SkipBusy)
     }
 
-    fn inspect_with_field_policy<'a>(
+    pub(crate) fn inspect_with_field_policy<'a>(
         &mut self,
         frame: &'a BoundCanonicalFrame,
         field_policy: FieldInputPolicy,
@@ -311,7 +311,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
             .recognition
             .inspect_with_field_policy(frame, field_policy)?;
         let field_submission = match (field_policy, field_inputs) {
-            (FieldInputPolicy::SkipBusy, None)
+            (FieldInputPolicy::SkipBusy | FieldInputPolicy::SkipBusyAndTitle, None)
                 if matches!(
                     observation.screen(),
                     scorepeek::recognition::ScreenClass::Result

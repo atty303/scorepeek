@@ -81,7 +81,9 @@ gaps fail. The active-inclusive latest ten invocation
 directories are retained; the next start removes the oldest completed invocation and its video.
 
 `--record` adds selectively retained canonical video below
-`sessions/<capture-session-id>/canonical/`; `--record-all` retains every canonical 10 Hz due tick
-for calibration captures. Runtime
+`sessions/<capture-session-id>/canonical/`, but TITLE pixels are always elided; `--record-all`
+retains every canonical 10 Hz due tick, including TITLE, for calibration captures. Both publish a
+`scorepeek-canonical-session-recording-v4` manifest whose required `game_version` is
+`identified(version)`, `not_observed`, `ambiguous`, or `observer_failed`. Runtime
 artifacts carry binding identities but no content digests. Corpus import computes video digests as
 it reads the bytes for validation and transfer.

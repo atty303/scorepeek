@@ -105,6 +105,7 @@ pub struct RecognitionArtifactExpected<'a> {
 #[derive(Serialize)]
 #[serde(tag = "screen", rename_all = "snake_case")]
 enum StoredDecision<'a> {
+    Title,
     Result {
         resolution: &'a ResultSongResolution,
     },
@@ -120,6 +121,9 @@ enum StoredDecision<'a> {
     reason = "the flat stored schema is serialized immediately and preserves artifact readability"
 )]
 enum StoredFields<'a> {
+    Title {
+        game_version: StoredText<'a>,
+    },
     Result {
         title: StoredText<'a>,
         artist: StoredText<'a>,
@@ -166,6 +170,10 @@ struct StoredText<'a> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "screen", rename_all = "snake_case")]
 enum StoredCandidates {
+    Title {
+        comparison_key_id: &'static str,
+        candidate_count: usize,
+    },
     Result {
         comparison_key_id: &'static str,
         candidate_order: &'static str,
@@ -259,7 +267,7 @@ impl RecognitionArtifactWriter {
             ScreenFieldObservations::Result(fields) => {
                 Some(ParsedResultFields::from_observations(fields))
             }
-            ScreenFieldObservations::MusicSelect(_) => None,
+            ScreenFieldObservations::Title(_) | ScreenFieldObservations::MusicSelect(_) => None,
         };
         self.record_with_result_context(
             sequence,
@@ -369,6 +377,9 @@ impl RecognitionArtifactWriter {
         }
         self.ensure_catalog(candidates.catalog_evidence())?;
         let decision = match (fields, song_resolution) {
+            (ScreenFieldObservations::Title(_), ScreenSongResolution::Title) => {
+                StoredDecision::Title
+            }
             (ScreenFieldObservations::Result(_), ScreenSongResolution::Result(resolution)) => {
                 StoredDecision::Result { resolution }
             }
@@ -925,6 +936,9 @@ fn acquire_worker_token(supervisor: &Mutex<Weak<()>>) -> Option<Arc<()>> {
 impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
     fn from(fields: &'a ScreenFieldObservations) -> Self {
         match fields {
+            ScreenFieldObservations::Title(fields) => Self::Title {
+                game_version: StoredText::from(&fields.game_version),
+            },
             ScreenFieldObservations::Result(fields) => Self::Result {
                 title: StoredText::from(&fields.title),
                 artist: StoredText::from(&fields.artist),
@@ -977,6 +991,12 @@ impl TryFrom<&ScreenCatalogCandidateObservations> for StoredCandidates {
 
     fn try_from(candidates: &ScreenCatalogCandidateObservations) -> Result<Self, Self::Error> {
         match candidates {
+            ScreenCatalogCandidateObservations::Title {
+                comparison_key_id, ..
+            } => Ok(Self::Title {
+                comparison_key_id,
+                candidate_count: 0,
+            }),
             ScreenCatalogCandidateObservations::Result {
                 comparison_key_id,
                 catalog,

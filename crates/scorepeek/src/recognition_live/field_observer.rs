@@ -136,6 +136,7 @@ impl FieldObserverInput {
     #[must_use]
     pub const fn screen(&self) -> ScreenClass {
         match &self.crops {
+            ScreenRgb8Crops::Title(_) => ScreenClass::Title,
             ScreenRgb8Crops::Result(_) => ScreenClass::Result,
             ScreenRgb8Crops::MusicSelect(_) => ScreenClass::MusicSelect,
         }
@@ -566,6 +567,9 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             return Err(FieldObserverOfferError::BindingMismatch);
         }
         let layout_matches = match &live.crops {
+            ScreenRgb8Crops::Title(crops) => {
+                crops.canonical_layout_sha256 == binding.canonical_layout_sha256
+            }
             ScreenRgb8Crops::Result(crops) => {
                 crops.canonical_layout_sha256 == binding.canonical_layout_sha256
             }
@@ -1011,6 +1015,9 @@ mod tests {
 
         fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
             let first_pixel = match input.crops() {
+                ScreenRgb8Crops::Title(crops) => {
+                    crops.game_version.pixels()[..3].try_into().unwrap()
+                }
                 ScreenRgb8Crops::Result(crops) => crops.title.pixels()[..3].try_into().unwrap(),
                 ScreenRgb8Crops::MusicSelect(crops) => {
                     crops.central_title.pixels()[..3].try_into().unwrap()

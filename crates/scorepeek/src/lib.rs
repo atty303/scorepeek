@@ -16,6 +16,7 @@ pub mod diagnostic_recording;
 pub mod diagnostic_stream;
 #[allow(dead_code)]
 pub mod diagnostic_worker;
+pub mod game_version;
 mod inventory;
 mod live_control;
 #[allow(dead_code)]

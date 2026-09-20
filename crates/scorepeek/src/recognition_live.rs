@@ -5,7 +5,7 @@ use std::time::Instant;
 use scorepeek::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
     ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
-    ScreenRgb8Crops, inspect_canonical_rgb8, route_screen_rgb8_crops,
+    ScreenRgb8Crops, TitleScreenRgb8Crops, inspect_canonical_rgb8, route_screen_rgb8_crops,
 };
 
 use crate::diagnostic_live::{BoundCanonicalFrame, DiagnosticBridge};
@@ -33,6 +33,8 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 pub(crate) enum FieldInputPolicy {
     Route,
     SkipBusy,
+    SkipTitle,
+    SkipBusyAndTitle,
 }
 
 /// One screen-predicate result that borrows its immutable live capture evidence.
@@ -239,6 +241,7 @@ struct RecognitionRunBinding {
 /// A borrowed view of one opaque live screen-crop owner.
 #[derive(Clone, Copy, Debug)]
 pub enum BoundScreenRgb8CropsRef<'a> {
+    Title(&'a TitleScreenRgb8Crops),
     Result(&'a ResultScreenRgb8Crops),
     MusicSelect(&'a MusicSelectScreenRgb8Crops),
 }
@@ -247,6 +250,7 @@ impl BoundScreenRgb8Crops<'_> {
     #[must_use]
     pub const fn screen(&self) -> ScreenClass {
         match &self.crops {
+            ScreenRgb8Crops::Title(_) => ScreenClass::Title,
             ScreenRgb8Crops::Result(_) => ScreenClass::Result,
             ScreenRgb8Crops::MusicSelect(_) => ScreenClass::MusicSelect,
         }
@@ -255,6 +259,7 @@ impl BoundScreenRgb8Crops<'_> {
     #[must_use]
     pub const fn crops(&self) -> BoundScreenRgb8CropsRef<'_> {
         match &self.crops {
+            ScreenRgb8Crops::Title(crops) => BoundScreenRgb8CropsRef::Title(crops),
             ScreenRgb8Crops::Result(crops) => BoundScreenRgb8CropsRef::Result(crops),
             ScreenRgb8Crops::MusicSelect(crops) => BoundScreenRgb8CropsRef::MusicSelect(crops),
         }
@@ -281,9 +286,35 @@ pub struct RecognitionSession {
     run_binding: Arc<RecognitionRunBinding>,
     bridge: DiagnosticBridge,
     last_sequence: Option<u64>,
+    title_confirmation: TitleConfirmation,
+}
+
+const TITLE_CONFIRMATION_FRAMES: u8 = 10;
+
+#[derive(Debug, Default)]
+struct TitleConfirmation {
+    candidate_frames: u8,
+}
+
+impl TitleConfirmation {
+    fn observe(&mut self, candidate: bool) -> bool {
+        if candidate {
+            self.candidate_frames = self.candidate_frames.saturating_add(1);
+        } else {
+            self.candidate_frames = 0;
+        }
+        self.candidate_frames >= TITLE_CONFIRMATION_FRAMES
+    }
 }
 
 impl RecognitionSession {
+    fn confirm_title(&mut self, predicate: &mut ScreenPredicateObservation) {
+        let candidate = predicate.title_presence.qualifies;
+        if self.title_confirmation.observe(candidate) {
+            predicate.screen = ScreenClass::Title;
+        }
+    }
+
     /// Starts a source-bound session only for the embedded canonical layout.
     ///
     /// # Errors
@@ -303,6 +334,7 @@ impl RecognitionSession {
             }),
             bridge,
             last_sequence: None,
+            title_confirmation: TitleConfirmation::default(),
         })
     }
 
@@ -322,6 +354,7 @@ impl RecognitionSession {
             }),
             bridge,
             last_sequence: None,
+            title_confirmation: TitleConfirmation::default(),
         })
     }
 
@@ -347,11 +380,12 @@ impl RecognitionSession {
         }
         self.last_sequence = Some(frame.sequence());
         let classification_started = Instant::now();
-        let Ok(observation) = RecognitionObservation::inspect(frame) else {
+        let Ok(mut observation) = RecognitionObservation::inspect(frame) else {
             let _ = self.bridge.offer(frame);
             let _ = self.bridge.record_recognition_failure(frame);
             return Err(RecognitionSessionError::RecognitionFailed);
         };
+        self.confirm_title(&mut observation.predicate);
         let screen_classification_us = duration_us(classification_started.elapsed());
         let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
         let crop_started = Instant::now();
@@ -360,12 +394,23 @@ impl RecognitionSession {
             | ScreenClass::DecideTransition
             | ScreenClass::Play
             | ScreenClass::Unknown => None,
-            ScreenClass::Result | ScreenClass::MusicSelect
-                if field_policy == FieldInputPolicy::SkipBusy =>
+            ScreenClass::Title
+                if matches!(
+                    field_policy,
+                    FieldInputPolicy::SkipTitle | FieldInputPolicy::SkipBusyAndTitle
+                ) =>
             {
                 None
             }
-            ScreenClass::Result | ScreenClass::MusicSelect => {
+            ScreenClass::Title | ScreenClass::Result | ScreenClass::MusicSelect
+                if matches!(
+                    field_policy,
+                    FieldInputPolicy::SkipBusy | FieldInputPolicy::SkipBusyAndTitle
+                ) =>
+            {
+                None
+            }
+            ScreenClass::Title | ScreenClass::Result | ScreenClass::MusicSelect => {
                 let Some(route) = observation.predicate().crop_route() else {
                     let _ = self.bridge.record_recognition_failure(frame);
                     return Err(RecognitionSessionError::RecognitionFailed);
@@ -430,13 +475,24 @@ impl RecognitionSession {
             return Err(RecognitionSessionError::RecognitionFailed);
         }
         self.last_sequence = Some(frame.sequence());
-        let observation = RecognitionObservation {
+        let mut observation = RecognitionObservation {
             frame,
             canonical_layout_sha256: CanonicalLayout::sha256(),
             predicate: prepared.predicate,
         };
+        self.confirm_title(&mut observation.predicate);
         let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
-        let field_inputs = prepared.field_inputs.map(|crops| BoundScreenRgb8Crops {
+        let prepared_inputs = if observation.screen() == ScreenClass::Title {
+            observation
+                .predicate()
+                .crop_route()
+                .map(|route| route_screen_rgb8_crops(frame.pixels(), route))
+                .transpose()
+                .map_err(|_| RecognitionSessionError::RecognitionFailed)?
+        } else {
+            prepared.field_inputs
+        };
+        let field_inputs = prepared_inputs.map(|crops| BoundScreenRgb8Crops {
             frame,
             run_binding: Arc::clone(&self.run_binding),
             crops,
@@ -648,6 +704,7 @@ impl RecognitionSession {
             }),
             bridge,
             last_sequence: None,
+            title_confirmation: TitleConfirmation::default(),
         })
     }
 }
@@ -693,6 +750,21 @@ mod tests {
 
     use super::*;
     use crate::diagnostic_recording::{DiagnosticBinding, DiagnosticResource};
+
+    #[test]
+    fn title_confirmation_starts_at_the_tenth_consecutive_candidate() {
+        let mut confirmation = TitleConfirmation::default();
+        for _ in 0..9 {
+            assert!(!confirmation.observe(true));
+        }
+        assert!(confirmation.observe(true));
+        assert!(confirmation.observe(true));
+        assert!(!confirmation.observe(false));
+        for _ in 0..9 {
+            assert!(!confirmation.observe(true));
+        }
+        assert!(confirmation.observe(true));
+    }
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {

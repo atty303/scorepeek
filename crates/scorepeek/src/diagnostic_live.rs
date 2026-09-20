@@ -411,6 +411,7 @@ impl DiagnosticBridge {
             self.canonical_layout_sha256
         );
         let screen = match observation.screen() {
+            scorepeek::recognition::ScreenClass::Title => DiagnosticScreen::Title,
             scorepeek::recognition::ScreenClass::Result => DiagnosticScreen::Result,
             scorepeek::recognition::ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
             scorepeek::recognition::ScreenClass::ModeSelect => DiagnosticScreen::ModeSelection,
@@ -431,6 +432,9 @@ impl DiagnosticBridge {
             detail: DiagnosticDetail::ScreenPredicateObservation {
                 screen,
                 screen_path_layout_sha256: predicate.screen_path_layout_sha256.clone(),
+                title_bright_bbox: predicate.title_presence.bright_bbox,
+                title_bright_channel_min: predicate.title_presence.bright_channel_min,
+                title_qualifies: predicate.title_presence.qualifies,
                 result_warm_pixels: predicate.result_presence.warm_pixels,
                 result_warm_pixels_min: predicate.result_presence.warm_pixels_min,
                 result_panel_side: predicate.result_presence.panel_side,
@@ -498,6 +502,7 @@ impl DiagnosticBridge {
         >,
     ) -> DiagnosticEnqueueOutcome {
         let screen = match timing.screen {
+            ScreenClass::Title => DiagnosticScreen::Title,
             ScreenClass::Result => DiagnosticScreen::Result,
             ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
             ScreenClass::ModeSelect => DiagnosticScreen::ModeSelection,
@@ -590,6 +595,7 @@ impl DiagnosticBridge {
         output: Result<&ScreenFieldObservations, ScreenTextField>,
     ) -> DiagnosticEnqueueOutcome {
         let diagnostic_screen = match screen {
+            ScreenClass::Title => DiagnosticScreen::Title,
             ScreenClass::Result => DiagnosticScreen::Result,
             ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
             ScreenClass::ModeSelect
@@ -623,6 +629,7 @@ impl DiagnosticBridge {
                     Some(DiagnosticFactErrorType::FieldObservationFailed),
                     0,
                     match screen {
+                        ScreenClass::Title => 0,
                         ScreenClass::Result => 0,
                         ScreenClass::MusicSelect => 1,
                         ScreenClass::ModeSelect
@@ -660,6 +667,7 @@ impl DiagnosticBridge {
         screen: ScreenClass,
     ) -> DiagnosticEnqueueOutcome {
         let screen = match screen {
+            ScreenClass::Title => DiagnosticScreen::Title,
             ScreenClass::Result => DiagnosticScreen::Result,
             ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
             ScreenClass::ModeSelect
@@ -851,6 +859,9 @@ fn diagnostic_text_field(
     field: ScreenTextField,
 ) -> Option<DiagnosticTextField> {
     Some(match (screen, field) {
+        (ScreenClass::Title, ScreenTextField::TitleGameVersion) => {
+            DiagnosticTextField::TitleGameVersion
+        }
         (ScreenClass::Result, ScreenTextField::ResultTitle) => DiagnosticTextField::ResultTitle,
         (ScreenClass::Result, ScreenTextField::ResultArtist) => DiagnosticTextField::ResultArtist,
         (ScreenClass::Result, ScreenTextField::ResultClearType) => {

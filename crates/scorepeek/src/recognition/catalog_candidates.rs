@@ -51,6 +51,10 @@ pub struct MusicSelectSongCandidateObservation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScreenCatalogCandidateObservations {
+    Title {
+        comparison_key_id: &'static str,
+        catalog: Arc<CatalogCandidateEvidenceTable>,
+    },
     Result {
         comparison_key_id: &'static str,
         catalog: Arc<CatalogCandidateEvidenceTable>,
@@ -67,7 +71,10 @@ impl ScreenCatalogCandidateObservations {
     #[must_use]
     pub const fn comparison_key_id(&self) -> &'static str {
         match self {
-            Self::Result {
+            Self::Title {
+                comparison_key_id, ..
+            }
+            | Self::Result {
                 comparison_key_id, ..
             }
             | Self::MusicSelect {
@@ -79,6 +86,7 @@ impl ScreenCatalogCandidateObservations {
     #[must_use]
     pub fn candidate_count(&self) -> usize {
         match self {
+            Self::Title { .. } => 0,
             Self::Result { candidates, .. } => candidates.len(),
             Self::MusicSelect { candidates, .. } => candidates.len(),
         }
@@ -87,7 +95,9 @@ impl ScreenCatalogCandidateObservations {
     #[must_use]
     pub fn catalog_evidence(&self) -> &CatalogCandidateEvidenceTable {
         match self {
-            Self::Result { catalog, .. } | Self::MusicSelect { catalog, .. } => catalog,
+            Self::Title { catalog, .. }
+            | Self::Result { catalog, .. }
+            | Self::MusicSelect { catalog, .. } => catalog,
         }
     }
 }
@@ -205,6 +215,10 @@ impl CatalogCandidateDomain {
         observations: &ScreenFieldObservations,
     ) -> ScreenCatalogCandidateObservations {
         match observations {
+            ScreenFieldObservations::Title(_) => ScreenCatalogCandidateObservations::Title {
+                comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
+                catalog: Arc::clone(&self.evidence),
+            },
             ScreenFieldObservations::Result(observations) => self.observe_result(observations),
             ScreenFieldObservations::MusicSelect(observations) => {
                 self.observe_music_select(observations)

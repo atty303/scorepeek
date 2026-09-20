@@ -113,6 +113,12 @@ pub enum RunEventKind {
         session_id: String,
         directory: String,
     },
+    GameVersionChanged {
+        session_id: String,
+        capture_generation: u64,
+        source_sequence: u64,
+        version: String,
+    },
     RawScreenObserved {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -1761,6 +1767,12 @@ impl RunEvent {
         observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
     ) -> Result<Self, String> {
         let (screen, fields) = match observation.fields() {
+            scorepeek::recognition::ScreenFieldObservations::Title(fields) => (
+                "title",
+                json!({
+                    "game_version": fields.game_version.open_text,
+                }),
+            ),
             scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
                 "result",
                 json!({
@@ -1853,6 +1865,14 @@ fn song_resolution_presentation_from_observation(
 ) -> Result<SongResolutionPresentation, String> {
     use scorepeek::recognition::{MusicSelectSongResolution, ResultSongResolution};
     match observation.song_resolution() {
+        scorepeek::recognition::ScreenSongResolution::Title => {
+            Ok(SongResolutionPresentation::Unknown {
+                reason: Value::String("not_applicable".to_owned()),
+                selected: None,
+                runner_up: None,
+                evidence_summary: None,
+            })
+        }
         scorepeek::recognition::ScreenSongResolution::Result(resolution) => match resolution {
             ResultSongResolution::Accepted {
                 selected,
@@ -2136,6 +2156,7 @@ impl RunViewState {
     #[allow(clippy::too_many_lines)]
     fn reduce(&mut self, event: &RunEvent, serialized: &Value) {
         match &event.kind {
+            RunEventKind::GameVersionChanged { .. } => {}
             RunEventKind::MusicSelectResolverChanged { state, .. } => {
                 self.music_select = state.clone();
             }
@@ -3326,6 +3347,7 @@ impl RoutineOutput {
             } => self.publish_screen_tick(*sequence, *monotonic_end_ms),
             RunEventKind::SessionFinished { .. } => self.publish_session_finished(event),
             RunEventKind::WatcherStarted { .. }
+            | RunEventKind::GameVersionChanged { .. }
             | RunEventKind::RecordingHealthChanged { .. }
             | RunEventKind::RecordingFinalizing { .. }
             | RunEventKind::RecordingCompleted { .. }

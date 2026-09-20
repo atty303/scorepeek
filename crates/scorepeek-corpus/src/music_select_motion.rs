@@ -30,7 +30,7 @@ use crate::{CorpusError, ErrorContext, digest_bytes, read_bounded_regular};
 
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v3";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v4";
 const OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";

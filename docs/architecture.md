@@ -123,10 +123,13 @@ model identities remain bound through recognition and diagnostics.
 
 ## Recognition and temporal authority
 
-The screen classifier creates typed MUSIC SELECT, MODE SELECT,
-DECIDE/transition, PLAY, RESULT, or UNKNOWN observations. Semantic screen
-episodes control suspension, drain, and finalization. UNKNOWN never supplies
-field crops.
+The screen classifier creates typed TITLE, MUSIC SELECT, MODE SELECT,
+DECIDE/transition, PLAY, RESULT, or UNKNOWN observations. TITLE is a session-local temporal
+classification: at canonical 10 Hz, the upper-left `(16, 8, 280, 45)` ROI must have ten
+consecutive bright-text bounding boxes within the registered layout bounds. The tenth frame starts
+the TITLE episode; earlier candidate frames remain UNKNOWN. The predicate uses the bounding box,
+not OCR text or bright-pixel count. Semantic screen episodes control suspension, drain, and
+finalization. UNKNOWN never supplies field crops.
 
 Screen-specific observers use scorepeek-owned layouts and registered model
 bundles. Text recognition and specialist numeric recognition run in bounded
@@ -135,6 +138,13 @@ closed. Full-catalog song and chart resolution keeps title, artist, play type,
 difficulty, level, and notes as independently attributable evidence. Ambiguity,
 conflict, insufficient margin, or missing required evidence produces a typed
 unknown rather than a guess.
+
+After TITLE confirmation, its version crop enters the same bounded, screen-gated text-observer
+path. A version is exactly 20 ASCII characters, with colons at byte offsets 3, 5, 7, and 9 and
+ASCII alphanumerics elsewhere. Three equal valid observations on distinct source sequences identify
+the session version; another valid value or an invalid observation breaks the consecutive run.
+Identification disables further version OCR for that capture session. Version state never carries
+between sessions.
 
 MUSIC SELECT identity includes independently measured footer play side for SP, selected chart
 context, and its stability gate; DP marks play side not applicable. RESULT independently stabilizes
@@ -151,7 +161,8 @@ The public live interface is Event API v3 on
 `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A client receives one current
 snapshot and then ordered NDJSON events. The public projection excludes raw
 OCR, candidates, recognition metrics, recording paths, pixels, and stored
-history. Reconnection restores current state, not every missed event. The wire
+history. Its nullable session version becomes non-null only after identification and is not written
+to the SQLite score history. Reconnection restores current state, not every missed event. The wire
 contract and RESULT lifecycle are defined in [Event API v3](event-api.md).
 
 The in-process `scorepeek-scores` consumer persists provisional, retracted,
@@ -194,8 +205,9 @@ are in [overlay visual debugging](overlay-visual-debugging.md).
 ## Diagnostics and private corpus
 
 Every `run` writes one invocation-level structured diagnostic stream without changing recognition
-or event authority. `--record` adds selectively retained canonical video and `--record-all` retains
-every canonical 10 Hz due tick; neither changes recognition or event authority. The separate live socket, 128 MiB ring,
+or event authority. `--record` adds selectively retained canonical video but always elides TITLE
+pixels; `--record-all` retains every canonical 10 Hz due tick, including TITLE. Both modes publish a
+v4 canonical manifest with the final session version state and neither changes recognition or event authority. The separate live socket, 128 MiB ring,
 disk degradation, and ten-generation policy are defined in [runtime diagnostics](diagnostics.md).
 
 The private corpus imports complete operator-reviewed sessions, retains
