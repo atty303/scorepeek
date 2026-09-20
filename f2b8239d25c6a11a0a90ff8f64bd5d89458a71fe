@@ -1,0 +1,21 @@
+Task: repair the workspace Clippy gate after the 2P recognition change
+Anchor: f2b8239d25c6a11a0a90ff8f64bd5d89458a71fe
+Base: 7dfb1408b7a60c10acd70a9f254e018c6748c53f
+Worktree: main, local only, eight commits ahead of origin/main
+Commits: f2b8239 fix(lints): satisfy workspace clippy gates
+Guidance: repository AGENTS.md; investigate-problem; design-program-observability; develop-repository; review
+Environment: sandbox denied Git metadata writes to the repository and `mise run fix` stopped when hk attempted to update the Git index; formatting continued with direct non-staging cargo fmt, while scoped Git operations and repository gates used the approved target-environment path
+
+Evidence:
+- Reproduced four Clippy failures: similar local names in score persistence tests, an oversized production-result test, an explicit drop of a non-Drop closure, and public recognition panics for conversions whose ranges were fixed by two-element arrays.
+- Renamed only test locals, extracted the unchanged two-player result episode fixture into test helpers, constructed the fixed result-panel array directly, and counted the fixed BPM outline array as u8. No lint suppression, dependency, public contract, or runtime recognition threshold changed.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`, `mise run check`, and the three targeted regression tests passed.
+- The first `mise run test` attempt hit a parallel embedded-web artifact collision: the OBS integration reported a non-embedded binary while another shard built the same target. The failed embedded integration task passed 2/2 in isolation, and the complete `mise run test` rerun then exited zero.
+- Fresh independent review of diff SHA-256 7c4e4c6e48aa8d5ec26f388bfe87d30f095c4fb837a7ef839e819a84508879de found no actionable issue. The hash remained unchanged through the successful complete test run.
+- Post-commit `mise run build` succeeded with embedded-web and refreshed target/debug/scorepeek.
+
+Authority: current source, Clippy configuration, tests, and repository task definitions are authoritative; this note records the lint repair and validation evidence.
+
+Transcript:
+- U1: clippyは修正して
+  - A: Reproduced every current workspace Clippy error; fixed all four classes without suppressions or behavior changes; passed strict workspace Clippy, checks, targeted regression tests, a complete test-gate rerun, independent review, and the required post-commit build; committed locally without push or deployment.
