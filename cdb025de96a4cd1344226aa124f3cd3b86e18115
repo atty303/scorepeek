@@ -1,0 +1,21 @@
+Task: add RESULT predicate evidence to replay traces and evaluate the remaining 1P anchor mismatch
+Anchor: cdb025de96a4cd1344226aa124f3cd3b86e18115
+Base: eb2ffc3b439dd87d1de800d355fb692198a4bf78
+Worktree: main, local only, origin/main was six commits behind after this commit
+Commits: cdb025d feat(diagnostics): trace result predicate evidence
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review
+Environment: private corpus generation fd3b1aaa10797492f70a7744350ac38a38b5aa782890113653b368e5ede33bb8; sandbox blocked Unix sockets and mise task-state writes, so equivalent package tests and post-commit build were rerun outside the sandbox with explicit approval
+
+Evidence:
+- Run-event v15 traces retained RESULT warm-header and both panel anchor measurements for all 15,971 raw frames. Four session traces ended with session_finished and consumed 14,659,854 bytes of the 256 MiB bound.
+- The failing 1P RESULT sequence 3038-3063 had warm-header counts 5,897-7,584 against 3,000, left upper counts 526-527, left lower counts 516-517, and opposite-side counts at most 28/8. The existing 518 AND threshold therefore failed only on the lower anchor.
+- Simulating a shared 512 threshold over all four existing 1P corpus sessions added 50 previously unknown frames, no known non-RESULT frame, and no multiple-panel frame. The 1,375 already recognized RESULT frames remained unique left-panel matches. This supports a later 518-to-512 threshold adjustment while retaining both-anchor and unique-side requirements; it was not implemented in this commit.
+- mise run check succeeded. Sandbox-external cargo test -p scorepeek -p scorepeek-corpus succeeded with 560 scorepeek and 129 scorepeek-corpus tests plus doc tests. Private replay retained the known event-count/payload-shift oracle failure and exposed the missing RESULT anchor evidence. Post-commit mise run build succeeded.
+- Full mise run test reached a pre-existing Clippy failure already present at the base commit: similar_names in scorepeek-scores tests, missing_panics_doc in inspect_canonical_rgb8, and too_many_lines/drop_non_drop in the existing 2P application test. Parallel shards were cancelled after that failure.
+- Fresh independent review of diff SHA-256 262f4b5cf4e3930d5350aa3b2fb053fbcfabcb255b7c48efeb9698c8e5f9cccc found no actionable issue. Remaining unverified boundary is a live capture writing the new evidence to durable diagnostics.
+
+Authority: current source, tests, docs/diagnostics.md, docs/private-corpus.md, and the active private corpus generation are authoritative; this note records the task evidence and unimplemented threshold recommendation.
+
+Transcript:
+- U1: traceを追加し、妥当なanchor調整を考えて
+  - A: Applied the observability and repository-development contracts; inspected the existing diagnostic, run-event, live-capture, replay, and trace paths; added the already measured RESULT predicate evidence to raw_screen_observed and advanced the volatile schema to v15; removed the duplicate panel-side field and made the reducer derive the side from the evidence; updated living docs and serialization/trace tests; passed checks, package tests, independent review, corpus trace acquisition, and post-commit build; measured the remaining 1P mismatch and selected a shared threshold of 512 as the evidence-supported next adjustment without implementing it; preserved the public Event API and recognition predicate; removed the agent-owned temporary trace.
