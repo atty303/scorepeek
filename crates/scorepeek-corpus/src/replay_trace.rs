@@ -374,13 +374,51 @@ mod tests {
         }
     }
 
+    fn raw_result_candidate() -> RunEvent {
+        RunEvent {
+            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::RawScreenObserved {
+                session_id: Some("session".to_owned()),
+                capture_generation: Some(1),
+                semantic_episode_id: Some(2),
+                sequence: 3038,
+                monotonic_start_ms: 100,
+                monotonic_end_ms: 100,
+                screen: "unknown".to_owned(),
+                result_presence: scorepeek::recognition::ResultPresenceEvidence {
+                    warm_pixels: 3_200,
+                    warm_pixels_min: 3_000,
+                    panel_side: scorepeek::recognition::ResultPanelSideState::Unknown(
+                        scorepeek::recognition::ResultPanelSideUnknownReason::NoCandidate,
+                    ),
+                    panels: [
+                        scorepeek::recognition::ResultPanelPresenceEvidence {
+                            panel_side: scorepeek::recognition::ResultPanelSide::Left,
+                            upper_panel_edge_pixels: 540,
+                            lower_panel_edge_pixels: 500,
+                            qualifies: false,
+                        },
+                        scorepeek::recognition::ResultPanelPresenceEvidence {
+                            panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                            upper_panel_edge_pixels: 12,
+                            lower_panel_edge_pixels: 4,
+                            qualifies: false,
+                        },
+                    ],
+                    horizontal_edge_pixels_min: 518,
+                },
+                unknown_reason: Some("predicate_not_matched".to_owned()),
+            },
+        }
+    }
+
     #[test]
     fn trace_never_overwrites_and_capacity_is_shared() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("trace");
         let mut trace = ReplayTrace::new(root.clone(), "generation");
         trace.start_session(0, "session").unwrap();
-        trace.observe(0, &watcher_started(0)).unwrap();
+        trace.observe(0, &raw_result_candidate()).unwrap();
         let first = trace.finish_session(0).unwrap().finish();
         assert!(first.error.is_none());
         assert_eq!(first.written_events, 1);
@@ -395,6 +433,23 @@ mod tests {
         .unwrap();
         assert_eq!(header["executable_sha256"].as_str().unwrap().len(), 64);
         assert_eq!(header["best_layout_sha256"].as_str().unwrap().len(), 64);
+        let event: serde_json::Value = serde_json::from_slice(
+            original
+                .split(|byte| *byte == b'\n')
+                .nth(1)
+                .expect("trace event exists"),
+        )
+        .unwrap();
+        assert_eq!(event["event"], "raw_screen_observed");
+        assert_eq!(event["result_presence"]["warm_pixels"], 3_200);
+        assert_eq!(
+            event["result_presence"]["panels"][0]["upper_panel_edge_pixels"],
+            540
+        );
+        assert_eq!(
+            event["result_presence"]["panels"][0]["lower_panel_edge_pixels"],
+            500
+        );
         trace.start_session(0, "session").unwrap();
         assert!(trace.finish_session(0).unwrap().finish().error.is_some());
         assert_eq!(original, fs::read(&first.path).unwrap());

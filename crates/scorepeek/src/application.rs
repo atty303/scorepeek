@@ -3268,7 +3268,7 @@ fn live_session_event_value(
             monotonic_start_ms,
             monotonic_end_ms,
             screen,
-            result_panel_side,
+            result_presence,
         } => {
             let mut value = serde_json::json!({
                 "schema": schema,
@@ -3278,7 +3278,7 @@ fn live_session_event_value(
                 "monotonic_start_ms": monotonic_start_ms,
                 "monotonic_end_ms": monotonic_end_ms,
                 "screen": screen,
-                "result_panel_side": result_panel_side,
+                "result_presence": result_presence,
                 "unknown_reason": (screen == scorepeek::recognition::ScreenClass::Unknown)
                     .then_some("predicate_not_matched"),
             });
@@ -5068,6 +5068,56 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    fn result_presence(
+        panel_side: scorepeek::recognition::ResultPanelSideState,
+    ) -> scorepeek::recognition::ResultPresenceEvidence {
+        let known = panel_side.known();
+        scorepeek::recognition::ResultPresenceEvidence {
+            warm_pixels: if known.is_some() { 3_100 } else { 2_900 },
+            warm_pixels_min: 3_000,
+            panel_side,
+            panels: [
+                scorepeek::recognition::ResultPanelPresenceEvidence {
+                    panel_side: scorepeek::recognition::ResultPanelSide::Left,
+                    upper_panel_edge_pixels: if known
+                        == Some(scorepeek::recognition::ResultPanelSide::Left)
+                    {
+                        520
+                    } else {
+                        0
+                    },
+                    lower_panel_edge_pixels: if known
+                        == Some(scorepeek::recognition::ResultPanelSide::Left)
+                    {
+                        520
+                    } else {
+                        0
+                    },
+                    qualifies: known == Some(scorepeek::recognition::ResultPanelSide::Left),
+                },
+                scorepeek::recognition::ResultPanelPresenceEvidence {
+                    panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                    upper_panel_edge_pixels: if known
+                        == Some(scorepeek::recognition::ResultPanelSide::Right)
+                    {
+                        520
+                    } else {
+                        0
+                    },
+                    lower_panel_edge_pixels: if known
+                        == Some(scorepeek::recognition::ResultPanelSide::Right)
+                    {
+                        520
+                    } else {
+                        0
+                    },
+                    qualifies: known == Some(scorepeek::recognition::ResultPanelSide::Right),
+                },
+            ],
+            horizontal_edge_pixels_min: 518,
+        }
+    }
+
     #[test]
     fn public_cli_exposes_only_the_seven_application_commands() {
         for command in [
@@ -5845,7 +5895,7 @@ node_name = "must-not-be-inherited"
             1,
             "the corpus reader rejects mixed-schema sessions"
         );
-        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v14"));
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v15"));
     }
 
     #[test]
@@ -5859,17 +5909,26 @@ node_name = "must-not-be-inherited"
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
                 screen: scorepeek::recognition::ScreenClass::Unknown,
-                result_panel_side: None,
+                result_presence: result_presence(
+                    scorepeek::recognition::ResultPanelSideState::Unknown(
+                        scorepeek::recognition::ResultPanelSideUnknownReason::NoCandidate,
+                    ),
+                ),
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v14");
+        assert_eq!(value["schema"], "scorepeek-run-event-v15");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 41);
         assert_eq!(value["screen"], "unknown");
+        assert_eq!(value["result_presence"]["warm_pixels"], 2_900);
+        assert_eq!(
+            value["result_presence"]["panel_side"]["value"],
+            "no_candidate"
+        );
 
         let mode = live_session_event_value(
             Some("invocation-session-2"),
@@ -6043,7 +6102,9 @@ node_name = "must-not-be-inherited"
                 monotonic_start_ms: sequence * 100,
                 monotonic_end_ms: sequence * 100 + 25,
                 screen: scorepeek::recognition::ScreenClass::Result,
-                result_panel_side: Some(ResultPanelSide::Right),
+                result_presence: result_presence(
+                    scorepeek::recognition::ResultPanelSideState::Known(ResultPanelSide::Right),
+                ),
             });
         }
         for sequence in [8, 9] {
@@ -6122,7 +6183,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v14");
+        assert_eq!(value["schema"], "scorepeek-run-event-v15");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

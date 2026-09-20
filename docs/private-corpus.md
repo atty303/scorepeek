@@ -178,7 +178,7 @@ include `music_select_best_snapshots`; these never enter the accepted-result ora
 field semantics and snapshot authority are defined in
 [field semantics](field-semantics.md) and [Event API v3](event-api.md).
 
-## SELECT event traces
+## Replay event traces
 
 `mise run corpus:test --trace-dir DIR` retains production state/domain events as session-indexed
 NDJSON in a new directory. Raw `field_observation` records are excluded: their OCR candidate
@@ -190,8 +190,14 @@ capacity, sync, or filesystem failure is reported only in that session's trace s
 alter result acceptance or the replay oracle. Headers identify the active corpus
 generation, executable digest, selected-source fingerprint, registered text/numeric manifests and integrated/best layout digests.
 Per-session `trace` summaries report path, written/total events, bytes and an optional error.
-The budget is 256 MiB across the run; existing directories/files are not overwritten. Trace
-No output is created without `--trace-dir`; private traces must remain outside Git.
+The budget is 256 MiB across the run; existing directories/files are not overwritten. No trace
+output is created without `--trace-dir`; private traces must remain outside Git.
+
+Every traced `raw_screen_observed` event includes the RESULT predicate evidence from the same
+production classification pass, including warm-header counts and both panels' upper/lower anchor
+counts, thresholds, qualification flags, and typed panel-side state. This permits anchor analysis
+for frames classified as `unknown` without retaining pixels or enabling the separate diagnostic
+frame recorder.
 
 Compare interval starts, held identity, conflicts, content revisions and episode revisits using
 source sequences. Endpoint SELECT labels do not assert a stationary span: inspect ambiguous

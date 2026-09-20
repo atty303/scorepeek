@@ -4633,7 +4633,7 @@ fn process_replay_frame(
                 monotonic_start_ms: tick.monotonic_ms,
                 monotonic_end_ms: tick.monotonic_ms,
                 screen: replay_screen_name(screen).to_owned(),
-                result_panel_side: inspected.observation.result_panel_side(),
+                result_presence: inspected.observation.result_presence(),
                 unknown_reason: (screen == ScreenClass::Unknown)
                     .then(|| "predicate_not_matched".to_owned()),
             },
@@ -6301,7 +6301,7 @@ mod tests {
         let event = serde_json::json!({
             "schema":"scorepeek-diagnostic-event-v1", "run_id":run_id, "sequence":1,
             "observed_unix_us":1, "operation":"run_event", "data":{
-                "schema":"scorepeek-run-event-v14", "event":"session_started",
+                "schema":"scorepeek-run-event-v15", "event":"session_started",
                 "session_id":session_id, "capture_generation":1,
                 "capture_profile_sha256":"1".repeat(64),
                 "normalizer_artifact_sha256":"2".repeat(64)
@@ -6349,7 +6349,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v14", "event":"session_started",
+                    "schema":"scorepeek-run-event-v15", "event":"session_started",
                     "session_id":session_id, "capture_generation":1,
                     "capture_profile_sha256":"1".repeat(64),
                     "normalizer_artifact_sha256":"2".repeat(64)
@@ -6371,7 +6371,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v14", "event":"recording_completed",
+                    "schema":"scorepeek-run-event-v15", "event":"recording_completed",
                     "session_id":session_id, "directory":canonical.parent().unwrap()
                 }
             }),
@@ -6470,7 +6470,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v14", "event":"session_started",
+                    "schema":"scorepeek-run-event-v15", "event":"session_started",
                     "session_id":session_id, "capture_generation":1,
                     "capture_profile_sha256":"1".repeat(64),
                     "normalizer_artifact_sha256":"2".repeat(64)
@@ -6492,7 +6492,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v14", "event":"field_observation",
+                    "schema":"scorepeek-run-event-v15", "event":"field_observation",
                     "session_id":session_id, "capture_generation":1, "sequence":1,
                     "monotonic_start_ms":90, "monotonic_end_ms":100, "screen":"result",
                     "fields":{"screen":"result"},
@@ -6504,7 +6504,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":4, "observed_unix_us":4, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v14", "event":"recording_completed",
+                    "schema":"scorepeek-run-event-v15", "event":"recording_completed",
                     "session_id":session_id, "directory":canonical.parent().unwrap()
                 }
             }),

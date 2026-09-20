@@ -676,7 +676,28 @@ pub(super) mod tests {
             monotonic_start_ms: 0,
             monotonic_end_ms: 1,
             screen: "raw frame label".into(),
-            result_panel_side: None,
+            result_presence: scorepeek::recognition::ResultPresenceEvidence {
+                warm_pixels: 0,
+                warm_pixels_min: 3_000,
+                panel_side: scorepeek::recognition::ResultPanelSideState::Unknown(
+                    scorepeek::recognition::ResultPanelSideUnknownReason::NoCandidate,
+                ),
+                panels: [
+                    scorepeek::recognition::ResultPanelPresenceEvidence {
+                        panel_side: scorepeek::recognition::ResultPanelSide::Left,
+                        upper_panel_edge_pixels: 0,
+                        lower_panel_edge_pixels: 0,
+                        qualifies: false,
+                    },
+                    scorepeek::recognition::ResultPanelPresenceEvidence {
+                        panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                        upper_panel_edge_pixels: 0,
+                        lower_panel_edge_pixels: 0,
+                        qualifies: false,
+                    },
+                ],
+                horizontal_edge_pixels_min: 518,
+            },
             unknown_reason: None,
         });
         assert!(state.project(&raw).is_empty());

@@ -33,8 +33,8 @@ use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
     ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
     PlaySide, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
-    ResultPanelSide, ResultPerformanceResolution, ResultTiming, SupplementalResultValue,
-    resolve_result_performance,
+    ResultPanelSide, ResultPerformanceResolution, ResultPresenceEvidence, ResultTiming,
+    SupplementalResultValue, resolve_result_performance,
 };
 use scorepeek::temporal_recognition::{
     MusicSelectTemporalState, MusicSelectTemporalTransitionReason, ResultTemporalState,
@@ -51,7 +51,7 @@ const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
 const SOCKET_NAME: &str = "events.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v14";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v15";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -124,8 +124,7 @@ pub enum RunEventKind {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result_panel_side: Option<ResultPanelSide>,
+        result_presence: ResultPresenceEvidence,
         #[serde(skip_serializing_if = "Option::is_none")]
         unknown_reason: Option<String>,
     },
@@ -3298,13 +3297,13 @@ impl RoutineOutput {
                 sequence,
                 monotonic_end_ms,
                 screen,
-                result_panel_side,
+                result_presence,
                 ..
             } => {
                 self.publish_one(event)?;
                 if screen == "result"
                     && let (Some(episode_id), Some(side)) =
-                        (*semantic_episode_id, *result_panel_side)
+                        (*semantic_episode_id, result_presence.panel_side.known())
                 {
                     self.observe_result_panel_side(
                         session_id.as_ref(),

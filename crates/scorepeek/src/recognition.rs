@@ -726,14 +726,14 @@ pub enum ResultPanelSide {
     Right,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultPanelSideUnknownReason {
     NoCandidate,
     MultipleCandidates,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", content = "value", rename_all = "snake_case")]
 pub enum ResultPanelSideState {
     Known(ResultPanelSide),
@@ -1913,7 +1913,7 @@ struct IntegratedContextDecodeRequestRow<'a> {
     file_sha256: &'a str,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResultPresenceEvidence {
     pub warm_pixels: u32,
     pub warm_pixels_min: u32,
@@ -1922,7 +1922,7 @@ pub struct ResultPresenceEvidence {
     pub horizontal_edge_pixels_min: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResultPanelPresenceEvidence {
     pub panel_side: ResultPanelSide,
     pub upper_panel_edge_pixels: u32,

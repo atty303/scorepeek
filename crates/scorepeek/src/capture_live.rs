@@ -198,7 +198,7 @@ pub enum GamescopeLiveSessionEvent<'a> {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: ScreenClass,
-        result_panel_side: Option<scorepeek::recognition::ResultPanelSide>,
+        result_presence: scorepeek::recognition::ResultPresenceEvidence,
     },
     SemanticScreenEpisode {
         screen_episode_id: u64,
@@ -1967,7 +1967,7 @@ fn offer_live_field_observation_frames(
                 monotonic_start_ms: frame.monotonic_start_ms(),
                 monotonic_end_ms: frame.monotonic_end_ms(),
                 screen,
-                result_panel_side: result.observation.result_panel_side(),
+                result_presence: result.observation.result_presence(),
             }) {
                 Ok(timing) => live_timing.add(timing),
                 Err(_) => output_failed = true,

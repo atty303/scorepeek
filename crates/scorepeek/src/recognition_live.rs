@@ -127,8 +127,8 @@ impl<'a> RecognitionObservation<'a> {
     }
 
     #[must_use]
-    pub const fn result_panel_side(&self) -> Option<scorepeek::recognition::ResultPanelSide> {
-        self.predicate.result_presence.panel_side.known()
+    pub const fn result_presence(&self) -> scorepeek::recognition::ResultPresenceEvidence {
+        self.predicate.result_presence
     }
 
     #[must_use]

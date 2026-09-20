@@ -4,6 +4,13 @@ Every `scorepeek run` invocation creates one ordered diagnostic stream whether o
 recording is enabled. The invocation ID is the run ID; capture lifetimes use
 `<run-id>-session-<generation>` IDs.
 
+Each `raw_screen_observed` record carries the complete RESULT predicate evidence measured for that
+canonical frame: warm-header pixels and threshold, the panel-side state, both panels' upper/lower
+horizontal-edge pixel counts and qualification flags, and the shared edge threshold. The reducer
+derives its RESULT panel-side observation from that evidence rather than storing a second value
+that could disagree. These bounded numeric attributes contain neither pixels nor OCR text and are
+available even when the final screen class is `unknown`.
+
 The durable stream is
 `$XDG_STATE_HOME/scorepeek/diagnostics/<run-id>/diagnostics.ndjson`. It contains lifecycle,
 recognition observations, overlay child diagnostics, and exact public event payloads with their
