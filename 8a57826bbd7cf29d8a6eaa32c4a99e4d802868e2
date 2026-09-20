@@ -1,0 +1,13 @@
+Task: recognize play side on MUSIC SELECT while deferring PLAY and RESULT 2P layouts
+Anchor: 8a57826
+Base: 834b1aa
+Worktree: main
+Commits: 8a57826 recognizes the fixed PLAYER 01 SIDE and PLAYER 02 SIDE footer labels and carries stable play side through selection output
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability
+Environment: durable Scorepeek recognition workflow calibrated from the latest target recording and a retained 1P corpus sample; no target deployment or push was authorized
+Evidence: independently measured 140x18 footer ROIs use Rec.709 luma >= 140, bright pixel minimum 320, and winner margin 60; 1P and 2P samples separated with observed stable margins of at least 104 and 74 pixels respectively; recognition, reducer, artifact, corpus, workspace check, mise run check, and post-commit build passed
+Evidence: full mise run test passed the Rust, corpus, OCR, capture, and embedded overlay paths but its existing browser integration path persistently failed two asset-version/editor-lifecycle assertions; the same two failures reproduced when that path ran alone, and none of this commit's files participate in the overlay asset build hash
+Authority: integrated-context-layout-v7.json and field-semantics.md define the MUSIC SELECT predicate; PLAY and RESULT 2P layouts remain explicitly deferred pending --record-all evidence
+Transcript:
+- U1: \--record-allを追加。選曲画面のplayside認識は実装。play/resultは録画後に再評価する
+  - A: Implemented fail-closed MUSIC SELECT play-side recognition with two consistent observations required before publication, updated diagnostics and selection presentation, and did not alter PLAY or RESULT recognition.
