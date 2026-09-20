@@ -487,8 +487,7 @@ impl DiagnosticBridge {
                 decide_transition_saturated_pixels_min: predicate
                     .decide_transition_presence
                     .saturated_pixels_min,
-                play_qualifying_bpm_searches: predicate.play_presence.qualifying_searches,
-                play_bpm_outlines: predicate.play_presence.searches,
+                play_presence: predicate.play_presence,
             },
         })
     }
@@ -629,8 +628,7 @@ impl DiagnosticBridge {
                     Some(DiagnosticFactErrorType::FieldObservationFailed),
                     0,
                     match screen {
-                        ScreenClass::Title => 0,
-                        ScreenClass::Result => 0,
+                        ScreenClass::Title | ScreenClass::Result => 0,
                         ScreenClass::MusicSelect => 1,
                         ScreenClass::ModeSelect
                         | ScreenClass::DecideTransition

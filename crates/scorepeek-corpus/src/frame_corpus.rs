@@ -4640,6 +4640,7 @@ fn process_replay_frame(
                 monotonic_end_ms: tick.monotonic_ms,
                 screen: replay_screen_name(screen).to_owned(),
                 result_presence: inspected.observation.result_presence(),
+                play_presence: inspected.observation.play_presence(),
                 unknown_reason: (screen == ScreenClass::Unknown)
                     .then(|| "predicate_not_matched".to_owned()),
             },

@@ -134,6 +134,11 @@ impl<'a> RecognitionObservation<'a> {
     }
 
     #[must_use]
+    pub const fn play_presence(&self) -> scorepeek::recognition::PlayPresenceEvidence {
+        self.predicate.play_presence
+    }
+
+    #[must_use]
     pub(crate) const fn frame(&self) -> &BoundCanonicalFrame {
         self.frame
     }

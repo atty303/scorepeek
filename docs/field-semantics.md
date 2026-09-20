@@ -36,6 +36,14 @@ be established, the field is `unknown`.
   capture profile, normalizer, canonical layout, model/catalog binding, and
   temporal episode.
 
+PLAY presence scans the single measured BPM-outline area `x=260..1659, y=940..1079` without
+dividing it by side. A candidate requires a 280--305 pixel cyan top edge, a 300--320 pixel cyan
+bottom edge 59--70 rows below it, and at most one pixel of horizontal center displacement. Adjacent
+row observations of the same center are one candidate; exactly one distinct candidate is required.
+Only observations within the measured 12-row edge-slope window are merged as one candidate; a
+second vertical outline at the same horizontal center remains distinct. Interior pixels, including
+DETAIL JUDGE overlap, do not participate, and BPM position never implies play side.
+
 ## Result
 
 | Field | Applicability predicate | Evidence required for `known` |

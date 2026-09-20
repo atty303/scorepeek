@@ -580,6 +580,24 @@ pub(super) mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    fn play_presence() -> scorepeek::recognition::PlayPresenceEvidence {
+        scorepeek::recognition::PlayPresenceEvidence {
+            qualifying_candidates: 0,
+            top_edge_runs: 0,
+            bottom_edge_runs: 0,
+            candidates: [None, None],
+            top_edge_pixels_min: 280,
+            top_edge_pixels_max: 305,
+            bottom_edge_pixels_min: 300,
+            bottom_edge_pixels_max: 320,
+            vertical_distance_min: 59,
+            vertical_distance_max: 70,
+            edge_center_delta_x2_max: 2,
+            candidate_cluster_delta_x2_max: 4,
+            candidate_cluster_delta_y_max: 12,
+        }
+    }
+
     fn run(kind: RunEventKind) -> RunEvent {
         RunEvent {
             schema: super::super::RUN_EVENT_SCHEMA.into(),
@@ -733,6 +751,7 @@ pub(super) mod tests {
                 ],
                 horizontal_edge_pixels_min: 518,
             },
+            play_presence: play_presence(),
             unknown_reason: None,
         });
         assert!(state.project(&raw).is_empty());

@@ -402,8 +402,7 @@ pub enum DiagnosticDetail {
         decide_transition_bright_pixels_min: u32,
         decide_transition_saturated_pixels: u32,
         decide_transition_saturated_pixels_min: u32,
-        play_qualifying_bpm_searches: u8,
-        play_bpm_outlines: [scorepeek::recognition::PlayBpmOutlineEvidence; 2],
+        play_presence: scorepeek::recognition::PlayPresenceEvidence,
     },
     FieldObservation {
         screen: DiagnosticScreen,

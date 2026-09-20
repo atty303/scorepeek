@@ -200,6 +200,7 @@ pub enum GamescopeLiveSessionEvent<'a> {
         monotonic_end_ms: u64,
         screen: ScreenClass,
         result_presence: scorepeek::recognition::ResultPresenceEvidence,
+        play_presence: scorepeek::recognition::PlayPresenceEvidence,
     },
     SemanticScreenEpisode {
         screen_episode_id: u64,
@@ -2001,6 +2002,7 @@ fn offer_live_field_observation_frames(
                 monotonic_end_ms: frame.monotonic_end_ms(),
                 screen,
                 result_presence: result.observation.result_presence(),
+                play_presence: result.observation.play_presence(),
             }) {
                 Ok(timing) => live_timing.add(timing),
                 Err(_) => output_failed = true,
@@ -2407,8 +2409,9 @@ fn wait_field_observations(
 }
 
 #[allow(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "one polling boundary preserves ordered completion, timing, and diagnostic outcomes"
+    reason = "one polling boundary keeps its ordered session, queues, diagnostics, event sink, and optional resolvers explicit"
 )]
 fn poll_field_observations(
     session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,

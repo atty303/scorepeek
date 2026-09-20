@@ -598,17 +598,15 @@ impl Recorder {
             semantic_episode_id: frame.semantic_episode_id,
             disposition: if retained {
                 "retained"
+            } else if frame.title_pixels {
+                "title"
             } else {
-                if frame.title_pixels {
-                    "title"
-                } else {
-                    match frame.screen {
-                        ScreenClass::Play => "play_interior",
-                        ScreenClass::ModeSelect => "mode_select_interior",
-                        ScreenClass::Unknown => "unknown_interior",
-                        ScreenClass::Title => "title",
-                        _ => "retained",
-                    }
+                match frame.screen {
+                    ScreenClass::Play => "play_interior",
+                    ScreenClass::ModeSelect => "mode_select_interior",
+                    ScreenClass::Unknown => "unknown_interior",
+                    ScreenClass::Title => "title",
+                    _ => "retained",
                 }
             },
         };

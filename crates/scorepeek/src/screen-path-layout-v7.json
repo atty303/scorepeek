@@ -1,5 +1,5 @@
 {
-  "schema": "scorepeek-screen-path-layout-v6",
+  "schema": "scorepeek-screen-path-layout-v7",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
   "width": 1920,
   "height": 1080,
@@ -37,19 +37,16 @@
   },
   "play": {
     "presence": {
-      "cyan_component_pixels_min": 4000,
-      "cyan_component_pixels_max": 7000,
-      "outline_width_min": 330,
-      "outline_width_max": 380,
-      "outline_height_min": 68,
-      "outline_height_max": 72,
       "top_edge_pixels_min": 280,
-      "middle_row_pixels_max": 64,
-      "bottom_edge_pixels_min": 300
+      "top_edge_pixels_max": 305,
+      "bottom_edge_pixels_min": 300,
+      "bottom_edge_pixels_max": 320,
+      "vertical_distance_min": 59,
+      "vertical_distance_max": 70,
+      "edge_center_delta_x2_max": 2,
+      "candidate_cluster_delta_x2_max": 4,
+      "candidate_cluster_delta_y_max": 12
     },
-    "bpm_outline_searches": {
-      "left": { "x": 260, "y": 940, "width": 420, "height": 140 },
-      "center_right": { "x": 760, "y": 940, "width": 900, "height": 140 }
-    }
+    "bpm_outline_search": { "x": 260, "y": 940, "width": 1400, "height": 140 }
   }
 }

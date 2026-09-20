@@ -365,6 +365,24 @@ impl TestWriterGate {
 mod tests {
     use super::*;
 
+    fn play_presence() -> scorepeek::recognition::PlayPresenceEvidence {
+        scorepeek::recognition::PlayPresenceEvidence {
+            qualifying_candidates: 0,
+            top_edge_runs: 0,
+            bottom_edge_runs: 0,
+            candidates: [None, None],
+            top_edge_pixels_min: 280,
+            top_edge_pixels_max: 305,
+            bottom_edge_pixels_min: 300,
+            bottom_edge_pixels_max: 320,
+            vertical_distance_min: 59,
+            vertical_distance_max: 70,
+            edge_center_delta_x2_max: 2,
+            candidate_cluster_delta_x2_max: 4,
+            candidate_cluster_delta_y_max: 12,
+        }
+    }
+
     fn watcher_started(sequence: usize) -> RunEvent {
         RunEvent {
             schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
@@ -407,6 +425,7 @@ mod tests {
                     ],
                     horizontal_edge_pixels_min: 518,
                 },
+                play_presence: play_presence(),
                 unknown_reason: Some("predicate_not_matched".to_owned()),
             },
         }
@@ -442,6 +461,7 @@ mod tests {
         .unwrap();
         assert_eq!(event["event"], "raw_screen_observed");
         assert_eq!(event["result_presence"]["warm_pixels"], 3_200);
+        assert_eq!(event["play_presence"]["qualifying_candidates"], 0);
         assert_eq!(
             event["result_presence"]["panels"][0]["upper_panel_edge_pixels"],
             540

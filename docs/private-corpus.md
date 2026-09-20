@@ -200,11 +200,12 @@ Per-session `trace` summaries report path, written/total events, bytes and an op
 The budget is 256 MiB across the run; existing directories/files are not overwritten. No trace
 output is created without `--trace-dir`; private traces must remain outside Git.
 
-Every traced `raw_screen_observed` event includes the RESULT predicate evidence from the same
-production classification pass, including warm-header counts and both panels' upper/lower anchor
-counts, thresholds, qualification flags, and typed panel-side state. This permits anchor analysis
-for frames classified as `unknown` without retaining pixels or enabling the separate diagnostic
-frame recorder.
+Every traced `raw_screen_observed` event includes the RESULT and PLAY predicate evidence from the
+same production classification pass. RESULT evidence includes warm-header counts and both panels'
+upper/lower anchor counts, thresholds, qualification flags, and typed panel-side state. PLAY
+evidence includes qualifying top/bottom BPM-edge run counts, the first two distinct edge-pair
+candidates, and the fixed thresholds. This permits anchor analysis for frames classified as
+`unknown` without retaining pixels or enabling the separate diagnostic frame recorder.
 
 Compare interval starts, held identity, conflicts, content revisions and episode revisits using
 source sequences. Endpoint SELECT labels do not assert a stationary span: inspect ambiguous

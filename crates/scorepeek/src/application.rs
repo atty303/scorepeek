@@ -3269,6 +3269,7 @@ fn live_session_event_value(
             monotonic_end_ms,
             screen,
             result_presence,
+            play_presence,
         } => {
             let mut value = serde_json::json!({
                 "schema": schema,
@@ -3279,6 +3280,7 @@ fn live_session_event_value(
                 "monotonic_end_ms": monotonic_end_ms,
                 "screen": screen,
                 "result_presence": result_presence,
+                "play_presence": play_presence,
                 "unknown_reason": (screen == scorepeek::recognition::ScreenClass::Unknown)
                     .then_some("predicate_not_matched"),
             });
@@ -5148,6 +5150,24 @@ mod tests {
         }
     }
 
+    fn play_presence() -> scorepeek::recognition::PlayPresenceEvidence {
+        scorepeek::recognition::PlayPresenceEvidence {
+            qualifying_candidates: 0,
+            top_edge_runs: 0,
+            bottom_edge_runs: 0,
+            candidates: [None, None],
+            top_edge_pixels_min: 280,
+            top_edge_pixels_max: 305,
+            bottom_edge_pixels_min: 300,
+            bottom_edge_pixels_max: 320,
+            vertical_distance_min: 59,
+            vertical_distance_max: 70,
+            edge_center_delta_x2_max: 2,
+            candidate_cluster_delta_x2_max: 4,
+            candidate_cluster_delta_y_max: 12,
+        }
+    }
+
     fn resolved_two_player_result_observation() -> RegisteredScreenFieldObservation {
         let catalog = catalog_from_records(&[
             tachi_record("song-1", "SYNTHETIC SONG", "SYNTHETIC ARTIST"),
@@ -5264,6 +5284,7 @@ mod tests {
                             scorepeek::recognition::ResultPanelSide::Right,
                         ),
                     ),
+                    play_presence: play_presence(),
                 },
             );
         }
@@ -6058,7 +6079,7 @@ node_name = "must-not-be-inherited"
             1,
             "the corpus reader rejects mixed-schema sessions"
         );
-        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v15"));
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v16"));
     }
 
     #[test]
@@ -6077,10 +6098,11 @@ node_name = "must-not-be-inherited"
                         scorepeek::recognition::ResultPanelSideUnknownReason::NoCandidate,
                     ),
                 ),
+                play_presence: play_presence(),
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v15");
+        assert_eq!(value["schema"], "scorepeek-run-event-v16");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -6088,6 +6110,7 @@ node_name = "must-not-be-inherited"
         assert_eq!(value["sequence"], 41);
         assert_eq!(value["screen"], "unknown");
         assert_eq!(value["result_presence"]["warm_pixels"], 2_900);
+        assert_eq!(value["play_presence"]["qualifying_candidates"], 0);
         assert_eq!(
             value["result_presence"]["panel_side"]["value"],
             "no_candidate"
@@ -6226,7 +6249,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v15");
+        assert_eq!(value["schema"], "scorepeek-run-event-v16");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

@@ -112,7 +112,7 @@ const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
-const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v6";
+const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v7";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
@@ -125,7 +125,7 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v2.json");
-const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v6.json");
+const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v7.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v8.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 #[cfg(test)]
@@ -607,14 +607,7 @@ pub struct DecideTransitionLayout {
 #[serde(deny_unknown_fields)]
 pub struct PlayLayout {
     presence: PlayPresencePredicate,
-    pub bpm_outline_searches: PlayBpmOutlineSearches,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PlayBpmOutlineSearches {
-    pub left: Roi,
-    pub center_right: Roi,
+    pub bpm_outline_search: Roi,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -644,15 +637,15 @@ struct DecideTransitionPresencePredicate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlayPresencePredicate {
-    cyan_component_pixels_min: u32,
-    cyan_component_pixels_max: u32,
-    outline_width_min: u32,
-    outline_width_max: u32,
-    outline_height_min: u32,
-    outline_height_max: u32,
     top_edge_pixels_min: u32,
-    middle_row_pixels_max: u32,
+    top_edge_pixels_max: u32,
     bottom_edge_pixels_min: u32,
+    bottom_edge_pixels_max: u32,
+    vertical_distance_min: u32,
+    vertical_distance_max: u32,
+    edge_center_delta_x2_max: u32,
+    candidate_cluster_delta_x2_max: u32,
+    candidate_cluster_delta_y_max: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -765,13 +758,6 @@ impl ResultPanelSideState {
             Self::Unknown(_) => None,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlayBpmOutlineRegion {
-    Left,
-    CenterRight,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -2006,53 +1992,37 @@ pub struct DecideTransitionPresenceEvidence {
     pub saturated_pixels_min: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PlayPresenceEvidence {
-    pub qualifying_searches: u8,
-    pub searches: [PlayBpmOutlineEvidence; 2],
+    pub qualifying_candidates: u8,
+    pub top_edge_runs: u8,
+    pub bottom_edge_runs: u8,
+    pub candidates: [Option<PlayBpmEdgePairEvidence>; 2],
+    pub top_edge_pixels_min: u32,
+    pub top_edge_pixels_max: u32,
+    pub bottom_edge_pixels_min: u32,
+    pub bottom_edge_pixels_max: u32,
+    pub vertical_distance_min: u32,
+    pub vertical_distance_max: u32,
+    pub edge_center_delta_x2_max: u32,
+    pub candidate_cluster_delta_x2_max: u32,
+    pub candidate_cluster_delta_y_max: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub struct PlayBpmOutlineEvidence {
-    pub region: PlayBpmOutlineRegion,
-    pub cyan_component_pixels: u32,
-    pub cyan_component_pixels_min: u32,
-    pub cyan_component_pixels_max: u32,
-    pub outline_width: u32,
-    pub outline_width_min: u32,
-    pub outline_width_max: u32,
-    pub outline_height: u32,
-    pub outline_height_min: u32,
-    pub outline_height_max: u32,
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlayBpmEdgePairEvidence {
+    pub center_x2: u32,
+    pub top_y: u32,
     pub top_edge_pixels: u32,
-    pub top_edge_pixels_min: u32,
-    pub middle_row_pixels: u32,
-    pub middle_row_pixels_max: u32,
+    pub bottom_y: u32,
     pub bottom_edge_pixels: u32,
-    pub bottom_edge_pixels_min: u32,
-    pub qualifies: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct BpmOutlineMeasurement {
-    cyan_component_pixels: u32,
-    width: u32,
-    height: u32,
-    top_edge_pixels: u32,
-    middle_row_pixels: u32,
-    bottom_edge_pixels: u32,
-}
-
-impl BpmOutlineMeasurement {
-    fn matches(self, predicate: PlayPresencePredicate) -> bool {
-        (predicate.cyan_component_pixels_min..=predicate.cyan_component_pixels_max)
-            .contains(&self.cyan_component_pixels)
-            && (predicate.outline_width_min..=predicate.outline_width_max).contains(&self.width)
-            && (predicate.outline_height_min..=predicate.outline_height_max).contains(&self.height)
-            && self.top_edge_pixels >= predicate.top_edge_pixels_min
-            && self.middle_row_pixels <= predicate.middle_row_pixels_max
-            && self.bottom_edge_pixels >= predicate.bottom_edge_pixels_min
-    }
+struct PlayCyanRun {
+    x: u32,
+    y: u32,
+    pixels: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -2255,8 +2225,7 @@ impl ScreenPathLayout {
             layout.title.version,
             layout.music_select_reference.search_roi,
             layout.decide_transition.splash,
-            layout.play.bpm_outline_searches.left,
-            layout.play.bpm_outline_searches.center_right,
+            layout.play.bpm_outline_search,
         ] {
             roi.validate(layout.width, layout.height)?;
         }
@@ -2303,35 +2272,32 @@ impl ScreenPathLayout {
             || layout.decide_transition.presence.cyan_pixels_min > decide_pixels
             || layout.decide_transition.presence.bright_pixels_min > decide_pixels
             || layout.decide_transition.presence.saturated_pixels_min > decide_pixels
-            || play.cyan_component_pixels_min == 0
-            || play.cyan_component_pixels_min > play.cyan_component_pixels_max
-            || play.outline_width_min == 0
-            || play.outline_width_min > play.outline_width_max
-            || play.outline_height_min == 0
-            || play.outline_height_min > play.outline_height_max
             || play.top_edge_pixels_min == 0
-            || play.top_edge_pixels_min > play.outline_width_max
-            || play.middle_row_pixels_max >= play.outline_width_min
+            || play.top_edge_pixels_min > play.top_edge_pixels_max
             || play.bottom_edge_pixels_min == 0
-            || play.bottom_edge_pixels_min > play.outline_width_max
+            || play.bottom_edge_pixels_min > play.bottom_edge_pixels_max
+            || play.vertical_distance_min == 0
+            || play.vertical_distance_min > play.vertical_distance_max
+            || play.edge_center_delta_x2_max == 0
+            || play.candidate_cluster_delta_x2_max < play.edge_center_delta_x2_max
+            || play.candidate_cluster_delta_y_max == 0
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
-        for roi in [
-            layout.play.bpm_outline_searches.left,
-            layout.play.bpm_outline_searches.center_right,
-        ] {
-            let pixels = roi
-                .width
-                .checked_mul(roi.height)
-                .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-            if pixels > 128_000
-                || play.cyan_component_pixels_max > pixels
-                || play.outline_width_max > roi.width
-                || play.outline_height_max > roi.height
-            {
-                return Err(RecognitionError::InvalidCanonicalLayout);
-            }
+        let play_search = layout.play.bpm_outline_search;
+        let pixels = play_search
+            .width
+            .checked_mul(play_search.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        if pixels > 256_000
+            || play.top_edge_pixels_max > play_search.width
+            || play.bottom_edge_pixels_max > play_search.width
+            || play.vertical_distance_max >= play_search.height
+            || play.edge_center_delta_x2_max > play_search.width * 2
+            || play.candidate_cluster_delta_x2_max > play_search.width * 2
+            || play.candidate_cluster_delta_y_max > play_search.height
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
         }
         Ok(layout)
     }
@@ -2346,107 +2312,118 @@ fn is_play_cyan(pixel: &[u8]) -> bool {
     g >= 30 && b >= 40 && u16::from(b) * 2 > u16::from(r) * 3 && b > g
 }
 
-fn measure_bpm_outline(
+fn play_cyan_runs(pixels: &[u8], roi: Roi) -> Vec<PlayCyanRun> {
+    let mut runs = Vec::new();
+    for y in roi.y..roi.y + roi.height {
+        let mut x = roi.x;
+        while x < roi.x + roi.width {
+            let index = (y as usize * CANONICAL_WIDTH as usize + x as usize) * 3;
+            if !is_play_cyan(&pixels[index..index + 3]) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            x += 1;
+            while x < roi.x + roi.width {
+                let index = (y as usize * CANONICAL_WIDTH as usize + x as usize) * 3;
+                if !is_play_cyan(&pixels[index..index + 3]) {
+                    break;
+                }
+                x += 1;
+            }
+            runs.push(PlayCyanRun {
+                x: start,
+                y,
+                pixels: x - start,
+            });
+        }
+    }
+    runs
+}
+
+impl PlayCyanRun {
+    const fn center_x2(self) -> u32 {
+        self.x * 2 + self.pixels - 1
+    }
+}
+
+fn play_presence_evidence(
     pixels: &[u8],
     roi: Roi,
     predicate: PlayPresencePredicate,
-) -> BpmOutlineMeasurement {
-    let width = roi.width as usize;
-    let height = roi.height as usize;
-    let mut cyan = vec![false; width * height];
-    for local_y in 0..height {
-        for local_x in 0..width {
-            let frame_x = roi.x as usize + local_x;
-            let frame_y = roi.y as usize + local_y;
-            let frame_index = (frame_y * CANONICAL_WIDTH as usize + frame_x) * 3;
-            cyan[local_y * width + local_x] = is_play_cyan(&pixels[frame_index..frame_index + 3]);
+) -> PlayPresenceEvidence {
+    let runs = play_cyan_runs(pixels, roi);
+    let top_runs = runs
+        .iter()
+        .copied()
+        .filter(|run| {
+            (predicate.top_edge_pixels_min..=predicate.top_edge_pixels_max).contains(&run.pixels)
+        })
+        .collect::<Vec<_>>();
+    let bottom_runs = runs
+        .iter()
+        .copied()
+        .filter(|run| {
+            (predicate.bottom_edge_pixels_min..=predicate.bottom_edge_pixels_max)
+                .contains(&run.pixels)
+        })
+        .collect::<Vec<_>>();
+    let mut pairs = Vec::new();
+    for top in &top_runs {
+        for bottom in &bottom_runs {
+            let Some(vertical_distance) = bottom.y.checked_sub(top.y) else {
+                continue;
+            };
+            if !(predicate.vertical_distance_min..=predicate.vertical_distance_max)
+                .contains(&vertical_distance)
+                || top.center_x2().abs_diff(bottom.center_x2()) > predicate.edge_center_delta_x2_max
+            {
+                continue;
+            }
+            pairs.push(PlayBpmEdgePairEvidence {
+                center_x2: u32::midpoint(top.center_x2(), bottom.center_x2()),
+                top_y: top.y,
+                top_edge_pixels: top.pixels,
+                bottom_y: bottom.y,
+                bottom_edge_pixels: bottom.pixels,
+            });
         }
     }
-
-    let mut visited = vec![false; cyan.len()];
-    let mut stack = Vec::with_capacity(cyan.len());
-    let mut row_pixels = vec![0_u32; height];
-    let mut touched_rows = Vec::with_capacity(height);
-    let mut best_any = BpmOutlineMeasurement::default();
-    let mut best_match = None;
-    for seed in 0..cyan.len() {
-        if !cyan[seed] || visited[seed] {
+    pairs.sort_unstable_by_key(|pair| (pair.center_x2, pair.top_y, pair.bottom_y));
+    let mut candidates = [None, None];
+    let mut candidate_count = 0_u8;
+    let mut cluster_anchor = None;
+    for pair in pairs {
+        let same_cluster = cluster_anchor.is_some_and(|anchor: PlayBpmEdgePairEvidence| {
+            pair.center_x2.abs_diff(anchor.center_x2) <= predicate.candidate_cluster_delta_x2_max
+                && pair.top_y.abs_diff(anchor.top_y) <= predicate.candidate_cluster_delta_y_max
+                && pair.bottom_y.abs_diff(anchor.bottom_y)
+                    <= predicate.candidate_cluster_delta_y_max
+        });
+        if same_cluster {
             continue;
         }
-        visited[seed] = true;
-        stack.clear();
-        stack.push(seed);
-        touched_rows.clear();
-        let mut component_pixels = 0_u32;
-        let mut min_x = seed % width;
-        let mut max_x = min_x;
-        let mut min_y = seed / width;
-        let mut max_y = min_y;
-        while let Some(index) = stack.pop() {
-            component_pixels += 1;
-            let x = index % width;
-            let y = index / width;
-            if row_pixels[y] == 0 {
-                touched_rows.push(y);
-            }
-            row_pixels[y] += 1;
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-            let neighbors = [
-                x.checked_sub(1).map(|next_x| y * width + next_x),
-                (x + 1 < width).then_some(y * width + x + 1),
-                y.checked_sub(1).map(|next_y| next_y * width + x),
-                (y + 1 < height).then_some((y + 1) * width + x),
-            ];
-            for neighbor in neighbors.into_iter().flatten() {
-                if cyan[neighbor] && !visited[neighbor] {
-                    visited[neighbor] = true;
-                    stack.push(neighbor);
-                }
-            }
+        if let Some(slot) = candidates.get_mut(usize::from(candidate_count)) {
+            *slot = Some(pair);
         }
-
-        let component_height = max_y - min_y + 1;
-        let component_rows = &row_pixels[min_y..=max_y];
-        let measurement = BpmOutlineMeasurement {
-            cyan_component_pixels: component_pixels,
-            width: u32::try_from(max_x - min_x + 1)
-                .expect("BPM search ROI is bounded by the canonical frame"),
-            height: u32::try_from(component_height)
-                .expect("BPM search ROI is bounded to 140 pixels high"),
-            top_edge_pixels: component_rows.iter().take(6).copied().max().unwrap_or(0),
-            middle_row_pixels: component_rows
-                .iter()
-                .skip(10)
-                .take(component_height.saturating_sub(20))
-                .copied()
-                .max()
-                .unwrap_or(0),
-            bottom_edge_pixels: component_rows
-                .iter()
-                .rev()
-                .take(7)
-                .copied()
-                .max()
-                .unwrap_or(0),
-        };
-        for row in &touched_rows {
-            row_pixels[*row] = 0;
-        }
-        if measurement.cyan_component_pixels > best_any.cyan_component_pixels {
-            best_any = measurement;
-        }
-        if measurement.matches(predicate)
-            && best_match.is_none_or(|current: BpmOutlineMeasurement| {
-                measurement.cyan_component_pixels > current.cyan_component_pixels
-            })
-        {
-            best_match = Some(measurement);
-        }
+        candidate_count = candidate_count.saturating_add(1);
+        cluster_anchor = Some(pair);
     }
-    best_match.unwrap_or(best_any)
+    PlayPresenceEvidence {
+        qualifying_candidates: candidate_count,
+        top_edge_runs: u8::try_from(top_runs.len()).unwrap_or(u8::MAX),
+        bottom_edge_runs: u8::try_from(bottom_runs.len()).unwrap_or(u8::MAX),
+        candidates,
+        top_edge_pixels_min: predicate.top_edge_pixels_min,
+        top_edge_pixels_max: predicate.top_edge_pixels_max,
+        bottom_edge_pixels_min: predicate.bottom_edge_pixels_min,
+        bottom_edge_pixels_max: predicate.bottom_edge_pixels_max,
+        vertical_distance_min: predicate.vertical_distance_min,
+        vertical_distance_max: predicate.vertical_distance_max,
+        edge_center_delta_x2_max: predicate.edge_center_delta_x2_max,
+        candidate_cluster_delta_x2_max: predicate.candidate_cluster_delta_x2_max,
+        candidate_cluster_delta_y_max: predicate.candidate_cluster_delta_y_max,
+    }
 }
 
 fn result_panel_presence(
@@ -2470,34 +2447,6 @@ fn result_panel_presence(
         qualifies: upper_panel_edge_pixels >= layout.presence.horizontal_edge_pixels_min
             && lower_panel_edge_pixels >= layout.presence.horizontal_edge_pixels_min,
     })
-}
-
-fn play_bpm_outline_evidence(
-    pixels: &[u8],
-    region: PlayBpmOutlineRegion,
-    roi: Roi,
-    predicate: PlayPresencePredicate,
-) -> PlayBpmOutlineEvidence {
-    let measurement = measure_bpm_outline(pixels, roi, predicate);
-    PlayBpmOutlineEvidence {
-        region,
-        cyan_component_pixels: measurement.cyan_component_pixels,
-        cyan_component_pixels_min: predicate.cyan_component_pixels_min,
-        cyan_component_pixels_max: predicate.cyan_component_pixels_max,
-        outline_width: measurement.width,
-        outline_width_min: predicate.outline_width_min,
-        outline_width_max: predicate.outline_width_max,
-        outline_height: measurement.height,
-        outline_height_min: predicate.outline_height_min,
-        outline_height_max: predicate.outline_height_max,
-        top_edge_pixels: measurement.top_edge_pixels,
-        top_edge_pixels_min: predicate.top_edge_pixels_min,
-        middle_row_pixels: measurement.middle_row_pixels,
-        middle_row_pixels_max: predicate.middle_row_pixels_max,
-        bottom_edge_pixels: measurement.bottom_edge_pixels,
-        bottom_edge_pixels_min: predicate.bottom_edge_pixels_min,
-        qualifies: measurement.matches(predicate),
-    }
 }
 
 fn title_presence_evidence(
@@ -2548,7 +2497,7 @@ fn title_presence_evidence(
 pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, RecognitionError> {
     let observation = inspect_canonical_rgb8(frame.pixels())?;
     Ok(RecognitionSnapshot {
-        schema: "scorepeek-recognition-spike-v3".to_owned(),
+        schema: "scorepeek-recognition-spike-v4".to_owned(),
         canonical_frame_sha256: encode_sha256(frame.pixels()),
         normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
         frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
@@ -2647,23 +2596,11 @@ pub fn inspect_canonical_rgb8(
             decide_saturated_pixels += 1;
         }
     }
-    let bpm_outlines = [
-        (
-            PlayBpmOutlineRegion::Left,
-            screen_path_layout.play.bpm_outline_searches.left,
-        ),
-        (
-            PlayBpmOutlineRegion::CenterRight,
-            screen_path_layout.play.bpm_outline_searches.center_right,
-        ),
-    ]
-    .map(|(region, roi)| {
-        play_bpm_outline_evidence(pixels, region, roi, screen_path_layout.play.presence)
-    });
-    let qualifying_bpm_outlines = bpm_outlines
-        .iter()
-        .filter(|outline| outline.qualifies)
-        .fold(0_u8, |count, _| count + 1);
+    let play_presence = play_presence_evidence(
+        pixels,
+        screen_path_layout.play.bpm_outline_search,
+        screen_path_layout.play.presence,
+    );
     let result_present =
         warm >= layout.result.presence.warm_pixels_min && result_panel_side.known().is_some();
     let aggregate_music_select_present = cyan_header_pixels
@@ -2715,7 +2652,7 @@ pub fn inspect_canonical_rgb8(
                 .decide_transition
                 .presence
                 .saturated_pixels_min;
-    let play_present = qualifying_bpm_outlines == 1;
+    let play_present = play_presence.qualifying_candidates == 1;
     let screen = match [
         (result_present, ScreenClass::Result),
         (music_select_present, ScreenClass::MusicSelect),
@@ -2775,10 +2712,7 @@ pub fn inspect_canonical_rgb8(
                 .presence
                 .saturated_pixels_min,
         },
-        play_presence: PlayPresenceEvidence {
-            qualifying_searches: qualifying_bpm_outlines,
-            searches: bpm_outlines,
-        },
+        play_presence,
     })
 }
 
@@ -3933,19 +3867,21 @@ mod tests {
     }
 
     fn paint_play_presence(pixels: &mut [u8], layout: &ScreenPathLayout) {
-        let roi = layout.play.bpm_outline_searches.center_right;
-        paint_play_outline(pixels, roi.x as usize + 60, roi.y as usize + 20);
+        let roi = layout.play.bpm_outline_search;
+        paint_play_outline(pixels, roi.x as usize + 606, roi.y as usize + 12);
     }
 
     fn paint_play_outline(pixels: &mut [u8], origin_x: usize, origin_y: usize) {
-        for y in 0..70_usize {
-            let ranges = if y < 6 {
-                [(30, 320), (0, 0)]
-            } else if y >= 65 {
-                [(0, 350), (0, 0)]
+        for y in 0..71_usize {
+            let ranges = if y < 9 {
+                let start = 31 - y;
+                [(start, start + 287 + y * 2), (0, 0)]
+            } else if y >= 64 {
+                let row = y - 64;
+                let start = 17 + row;
+                [(start, start + 315 - row * 2), (0, 0)]
             } else {
-                let inset = 30 - (y - 6) / 2;
-                [(inset, inset + 8), (341 - inset, 350 - inset)]
+                [(31, 39), (310, 318)]
             };
             for (start, end) in ranges {
                 for x in start..end {
@@ -3954,6 +3890,21 @@ mod tests {
                     pixels[(frame_y * CANONICAL_WIDTH as usize + frame_x) * 3..][..3]
                         .copy_from_slice(&[20, 100, 150]);
                 }
+            }
+        }
+    }
+
+    fn paint_play_edge_pair(pixels: &mut [u8], origin_x: usize, origin_y: usize) {
+        for y in 0..6_usize {
+            for x in 31..318_usize {
+                let index = ((origin_y + y) * CANONICAL_WIDTH as usize + origin_x + x) * 3;
+                pixels[index..index + 3].copy_from_slice(&[20, 100, 150]);
+            }
+        }
+        for y in 64..70_usize {
+            for x in 17..332_usize {
+                let index = ((origin_y + y) * CANONICAL_WIDTH as usize + origin_x + x) * 3;
+                pixels[index..index + 3].copy_from_slice(&[20, 100, 150]);
             }
         }
     }
@@ -4566,22 +4517,20 @@ mod tests {
         paint_play_presence(&mut play, &layout);
         let play = inspect(&test_frame(play)).unwrap();
         assert_eq!(play.screen, ScreenClass::Play);
-        assert_eq!(play.play_presence.qualifying_searches, 1);
+        assert_eq!(play.play_presence.qualifying_candidates, 1);
         let outline = play
             .play_presence
-            .searches
+            .candidates
             .iter()
-            .find(|outline| outline.qualifies)
+            .flatten()
+            .next()
             .unwrap();
-        assert!(outline.cyan_component_pixels >= 4_000);
-        assert!((330..=380).contains(&outline.outline_width));
-        assert!((68..=72).contains(&outline.outline_height));
-        assert!(outline.top_edge_pixels >= 280);
-        assert!(outline.middle_row_pixels <= 64);
-        assert!(outline.bottom_edge_pixels >= 300);
+        assert!((280..=305).contains(&outline.top_edge_pixels));
+        assert!((300..=320).contains(&outline.bottom_edge_pixels));
+        assert!((59..=70).contains(&(outline.bottom_y - outline.top_y)));
 
         let mut color_area_only = vec![0_u8; CANONICAL_BYTES];
-        let roi = layout.play.bpm_outline_searches.center_right;
+        let roi = layout.play.bpm_outline_search;
         for y in 0..20_usize {
             for x in 0..220_usize {
                 let index =
@@ -4631,9 +4580,9 @@ mod tests {
     }
 
     #[test]
-    fn bpm_outline_accepts_left_and_center_right_positions_and_rejects_solid_panels() {
+    fn bpm_outline_accepts_all_measured_positions_and_rejects_solid_panels() {
         // Positions measured independently from canonical captures, not derived from the ROI.
-        for origin_x in [298, 866, 1283] {
+        for origin_x in [298, 715, 778, 866, 1283] {
             let mut pixels = vec![0_u8; CANONICAL_BYTES];
             paint_play_outline(&mut pixels, origin_x, 952);
             assert_eq!(
@@ -4656,13 +4605,38 @@ mod tests {
     }
 
     #[test]
+    fn bpm_outline_ignores_connected_interior_judge_pixels() {
+        let mut pixels = vec![0_u8; CANONICAL_BYTES];
+        paint_play_outline(&mut pixels, 715, 952);
+        for y in 970..1010 {
+            for x in 900..1450 {
+                let index = (y * CANONICAL_WIDTH as usize + x) * 3;
+                pixels[index..index + 3].copy_from_slice(&[20, 100, 150]);
+            }
+        }
+        let observation = inspect(&test_frame(pixels)).unwrap();
+        assert_eq!(observation.screen, ScreenClass::Play);
+        assert_eq!(observation.play_presence.qualifying_candidates, 1);
+    }
+
+    #[test]
     fn bpm_outline_rejects_simultaneous_left_and_center_right_candidates() {
         let mut pixels = vec![0_u8; CANONICAL_BYTES];
         paint_play_outline(&mut pixels, 298, 952);
         paint_play_outline(&mut pixels, 866, 952);
         let observation = inspect(&test_frame(pixels)).unwrap();
         assert_eq!(observation.screen, ScreenClass::Unknown);
-        assert_eq!(observation.play_presence.qualifying_searches, 2);
+        assert_eq!(observation.play_presence.qualifying_candidates, 2);
+    }
+
+    #[test]
+    fn bpm_outline_rejects_vertically_separated_candidates_at_the_same_center() {
+        let mut pixels = vec![0_u8; CANONICAL_BYTES];
+        paint_play_edge_pair(&mut pixels, 715, 940);
+        paint_play_edge_pair(&mut pixels, 715, 1010);
+        let observation = inspect(&test_frame(pixels)).unwrap();
+        assert_eq!(observation.screen, ScreenClass::Unknown);
+        assert_eq!(observation.play_presence.qualifying_candidates, 2);
     }
 
     #[test]
@@ -4675,13 +4649,13 @@ mod tests {
             ScreenClass::Play
         );
 
-        let roi = layout.play.bpm_outline_searches.center_right;
+        let roi = layout.play.bpm_outline_search;
         let mut variable_tempo = loading;
         for (x, width) in [(105_u32, 28_u32), (185, 45), (275, 28)] {
             for y in 47..57_u32 {
                 for local_x in x..x + width {
-                    let frame_x = roi.x + 60 + local_x;
-                    let frame_y = roi.y + y;
+                    let frame_x = roi.x + 606 + local_x;
+                    let frame_y = roi.y + 12 + y;
                     let index =
                         (frame_y as usize * CANONICAL_WIDTH as usize + frame_x as usize) * 3;
                     variable_tempo[index..index + 3].copy_from_slice(&[210, 210, 210]);

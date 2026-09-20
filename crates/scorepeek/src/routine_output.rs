@@ -32,9 +32,9 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
     ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
-    PlaySide, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
-    ResultPanelSide, ResultPerformanceResolution, ResultPresenceEvidence, ResultTiming,
-    SupplementalResultValue, resolve_result_performance,
+    PlayPresenceEvidence, PlaySide, PreviousBest, PreviousBestValue, ResultChartResolution,
+    ResultJudgments, ResultPanelSide, ResultPerformanceResolution, ResultPresenceEvidence,
+    ResultTiming, SupplementalResultValue, resolve_result_performance,
 };
 use scorepeek::temporal_recognition::{
     MusicSelectTemporalState, MusicSelectTemporalTransitionReason, ResultTemporalState,
@@ -51,7 +51,7 @@ const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
 const SOCKET_NAME: &str = "events.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v15";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v16";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -131,6 +131,7 @@ pub enum RunEventKind {
         monotonic_end_ms: u64,
         screen: String,
         result_presence: ResultPresenceEvidence,
+        play_presence: PlayPresenceEvidence,
         #[serde(skip_serializing_if = "Option::is_none")]
         unknown_reason: Option<String>,
     },
@@ -2156,7 +2157,6 @@ impl RunViewState {
     #[allow(clippy::too_many_lines)]
     fn reduce(&mut self, event: &RunEvent, serialized: &Value) {
         match &event.kind {
-            RunEventKind::GameVersionChanged { .. } => {}
             RunEventKind::MusicSelectResolverChanged { state, .. } => {
                 self.music_select = state.clone();
             }
@@ -2233,7 +2233,8 @@ impl RunViewState {
                 SemanticEpisodePhase::Finalized => self.current_screen = None,
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
-            RunEventKind::OverlayObserved { .. }
+            RunEventKind::GameVersionChanged { .. }
+            | RunEventKind::OverlayObserved { .. }
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::ScreenTick { .. }
             | RunEventKind::ResolverStateChanged { .. }
