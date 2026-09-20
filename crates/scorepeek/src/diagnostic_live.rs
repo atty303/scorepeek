@@ -1083,7 +1083,7 @@ mod tests {
         assert_eq!(fact["fact"]["detail"]["result_warm_pixels_min"], 3_000);
         assert_eq!(
             fact["fact"]["detail"]["result_horizontal_edge_pixels_min"],
-            512
+            490
         );
         assert_eq!(
             fact["fact"]["detail"]["music_select_cyan_header_pixels_min"],

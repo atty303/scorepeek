@@ -27,7 +27,7 @@ pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
     "/../../models/manifests/numeric-fixed-slot-hog-mlp-runtime-v3.json"
 ));
 pub const NUMERIC_MODEL_MANIFEST_SHA256: &str =
-    "fea9ee53af5b9a68dbab2bdbbf3265a5699e562cdf8c9eef3b3b7de09f989d1b";
+    "c91004410c9877c6e38efb13d36cbfd5b73087f3d1903bcf63d80aec65112a3d";
 pub const NUMERIC_MODEL_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../models/numeric-fixed-slot-hog-mlp-runtime-v3/inference.onnx"

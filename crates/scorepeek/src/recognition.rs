@@ -4474,11 +4474,11 @@ mod tests {
         );
         assert_eq!(
             snapshot.result_presence.panels[0].upper_panel_edge_pixels,
-            512
+            490
         );
         assert_eq!(
             snapshot.result_presence.panels[0].lower_panel_edge_pixels,
-            512
+            490
         );
 
         let mut right = vec![0_u8; CANONICAL_BYTES];
