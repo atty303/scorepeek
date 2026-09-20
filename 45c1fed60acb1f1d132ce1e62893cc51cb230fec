@@ -1,0 +1,14 @@
+Task: Lower the shared RESULT horizontal-edge threshold to 490
+Anchor: 45c1fed60acb1f1d132ce1e62893cc51cb230fec
+Base: a5d6512
+Workline: main, local commits only, origin/main remained unchanged
+Commits: 45c1fed fix(recognition): admit weaker result panel edges
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; review; maintain-agent-guidance
+Execution: local source and target host diagnostics; host execution was required for AF_UNIX corpus replay and package tests; no target deployment or push
+Evidence: The missed 2P RESULT held a 501-pixel right lower edge for 69 observations over 7.34 seconds against the former 512 minimum, while the right upper edge and warm-header predicate passed. The threshold-only replay candidate added those missed unknown observations without a known non-RESULT in that run.
+Evidence: A disposable copy of the four-session private corpus was migrated from v3 to v4 only for replay because the live corpus predates the current game-version schema. All active sessions replayed successfully and the copy was removed; the live corpus was unchanged.
+Evidence: Path checks, repository check, three focused tests, all 566 scorepeek package tests under host execution, independent review, and post-commit build succeeded. The full mise test gate reached a pre-existing GameVersionChanged Clippy failure outside this commit; parallel shards were then terminated.
+Authority: Current layout JSON, dependent digest-bound layouts and numeric manifest, tests, and commit 45c1fed are authoritative; private captures and labels remain outside the repository.
+Transcript:
+- U1: ok. 490に変更して
+  - A: Classified the change as durable and kept the existing RESULT ROI, paired upper/lower requirement, unique-side fail-closed behavior, and temporal handling unchanged. Changed the shared edge minimum from 512 to 490, refreshed the canonical-layout binding chain and embedded numeric-manifest digest, and updated diagnostic and unit-test expectations. Verified focused behavior, the complete active private corpus through a disposable migrated copy, repository checks, all scorepeek package tests on the host, and a fresh independent review. The full workspace gate was separately blocked by four Clippy findings in the preceding game-version commit. A commit hook accidentally staged three unrelated corpus migration files after formatting them; amended the local commit without those files and left their content uncommitted. Built target/debug/scorepeek from the final commit. No deploy, push, or live corpus migration was performed.
