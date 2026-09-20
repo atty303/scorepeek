@@ -2475,13 +2475,10 @@ pub fn inspect_canonical_rgb8(
             warm += 1;
         }
     }
-    let result_panels: [ResultPanelPresenceEvidence; 2] =
-        [ResultPanelSide::Left, ResultPanelSide::Right]
-            .map(|side| result_panel_presence(pixels, &layout.result, side))
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .try_into()
-            .expect("the fixed result panel list has two entries");
+    let result_panels = [
+        result_panel_presence(pixels, &layout.result, ResultPanelSide::Left)?,
+        result_panel_presence(pixels, &layout.result, ResultPanelSide::Right)?,
+    ];
     let qualifying_result_panels = result_panels
         .iter()
         .filter(|panel| panel.qualifies)
@@ -2548,7 +2545,7 @@ pub fn inspect_canonical_rgb8(
     let qualifying_bpm_outlines = bpm_outlines
         .iter()
         .filter(|outline| outline.qualifies)
-        .count();
+        .fold(0_u8, |count, _| count + 1);
     let result_present =
         warm >= layout.result.presence.warm_pixels_min && result_panel_side.known().is_some();
     let aggregate_music_select_present = cyan_header_pixels
@@ -2660,8 +2657,7 @@ pub fn inspect_canonical_rgb8(
                 .saturated_pixels_min,
         },
         play_presence: PlayPresenceEvidence {
-            qualifying_searches: u8::try_from(qualifying_bpm_outlines)
-                .expect("the fixed BPM search list has two entries"),
+            qualifying_searches: qualifying_bpm_outlines,
             searches: bpm_outlines,
         },
     })

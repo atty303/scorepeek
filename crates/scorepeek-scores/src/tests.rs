@@ -267,11 +267,11 @@ fn unsupported_payload_is_not_saved() {
 fn play_side_applicability_must_match_play_type() {
     let mut invalid_result = result(1, 100);
     invalid_result["state"]["result"]["play_type"] = json!("double");
-    let score = json!({"status":"known", "value":100});
-    let miss = json!({"status":"known", "value":1});
-    let mut legacy_select = select(1, &score, &miss);
+    let select_score = json!({"status":"known", "value":100});
+    let select_miss = json!({"status":"known", "value":1});
+    let mut legacy_select = select(1, &select_score, &select_miss);
     legacy_select["snapshot"]["chart"]["play_side"] = json!("one_player");
-    let mut invalid_double_select = select(1, &score, &miss);
+    let mut invalid_double_select = select(1, &select_score, &select_miss);
     invalid_double_select["snapshot"]["chart"]["play_type"] = json!("double");
 
     for invalid in [invalid_result, legacy_select, invalid_double_select] {

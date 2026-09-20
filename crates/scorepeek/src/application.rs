@@ -5118,6 +5118,139 @@ mod tests {
         }
     }
 
+    fn resolved_two_player_result_observation() -> RegisteredScreenFieldObservation {
+        let catalog = catalog_from_records(&[
+            tachi_record("song-1", "SYNTHETIC SONG", "SYNTHETIC ARTIST"),
+            tachi_record("song-2", "DISTANT RUNNER UP", "OTHER ARTIST"),
+        ]);
+        let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
+        let numeric = |value: &str| DynamicTextObservation {
+            input_width: 1,
+            output_timesteps: 1,
+            open_text: value.to_owned(),
+            constrained_text: Some(value.to_owned()),
+        };
+        let observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
+            &domain,
+            &catalog,
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                title: text("SYNTHETIC SONG"),
+                artist: text("SYNTHETIC ARTIST"),
+                clear_type: text("CLEAR"),
+                difficulty: text("NORMAL"),
+                play_type: text("SP"),
+                level: numeric("1"),
+                notes: numeric("1"),
+                current_score: numeric("2"),
+                previous_clear_type: text("NO PLAY"),
+                previous_score: numeric("0"),
+                previous_miss_count: numeric("0"),
+                miss_count: numeric("0"),
+                pgreat: numeric("1"),
+                great: numeric("0"),
+                good: numeric("0"),
+                bad: numeric("0"),
+                poor: numeric("0"),
+                fast: numeric("0"),
+                slow: numeric("0"),
+                combo_break: numeric("0"),
+                ..Default::default()
+            }),
+        );
+        assert!(observation.result_chart_resolution().is_some());
+        assert!(observation.result_performance_resolution().is_some());
+        observation
+    }
+
+    fn publish_headless_live_event(
+        routine: &mut crate::routine_output::RoutineOutput,
+        event: GamescopeLiveSessionEvent<'_>,
+    ) {
+        let value = live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
+        routine
+            .publish(&crate::routine_output::RunEvent::from_value(value).unwrap())
+            .unwrap();
+    }
+
+    fn publish_two_player_result_episode(
+        routine: &mut crate::routine_output::RoutineOutput,
+        observation: &RegisteredScreenFieldObservation,
+    ) {
+        for (screen_episode_id, sequence, screen, phase) in [
+            (
+                1,
+                1,
+                scorepeek::recognition::ScreenClass::MusicSelect,
+                crate::capture_live::SemanticScreenEpisodePhase::Started,
+            ),
+            (
+                1,
+                2,
+                scorepeek::recognition::ScreenClass::MusicSelect,
+                crate::capture_live::SemanticScreenEpisodePhase::Finalized,
+            ),
+            (
+                2,
+                3,
+                scorepeek::recognition::ScreenClass::Play,
+                crate::capture_live::SemanticScreenEpisodePhase::Started,
+            ),
+            (
+                2,
+                4,
+                scorepeek::recognition::ScreenClass::Play,
+                crate::capture_live::SemanticScreenEpisodePhase::Finalized,
+            ),
+            (
+                3,
+                5,
+                scorepeek::recognition::ScreenClass::Result,
+                crate::capture_live::SemanticScreenEpisodePhase::Started,
+            ),
+        ] {
+            publish_headless_live_event(
+                routine,
+                GamescopeLiveSessionEvent::SemanticScreenEpisode {
+                    screen_episode_id,
+                    sequence,
+                    monotonic_end_ms: sequence * 100,
+                    screen,
+                    phase,
+                },
+            );
+        }
+        for sequence in [6, 7] {
+            publish_headless_live_event(
+                routine,
+                GamescopeLiveSessionEvent::RawScreenObserved {
+                    semantic_episode_id: Some(3),
+                    sequence,
+                    monotonic_start_ms: sequence * 100,
+                    monotonic_end_ms: sequence * 100 + 25,
+                    screen: scorepeek::recognition::ScreenClass::Result,
+                    result_presence: result_presence(
+                        scorepeek::recognition::ResultPanelSideState::Known(
+                            scorepeek::recognition::ResultPanelSide::Right,
+                        ),
+                    ),
+                },
+            );
+        }
+        for sequence in [8, 9] {
+            publish_headless_live_event(
+                routine,
+                GamescopeLiveSessionEvent::Observation {
+                    screen_episode_id: 3,
+                    sequence,
+                    monotonic_start_ms: sequence * 100,
+                    monotonic_end_ms: sequence * 100 + 25,
+                    output: observation,
+                },
+            );
+        }
+    }
+
     #[test]
     fn public_cli_exposes_only_the_seven_application_commands() {
         for command in [
@@ -5997,126 +6130,11 @@ node_name = "must-not-be-inherited"
 
     #[test]
     fn production_result_serializer_reaches_provisional_and_confirmed_output() {
-        use crate::routine_output::{ResultState, RoutineOutput, RunEvent, RunEventKind};
-        use scorepeek::recognition::ResultPanelSide;
+        use crate::routine_output::{ResultState, RoutineOutput, RunEventKind};
 
-        let catalog = catalog_from_records(&[
-            tachi_record("song-1", "SYNTHETIC SONG", "SYNTHETIC ARTIST"),
-            tachi_record("song-2", "DISTANT RUNNER UP", "OTHER ARTIST"),
-        ]);
-        let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
-        let numeric = |value: &str| DynamicTextObservation {
-            input_width: 1,
-            output_timesteps: 1,
-            open_text: value.to_owned(),
-            constrained_text: Some(value.to_owned()),
-        };
-        let observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
-            &domain,
-            &catalog,
-            ScreenFieldObservations::Result(ResultScreenFieldObservations {
-                panel_side: ResultPanelSide::Right,
-                title: text("SYNTHETIC SONG"),
-                artist: text("SYNTHETIC ARTIST"),
-                clear_type: text("CLEAR"),
-                difficulty: text("NORMAL"),
-                play_type: text("SP"),
-                level: numeric("1"),
-                notes: numeric("1"),
-                current_score: numeric("2"),
-                previous_clear_type: text("NO PLAY"),
-                previous_score: numeric("0"),
-                previous_miss_count: numeric("0"),
-                miss_count: numeric("0"),
-                pgreat: numeric("1"),
-                great: numeric("0"),
-                good: numeric("0"),
-                bad: numeric("0"),
-                poor: numeric("0"),
-                fast: numeric("0"),
-                slow: numeric("0"),
-                combo_break: numeric("0"),
-                ..Default::default()
-            }),
-        );
-        assert!(
-            observation.result_chart_resolution().is_some(),
-            "song={:?} fields={:?}",
-            observation.song_resolution(),
-            observation.parsed_result_fields()
-        );
-        assert!(observation.result_performance_resolution().is_some());
-
+        let observation = resolved_two_player_result_observation();
         let mut routine = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
-        let mut publish = |event| {
-            let value =
-                live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
-            routine
-                .publish(&RunEvent::from_value(value).unwrap())
-                .unwrap();
-        };
-        for (screen_episode_id, sequence, screen, phase) in [
-            (
-                1,
-                1,
-                scorepeek::recognition::ScreenClass::MusicSelect,
-                crate::capture_live::SemanticScreenEpisodePhase::Started,
-            ),
-            (
-                1,
-                2,
-                scorepeek::recognition::ScreenClass::MusicSelect,
-                crate::capture_live::SemanticScreenEpisodePhase::Finalized,
-            ),
-            (
-                2,
-                3,
-                scorepeek::recognition::ScreenClass::Play,
-                crate::capture_live::SemanticScreenEpisodePhase::Started,
-            ),
-            (
-                2,
-                4,
-                scorepeek::recognition::ScreenClass::Play,
-                crate::capture_live::SemanticScreenEpisodePhase::Finalized,
-            ),
-            (
-                3,
-                5,
-                scorepeek::recognition::ScreenClass::Result,
-                crate::capture_live::SemanticScreenEpisodePhase::Started,
-            ),
-        ] {
-            publish(GamescopeLiveSessionEvent::SemanticScreenEpisode {
-                screen_episode_id,
-                sequence,
-                monotonic_end_ms: sequence * 100,
-                screen,
-                phase,
-            });
-        }
-        for sequence in [6, 7] {
-            publish(GamescopeLiveSessionEvent::RawScreenObserved {
-                semantic_episode_id: Some(3),
-                sequence,
-                monotonic_start_ms: sequence * 100,
-                monotonic_end_ms: sequence * 100 + 25,
-                screen: scorepeek::recognition::ScreenClass::Result,
-                result_presence: result_presence(
-                    scorepeek::recognition::ResultPanelSideState::Known(ResultPanelSide::Right),
-                ),
-            });
-        }
-        for sequence in [8, 9] {
-            publish(GamescopeLiveSessionEvent::Observation {
-                screen_episode_id: 3,
-                sequence,
-                monotonic_start_ms: sequence * 100,
-                monotonic_end_ms: sequence * 100 + 25,
-                output: &observation,
-            });
-        }
-        drop(publish);
+        publish_two_player_result_episode(&mut routine, &observation);
         assert!(routine.take_headless_events().iter().any(|event| matches!(
             event.kind,
             RunEventKind::ResultChanged {
@@ -6128,9 +6146,8 @@ node_name = "must-not-be-inherited"
                 )
         )));
 
-        let value = live_session_event_value(
-            Some("invocation-session-1"),
-            Some(1),
+        publish_headless_live_event(
+            &mut routine,
             GamescopeLiveSessionEvent::SemanticScreenEpisode {
                 screen_episode_id: 3,
                 sequence: 10,
@@ -6138,11 +6155,7 @@ node_name = "must-not-be-inherited"
                 screen: scorepeek::recognition::ScreenClass::Result,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             },
-        )
-        .unwrap();
-        routine
-            .publish(&RunEvent::from_value(value).unwrap())
-            .unwrap();
+        );
         assert!(routine.take_headless_events().iter().any(|event| matches!(
             event.kind,
             RunEventKind::ResultChanged {
