@@ -1,0 +1,12 @@
+Task: add complete-session recording and prepare evidence for 2P support
+Anchor: 834b1aa
+Base: f7f9c68
+Worktree: main
+Commits: 834b1aa adds --record-all and explicit recording retention policy while preserving selective --record behavior
+Guidance: repository AGENTS.md; develop-repository; design-program-observability
+Environment: durable Scorepeek runtime and private canonical recording workflow; no target deployment or push was authorized
+Evidence: CLI conflict and ordering tests, canonical recorder retention tests, mise run check, and repository runtime checks passed; post-commit mise run build completed with the embedded OBS UI
+Authority: README.md, docs/diagnostics.md, docs/private-corpus.md, and committed runtime tests define recording behavior
+Transcript:
+- U1: \--record-allを追加。選曲画面のplayside認識は実装。play/resultは録画後に再評価する
+  - A: Added a mutually exclusive --record-all mode that records every canonical 10 Hz tick, retained the existing selective --record semantics, exposed retention in structured diagnostics, documented the workflow, and committed it independently. PLAY and RESULT 2P recognition were left unchanged.
