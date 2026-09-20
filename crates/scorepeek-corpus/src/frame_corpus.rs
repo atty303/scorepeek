@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use scorepeek::catalog::{Difficulty, PlayType};
 use scorepeek::recognition::{
     NumericField, PlayOption, PlayOptions, PreviousBest, PreviousBestValue, ResultChartResolution,
-    ResultJudgments, ResultPerformanceResolution, ResultTiming, Rgb8Crop, ScreenClass,
-    ScreenRgb8Crops, SupplementalResultValue, inspect_canonical_rgb8, resolve_clear_type,
-    route_screen_rgb8_crops,
+    ResultJudgments, ResultPanelSide, ResultPerformanceResolution, ResultTiming, Rgb8Crop,
+    ScreenClass, ScreenRgb8Crops, SupplementalResultValue, inspect_canonical_rgb8,
+    resolve_clear_type, route_screen_rgb8_crops,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -2237,19 +2237,21 @@ pub fn author_numeric_dataset(
             if !requested_sequences.contains(&sequence) {
                 return Ok(());
             }
-            if inspect_canonical_rgb8(&pixels)
-                .map_err(|_| {
-                    CorpusError::InvalidRequest("numeric dataset screen predicate failed".into())
-                })?
-                .screen
-                != ScreenClass::Result
-            {
+            let predicate = inspect_canonical_rgb8(&pixels).map_err(|_| {
+                CorpusError::InvalidRequest("numeric dataset screen predicate failed".into())
+            })?;
+            if predicate.screen != ScreenClass::Result {
                 return invalid("numeric dataset frame is not a canonical result frame");
             }
-            let ScreenRgb8Crops::Result(crops) =
-                route_screen_rgb8_crops(&pixels, ScreenClass::Result).map_err(|_| {
-                    CorpusError::InvalidRequest("numeric dataset crop routing failed".into())
-                })?
+            let ScreenRgb8Crops::Result(crops) = route_screen_rgb8_crops(
+                &pixels,
+                predicate.crop_route().ok_or_else(|| {
+                    CorpusError::InvalidRequest("numeric dataset result panel is unknown".into())
+                })?,
+            )
+            .map_err(|_| {
+                CorpusError::InvalidRequest("numeric dataset crop routing failed".into())
+            })?
             else {
                 unreachable!("result routing returns result crops");
             };
@@ -2408,20 +2410,23 @@ pub fn author_numeric_sentinel(
     }
     let (header, pixels) = qoi::decode_to_vec(encoded)
         .map_err(|_| CorpusError::InvalidRequest("numeric sentinel QOI is invalid".into()))?;
+    let predicate = inspect_canonical_rgb8(&pixels).map_err(|_| {
+        CorpusError::InvalidRequest("numeric sentinel screen predicate failed".into())
+    })?;
     if header.width != 1_920
         || header.height != 1_080
         || pixels.len() != 1_920 * 1_080 * 3
-        || inspect_canonical_rgb8(&pixels)
-            .map_err(|_| {
-                CorpusError::InvalidRequest("numeric sentinel screen predicate failed".into())
-            })?
-            .screen
-            != ScreenClass::Result
+        || predicate.screen != ScreenClass::Result
     {
         return invalid("numeric sentinel frame is not a canonical result frame");
     }
-    let ScreenRgb8Crops::Result(crops) = route_screen_rgb8_crops(&pixels, ScreenClass::Result)
-        .map_err(|_| CorpusError::InvalidRequest("numeric sentinel crop routing failed".into()))?
+    let ScreenRgb8Crops::Result(crops) = route_screen_rgb8_crops(
+        &pixels,
+        predicate.crop_route().ok_or_else(|| {
+            CorpusError::InvalidRequest("numeric sentinel result panel is unknown".into())
+        })?,
+    )
+    .map_err(|_| CorpusError::InvalidRequest("numeric sentinel crop routing failed".into()))?
     else {
         unreachable!("result routing returns result crops");
     };
@@ -2957,7 +2962,11 @@ pub fn replay_corpus_with_options(
                         current_score,
                         ..
                     }) => {
-                        if expected.play_side != "one_player"
+                        if !expected_play_side_matches(
+                            fields.panel_side,
+                            expected.play_type,
+                            &expected.play_side,
+                        )
                             || !play_mode_matches_type(
                                 &expected.play_mode,
                                 expected.play_type,
@@ -4624,6 +4633,7 @@ fn process_replay_frame(
                 monotonic_start_ms: tick.monotonic_ms,
                 monotonic_end_ms: tick.monotonic_ms,
                 screen: replay_screen_name(screen).to_owned(),
+                result_panel_side: inspected.observation.result_panel_side(),
                 unknown_reason: (screen == ScreenClass::Unknown)
                     .then(|| "predicate_not_matched".to_owned()),
             },
@@ -5223,10 +5233,20 @@ fn result_event_matches(
         Value::String(episode.expected_song_id.clone()),
     )
     .ok();
-    event.contract == "scorepeek-result-detected-v2"
+    event.contract == "scorepeek-result-detected-v3"
         && Some(event.scorepeek_song_id) == expected_song
         && event.clear_type == episode.expected_clear_type
-        && event.play_side == expected.play_side
+        && match event.play_side {
+            scorepeek::routine_output::PlaySideApplicability::Known(
+                scorepeek::recognition::PlaySide::OnePlayer,
+            ) => expected.play_side == "one_player",
+            scorepeek::routine_output::PlaySideApplicability::Known(
+                scorepeek::recognition::PlaySide::TwoPlayer,
+            ) => expected.play_side == "two_player",
+            scorepeek::routine_output::PlaySideApplicability::NotApplicable => {
+                expected.play_side == "not_applicable"
+            }
+        }
         && event.play_mode == expected.play_mode
         && event.play_type == expected.play_type
         && event.difficulty == expected.difficulty
@@ -5599,7 +5619,10 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         if episode.episode_id.is_empty()
             || episode.expected_song_id.is_empty()
             || episode.expected_clear_type.is_empty()
-            || episode.expected_result.play_side != "one_player"
+            || !valid_expected_play_side(
+                episode.expected_result.play_type,
+                &episode.expected_result.play_side,
+            )
             || !play_mode_matches_type(
                 &episode.expected_result.play_mode,
                 episode.expected_result.play_type,
@@ -5662,6 +5685,26 @@ fn play_mode_matches_type(play_mode: &str, play_type: PlayType) -> bool {
     matches!(
         (play_mode, play_type),
         ("single_play", PlayType::Single) | ("double_play", PlayType::Double)
+    )
+}
+
+fn valid_expected_play_side(play_type: PlayType, play_side: &str) -> bool {
+    matches!(
+        (play_type, play_side),
+        (PlayType::Single, "one_player" | "two_player") | (PlayType::Double, "not_applicable")
+    )
+}
+
+fn expected_play_side_matches(
+    panel_side: ResultPanelSide,
+    play_type: PlayType,
+    play_side: &str,
+) -> bool {
+    matches!(
+        (play_type, panel_side, play_side),
+        (PlayType::Single, ResultPanelSide::Left, "one_player")
+            | (PlayType::Single, ResultPanelSide::Right, "two_player")
+            | (PlayType::Double, _, "not_applicable")
     )
 }
 
@@ -6258,7 +6301,7 @@ mod tests {
         let event = serde_json::json!({
             "schema":"scorepeek-diagnostic-event-v1", "run_id":run_id, "sequence":1,
             "observed_unix_us":1, "operation":"run_event", "data":{
-                "schema":"scorepeek-run-event-v13", "event":"session_started",
+                "schema":"scorepeek-run-event-v14", "event":"session_started",
                 "session_id":session_id, "capture_generation":1,
                 "capture_profile_sha256":"1".repeat(64),
                 "normalizer_artifact_sha256":"2".repeat(64)
@@ -6306,7 +6349,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v13", "event":"session_started",
+                    "schema":"scorepeek-run-event-v14", "event":"session_started",
                     "session_id":session_id, "capture_generation":1,
                     "capture_profile_sha256":"1".repeat(64),
                     "normalizer_artifact_sha256":"2".repeat(64)
@@ -6328,7 +6371,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v13", "event":"recording_completed",
+                    "schema":"scorepeek-run-event-v14", "event":"recording_completed",
                     "session_id":session_id, "directory":canonical.parent().unwrap()
                 }
             }),
@@ -6427,7 +6470,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":1, "observed_unix_us":1, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v13", "event":"session_started",
+                    "schema":"scorepeek-run-event-v14", "event":"session_started",
                     "session_id":session_id, "capture_generation":1,
                     "capture_profile_sha256":"1".repeat(64),
                     "normalizer_artifact_sha256":"2".repeat(64)
@@ -6449,7 +6492,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":3, "observed_unix_us":3, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v13", "event":"field_observation",
+                    "schema":"scorepeek-run-event-v14", "event":"field_observation",
                     "session_id":session_id, "capture_generation":1, "sequence":1,
                     "monotonic_start_ms":90, "monotonic_end_ms":100, "screen":"result",
                     "fields":{"screen":"result"},
@@ -6461,7 +6504,7 @@ mod tests {
             serde_json::json!({
                 "schema":"scorepeek-diagnostic-event-v1", "run_id":"run-1-0-1",
                 "sequence":4, "observed_unix_us":4, "operation":"run_event", "data":{
-                    "schema":"scorepeek-run-event-v13", "event":"recording_completed",
+                    "schema":"scorepeek-run-event-v14", "event":"recording_completed",
                     "session_id":session_id, "directory":canonical.parent().unwrap()
                 }
             }),
@@ -7087,6 +7130,29 @@ mod tests {
     }
 
     #[test]
+    fn result_play_side_labels_follow_play_type_and_panel_side() {
+        assert!(valid_expected_play_side(PlayType::Single, "one_player"));
+        assert!(valid_expected_play_side(PlayType::Single, "two_player"));
+        assert!(valid_expected_play_side(PlayType::Double, "not_applicable"));
+        assert!(!valid_expected_play_side(PlayType::Double, "one_player"));
+        assert!(expected_play_side_matches(
+            ResultPanelSide::Left,
+            PlayType::Single,
+            "one_player"
+        ));
+        assert!(expected_play_side_matches(
+            ResultPanelSide::Right,
+            PlayType::Single,
+            "two_player"
+        ));
+        assert!(expected_play_side_matches(
+            ResultPanelSide::Right,
+            PlayType::Double,
+            "not_applicable"
+        ));
+    }
+
+    #[test]
     fn numeric_dataset_authors_from_segment_backed_canonical_frames() {
         let root = tempfile::tempdir().unwrap();
         let store = root.path().join("store");
@@ -7103,9 +7169,13 @@ mod tests {
                 pixels[(y * 1_920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
             }
         }
-        let ScreenRgb8Crops::Result(crops) =
-            route_screen_rgb8_crops(&pixels, ScreenClass::Result).unwrap()
-        else {
+        let ScreenRgb8Crops::Result(crops) = route_screen_rgb8_crops(
+            &pixels,
+            scorepeek::recognition::ScreenCropRoute::Result(
+                scorepeek::recognition::ResultPanelSide::Left,
+            ),
+        )
+        .unwrap() else {
             unreachable!();
         };
         let rois = numeric_crops(&crops, &labels)

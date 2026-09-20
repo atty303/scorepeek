@@ -35,7 +35,7 @@ impl Consumer {
             return Err("overlay invocation mismatch".into());
         }
         match text(record, "schema")? {
-            "scorepeek-event-snapshot-v2" => {
+            "scorepeek-event-snapshot-v3" => {
                 validate_status(&record["status"])?;
                 if record.get("result").is_none_or(Value::is_null) {
                     return Err("missing snapshot result state".into());
@@ -94,7 +94,7 @@ impl Consumer {
                 replacement.view.connected = true;
                 *self = replacement;
             }
-            "scorepeek-event-v2" => {
+            "scorepeek-event-v3" => {
                 validate_public_record(record, expected_invocation)?;
                 let sequence = number(record, "sequence")?;
                 if !self.view.connected
@@ -224,7 +224,7 @@ impl Consumer {
 fn validate_public_record(record: &Value, expected_invocation: &str) -> Result<(), String> {
     let envelope: PublicEnvelope =
         serde_json::from_value(record.clone()).map_err(|_| "invalid public event envelope")?;
-    if envelope.schema != "scorepeek-event-v2" || envelope.invocation_id != expected_invocation {
+    if envelope.schema != "scorepeek-event-v3" || envelope.invocation_id != expected_invocation {
         return Err("invalid public event envelope".into());
     }
     let _ = (
@@ -303,7 +303,10 @@ fn validate_result(record: &Value) -> Result<(), String> {
         "provisional" | "confirmed" => validate_result_identity(record, state),
         "retracted" => {
             match text(state, "reason")? {
-                "evidence_unresolved" | "attempt_rejected" | "session_ended" => {}
+                "evidence_unresolved"
+                | "panel_side_conflict"
+                | "attempt_rejected"
+                | "session_ended" => {}
                 _ => return Err("unsupported result retraction reason".into()),
             }
             validate_result_identity(record, state)
@@ -343,20 +346,16 @@ fn validate_song(song: &Value) -> Result<&str, String> {
 }
 
 fn validate_result_payload(result: &Value) -> Result<&str, String> {
-    if text(result, "contract")? != "scorepeek-result-detected-v2" {
+    if text(result, "contract")? != "scorepeek-result-detected-v3" {
         return Err("unsupported result payload".into());
     }
     for key in ["attempt_id", "level", "notes", "current_score"] {
         number(result, key)?;
     }
     let song_id = text(result, "scorepeek_song_id")?;
-    for key in [
-        "play_side",
-        "play_mode",
-        "play_type",
-        "difficulty",
-        "clear_type",
-    ] {
+    let play_type = text(result, "play_type")?;
+    validate_play_side(&result["play_side"], play_type)?;
+    for key in ["play_mode", "difficulty", "clear_type"] {
         text(result, key)?;
     }
     for (object, fields) in [
@@ -421,6 +420,17 @@ fn validate_supplemental(value: &Value, previous: bool, known_string: bool) -> R
     Ok(())
 }
 
+fn validate_play_side(value: &Value, play_type: &str) -> Result<(), String> {
+    match (play_type, text(value, "status")?) {
+        ("single", "known") => match text(value, "value")? {
+            "one_player" | "two_player" => Ok(()),
+            _ => Err("invalid known play side".into()),
+        },
+        ("double", "not_applicable") if value.get("value").is_none() => Ok(()),
+        _ => Err("invalid play side applicability".into()),
+    }
+}
+
 fn validate_selection(record: &Value) -> Result<(), String> {
     for key in ["screen_episode_id", "source_sequence", "revision"] {
         number(record, key)?;
@@ -429,6 +439,7 @@ fn validate_selection(record: &Value) -> Result<(), String> {
     match text(state, "status")? {
         "selected" => {
             validate_chart(state)?;
+            validate_play_side(&state["play_side"], text(state, "play_type")?)?;
             if !state["presentation"].is_object() {
                 return Err("missing selection presentation".into());
             }
@@ -446,12 +457,16 @@ fn validate_select_best(record: &Value) -> Result<(), String> {
     if snapshot.is_null() {
         return Ok(());
     }
-    if text(snapshot, "contract")? != "scorepeek-music-select-best-snapshot-v1" {
+    if text(snapshot, "contract")? != "scorepeek-music-select-best-snapshot-v2" {
         return Err("unsupported music select best snapshot".into());
     }
     number(snapshot, "revision")?;
     text(snapshot, "observation_id")?;
     validate_chart(&snapshot["chart"])?;
+    validate_play_side(
+        &snapshot["chart"]["play_side"],
+        text(&snapshot["chart"], "play_type")?,
+    )?;
     for key in ["score", "miss_count", "clear_type"] {
         if !snapshot["values"].get(key).is_some_and(Value::is_object) {
             return Err("incomplete music select best snapshot".into());
@@ -573,7 +588,20 @@ mod tests {
     }
 
     fn result_payload() -> Value {
-        json!({"contract":"scorepeek-result-detected-v2","attempt_id":1,"scorepeek_song_id":"song","play_side":"1p","play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":100,"clear_type":"CLEAR","judgments":{"pgreat":1,"great":2,"good":3,"bad":4,"poor":5},"miss_count":{"status":"known","value":9},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":90},"miss_count":{"status":"known","value":10},"clear_type":{"status":"known","value":"FAILED"}},"play_options":{"status":"known","values":[]}})
+        json!({"contract":"scorepeek-result-detected-v3","attempt_id":1,"scorepeek_song_id":"song","play_side":{"status":"known","value":"one_player"},"play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":100,"clear_type":"CLEAR","judgments":{"pgreat":1,"great":2,"good":3,"bad":4,"poor":5},"miss_count":{"status":"known","value":9},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":90},"miss_count":{"status":"known","value":10},"clear_type":{"status":"known","value":"FAILED"}},"play_options":{"status":"known","values":[]}})
+    }
+
+    #[test]
+    fn play_side_applicability_matches_play_type() {
+        assert!(
+            validate_play_side(&json!({"status":"known", "value":"one_player"}), "single").is_ok()
+        );
+        assert!(validate_play_side(&json!({"status":"not_applicable"}), "double").is_ok());
+        assert!(
+            validate_play_side(&json!({"status":"known", "value":"two_player"}), "double").is_err()
+        );
+        assert!(validate_play_side(&json!({"status":"not_applicable"}), "single").is_err());
+        assert!(validate_play_side(&json!("one_player"), "single").is_err());
     }
 
     fn result_state(state: &str) -> Value {
@@ -589,7 +617,7 @@ mod tests {
     }
 
     fn wire(sequence: u64, event: &Value) -> Value {
-        let mut record = json!({"schema":"scorepeek-event-v2","invocation_id":"a","sequence":sequence,"event_id":format!("a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+i64::try_from(sequence).unwrap(),"capture":{"session_id":"session","capture_generation":1,"binding":null}});
+        let mut record = json!({"schema":"scorepeek-event-v3","invocation_id":"a","sequence":sequence,"event_id":format!("a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+i64::try_from(sequence).unwrap(),"capture":{"session_id":"session","capture_generation":1,"binding":null}});
         record
             .as_object_mut()
             .unwrap()
@@ -599,7 +627,7 @@ mod tests {
 
     fn snapshot(next_sequence: u64, result: &Value, screen: Option<&Value>) -> Value {
         let result = json!({"event":"result_changed","source_sequence":0,"state":result});
-        json!({"schema":"scorepeek-event-snapshot-v2","invocation_id":"a","next_sequence":next_sequence,"status":status(),"result":wire(0,&result),"screen_state":screen,"music_selection":null,"music_select_best":null})
+        json!({"schema":"scorepeek-event-snapshot-v3","invocation_id":"a","next_sequence":next_sequence,"status":status(),"result":wire(0,&result),"screen_state":screen,"music_selection":null,"music_select_best":null})
     }
 
     #[test]

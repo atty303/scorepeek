@@ -48,7 +48,7 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-fn validate_v2_envelope(raw: &Value) -> Result<(), Error> {
+fn validate_v3_envelope(raw: &Value) -> Result<(), Error> {
     let object = raw.as_object().ok_or(Error::UnsupportedContract)?;
     for key in [
         "schema",
@@ -64,7 +64,7 @@ fn validate_v2_envelope(raw: &Value) -> Result<(), Error> {
             return Err(Error::UnsupportedContract);
         }
     }
-    if raw["schema"].as_str() != Some("scorepeek-event-v2")
+    if raw["schema"].as_str() != Some("scorepeek-event-v3")
         || raw["invocation_id"].as_str().is_none()
         || raw["sequence"].as_u64().is_none()
         || raw["event_id"].as_str().is_none_or(str::is_empty)
@@ -165,6 +165,7 @@ struct SongPresentation {
 #[serde(rename_all = "snake_case")]
 enum ResultRetractionReason {
     EvidenceUnresolved,
+    PanelSideConflict,
     AttemptRejected,
     SessionEnded,
 }
@@ -189,6 +190,7 @@ fn validate_result_context(event: &Event, capture: &Value) -> Result<(), Error> 
     if song.scorepeek_song_id != result.chart.scorepeek_song_id
         || song.display_titles.is_empty()
         || song.display_titles.iter().any(String::is_empty)
+        || !valid_play_side(&result.chart.play_type, &result.play_side)
     {
         return Err(Error::UnsupportedContract);
     }
@@ -225,7 +227,7 @@ struct ResultData {
     attempt_id: u64,
     #[serde(flatten)]
     chart: Chart,
-    play_side: String,
+    play_side: PlaySideApplicability,
     play_mode: String,
     level: u8,
     notes: u32,
@@ -237,6 +239,19 @@ struct ResultData {
     combo_break: Supplemental<u32>,
     previous_best: Previous,
     play_options: PlayOptions,
+}
+#[allow(dead_code, reason = "the complete public play-side shape is validated")]
+#[derive(Deserialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+enum PlaySideApplicability {
+    Known(PlaySide),
+    NotApplicable,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PlaySide {
+    OnePlayer,
+    TwoPlayer,
 }
 #[allow(
     dead_code,
@@ -298,6 +313,7 @@ struct SelectData {
 struct SelectChart {
     #[serde(flatten)]
     chart: Chart,
+    play_side: PlaySideApplicability,
     presentation: Value,
 }
 #[derive(Deserialize)]
@@ -487,7 +503,7 @@ const DATABASE_VERSION: i64 = 3;
 const STORED_RESULT_SCHEMA: &str = "scorepeek-stored-result-v1";
 
 fn stored_result_from_event(raw: &Value) -> Result<Value, Error> {
-    if raw["schema"].as_str() != Some("scorepeek-event-v2")
+    if raw["schema"].as_str() != Some("scorepeek-event-v3")
         || raw["event"].as_str() != Some("result_changed")
     {
         return Err(Error::UnsupportedContract);
@@ -510,7 +526,10 @@ fn prepare_result<'a>(
     origin: &Origin,
     mutation: ResultMutation,
 ) -> Result<Prepared<'a>, Error> {
-    if result.contract != "scorepeek-result-detected-v2" {
+    if result.contract != "scorepeek-result-detected-v3" {
+        return Err(Error::UnsupportedContract);
+    }
+    if !valid_play_side(&result.chart.play_type, &result.play_side) {
         return Err(Error::UnsupportedContract);
     }
     if let Some(song) = song
@@ -576,7 +595,10 @@ fn prepare<'a>(event: &'a Event, origin: &mut Origin) -> Result<Option<Prepared<
         Event::MusicSelectBestObserved {
             snapshot: Some(snapshot),
         } => {
-            if snapshot.contract != "scorepeek-music-select-best-snapshot-v1" {
+            if snapshot.contract != "scorepeek-music-select-best-snapshot-v2" {
+                return Err(Error::UnsupportedContract);
+            }
+            if !valid_play_side(&snapshot.chart.chart.play_type, &snapshot.chart.play_side) {
                 return Err(Error::UnsupportedContract);
             }
             origin.revision = Some(snapshot.revision);
@@ -598,6 +620,14 @@ fn prepare<'a>(event: &'a Event, origin: &mut Origin) -> Result<Option<Prepared<
         _ => return Ok(None),
     };
     Ok(Some(prepared))
+}
+
+const fn valid_play_side(play_type: &PlayType, play_side: &PlaySideApplicability) -> bool {
+    matches!(
+        (play_type, play_side),
+        (PlayType::Single, PlaySideApplicability::Known(_))
+            | (PlayType::Double, PlaySideApplicability::NotApplicable)
+    )
 }
 
 /// Synchronous database core. The host chooses the path and owns diagnostics.
@@ -672,9 +702,9 @@ impl Store {
     /// Returns unsupported contract, parsing or transaction errors. No partial event is saved.
     pub fn consume(&mut self, bytes: &[u8], received_unix_ms: u64) -> Result<bool, Error> {
         let raw: Value = serde_json::from_slice(bytes)?;
-        validate_v2_envelope(&raw)?;
+        validate_v3_envelope(&raw)?;
         let envelope: Envelope = serde_json::from_slice(bytes)?;
-        if envelope.schema != "scorepeek-event-v2" {
+        if envelope.schema != "scorepeek-event-v3" {
             return Err(Error::UnsupportedContract);
         }
         validate_result_context(&envelope.event, &envelope.capture)?;

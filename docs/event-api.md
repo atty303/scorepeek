@@ -1,8 +1,8 @@
-# Event API v2
+# Event API v3
 
 `scorepeek run` owns the stable Unix socket `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A connection
-receives one UTF-8 NDJSON `scorepeek-event-snapshot-v2` record followed by
-`scorepeek-event-v2` records. There is no request, handshake, subscription message, ACK, retained
+receives one UTF-8 NDJSON `scorepeek-event-snapshot-v3` record followed by
+`scorepeek-event-v3` records. There is no request, handshake, subscription message, ACK, retained
 event log, or second version-named socket.
 
 ## Envelope and identity
@@ -17,8 +17,8 @@ or result-local revision exists. Every state transition has its own envelope eve
 
 | `event` | Additional fields and meaning |
 | --- | --- |
-| `result_changed` | `source_sequence`, `state`. The state is `inactive`, `provisional`, `retracted`, or `confirmed`. Provisional, retracted, and confirmed states carry the same complete `song` and `scorepeek-result-detected-v2` `result` payload; retracted also carries a bounded `reason`. |
-| `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation plus the stable MUSIC SELECT `play_side` (`one_player` or `two_player`). |
+| `result_changed` | `source_sequence`, `state`. The state is `inactive`, `provisional`, `retracted`, or `confirmed`. Provisional, retracted, and confirmed states carry the same complete `song` and `scorepeek-result-detected-v3` `result` payload; retracted also carries a bounded `reason`. `result.play_side` is tagged applicability: SP carries `{"status":"known","value":"one_player"}` or `{"status":"known","value":"two_player"}`, while DP carries `{"status":"not_applicable"}`. The former untagged string is not accepted. |
+| `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation plus applicability-tagged `play_side`: SP carries `known(one_player|two_player)`, while DP carries `not_applicable`. |
 | `music_select_best_observed` | Nullable supplemental SELECT-best snapshot. It is not a play. |
 | `screen_state_changed` | Nullable semantic screen presentation state. |
 | `status_changed` | Current watcher, capture, dependency, recording, and score-store readiness. |
@@ -44,7 +44,7 @@ its corresponding live event and require every live `sequence` to equal `next_se
 and replace local state after a disconnect or gap. `score_store_changed` has no snapshot slot; reread
 the named chart from SQLite.
 
-Unknown additive v2 event kinds and fields may be ignored after envelope and sequence validation.
+Unknown additive v3 event kinds and fields may be ignored after envelope and sequence validation.
 Consumers must reject unknown schema versions. A process restart creates a new invocation and loses
 socket-only state/history; SQLite is the durable play-history authority.
 
@@ -72,4 +72,4 @@ open, an unclosed provisional row is promoted to confirmed with
 recovery provenance but no synthetic old-session socket event. A database-specific lifetime lock
 admits only one score writer, so another live writer's provisional row cannot be mistaken for crash
 residue. Persistence failure is represented by score-store health/status; the removed
-`result_ingest_changed` lifecycle has no v2 replacement.
+`result_ingest_changed` lifecycle has no replacement.

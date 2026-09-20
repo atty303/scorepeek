@@ -1,5 +1,5 @@
 {
-  "schema": "scorepeek-screen-path-layout-v4",
+  "schema": "scorepeek-screen-path-layout-v5",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
   "width": 1920,
   "height": 1080,
@@ -33,6 +33,9 @@
       "middle_row_pixels_max": 64,
       "bottom_edge_pixels_min": 300
     },
-    "bpm_outline_search": { "x": 760, "y": 940, "width": 900, "height": 140 }
+    "bpm_outline_searches": {
+      "left": { "x": 260, "y": 940, "width": 420, "height": 140 },
+      "center_right": { "x": 760, "y": 940, "width": 900, "height": 140 }
+    }
   }
 }

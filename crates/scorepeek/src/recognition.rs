@@ -111,8 +111,8 @@ const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
-const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v1";
-const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v4";
+const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
+const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v5";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
@@ -124,9 +124,9 @@ const MAX_EXTRACTION_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
-const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
-const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v4.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v7.json");
+const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v2.json");
+const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v5.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v8.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 #[cfg(test)]
 const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
@@ -527,6 +527,32 @@ impl Roi {
         }
         Ok(())
     }
+
+    fn translated_x(self, origin_x: u32) -> Result<Self, RecognitionError> {
+        Ok(Self {
+            x: self
+                .x
+                .checked_add(origin_x)
+                .ok_or(RecognitionError::InvalidCanonicalLayout)?,
+            ..self
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResultPanelOrigins {
+    left: u32,
+    right: u32,
+}
+
+impl ResultPanelOrigins {
+    const fn get(self, side: ResultPanelSide) -> u32 {
+        match side {
+            ResultPanelSide::Left => self.left,
+            ResultPanelSide::Right => self.right,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -534,6 +560,7 @@ impl Roi {
 pub struct ResultLayout {
     presence: ResultPresencePredicate,
     pub header: Roi,
+    panel_origins: ResultPanelOrigins,
     pub upper_panel_edge: Roi,
     pub lower_panel_edge: Roi,
     pub title: Roi,
@@ -580,7 +607,14 @@ pub struct DecideTransitionLayout {
 #[serde(deny_unknown_fields)]
 pub struct PlayLayout {
     presence: PlayPresencePredicate,
-    pub bpm_outline_search: Roi,
+    pub bpm_outline_searches: PlayBpmOutlineSearches,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayBpmOutlineSearches {
+    pub left: Roi,
+    pub center_right: Roi,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -661,6 +695,68 @@ pub enum ScreenClass {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScreenCropRoute {
+    Result(ResultPanelSide),
+    MusicSelect,
+}
+
+impl ScreenPredicateObservation {
+    #[must_use]
+    pub const fn crop_route(&self) -> Option<ScreenCropRoute> {
+        match self.screen {
+            ScreenClass::Result => match self.result_presence.panel_side.known() {
+                Some(side) => Some(ScreenCropRoute::Result(side)),
+                None => None,
+            },
+            ScreenClass::MusicSelect => Some(ScreenCropRoute::MusicSelect),
+            ScreenClass::ModeSelect
+            | ScreenClass::DecideTransition
+            | ScreenClass::Play
+            | ScreenClass::Unknown => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPanelSide {
+    #[default]
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPanelSideUnknownReason {
+    NoCandidate,
+    MultipleCandidates,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum ResultPanelSideState {
+    Known(ResultPanelSide),
+    Unknown(ResultPanelSideUnknownReason),
+}
+
+impl ResultPanelSideState {
+    #[must_use]
+    pub const fn known(self) -> Option<ResultPanelSide> {
+        match self {
+            Self::Known(side) => Some(side),
+            Self::Unknown(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayBpmOutlineRegion {
+    Left,
+    CenterRight,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RecognitionSnapshot {
     pub schema: String,
@@ -674,6 +770,23 @@ pub struct RecognitionSnapshot {
     pub music_select_presence: MusicSelectPresenceEvidence,
     pub decide_transition_presence: DecideTransitionPresenceEvidence,
     pub play_presence: PlayPresenceEvidence,
+}
+
+impl RecognitionSnapshot {
+    #[must_use]
+    pub const fn crop_route(&self) -> Option<ScreenCropRoute> {
+        match self.screen {
+            ScreenClass::Result => match self.result_presence.panel_side.known() {
+                Some(side) => Some(ScreenCropRoute::Result(side)),
+                None => None,
+            },
+            ScreenClass::MusicSelect => Some(ScreenCropRoute::MusicSelect),
+            ScreenClass::ModeSelect
+            | ScreenClass::DecideTransition
+            | ScreenClass::Play
+            | ScreenClass::Unknown => None,
+        }
+    }
 }
 
 /// A pure canonical-RGB8 screen-predicate result without capture or extraction provenance.
@@ -873,7 +986,7 @@ impl IntegratedContextLayout {
             .rois()
             .nth(10)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.schema != "scorepeek-integrated-context-layout-v7"
+        if layout.schema != "scorepeek-integrated-context-layout-v8"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
@@ -1157,6 +1270,7 @@ impl Rgb8Crop {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResultScreenRgb8Crops {
     pub canonical_layout_sha256: String,
+    pub panel_side: ResultPanelSide,
     pub title: Rgb8Crop,
     pub artist: Rgb8Crop,
     pub clear_type: Rgb8Crop,
@@ -1492,6 +1606,7 @@ impl ScreenTextField {
 /// Complete result-screen field observations from the currently registered observers.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResultScreenFieldObservations {
+    pub panel_side: ResultPanelSide,
     pub title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
     pub clear_type: DynamicTextObservation,
@@ -1617,6 +1732,7 @@ pub fn observe_screen_fields<E>(
     Ok(match crops {
         ScreenRgb8Crops::Result(crops) => {
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                panel_side: crops.panel_side,
                 title: observe(ScreenTextField::ResultTitle, &crops.title)?,
                 artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
                 clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
@@ -1686,6 +1802,7 @@ pub fn observe_result_fields_with_numeric<E>(
         observe_text(field, crop).map_err(|source| ScreenFieldObservationError::new(field, source))
     };
     Ok(ResultScreenFieldObservations {
+        panel_side: crops.panel_side,
         title: observe(ScreenTextField::ResultTitle, &crops.title)?,
         artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
         clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
@@ -1800,9 +1917,17 @@ struct IntegratedContextDecodeRequestRow<'a> {
 pub struct ResultPresenceEvidence {
     pub warm_pixels: u32,
     pub warm_pixels_min: u32,
+    pub panel_side: ResultPanelSideState,
+    pub panels: [ResultPanelPresenceEvidence; 2],
+    pub horizontal_edge_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct ResultPanelPresenceEvidence {
+    pub panel_side: ResultPanelSide,
     pub upper_panel_edge_pixels: u32,
     pub lower_panel_edge_pixels: u32,
-    pub horizontal_edge_pixels_min: u32,
+    pub qualifies: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1832,6 +1957,13 @@ pub struct DecideTransitionPresenceEvidence {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct PlayPresenceEvidence {
+    pub qualifying_searches: u8,
+    pub searches: [PlayBpmOutlineEvidence; 2],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct PlayBpmOutlineEvidence {
+    pub region: PlayBpmOutlineRegion,
     pub cyan_component_pixels: u32,
     pub cyan_component_pixels_min: u32,
     pub cyan_component_pixels_max: u32,
@@ -1847,6 +1979,7 @@ pub struct PlayPresenceEvidence {
     pub middle_row_pixels_max: u32,
     pub bottom_edge_pixels: u32,
     pub bottom_edge_pixels_min: u32,
+    pub qualifies: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1898,34 +2031,42 @@ impl CanonicalLayout {
         }
         for roi in [
             layout.result.header,
-            layout.result.upper_panel_edge,
-            layout.result.lower_panel_edge,
             layout.result.title,
             layout.result.artist,
-            layout.result.clear_type,
             layout.result.difficulty,
             layout.result.level,
             layout.result.notes,
-            layout.result.current_score,
-            layout.result.previous_clear_type,
-            layout.result.previous_score,
-            layout.result.previous_miss_count,
-            layout.result.miss_count,
-            layout.result.pgreat,
-            layout.result.great,
-            layout.result.good,
-            layout.result.bad,
-            layout.result.poor,
-            layout.result.fast,
-            layout.result.slow,
-            layout.result.combo_break,
-            layout.result.play_options,
             layout.music_select.header,
             layout.music_select.label,
             layout.music_select.level_column,
             layout.music_select.selected_title,
         ] {
             roi.validate(layout.width, layout.height)?;
+        }
+        for side in [ResultPanelSide::Left, ResultPanelSide::Right] {
+            let origin_x = layout.result.panel_origins.get(side);
+            for roi in [
+                layout.result.upper_panel_edge,
+                layout.result.lower_panel_edge,
+                layout.result.clear_type,
+                layout.result.current_score,
+                layout.result.previous_clear_type,
+                layout.result.previous_score,
+                layout.result.previous_miss_count,
+                layout.result.miss_count,
+                layout.result.pgreat,
+                layout.result.great,
+                layout.result.good,
+                layout.result.bad,
+                layout.result.poor,
+                layout.result.fast,
+                layout.result.slow,
+                layout.result.combo_break,
+                layout.result.play_options,
+            ] {
+                roi.translated_x(origin_x)?
+                    .validate(layout.width, layout.height)?;
+            }
         }
         for roi in layout.music_select.list_titles.rois() {
             roi.validate(layout.width, layout.height)?;
@@ -1939,6 +2080,8 @@ impl CanonicalLayout {
         if layout.result.presence.warm_pixels_min == 0
             || layout.result.presence.horizontal_edge_pixels_min == 0
             || layout.result.presence.warm_pixels_min > header_pixels
+            || layout.result.panel_origins.left != 0
+            || layout.result.panel_origins.right != 1_360
             || layout.result.upper_panel_edge.height != 2
             || layout.result.lower_panel_edge.height != 2
             || layout.result.presence.horizontal_edge_pixels_min
@@ -2052,7 +2195,8 @@ impl ScreenPathLayout {
         for roi in [
             layout.music_select_reference.search_roi,
             layout.decide_transition.splash,
-            layout.play.bpm_outline_search,
+            layout.play.bpm_outline_searches.left,
+            layout.play.bpm_outline_searches.center_right,
         ] {
             roi.validate(layout.width, layout.height)?;
         }
@@ -2077,12 +2221,6 @@ impl ScreenPathLayout {
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
-        let bpm_search_pixels = layout
-            .play
-            .bpm_outline_search
-            .width
-            .checked_mul(layout.play.bpm_outline_search.height)
-            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
         let play = layout.play.presence;
         if layout.decide_transition.presence.cyan_pixels_min == 0
             || layout.decide_transition.presence.bright_pixels_min == 0
@@ -2090,16 +2228,12 @@ impl ScreenPathLayout {
             || layout.decide_transition.presence.cyan_pixels_min > decide_pixels
             || layout.decide_transition.presence.bright_pixels_min > decide_pixels
             || layout.decide_transition.presence.saturated_pixels_min > decide_pixels
-            || bpm_search_pixels > 128_000
             || play.cyan_component_pixels_min == 0
             || play.cyan_component_pixels_min > play.cyan_component_pixels_max
-            || play.cyan_component_pixels_max > bpm_search_pixels
             || play.outline_width_min == 0
             || play.outline_width_min > play.outline_width_max
-            || play.outline_width_max > layout.play.bpm_outline_search.width
             || play.outline_height_min == 0
             || play.outline_height_min > play.outline_height_max
-            || play.outline_height_max > layout.play.bpm_outline_search.height
             || play.top_edge_pixels_min == 0
             || play.top_edge_pixels_min > play.outline_width_max
             || play.middle_row_pixels_max >= play.outline_width_min
@@ -2107,6 +2241,22 @@ impl ScreenPathLayout {
             || play.bottom_edge_pixels_min > play.outline_width_max
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
+        }
+        for roi in [
+            layout.play.bpm_outline_searches.left,
+            layout.play.bpm_outline_searches.center_right,
+        ] {
+            let pixels = roi
+                .width
+                .checked_mul(roi.height)
+                .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+            if pixels > 128_000
+                || play.cyan_component_pixels_max > pixels
+                || play.outline_width_max > roi.width
+                || play.outline_height_max > roi.height
+            {
+                return Err(RecognitionError::InvalidCanonicalLayout);
+            }
         }
         Ok(layout)
     }
@@ -2224,6 +2374,57 @@ fn measure_bpm_outline(
     best_match.unwrap_or(best_any)
 }
 
+fn result_panel_presence(
+    pixels: &[u8],
+    layout: &ResultLayout,
+    side: ResultPanelSide,
+) -> Result<ResultPanelPresenceEvidence, RecognitionError> {
+    let origin_x = layout.panel_origins.get(side);
+    let upper_panel_edge_pixels = horizontal_edge_pixels(
+        &crop_canonical_pixels(pixels, layout.upper_panel_edge.translated_x(origin_x)?)?,
+        layout.upper_panel_edge.width,
+    );
+    let lower_panel_edge_pixels = horizontal_edge_pixels(
+        &crop_canonical_pixels(pixels, layout.lower_panel_edge.translated_x(origin_x)?)?,
+        layout.lower_panel_edge.width,
+    );
+    Ok(ResultPanelPresenceEvidence {
+        panel_side: side,
+        upper_panel_edge_pixels,
+        lower_panel_edge_pixels,
+        qualifies: upper_panel_edge_pixels >= layout.presence.horizontal_edge_pixels_min
+            && lower_panel_edge_pixels >= layout.presence.horizontal_edge_pixels_min,
+    })
+}
+
+fn play_bpm_outline_evidence(
+    pixels: &[u8],
+    region: PlayBpmOutlineRegion,
+    roi: Roi,
+    predicate: PlayPresencePredicate,
+) -> PlayBpmOutlineEvidence {
+    let measurement = measure_bpm_outline(pixels, roi, predicate);
+    PlayBpmOutlineEvidence {
+        region,
+        cyan_component_pixels: measurement.cyan_component_pixels,
+        cyan_component_pixels_min: predicate.cyan_component_pixels_min,
+        cyan_component_pixels_max: predicate.cyan_component_pixels_max,
+        outline_width: measurement.width,
+        outline_width_min: predicate.outline_width_min,
+        outline_width_max: predicate.outline_width_max,
+        outline_height: measurement.height,
+        outline_height_min: predicate.outline_height_min,
+        outline_height_max: predicate.outline_height_max,
+        top_edge_pixels: measurement.top_edge_pixels,
+        top_edge_pixels_min: predicate.top_edge_pixels_min,
+        middle_row_pixels: measurement.middle_row_pixels,
+        middle_row_pixels_max: predicate.middle_row_pixels_max,
+        bottom_edge_pixels: measurement.bottom_edge_pixels,
+        bottom_edge_pixels_min: predicate.bottom_edge_pixels_min,
+        qualifies: measurement.matches(predicate),
+    }
+}
+
 /// Inspects one canonical frame without accepting an observed-frame representation.
 ///
 /// # Errors
@@ -2274,14 +2475,24 @@ pub fn inspect_canonical_rgb8(
             warm += 1;
         }
     }
-    let upper_panel_edge_pixels = horizontal_edge_pixels(
-        &crop_canonical_pixels(pixels, layout.result.upper_panel_edge)?,
-        layout.result.upper_panel_edge.width,
-    );
-    let lower_panel_edge_pixels = horizontal_edge_pixels(
-        &crop_canonical_pixels(pixels, layout.result.lower_panel_edge)?,
-        layout.result.lower_panel_edge.width,
-    );
+    let result_panels: [ResultPanelPresenceEvidence; 2] =
+        [ResultPanelSide::Left, ResultPanelSide::Right]
+            .map(|side| result_panel_presence(pixels, &layout.result, side))
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .expect("the fixed result panel list has two entries");
+    let qualifying_result_panels = result_panels
+        .iter()
+        .filter(|panel| panel.qualifies)
+        .collect::<Vec<_>>();
+    let result_panel_side = match qualifying_result_panels.as_slice() {
+        [panel] => ResultPanelSideState::Known(panel.panel_side),
+        [] => ResultPanelSideState::Unknown(ResultPanelSideUnknownReason::NoCandidate),
+        [_, _, ..] => {
+            ResultPanelSideState::Unknown(ResultPanelSideUnknownReason::MultipleCandidates)
+        }
+    };
     let music_header = crop_canonical_pixels(pixels, layout.music_select.header)?;
     let cyan_header_pixels = music_header
         .chunks_exact(3)
@@ -2321,13 +2532,25 @@ pub fn inspect_canonical_rgb8(
             decide_saturated_pixels += 1;
         }
     }
-    let bpm_outline = measure_bpm_outline(
-        pixels,
-        screen_path_layout.play.bpm_outline_search,
-        screen_path_layout.play.presence,
-    );
-    let result_present = warm >= layout.result.presence.warm_pixels_min
-        && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
+    let bpm_outlines = [
+        (
+            PlayBpmOutlineRegion::Left,
+            screen_path_layout.play.bpm_outline_searches.left,
+        ),
+        (
+            PlayBpmOutlineRegion::CenterRight,
+            screen_path_layout.play.bpm_outline_searches.center_right,
+        ),
+    ]
+    .map(|(region, roi)| {
+        play_bpm_outline_evidence(pixels, region, roi, screen_path_layout.play.presence)
+    });
+    let qualifying_bpm_outlines = bpm_outlines
+        .iter()
+        .filter(|outline| outline.qualifies)
+        .count();
+    let result_present =
+        warm >= layout.result.presence.warm_pixels_min && result_panel_side.known().is_some();
     let aggregate_music_select_present = cyan_header_pixels
         >= layout.music_select.presence.cyan_header_pixels_min
         && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min
@@ -2377,7 +2600,7 @@ pub fn inspect_canonical_rgb8(
                 .decide_transition
                 .presence
                 .saturated_pixels_min;
-    let play_present = bpm_outline.matches(screen_path_layout.play.presence);
+    let play_present = qualifying_bpm_outlines == 1;
     let screen = match [
         (result_present, ScreenClass::Result),
         (music_select_present, ScreenClass::MusicSelect),
@@ -2399,8 +2622,8 @@ pub fn inspect_canonical_rgb8(
         result_presence: ResultPresenceEvidence {
             warm_pixels: warm,
             warm_pixels_min: layout.result.presence.warm_pixels_min,
-            upper_panel_edge_pixels,
-            lower_panel_edge_pixels,
+            panel_side: result_panel_side,
+            panels: result_panels,
             horizontal_edge_pixels_min: layout.result.presence.horizontal_edge_pixels_min,
         },
         music_select_presence: MusicSelectPresenceEvidence {
@@ -2437,21 +2660,9 @@ pub fn inspect_canonical_rgb8(
                 .saturated_pixels_min,
         },
         play_presence: PlayPresenceEvidence {
-            cyan_component_pixels: bpm_outline.cyan_component_pixels,
-            cyan_component_pixels_min: screen_path_layout.play.presence.cyan_component_pixels_min,
-            cyan_component_pixels_max: screen_path_layout.play.presence.cyan_component_pixels_max,
-            outline_width: bpm_outline.width,
-            outline_width_min: screen_path_layout.play.presence.outline_width_min,
-            outline_width_max: screen_path_layout.play.presence.outline_width_max,
-            outline_height: bpm_outline.height,
-            outline_height_min: screen_path_layout.play.presence.outline_height_min,
-            outline_height_max: screen_path_layout.play.presence.outline_height_max,
-            top_edge_pixels: bpm_outline.top_edge_pixels,
-            top_edge_pixels_min: screen_path_layout.play.presence.top_edge_pixels_min,
-            middle_row_pixels: bpm_outline.middle_row_pixels,
-            middle_row_pixels_max: screen_path_layout.play.presence.middle_row_pixels_max,
-            bottom_edge_pixels: bpm_outline.bottom_edge_pixels,
-            bottom_edge_pixels_min: screen_path_layout.play.presence.bottom_edge_pixels_min,
+            qualifying_searches: u8::try_from(qualifying_bpm_outlines)
+                .expect("the fixed BPM search list has two entries"),
+            searches: bpm_outlines,
         },
     })
 }
@@ -2570,7 +2781,12 @@ pub fn export_result_crops(
     let output = output.as_ref();
     fs::create_dir(output)?;
 
-    let ScreenRgb8Crops::Result(routed) = route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?
+    let ScreenRgb8Crops::Result(routed) = route_screen_rgb8_crops(
+        frame.pixels(),
+        snapshot
+            .crop_route()
+            .ok_or(RecognitionError::NotResultScreen)?,
+    )?
     else {
         return Err(RecognitionError::NotResultScreen);
     };
@@ -2633,8 +2849,12 @@ pub fn export_music_select_crops(
     let output = output.as_ref();
     fs::create_dir(output)?;
 
-    let ScreenRgb8Crops::MusicSelect(routed) =
-        route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?
+    let ScreenRgb8Crops::MusicSelect(routed) = route_screen_rgb8_crops(
+        frame.pixels(),
+        snapshot
+            .crop_route()
+            .ok_or(RecognitionError::NotMusicSelectScreen)?,
+    )?
     else {
         return Err(RecognitionError::NotMusicSelectScreen);
     };
@@ -2709,7 +2929,12 @@ pub fn export_integrated_context_crops(
         return Err(RecognitionError::InvalidCanonicalFrame);
     }
     let snapshot = inspect(frame)?;
-    let routed = route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?;
+    let routed = route_screen_rgb8_crops(
+        frame.pixels(),
+        snapshot
+            .crop_route()
+            .ok_or(RecognitionError::InvalidCanonicalFrame)?,
+    )?;
     let output = output.as_ref();
     fs::create_dir(output)?;
     let (integrated_context_layout_sha256, selections) = match routed {
@@ -2795,7 +3020,7 @@ pub fn export_integrated_context_crops(
 /// Returns an error for an unknown screen, invalid canonical pixels, or layout drift.
 pub fn route_screen_rgb8_crops(
     pixels: &[u8],
-    screen: ScreenClass,
+    route: ScreenCropRoute,
 ) -> Result<ScreenRgb8Crops, RecognitionError> {
     fn crop(pixels: &[u8], roi: Roi) -> Result<Rgb8Crop, RecognitionError> {
         Ok(Rgb8Crop {
@@ -2806,55 +3031,61 @@ pub fn route_screen_rgb8_crops(
 
     let canonical = CanonicalLayout::load()?;
     let context = IntegratedContextLayout::load()?;
-    match screen {
-        ScreenClass::Result => Ok(ScreenRgb8Crops::Result(ResultScreenRgb8Crops {
-            canonical_layout_sha256: CanonicalLayout::sha256(),
-            title: crop(pixels, canonical.result.title)?,
-            artist: crop(pixels, context.result.artist)?,
-            clear_type: crop(pixels, canonical.result.clear_type)?,
-            difficulty: crop(pixels, canonical.result.difficulty)?,
-            play_type: crop(pixels, context.result.play_type)?,
-            level: crop(pixels, canonical.result.level)?,
-            notes: crop(pixels, canonical.result.notes)?,
-            current_score: crop(pixels, canonical.result.current_score)?,
-            previous_clear_type: crop(pixels, canonical.result.previous_clear_type)?,
-            previous_score: crop(pixels, canonical.result.previous_score)?,
-            previous_miss_count: crop(pixels, canonical.result.previous_miss_count)?,
-            miss_count: crop(pixels, canonical.result.miss_count)?,
-            pgreat: crop(pixels, canonical.result.pgreat)?,
-            great: crop(pixels, canonical.result.great)?,
-            good: crop(pixels, canonical.result.good)?,
-            bad: crop(pixels, canonical.result.bad)?,
-            poor: crop(pixels, canonical.result.poor)?,
-            fast: crop(pixels, canonical.result.fast)?,
-            slow: crop(pixels, canonical.result.slow)?,
-            combo_break: crop(pixels, canonical.result.combo_break)?,
-            play_options: crop(pixels, canonical.result.play_options)?,
-        })),
-        ScreenClass::MusicSelect => Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
-            best: MusicSelectBestCrops::extract(pixels)?,
-            canonical_layout_sha256: CanonicalLayout::sha256(),
-            integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
-            central_title: crop(pixels, canonical.music_select.selected_title)?,
-            artist: crop(pixels, context.music_select.artist)?,
-            play_type: crop(pixels, context.music_select.play_type.roi)?,
-            difficulty_markers: MusicSelectDifficultyMarkerCrops {
-                beginner: crop(pixels, context.music_select.selected_difficulty.beginner)?,
-                normal: crop(pixels, context.music_select.selected_difficulty.normal)?,
-                hyper: crop(pixels, context.music_select.selected_difficulty.hyper)?,
-                another: crop(pixels, context.music_select.selected_difficulty.another)?,
-                leggendaria: crop(pixels, context.music_select.selected_difficulty.leggendaria)?,
-            },
-            play_side: MusicSelectPlaySideCrops {
-                one_player: crop(pixels, context.music_select.play_side.one_player)?,
-                two_player: crop(pixels, context.music_select.play_side.two_player)?,
-            },
-            active_list_title: crop(pixels, context.music_select.active_list_title)?,
-        })),
-        ScreenClass::ModeSelect
-        | ScreenClass::DecideTransition
-        | ScreenClass::Play
-        | ScreenClass::Unknown => Err(RecognitionError::InvalidCanonicalFrame),
+    match route {
+        ScreenCropRoute::Result(panel_side) => {
+            let origin_x = canonical.result.panel_origins.get(panel_side);
+            let panel = |roi: Roi| roi.translated_x(origin_x);
+            Ok(ScreenRgb8Crops::Result(ResultScreenRgb8Crops {
+                canonical_layout_sha256: CanonicalLayout::sha256(),
+                panel_side,
+                title: crop(pixels, canonical.result.title)?,
+                artist: crop(pixels, context.result.artist)?,
+                clear_type: crop(pixels, panel(canonical.result.clear_type)?)?,
+                difficulty: crop(pixels, canonical.result.difficulty)?,
+                play_type: crop(pixels, context.result.play_type)?,
+                level: crop(pixels, canonical.result.level)?,
+                notes: crop(pixels, canonical.result.notes)?,
+                current_score: crop(pixels, panel(canonical.result.current_score)?)?,
+                previous_clear_type: crop(pixels, panel(canonical.result.previous_clear_type)?)?,
+                previous_score: crop(pixels, panel(canonical.result.previous_score)?)?,
+                previous_miss_count: crop(pixels, panel(canonical.result.previous_miss_count)?)?,
+                miss_count: crop(pixels, panel(canonical.result.miss_count)?)?,
+                pgreat: crop(pixels, panel(canonical.result.pgreat)?)?,
+                great: crop(pixels, panel(canonical.result.great)?)?,
+                good: crop(pixels, panel(canonical.result.good)?)?,
+                bad: crop(pixels, panel(canonical.result.bad)?)?,
+                poor: crop(pixels, panel(canonical.result.poor)?)?,
+                fast: crop(pixels, panel(canonical.result.fast)?)?,
+                slow: crop(pixels, panel(canonical.result.slow)?)?,
+                combo_break: crop(pixels, panel(canonical.result.combo_break)?)?,
+                play_options: crop(pixels, panel(canonical.result.play_options)?)?,
+            }))
+        }
+        ScreenCropRoute::MusicSelect => {
+            Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
+                best: MusicSelectBestCrops::extract(pixels)?,
+                canonical_layout_sha256: CanonicalLayout::sha256(),
+                integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
+                central_title: crop(pixels, canonical.music_select.selected_title)?,
+                artist: crop(pixels, context.music_select.artist)?,
+                play_type: crop(pixels, context.music_select.play_type.roi)?,
+                difficulty_markers: MusicSelectDifficultyMarkerCrops {
+                    beginner: crop(pixels, context.music_select.selected_difficulty.beginner)?,
+                    normal: crop(pixels, context.music_select.selected_difficulty.normal)?,
+                    hyper: crop(pixels, context.music_select.selected_difficulty.hyper)?,
+                    another: crop(pixels, context.music_select.selected_difficulty.another)?,
+                    leggendaria: crop(
+                        pixels,
+                        context.music_select.selected_difficulty.leggendaria,
+                    )?,
+                },
+                play_side: MusicSelectPlaySideCrops {
+                    one_player: crop(pixels, context.music_select.play_side.one_player)?,
+                    two_player: crop(pixels, context.music_select.play_side.two_player)?,
+                },
+                active_list_title: crop(pixels, context.music_select.active_list_title)?,
+            }))
+        }
     }
 }
 
@@ -3451,6 +3682,14 @@ mod tests {
     }
 
     fn paint_result_presence(pixels: &mut [u8], layout: &CanonicalLayout) {
+        paint_result_presence_on(pixels, layout, ResultPanelSide::Left);
+    }
+
+    fn paint_result_presence_on(
+        pixels: &mut [u8],
+        layout: &CanonicalLayout,
+        side: ResultPanelSide,
+    ) {
         for index in 0..layout.result.presence.warm_pixels_min as usize {
             let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
             let y = layout.result.header.y as usize + index / layout.result.header.width as usize;
@@ -3460,6 +3699,9 @@ mod tests {
             layout.result.upper_panel_edge,
             layout.result.lower_panel_edge,
         ] {
+            let edge = edge
+                .translated_x(layout.result.panel_origins.get(side))
+                .unwrap();
             for x in 0..layout.result.presence.horizontal_edge_pixels_min as usize {
                 let upper = (edge.y as usize * CANONICAL_WIDTH as usize + edge.x as usize + x) * 3;
                 let lower = upper + CANONICAL_WIDTH as usize * 3;
@@ -3501,7 +3743,7 @@ mod tests {
     }
 
     fn paint_play_presence(pixels: &mut [u8], layout: &ScreenPathLayout) {
-        let roi = layout.play.bpm_outline_search;
+        let roi = layout.play.bpm_outline_searches.center_right;
         paint_play_outline(pixels, roi.x as usize + 60, roi.y as usize + 20);
     }
 
@@ -3696,8 +3938,11 @@ mod tests {
 
     #[test]
     fn screen_field_observations_keep_complete_screen_specific_shapes() {
-        let result_crops =
-            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::Result).unwrap();
+        let result_crops = route_screen_rgb8_crops(
+            &vec![0; CANONICAL_BYTES],
+            ScreenCropRoute::Result(ResultPanelSide::Left),
+        )
+        .unwrap();
         let mut result_calls = 0;
         let result = observe_screen_fields(&result_crops, |_, crop| {
             result_calls += 1;
@@ -3735,7 +3980,8 @@ mod tests {
         assert_eq!(result.combo_break.open_text, "result-20");
 
         let music_crops =
-            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::MusicSelect).unwrap();
+            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenCropRoute::MusicSelect)
+                .unwrap();
         let mut music_calls = 0;
         let music = observe_screen_fields(&music_crops, |_, crop| {
             music_calls += 1;
@@ -3762,6 +4008,55 @@ mod tests {
             MusicSelectPlaySideState::Unknown(MusicSelectPlaySideUnknownReason::NoCandidate)
         );
         assert_eq!(music.active_list_title.open_text, "music-3");
+    }
+
+    #[test]
+    fn result_crop_router_translates_only_panel_local_fields() {
+        let pixels = vec![0; CANONICAL_BYTES];
+        let ScreenRgb8Crops::Result(left) =
+            route_screen_rgb8_crops(&pixels, ScreenCropRoute::Result(ResultPanelSide::Left))
+                .unwrap()
+        else {
+            unreachable!();
+        };
+        let ScreenRgb8Crops::Result(right) =
+            route_screen_rgb8_crops(&pixels, ScreenCropRoute::Result(ResultPanelSide::Right))
+                .unwrap()
+        else {
+            unreachable!();
+        };
+        for (left, right) in [
+            (&left.title, &right.title),
+            (&left.artist, &right.artist),
+            (&left.difficulty, &right.difficulty),
+            (&left.play_type, &right.play_type),
+            (&left.level, &right.level),
+            (&left.notes, &right.notes),
+        ] {
+            assert_eq!(left.roi, right.roi);
+        }
+        for (left, right) in [
+            (&left.clear_type, &right.clear_type),
+            (&left.current_score, &right.current_score),
+            (&left.previous_clear_type, &right.previous_clear_type),
+            (&left.previous_score, &right.previous_score),
+            (&left.previous_miss_count, &right.previous_miss_count),
+            (&left.miss_count, &right.miss_count),
+            (&left.pgreat, &right.pgreat),
+            (&left.great, &right.great),
+            (&left.good, &right.good),
+            (&left.bad, &right.bad),
+            (&left.poor, &right.poor),
+            (&left.fast, &right.fast),
+            (&left.slow, &right.slow),
+            (&left.combo_break, &right.combo_break),
+            (&left.play_options, &right.play_options),
+        ] {
+            assert_eq!(right.roi.x, left.roi.x + 1_360);
+            assert_eq!(right.roi.y, left.roi.y);
+            assert_eq!(right.roi.width, left.roi.width);
+            assert_eq!(right.roi.height, left.roi.height);
+        }
     }
 
     fn side_crop(bright_pixels: usize) -> Rgb8Crop {
@@ -3909,8 +4204,11 @@ mod tests {
 
     #[test]
     fn failed_text_field_does_not_construct_a_partial_screen_observation() {
-        let crops =
-            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::Result).unwrap();
+        let crops = route_screen_rgb8_crops(
+            &vec![0; CANONICAL_BYTES],
+            ScreenCropRoute::Result(ResultPanelSide::Left),
+        )
+        .unwrap();
         let mut calls = 0;
         let error = observe_screen_fields(&crops, |_, _| {
             calls += 1;
@@ -3980,8 +4278,36 @@ mod tests {
         let snapshot = inspect(&frame).unwrap();
         assert_eq!(snapshot.screen, ScreenClass::Result);
         assert_eq!(snapshot.result_presence.warm_pixels, 3_000);
-        assert_eq!(snapshot.result_presence.upper_panel_edge_pixels, 518);
-        assert_eq!(snapshot.result_presence.lower_panel_edge_pixels, 518);
+        assert_eq!(
+            snapshot.result_presence.panel_side.known(),
+            Some(ResultPanelSide::Left)
+        );
+        assert_eq!(
+            snapshot.result_presence.panels[0].upper_panel_edge_pixels,
+            518
+        );
+        assert_eq!(
+            snapshot.result_presence.panels[0].lower_panel_edge_pixels,
+            518
+        );
+
+        let mut right = vec![0_u8; CANONICAL_BYTES];
+        paint_result_presence_on(&mut right, &layout, ResultPanelSide::Right);
+        let right = inspect(&test_frame(right)).unwrap();
+        assert_eq!(right.screen, ScreenClass::Result);
+        assert_eq!(
+            right.result_presence.panel_side.known(),
+            Some(ResultPanelSide::Right)
+        );
+
+        let mut both = frame.pixels.to_vec();
+        paint_result_presence_on(&mut both, &layout, ResultPanelSide::Right);
+        let both = inspect(&test_frame(both)).unwrap();
+        assert_eq!(both.screen, ScreenClass::Unknown);
+        assert_eq!(
+            both.result_presence.panel_side,
+            ResultPanelSideState::Unknown(ResultPanelSideUnknownReason::MultipleCandidates)
+        );
 
         let empty = test_frame(vec![0_u8; CANONICAL_BYTES]);
         assert_eq!(inspect(&empty).unwrap().screen, ScreenClass::Unknown);
@@ -4050,15 +4376,22 @@ mod tests {
         paint_play_presence(&mut play, &layout);
         let play = inspect(&test_frame(play)).unwrap();
         assert_eq!(play.screen, ScreenClass::Play);
-        assert!(play.play_presence.cyan_component_pixels >= 4_000);
-        assert!((330..=380).contains(&play.play_presence.outline_width));
-        assert!((68..=72).contains(&play.play_presence.outline_height));
-        assert!(play.play_presence.top_edge_pixels >= 280);
-        assert!(play.play_presence.middle_row_pixels <= 64);
-        assert!(play.play_presence.bottom_edge_pixels >= 300);
+        assert_eq!(play.play_presence.qualifying_searches, 1);
+        let outline = play
+            .play_presence
+            .searches
+            .iter()
+            .find(|outline| outline.qualifies)
+            .unwrap();
+        assert!(outline.cyan_component_pixels >= 4_000);
+        assert!((330..=380).contains(&outline.outline_width));
+        assert!((68..=72).contains(&outline.outline_height));
+        assert!(outline.top_edge_pixels >= 280);
+        assert!(outline.middle_row_pixels <= 64);
+        assert!(outline.bottom_edge_pixels >= 300);
 
         let mut color_area_only = vec![0_u8; CANONICAL_BYTES];
-        let roi = layout.play.bpm_outline_search;
+        let roi = layout.play.bpm_outline_searches.center_right;
         for y in 0..20_usize {
             for x in 0..220_usize {
                 let index =
@@ -4108,9 +4441,9 @@ mod tests {
     }
 
     #[test]
-    fn bpm_outline_accepts_both_sp_graph_positions_and_rejects_solid_panels() {
+    fn bpm_outline_accepts_left_and_center_right_positions_and_rejects_solid_panels() {
         // Positions measured independently from canonical captures, not derived from the ROI.
-        for origin_x in [866, 1283] {
+        for origin_x in [298, 866, 1283] {
             let mut pixels = vec![0_u8; CANONICAL_BYTES];
             paint_play_outline(&mut pixels, origin_x, 952);
             assert_eq!(
@@ -4133,6 +4466,16 @@ mod tests {
     }
 
     #[test]
+    fn bpm_outline_rejects_simultaneous_left_and_center_right_candidates() {
+        let mut pixels = vec![0_u8; CANONICAL_BYTES];
+        paint_play_outline(&mut pixels, 298, 952);
+        paint_play_outline(&mut pixels, 866, 952);
+        let observation = inspect(&test_frame(pixels)).unwrap();
+        assert_eq!(observation.screen, ScreenClass::Unknown);
+        assert_eq!(observation.play_presence.qualifying_searches, 2);
+    }
+
+    #[test]
     fn bpm_outline_ignores_loading_and_variable_tempo_interior() {
         let layout = ScreenPathLayout::load().unwrap();
         let mut loading = vec![0_u8; CANONICAL_BYTES];
@@ -4142,7 +4485,7 @@ mod tests {
             ScreenClass::Play
         );
 
-        let roi = layout.play.bpm_outline_search;
+        let roi = layout.play.bpm_outline_searches.center_right;
         let mut variable_tempo = loading;
         for (x, width) in [(105_u32, 28_u32), (185, 45), (275, 28)] {
             for y in 47..57_u32 {

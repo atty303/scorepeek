@@ -26,7 +26,7 @@ from scorepeek_ocr.model_store import (
 MAX_CROP_MANIFEST_BYTES = 64 * 1024
 MAX_LAYOUT_BYTES = 64 * 1024
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-CANONICAL_LAYOUT_PATH = PROJECT_ROOT / "crates" / "scorepeek" / "src" / "canonical-layout-v1.json"
+CANONICAL_LAYOUT_PATH = PROJECT_ROOT / "crates" / "scorepeek" / "src" / "canonical-layout-v2.json"
 CALIBRATED_NORMALIZER_SHA256 = (
     "0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf"
 )
@@ -91,7 +91,7 @@ def load_layout_contract(
         "canonical layout",
     )
     if (
-        raw["schema"] != "scorepeek-canonical-layout-v1"
+        raw["schema"] != "scorepeek-canonical-layout-v2"
         or raw["canonical_frame_contract_id"]
         != "scorepeek-canonical-rgb8-1920x1080-v1"
         or raw["width"] != 1920
@@ -103,6 +103,7 @@ def load_layout_contract(
         {
             "presence",
             "header",
+            "panel_origins",
             "upper_panel_edge",
             "lower_panel_edge",
             "title",
@@ -155,6 +156,11 @@ def load_layout_contract(
         {"warm_pixels_min", "horizontal_edge_pixels_min"},
         "result presence predicate",
     )
+    panel_origins = _exact_object(
+        result["panel_origins"], {"left", "right"}, "result panel origins"
+    )
+    if panel_origins != {"left": 0, "right": 1360}:
+        raise SpikeError("canonical result panel origins are invalid")
     for field in ("header", "upper_panel_edge", "lower_panel_edge"):
         roi = _exact_object(
             result[field], {"x", "y", "width", "height"}, f"{field} ROI"

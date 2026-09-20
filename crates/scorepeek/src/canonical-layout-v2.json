@@ -1,11 +1,12 @@
 {
-  "schema": "scorepeek-canonical-layout-v1",
+  "schema": "scorepeek-canonical-layout-v2",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
   "width": 1920,
   "height": 1080,
   "result": {
     "presence": { "warm_pixels_min": 3000, "horizontal_edge_pixels_min": 518 },
     "header": { "x": 600, "y": 0, "width": 720, "height": 80 },
+    "panel_origins": { "left": 0, "right": 1360 },
     "upper_panel_edge": { "x": 0, "y": 450, "width": 560, "height": 2 },
     "lower_panel_edge": { "x": 0, "y": 654, "width": 560, "height": 2 },
     "title": { "x": 660, "y": 950, "width": 600, "height": 50 },

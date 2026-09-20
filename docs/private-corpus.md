@@ -162,7 +162,7 @@ always follows the available-parallelism-minus-four policy capped at twelve work
 operator explicitly supplies `--text-workers`; a one-worker comparison uses `--text-workers 1`.
 
 For every accepted label, replay requires exactly one ordered
-`scorepeek-result-detected-v2` event with equal semantic payload, ordered play options, and normalized
+`scorepeek-result-detected-v3` event with equal semantic payload, ordered play options, and normalized
 parent relation. The runtime session ID, runtime attempt IDs, emission tick, and diagnostic metadata
 are not truth. Missing, duplicate, extra, payload-different, play-option-order-different, and
 parent-different events fail replay. Non-accepted outcomes require no event.
@@ -176,7 +176,7 @@ starts the normalizer; FFmpeg is used only to decode the already-canonical lossl
 SELECT best replay uses the same production observer and reducer. Per-session replay summaries
 include `music_select_best_snapshots`; these never enter the accepted-result oracle. The current
 field semantics and snapshot authority are defined in
-[field semantics](field-semantics.md) and [Event API v2](event-api.md).
+[field semantics](field-semantics.md) and [Event API v3](event-api.md).
 
 ## SELECT event traces
 

@@ -33,7 +33,8 @@ use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
     ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
     PlaySide, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
-    ResultPerformanceResolution, ResultTiming, SupplementalResultValue, resolve_result_performance,
+    ResultPanelSide, ResultPerformanceResolution, ResultTiming, SupplementalResultValue,
+    resolve_result_performance,
 };
 use scorepeek::temporal_recognition::{
     MusicSelectTemporalState, MusicSelectTemporalTransitionReason, ResultTemporalState,
@@ -50,7 +51,7 @@ const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
 const SOCKET_NAME: &str = "events.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v13";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v14";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -124,6 +125,8 @@ pub enum RunEventKind {
         monotonic_end_ms: u64,
         screen: String,
         #[serde(skip_serializing_if = "Option::is_none")]
+        result_panel_side: Option<ResultPanelSide>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         unknown_reason: Option<String>,
     },
     SemanticScreenEpisodeChanged {
@@ -189,6 +192,26 @@ pub enum RunEventKind {
         capture_generation: u64,
         source_sequence: u64,
         state: ResultState,
+    },
+    ResultPanelSideChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        state: ResultPanelSideEpisodeState,
+        reason: ResultPanelSideTransitionReason,
+    },
+    ResultSelectContextMismatch {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        select_play_side: PlaySide,
+        result_play_side: PlaySide,
     },
     MusicSelectionChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -334,6 +357,41 @@ pub enum NumericResultTransitionReason {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum PlaySideApplicability {
+    Known(PlaySide),
+    NotApplicable,
+}
+
+impl std::fmt::Display for PlaySideApplicability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Known(PlaySide::OnePlayer) => "1P",
+            Self::Known(PlaySide::TwoPlayer) => "2P",
+            Self::NotApplicable => "N/A",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ResultPanelSideEpisodeState {
+    Pending,
+    Stable { side: ResultPanelSide },
+    Conflicted { stable_side: ResultPanelSide },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPanelSideTransitionReason {
+    CandidateStarted,
+    CandidateRepeated,
+    Accepted,
+    OppositeObserved,
+    Conflict,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NumericResultEventSuppressionReason {
     NumericNotAccepted,
@@ -352,7 +410,7 @@ pub struct ResultDomainEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_attempt_id: Option<u64>,
     pub scorepeek_song_id: ScorepeekSongId,
-    pub play_side: String,
+    pub play_side: PlaySideApplicability,
     pub play_mode: String,
     pub play_type: PlayType,
     pub difficulty: Difficulty,
@@ -372,6 +430,7 @@ pub struct ResultDomainEvent {
 #[serde(rename_all = "snake_case")]
 pub enum ResultRetractionReason {
     EvidenceUnresolved,
+    PanelSideConflict,
     AttemptRejected,
     SessionEnded,
 }
@@ -480,6 +539,85 @@ impl PlayOptionsEpisodeAccumulator {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct ResultPanelSideAccumulator {
+    episode_id: Option<u64>,
+    observations: BTreeMap<ResultPanelSide, u8>,
+    stable: Option<ResultPanelSide>,
+    opposite_observations: u8,
+    last_sequence: Option<u64>,
+    conflicted: bool,
+}
+
+impl ResultPanelSideAccumulator {
+    fn start_episode(&mut self, episode_id: u64) {
+        if self.episode_id != Some(episode_id) {
+            *self = Self {
+                episode_id: Some(episode_id),
+                ..Self::default()
+            };
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    const fn stable(&self) -> Option<ResultPanelSide> {
+        if self.conflicted { None } else { self.stable }
+    }
+
+    fn observe(
+        &mut self,
+        episode_id: u64,
+        sequence: u64,
+        side: ResultPanelSide,
+    ) -> Option<(ResultPanelSideEpisodeState, ResultPanelSideTransitionReason)> {
+        self.start_episode(episode_id);
+        if self.conflicted || self.last_sequence.is_some_and(|last| sequence <= last) {
+            return None;
+        }
+        self.last_sequence = Some(sequence);
+        if let Some(stable) = self.stable {
+            if side == stable {
+                return None;
+            }
+            self.opposite_observations = self.opposite_observations.saturating_add(1);
+            if self.opposite_observations >= 2 {
+                self.conflicted = true;
+                return Some((
+                    ResultPanelSideEpisodeState::Conflicted {
+                        stable_side: stable,
+                    },
+                    ResultPanelSideTransitionReason::Conflict,
+                ));
+            }
+            return Some((
+                ResultPanelSideEpisodeState::Stable { side: stable },
+                ResultPanelSideTransitionReason::OppositeObserved,
+            ));
+        }
+        let count = self.observations.entry(side).or_default();
+        *count = count.saturating_add(1);
+        if *count >= 2 {
+            self.stable = Some(side);
+            self.observations.clear();
+            return Some((
+                ResultPanelSideEpisodeState::Stable { side },
+                ResultPanelSideTransitionReason::Accepted,
+            ));
+        }
+        Some((
+            ResultPanelSideEpisodeState::Pending,
+            if self.observations.len() == 1 {
+                ResultPanelSideTransitionReason::CandidateStarted
+            } else {
+                ResultPanelSideTransitionReason::CandidateRepeated
+            },
+        ))
+    }
+}
+
 fn joint_matches_numeric(candidate: &JointEvidenceCandidate, numeric: &NumericResultView) -> bool {
     candidate.song_id == numeric.song_id && candidate.chart == numeric.chart
 }
@@ -536,7 +674,7 @@ pub enum MusicSelectionState {
     },
     Selected {
         scorepeek_song_id: ScorepeekSongId,
-        play_side: PlaySide,
+        play_side: PlaySideApplicability,
         play_type: PlayType,
         difficulty: Difficulty,
         level: u8,
@@ -1466,7 +1604,12 @@ impl MusicSelectResolver {
         let summary = accumulator.summary();
         let selected = summary.selected.as_ref()?;
         let play_type = summary.select_play_type?;
-        let play_side = accumulator.resolved_select_play_side()?;
+        let play_side = match play_type {
+            PlayType::Single => {
+                PlaySideApplicability::Known(accumulator.resolved_select_play_side()?)
+            }
+            PlayType::Double => PlaySideApplicability::NotApplicable,
+        };
         let difficulty = accumulator.select_difficulty?.difficulty;
         if summary.support < JOINT_ACCEPT_SUPPORT
             || summary.song_margin < JOINT_ACCEPT_MARGIN
@@ -1622,6 +1765,7 @@ impl RunEvent {
             scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
                 "result",
                 json!({
+                    "panel_side": fields.panel_side,
                     "title": fields.title.open_text,
                     "artist": fields.artist.open_text,
                     "clear_type": observation.clear_type(),
@@ -2073,7 +2217,9 @@ impl RunViewState {
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::ScreenTick { .. }
             | RunEventKind::ResolverStateChanged { .. }
-            | RunEventKind::SelectionDifficultyChanged { .. } => {}
+            | RunEventKind::SelectionDifficultyChanged { .. }
+            | RunEventKind::ResultPanelSideChanged { .. }
+            | RunEventKind::ResultSelectContextMismatch { .. } => {}
             RunEventKind::MusicSelectionChanged { state, .. } => {
                 self.latest_music_selection = Some(state.clone());
             }
@@ -2635,6 +2781,8 @@ pub struct RoutineOutput {
     active_music_selection: Option<MusicSelectionState>,
     music_selection_episode_active: bool,
     play_options: PlayOptionsEpisodeAccumulator,
+    result_panel_side: ResultPanelSideAccumulator,
+    result_select_context_detached: bool,
     numeric_evidence: VecDeque<RawNumericEvidence>,
     last_numeric_sequence: Option<u64>,
     last_numeric_monotonic_ms: Option<u64>,
@@ -2877,6 +3025,8 @@ impl RoutineOutput {
             active_music_selection: None,
             music_selection_episode_active: false,
             play_options: PlayOptionsEpisodeAccumulator::default(),
+            result_panel_side: ResultPanelSideAccumulator::default(),
+            result_select_context_detached: false,
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
             last_numeric_monotonic_ms: None,
@@ -2953,6 +3103,8 @@ impl RoutineOutput {
             active_music_selection: None,
             music_selection_episode_active: false,
             play_options: PlayOptionsEpisodeAccumulator::default(),
+            result_panel_side: ResultPanelSideAccumulator::default(),
+            result_select_context_detached: false,
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
             last_numeric_monotonic_ms: None,
@@ -3123,6 +3275,8 @@ impl RoutineOutput {
                 self.attempt_phase_started_ms = None;
                 self.numeric_evidence.clear();
                 self.play_options = PlayOptionsEpisodeAccumulator::default();
+                self.result_panel_side.clear();
+                self.result_select_context_detached = false;
                 self.clear_resolver_field_observation()?;
                 self.publish_one(event)?;
                 if let Some(session_id) = session_id.clone() {
@@ -3138,11 +3292,28 @@ impl RoutineOutput {
             RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),
             RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
             RunEventKind::RawScreenObserved {
+                session_id,
+                capture_generation,
+                semantic_episode_id,
                 sequence,
                 monotonic_end_ms,
+                screen,
+                result_panel_side,
                 ..
             } => {
                 self.publish_one(event)?;
+                if screen == "result"
+                    && let (Some(episode_id), Some(side)) =
+                        (*semantic_episode_id, *result_panel_side)
+                {
+                    self.observe_result_panel_side(
+                        session_id.as_ref(),
+                        *capture_generation,
+                        episode_id,
+                        *sequence,
+                        side,
+                    )?;
+                }
                 self.publish_screen_tick(*sequence, *monotonic_end_ms)
             }
             RunEventKind::SemanticScreenEpisodeChanged { .. } => {
@@ -3169,8 +3340,47 @@ impl RoutineOutput {
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::MusicSelectResolverChanged { .. }
             | RunEventKind::ResultChanged { .. }
+            | RunEventKind::ResultPanelSideChanged { .. }
+            | RunEventKind::ResultSelectContextMismatch { .. }
             | RunEventKind::OverlayObserved { .. } => self.publish_one(event),
         }
+    }
+
+    fn observe_result_panel_side(
+        &mut self,
+        session_id: Option<&String>,
+        capture_generation: Option<u64>,
+        episode_id: u64,
+        sequence: u64,
+        side: ResultPanelSide,
+    ) -> Result<(), String> {
+        let Some((state, reason)) = self.result_panel_side.observe(episode_id, sequence, side)
+        else {
+            return Ok(());
+        };
+        self.publish_one(&RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::ResultPanelSideChanged {
+                session_id: session_id.cloned(),
+                capture_generation,
+                screen_episode_id: episode_id,
+                source_sequence: sequence,
+                state,
+                reason,
+            },
+        })?;
+        if reason == ResultPanelSideTransitionReason::Conflict
+            && let (Some(session_id), Some(capture_generation)) =
+                (session_id.cloned(), capture_generation)
+        {
+            self.withdraw_result_provisional(
+                session_id,
+                capture_generation,
+                sequence,
+                ResultRetractionReason::PanelSideConflict,
+            )?;
+        }
+        Ok(())
     }
 
     fn publish_semantic_screen_episode(&mut self, event: &RunEvent) -> Result<(), String> {
@@ -3252,6 +3462,8 @@ impl RoutineOutput {
                         *capture_generation,
                         *sequence,
                     )?;
+                    self.result_panel_side.clear();
+                    self.result_select_context_detached = false;
                 }
                 self.result_episode_finalizing = false;
                 self.semantic_episode_suspended = false;
@@ -3364,6 +3576,21 @@ impl RoutineOutput {
         {
             return Ok(());
         }
+        if screen == "result" {
+            let panel_side = result_panel_side(fields);
+            if let Some(side) = panel_side {
+                self.observe_result_panel_side(
+                    session_id.as_ref(),
+                    *capture_generation,
+                    *screen_episode_id,
+                    *sequence,
+                    side,
+                )?;
+            }
+            if panel_side != self.result_panel_side.stable() {
+                return Ok(());
+            }
+        }
         match screen.as_str() {
             "result" => self.reduce_result_observation(
                 session_id.as_ref(),
@@ -3420,6 +3647,37 @@ impl RoutineOutput {
             self.play_options.observe(sequence, observation);
         }
         let result_summary = self.engine.result_hypotheses.summary();
+        if !self.result_select_context_detached
+            && result_summary.result_play_type == Some(PlayType::Single)
+            && let Some(result_side) =
+                result_play_side(PlayType::Single, self.result_panel_side.stable())
+            && let PlaySideApplicability::Known(result_side) = result_side
+            && let Some(select_side) = self.engine.retained_select.resolved_select_play_side()
+            && select_side != result_side
+        {
+            self.result_select_context_detached = true;
+            self.engine.retained_select = HypothesisAccumulator::default();
+            self.engine.provisional_joint = None;
+            self.publish_one(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::ResultSelectContextMismatch {
+                    session_id: session_id.cloned(),
+                    capture_generation,
+                    screen_episode_id: self.screen_episode_id,
+                    source_sequence: sequence,
+                    select_play_side: select_side,
+                    result_play_side: result_side,
+                },
+            })?;
+            if let Some(state) = self.engine.play_attempt.detach_selection_linkage() {
+                self.publish_play_attempt_update(
+                    session_id.cloned(),
+                    capture_generation,
+                    Some(sequence),
+                    state,
+                )?;
+            }
+        }
         self.publish_resolver_transition(
             session_id,
             capture_generation,
@@ -3688,8 +3946,17 @@ impl RoutineOutput {
         {
             return Ok(());
         }
-        let result =
-            build_result_domain_event(accepted_attempt, numeric, self.play_options.resolved());
+        let Some(play_side) =
+            result_play_side(numeric.chart.key.play_type, self.result_panel_side.stable())
+        else {
+            return Ok(());
+        };
+        let result = build_result_domain_event(
+            accepted_attempt,
+            numeric,
+            play_side,
+            self.play_options.resolved(),
+        );
         let source_sequence = numeric.source_sequence.max(fallback_sequence);
         let emitted_attempt_id = accepted_attempt.attempt_id;
         let song = self
@@ -3736,14 +4003,20 @@ impl RoutineOutput {
             .zip(self.accepted_numeric_result.as_ref())
             .filter(|(joint, numeric)| joint_matches_numeric(joint, numeric))
             .zip(self.engine.play_attempt.active_result())
-            .map(|((joint, numeric), attempt)| {
+            .and_then(|((joint, numeric), attempt)| {
+                let play_side =
+                    result_play_side(numeric.chart.key.play_type, self.result_panel_side.stable())?;
                 let song = Some(candidate_song_presentation(joint));
-                let result =
-                    build_result_domain_event(attempt, numeric, self.play_options.resolved());
-                (
+                let result = build_result_domain_event(
+                    attempt,
+                    numeric,
+                    play_side,
+                    self.play_options.resolved(),
+                );
+                Some((
                     ActiveProvisionalResult { song, result },
                     numeric.source_sequence.max(fallback_sequence),
-                )
+                ))
             });
         let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation) else {
             return Ok(());
@@ -4049,6 +4322,8 @@ impl RoutineOutput {
             selection_screen_attempt_update = self.engine.play_attempt.observe_selection_screen();
         }
         if screen == "result" {
+            self.result_panel_side.start_episode(*screen_episode_id);
+            self.result_select_context_detached = false;
             self.result_resolver_active = true;
             self.active_provisional_result = None;
             self.engine.result_hypotheses = HypothesisAccumulator::default();
@@ -4175,6 +4450,8 @@ impl RoutineOutput {
             )?;
         }
         if screen != "result" {
+            self.result_panel_side.clear();
+            self.result_select_context_detached = false;
             self.reset_numeric_result();
             self.numeric_evidence.clear();
             self.play_options = PlayOptionsEpisodeAccumulator::default();
@@ -4212,6 +4489,8 @@ impl RoutineOutput {
             )?;
             self.music_selection_episode_active = false;
         }
+        self.result_panel_side.clear();
+        self.result_select_context_detached = false;
         self.publish_one(event)?;
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(
@@ -4701,6 +4980,7 @@ impl Drop for RoutineOutput {
 fn build_result_domain_event(
     attempt: AcceptedPlayAttempt,
     numeric: &NumericResultView,
+    play_side: PlaySideApplicability,
     play_options: PlayOptions,
 ) -> ResultDomainEvent {
     let ResultPerformanceResolution::Accepted {
@@ -4715,11 +4995,11 @@ fn build_result_domain_event(
         unreachable!("accepted numeric view stores accepted performance");
     };
     ResultDomainEvent {
-        contract: "scorepeek-result-detected-v2".to_owned(),
+        contract: "scorepeek-result-detected-v3".to_owned(),
         attempt_id: attempt.attempt_id,
         parent_attempt_id: attempt.parent_attempt_id,
         scorepeek_song_id: numeric.song_id,
-        play_side: "one_player".to_owned(),
+        play_side,
         play_mode: match numeric.chart.key.play_type {
             PlayType::Single => "single_play",
             PlayType::Double => "double_play",
@@ -4738,6 +5018,22 @@ fn build_result_domain_event(
         previous_best: previous_best.clone(),
         play_options,
     }
+}
+
+const fn result_play_side(
+    play_type: PlayType,
+    panel_side: Option<ResultPanelSide>,
+) -> Option<PlaySideApplicability> {
+    let Some(panel_side) = panel_side else {
+        return None;
+    };
+    Some(match play_type {
+        PlayType::Single => PlaySideApplicability::Known(match panel_side {
+            ResultPanelSide::Left => PlaySide::OnePlayer,
+            ResultPanelSide::Right => PlaySide::TwoPlayer,
+        }),
+        PlayType::Double => PlaySideApplicability::NotApplicable,
+    })
 }
 
 fn bounded_run_event_value(event: &RunEvent) -> Result<Value, String> {
@@ -4831,6 +5127,10 @@ fn selected_play_side(fields: &Value) -> Option<PlaySide> {
         "two_player" => Some(PlaySide::TwoPlayer),
         _ => None,
     }
+}
+
+fn result_panel_side(fields: &Value) -> Option<ResultPanelSide> {
+    serde_json::from_value(fields.get("panel_side")?.clone()).ok()
 }
 
 fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
@@ -6073,6 +6373,8 @@ mod tests {
             music_selection_episode_active: false,
             numeric_evidence: VecDeque::with_capacity(8),
             play_options: PlayOptionsEpisodeAccumulator::default(),
+            result_panel_side: ResultPanelSideAccumulator::default(),
+            result_select_context_detached: false,
             last_numeric_sequence: None,
             last_numeric_monotonic_ms: None,
             emitted_attempt_ids: BTreeSet::new(),
@@ -6123,6 +6425,7 @@ mod tests {
                 monotonic_end_ms: sequence.saturating_mul(100).saturating_add(25),
                 screen: "result".to_owned(),
                 fields: json!({
+                    "panel_side": ResultPanelSide::Left,
                     "title": "OCR TITLE",
                     "artist": "OCR ARTIST",
                     "clear_type": "CLEAR",
@@ -6265,6 +6568,7 @@ mod tests {
     }
 
     fn prepare_accepted_attempt(output: &mut RoutineOutput) {
+        prime_left_result_panel(output);
         output.engine.play_attempt.observe_selection_screen();
         output
             .engine
@@ -6274,6 +6578,25 @@ mod tests {
             .engine
             .play_attempt
             .observe_screen(PlayAttemptScreen::Result, 0);
+    }
+
+    fn prime_left_result_panel(output: &mut RoutineOutput) {
+        assert!(
+            output
+                .result_panel_side
+                .observe(0, 0, ResultPanelSide::Left)
+                .is_some()
+        );
+        assert!(
+            output
+                .result_panel_side
+                .observe(0, 1, ResultPanelSide::Left)
+                .is_some()
+        );
+        assert_eq!(
+            output.result_panel_side.stable(),
+            Some(ResultPanelSide::Left)
+        );
     }
 
     fn play_options_observation(values: Vec<PlayOption>) -> PlayOptionsObservation {
@@ -6475,7 +6798,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v2");
+        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v3");
         assert_eq!(snapshot["invocation_id"], "invocation-1");
         assert_eq!(snapshot["next_sequence"], 1);
         assert_eq!(snapshot["status"]["watcher"], "starting");
@@ -6617,7 +6940,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(provisional.contract, "scorepeek-result-detected-v2");
+        assert_eq!(provisional.contract, "scorepeek-result-detected-v3");
         let encoded = output
             .headless_events
             .iter()
@@ -7016,6 +7339,7 @@ mod tests {
     #[test]
     fn linkage_deficient_attempt_is_provisional_then_withdrawn_on_rejection() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prime_left_result_panel(&mut output);
         output.engine.play_attempt.observe_selection_screen();
         output
             .engine
@@ -7259,18 +7583,19 @@ mod tests {
         };
         output.publish(&result(5)).unwrap();
         output.publish(&result(6)).unwrap();
+        output.publish(&result(7)).unwrap();
 
         assert_eq!(output.emitted_attempt_ids.len(), 0);
         output
             .publish(&semantic_episode_event(
-                7,
+                8,
                 "result",
                 SemanticEpisodePhase::Closing,
             ))
             .unwrap();
         output
             .publish(&semantic_episode_event(
-                7,
+                8,
                 "result",
                 SemanticEpisodePhase::Finalized,
             ))
@@ -7361,7 +7686,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-event-snapshot-v2"));
+            assert!(snapshot.contains("scorepeek-event-snapshot-v3"));
         }
         channel.publish(wire_event(1));
         for reader in &mut readers {
@@ -7831,11 +8156,11 @@ mod tests {
                 1,
                 source_sequence,
                 ResultDomainEvent {
-                    contract: "scorepeek-result-detected-v2".to_owned(),
+                    contract: "scorepeek-result-detected-v3".to_owned(),
                     attempt_id: source_sequence,
                     parent_attempt_id: None,
                     scorepeek_song_id: song_id,
-                    play_side: "one_player".to_owned(),
+                    play_side: PlaySideApplicability::Known(PlaySide::OnePlayer),
                     play_mode: "single_play".to_owned(),
                     play_type: PlayType::Single,
                     difficulty: Difficulty::Normal,
@@ -7936,7 +8261,7 @@ mod tests {
         let candidate = &evidence.candidates[0];
         let selection = MusicSelectionState::Selected {
             scorepeek_song_id: candidate.song_id,
-            play_side: PlaySide::OnePlayer,
+            play_side: PlaySideApplicability::Known(PlaySide::OnePlayer),
             play_type: candidate.chart.key.play_type,
             difficulty: candidate.chart.key.difficulty,
             level: candidate.chart.level,
@@ -8160,7 +8485,7 @@ mod tests {
         for difficulty in [Difficulty::Hyper, Difficulty::Leggendaria] {
             state.latest_music_selection = Some(MusicSelectionState::Selected {
                 scorepeek_song_id,
-                play_side: PlaySide::OnePlayer,
+                play_side: PlaySideApplicability::Known(PlaySide::OnePlayer),
                 play_type: PlayType::Double,
                 difficulty,
                 level: 12,
@@ -9775,7 +10100,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert_two_player_selection(&output);
+        assert_double_play_selection(&output);
         output.engine.selection_epochs = SelectionEpochTracker::default();
         assert!(output.music_select_resolver.selected().is_some());
         let mut changed_song = evidence.clone();
@@ -9854,11 +10179,11 @@ mod tests {
         )));
     }
 
-    fn assert_two_player_selection(output: &RoutineOutput) {
+    fn assert_double_play_selection(output: &RoutineOutput) {
         assert!(matches!(
             output.music_select_resolver.selected(),
             Some(MusicSelectionState::Selected {
-                play_side: PlaySide::TwoPlayer,
+                play_side: PlaySideApplicability::NotApplicable,
                 ..
             })
         ));
@@ -9867,7 +10192,9 @@ mod tests {
     #[test]
     fn music_selection_requires_two_equal_play_sides_and_rejects_a_conflict() {
         let mut resolver = MusicSelectResolver::default();
-        let (mut fields, evidence, _) = music_selection_test_observation();
+        let (mut fields, mut evidence, _) = music_selection_test_observation();
+        fields["play_type"]["state"]["value"] = json!("single");
+        evidence.candidates[0].chart.key.play_type = PlayType::Single;
         resolver.observe(
             1,
             100,
@@ -9888,7 +10215,7 @@ mod tests {
         assert!(matches!(
             resolver.selected(),
             Some(MusicSelectionState::Selected {
-                play_side: PlaySide::TwoPlayer,
+                play_side: PlaySideApplicability::Known(PlaySide::TwoPlayer),
                 ..
             })
         ));
@@ -9903,6 +10230,243 @@ mod tests {
             selected_play_side(&fields),
         );
         assert!(resolver.selected().is_none());
+    }
+
+    #[test]
+    fn double_play_selection_does_not_require_a_footer_play_side() {
+        let mut resolver = MusicSelectResolver::default();
+        let (fields, evidence, _) = music_selection_test_observation();
+        for (sequence, monotonic_ms) in [(1, 100), (2, 200)] {
+            resolver.observe(
+                sequence,
+                monotonic_ms,
+                &evidence,
+                selected_difficulty(&fields),
+                selected_play_type(&fields),
+                None,
+            );
+        }
+        assert!(matches!(
+            resolver.selected(),
+            Some(MusicSelectionState::Selected {
+                play_side: PlaySideApplicability::NotApplicable,
+                play_type: PlayType::Double,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn result_panel_side_requires_two_fresh_matches_and_two_opposites_conflict() {
+        let mut side = ResultPanelSideAccumulator::default();
+        assert_eq!(
+            side.observe(7, 10, ResultPanelSide::Right),
+            Some((
+                ResultPanelSideEpisodeState::Pending,
+                ResultPanelSideTransitionReason::CandidateStarted,
+            ))
+        );
+        assert_eq!(side.stable(), None);
+        assert_eq!(side.observe(7, 10, ResultPanelSide::Right), None);
+        assert_eq!(
+            side.observe(7, 11, ResultPanelSide::Right),
+            Some((
+                ResultPanelSideEpisodeState::Stable {
+                    side: ResultPanelSide::Right,
+                },
+                ResultPanelSideTransitionReason::Accepted,
+            ))
+        );
+        assert_eq!(side.stable(), Some(ResultPanelSide::Right));
+        assert_eq!(
+            side.observe(7, 12, ResultPanelSide::Left),
+            Some((
+                ResultPanelSideEpisodeState::Stable {
+                    side: ResultPanelSide::Right,
+                },
+                ResultPanelSideTransitionReason::OppositeObserved,
+            ))
+        );
+        assert_eq!(side.stable(), Some(ResultPanelSide::Right));
+        assert_eq!(side.observe(7, 13, ResultPanelSide::Right), None);
+        assert_eq!(
+            side.observe(7, 14, ResultPanelSide::Left),
+            Some((
+                ResultPanelSideEpisodeState::Conflicted {
+                    stable_side: ResultPanelSide::Right,
+                },
+                ResultPanelSideTransitionReason::Conflict,
+            ))
+        );
+        assert_eq!(side.stable(), None);
+        side.start_episode(8);
+        assert_eq!(side.stable(), None);
+    }
+
+    #[test]
+    fn pre_stable_candidates_do_not_count_as_opposite_evidence() {
+        let mut side = ResultPanelSideAccumulator::default();
+        assert!(side.observe(7, 10, ResultPanelSide::Left).is_some());
+        assert!(side.observe(7, 11, ResultPanelSide::Right).is_some());
+        assert_eq!(
+            side.observe(7, 12, ResultPanelSide::Right),
+            Some((
+                ResultPanelSideEpisodeState::Stable {
+                    side: ResultPanelSide::Right,
+                },
+                ResultPanelSideTransitionReason::Accepted,
+            ))
+        );
+        assert_eq!(
+            side.observe(7, 13, ResultPanelSide::Left),
+            Some((
+                ResultPanelSideEpisodeState::Stable {
+                    side: ResultPanelSide::Right,
+                },
+                ResultPanelSideTransitionReason::OppositeObserved,
+            ))
+        );
+        assert_eq!(side.stable(), Some(ResultPanelSide::Right));
+        assert!(matches!(
+            side.observe(7, 14, ResultPanelSide::Left),
+            Some((
+                ResultPanelSideEpisodeState::Conflicted { .. },
+                ResultPanelSideTransitionReason::Conflict
+            ))
+        ));
+    }
+
+    #[test]
+    fn panel_side_conflict_retracts_the_provisional_result() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        assert!(output.active_provisional_result.is_some());
+
+        output
+            .observe_result_panel_side(
+                Some(&"invocation-1-session-1".to_owned()),
+                Some(1),
+                0,
+                3,
+                ResultPanelSide::Right,
+            )
+            .unwrap();
+        assert!(output.active_provisional_result.is_some());
+        output
+            .observe_result_panel_side(
+                Some(&"invocation-1-session-1".to_owned()),
+                Some(1),
+                0,
+                4,
+                ResultPanelSide::Right,
+            )
+            .unwrap();
+
+        assert!(output.active_provisional_result.is_none());
+        assert!(output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted {
+                    reason: ResultRetractionReason::PanelSideConflict,
+                    ..
+                },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn result_select_side_mismatch_detaches_only_the_attempt_linkage() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        output.engine.play_attempt.observe_selection_screen();
+        output
+            .engine
+            .play_attempt
+            .observe_screen(PlayAttemptScreen::Play, 0);
+        output
+            .engine
+            .play_attempt
+            .observe_screen(PlayAttemptScreen::Result, 0);
+        output
+            .engine
+            .retained_select
+            .select_play_sides
+            .insert(PlaySide::OnePlayer, 2);
+        assert!(
+            output
+                .result_panel_side
+                .observe(0, 0, ResultPanelSide::Right)
+                .is_some()
+        );
+        assert!(
+            output
+                .result_panel_side
+                .observe(0, 1, ResultPanelSide::Right)
+                .is_some()
+        );
+
+        for sequence in [1, 2] {
+            let mut event = accepted_result_event(sequence);
+            let RunEventKind::FieldObservation { fields, .. } = &mut event.kind else {
+                unreachable!();
+            };
+            fields["panel_side"] = json!(ResultPanelSide::Right);
+            output.publish(&event).unwrap();
+        }
+
+        assert!(output.result_select_context_detached);
+        assert_eq!(output.engine.retained_select.observation_count, 0);
+        assert!(output.active_provisional_result.is_some());
+        assert!(output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultSelectContextMismatch {
+                select_play_side: PlaySide::OnePlayer,
+                result_play_side: PlaySide::TwoPlayer,
+                ..
+            }
+        )));
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        assert!(output.headless_events.iter().any(|event| matches!(
+            &event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { result, .. },
+                ..
+            } if result.play_side
+                == PlaySideApplicability::Known(PlaySide::TwoPlayer)
+        )));
+    }
+
+    #[test]
+    fn result_play_side_serializes_applicability_without_legacy_strings() {
+        assert_eq!(
+            serde_json::to_value(
+                result_play_side(PlayType::Single, Some(ResultPanelSide::Left)).unwrap()
+            )
+            .unwrap(),
+            json!({"status":"known", "value":"one_player"})
+        );
+        assert_eq!(
+            serde_json::to_value(
+                result_play_side(PlayType::Single, Some(ResultPanelSide::Right)).unwrap()
+            )
+            .unwrap(),
+            json!({"status":"known", "value":"two_player"})
+        );
+        assert_eq!(
+            serde_json::to_value(
+                result_play_side(PlayType::Double, Some(ResultPanelSide::Right)).unwrap()
+            )
+            .unwrap(),
+            json!({"status":"not_applicable"})
+        );
     }
 
     #[test]
@@ -10309,6 +10873,7 @@ mod tests {
     #[test]
     fn resolver_transition_records_raw_and_normalized_family_contributions() {
         let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+        prime_left_result_panel(&mut output);
 
         output.publish(&accepted_result_event(1)).unwrap();
         let events = output.take_headless_events();

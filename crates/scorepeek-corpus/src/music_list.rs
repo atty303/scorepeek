@@ -23,7 +23,7 @@ const MUSIC_LIST_SLOTS: u8 = 20;
 const MUSIC_LIST_ROW_RGB_VALUES: u64 = 475 * 45 * 3;
 const CANONICAL_FRAME_RGB_VALUES: usize = 1_920 * 1_080 * 3;
 const CANONICAL_LAYOUT_BYTES: &[u8] =
-    include_bytes!("../../scorepeek/src/canonical-layout-v1.json");
+    include_bytes!("../../scorepeek/src/canonical-layout-v2.json");
 const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
     "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
 const CALIBRATED_FFMPEG_SHA256: &str =

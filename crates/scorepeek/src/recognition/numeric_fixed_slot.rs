@@ -2,8 +2,8 @@ use crate::catalog::Difficulty;
 
 use super::title_preprocessor::resize_linear_gray;
 use super::{
-    NumericField, RecognitionError, ResultNumericCharacterLayout, ResultScreenRgb8Crops, Rgb8Crop,
-    Roi,
+    CanonicalLayout, NumericField, RecognitionError, ResultNumericCharacterLayout,
+    ResultScreenRgb8Crops, Rgb8Crop, Roi,
 };
 
 pub const FIXED_SLOT_PREPROCESSOR_ID: &str = "scorepeek-fixed-slot-hog-hybrid-0p25-v1";
@@ -27,6 +27,7 @@ pub fn extract_fixed_slot_fields(
     crops: &ResultScreenRgb8Crops,
 ) -> Result<Vec<FixedSlotFieldCells>, RecognitionError> {
     let layout = ResultNumericCharacterLayout::load()?;
+    let canonical = CanonicalLayout::load()?;
     let mut output = Vec::new();
     for variant in layout.all_level_variants() {
         let level_difficulty = match variant.difficulty.as_str() {
@@ -40,7 +41,7 @@ pub fn extract_fixed_slot_fields(
         output.push(FixedSlotFieldCells {
             field: NumericField::Level,
             level_difficulty: Some(level_difficulty),
-            cells: extract_cells(&crops.level, &variant.digit_cells)?,
+            cells: extract_cells(&crops.level, &variant.digit_cells, 0)?,
         });
     }
     for field in NumericField::ALL
@@ -54,7 +55,15 @@ pub fn extract_fixed_slot_fields(
         output.push(FixedSlotFieldCells {
             field,
             level_difficulty: None,
-            cells: extract_cells(owner, cells)?,
+            cells: extract_cells(
+                owner,
+                cells,
+                if matches!(field, NumericField::Notes) {
+                    0
+                } else {
+                    canonical.result.panel_origins.get(crops.panel_side)
+                },
+            )?,
         });
     }
     Ok(output)
@@ -124,10 +133,14 @@ fn numeric_crop(crops: &ResultScreenRgb8Crops, field: NumericField) -> &Rgb8Crop
     }
 }
 
-fn extract_cells(owner: &Rgb8Crop, cells: &[Roi]) -> Result<Vec<FixedSlotCell>, RecognitionError> {
+fn extract_cells(
+    owner: &Rgb8Crop,
+    cells: &[Roi],
+    origin_x: u32,
+) -> Result<Vec<FixedSlotCell>, RecognitionError> {
     cells
         .iter()
-        .map(|cell| extract_cell(owner, *cell))
+        .map(|cell| extract_cell(owner, cell.translated_x(origin_x)?))
         .collect()
 }
 
@@ -381,6 +394,37 @@ fn normalize(values: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recognition::{
+        CANONICAL_BYTES, ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops, route_screen_rgb8_crops,
+    };
+
+    #[test]
+    fn fixed_slot_cells_follow_the_result_panel_without_moving_global_fields() {
+        let pixels = vec![0; CANONICAL_BYTES];
+        let route = |side| {
+            let ScreenRgb8Crops::Result(crops) =
+                route_screen_rgb8_crops(&pixels, ScreenCropRoute::Result(side)).unwrap()
+            else {
+                unreachable!();
+            };
+            crops
+        };
+        let left = route(ResultPanelSide::Left);
+        let right = route(ResultPanelSide::Right);
+        let left_fields = extract_fixed_slot_fields(&left).unwrap();
+        let right_fields = extract_fixed_slot_fields(&right).unwrap();
+
+        assert_eq!(left_fields.len(), right_fields.len());
+        for (left, right) in left_fields.iter().zip(&right_fields) {
+            assert_eq!(left.field, right.field);
+            assert_eq!(left.level_difficulty, right.level_difficulty);
+            assert_eq!(left.cells.len(), right.cells.len());
+            for (left, right) in left.cells.iter().zip(&right.cells) {
+                assert_eq!((left.width, left.height), (right.width, right.height));
+                assert_eq!(left.pixels, right.pixels);
+            }
+        }
+    }
 
     #[test]
     fn fixed_slot_feature_has_registered_shape_and_finite_values() {

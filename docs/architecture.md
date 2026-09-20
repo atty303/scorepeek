@@ -21,7 +21,7 @@ flowchart LR
   FO --> JR
   JR --> AR["Attempt and RESULT lifecycle"]
   SE --> AR
-  AR --> EV["Event API v2 projection"]
+  AR --> EV["Event API v3 projection"]
   EV --> SOCK["events.sock"]
   EV --> DB["SQLite score consumer"]
   SOCK --> OV["Wayland and OBS overlays"]
@@ -136,8 +136,10 @@ difficulty, level, and notes as independently attributable evidence. Ambiguity,
 conflict, insufficient margin, or missing required evidence produces a typed
 unknown rather than a guess.
 
-MUSIC SELECT identity includes independently measured footer play side, selected chart context,
-and its stability gate. Supplemental self-best values, RESULT recognition, and
+MUSIC SELECT identity includes independently measured footer play side for SP, selected chart
+context, and its stability gate; DP marks play side not applicable. RESULT independently stabilizes
+left/right panel geometry before routing panel-local crops, while shared chart crops remain fixed.
+Supplemental self-best values, RESULT recognition, and
 play-attempt resolution have separate state. Supplemental best values never
 become song-identity or attempt-acceptance evidence. Current field
 applicability and acceptance rules are defined in
@@ -145,12 +147,12 @@ applicability and acceptance rules are defined in
 
 ## Events and score persistence
 
-The public live interface is Event API v2 on
+The public live interface is Event API v3 on
 `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A client receives one current
 snapshot and then ordered NDJSON events. The public projection excludes raw
 OCR, candidates, recognition metrics, recording paths, pixels, and stored
 history. Reconnection restores current state, not every missed event. The wire
-contract and RESULT lifecycle are defined in [Event API v2](event-api.md).
+contract and RESULT lifecycle are defined in [Event API v3](event-api.md).
 
 The in-process `scorepeek-scores` consumer persists provisional, retracted,
 and confirmed RESULT transitions plus current MUSIC SELECT supplements in
@@ -217,7 +219,7 @@ approved repository artifact. See
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek/src` |
 | OCR preprocessing, models, and thresholds | Registered text bundle and embedded numeric model artifacts |
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
-| Public live compatibility | Event API v2 typed projection |
+| Public live compatibility | Event API v3 typed projection |
 | Durable local score state | `scorepeek-scores` SQLite consumer |
 | Canvas/editor state and skin execution | Overlay crates and skin SDK |
 | Private replay evidence | Diagnostic store and external private corpus |

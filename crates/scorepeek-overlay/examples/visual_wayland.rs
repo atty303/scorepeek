@@ -26,7 +26,7 @@ impl std::io::Read for TimedLease {
 
 fn fixture_event(sequence: u64, screen: &str) -> serde_json::Value {
     json!({
-        "schema": "scorepeek-event-v2",
+        "schema": "scorepeek-event-v3",
         "invocation_id": "overlay-visual-wayland",
         "sequence": sequence,
         "event_id": format!("overlay-visual-wayland:{sequence}"),
@@ -120,7 +120,7 @@ fn start_integration_feed(socket: &Path, trigger: &Path) -> std::io::Result<Inte
                 return Ok(());
             };
             let snapshot = json!({
-                "schema": "scorepeek-event-snapshot-v2",
+                "schema": "scorepeek-event-snapshot-v3",
                 "invocation_id": "overlay-visual-wayland",
                 "next_sequence": 1,
                 "status": {
@@ -133,7 +133,7 @@ fn start_integration_feed(socket: &Path, trigger: &Path) -> std::io::Result<Inte
                     "last_session_outcome": null,
                 },
                 "result": {
-                    "schema": "scorepeek-event-v2",
+                    "schema": "scorepeek-event-v3",
                     "invocation_id": "overlay-visual-wayland",
                     "sequence": 0,
                     "event_id": "overlay-visual-wayland:0",

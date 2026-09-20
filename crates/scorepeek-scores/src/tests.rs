@@ -2,10 +2,10 @@ use super::*;
 use serde_json::json;
 
 fn select(sequence: u64, score: &Value, miss: &Value) -> Value {
-    json!({"schema":"scorepeek-event-v2","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"music_select_best_observed","snapshot":{"contract":"scorepeek-music-select-best-snapshot-v1","revision":sequence,"observation_id":format!("select:{sequence}"),"chart":{"scorepeek_song_id":"song-a","play_type":"single","difficulty":"hyper","presentation":{"display_titles":["Synthetic song"]}},"values":{"score":score,"miss_count":miss,"clear_type":{"status":"known","value":"hard_clear"}}}})
+    json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"music_select_best_observed","snapshot":{"contract":"scorepeek-music-select-best-snapshot-v2","revision":sequence,"observation_id":format!("select:{sequence}"),"chart":{"scorepeek_song_id":"song-a","play_side":{"status":"known","value":"one_player"},"play_type":"single","difficulty":"hyper","presentation":{"display_titles":["Synthetic song"]}},"values":{"score":score,"miss_count":miss,"clear_type":{"status":"known","value":"hard_clear"}}}})
 }
 fn result(sequence: u64, score: u32) -> Value {
-    json!({"schema":"scorepeek-event-v2","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"result_changed","source_sequence":sequence,"state":{"status":"provisional","song":{"scorepeek_song_id":"song-a","display_titles":["Synthetic song"],"artist":"Synthetic artist"},"result":{"contract":"scorepeek-result-detected-v2","attempt_id":sequence,"scorepeek_song_id":"song-a","play_side":"1p","play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":score,"clear_type":"EXH-CLEAR","judgments":{"pgreat":50,"great":20,"good":3,"bad":2,"poor":1},"miss_count":{"status":"known","value":20},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":180},"miss_count":{"status":"unknown","reason":"empty"},"clear_type":{"status":"not_played"}},"play_options":{"status":"known","values":[]}}}})
+    json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"result_changed","source_sequence":sequence,"state":{"status":"provisional","song":{"scorepeek_song_id":"song-a","display_titles":["Synthetic song"],"artist":"Synthetic artist"},"result":{"contract":"scorepeek-result-detected-v3","attempt_id":sequence,"scorepeek_song_id":"song-a","play_side":{"status":"known","value":"one_player"},"play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":score,"clear_type":"EXH-CLEAR","judgments":{"pgreat":50,"great":20,"good":3,"bad":2,"poor":1},"miss_count":{"status":"known","value":20},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":180},"miss_count":{"status":"unknown","reason":"empty"},"clear_type":{"status":"not_played"}},"play_options":{"status":"known","values":[]}}}})
 }
 fn result_state(sequence: u64, attempt_id: u64, score: u32, status: &str) -> Value {
     let mut value = result(sequence, score);
@@ -162,7 +162,7 @@ fn order_clear_unknown_and_new_invocation() {
             &json!({"status":"no_record"})
         )
     ));
-    let clear = json!({"schema":"scorepeek-event-v2","invocation_id":"run-a","sequence":6,"event_id":"run-a:6","emitted_monotonic_ms":6,"emitted_unix_ms":1006,"capture":null,"event":"music_select_best_observed","snapshot":null});
+    let clear = json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":6,"event_id":"run-a:6","emitted_monotonic_ms":6,"emitted_unix_ms":1006,"capture":null,"event":"music_select_best_observed","snapshot":null});
     assert!(!apply(&mut store, &clear));
     assert_eq!(values(&store), (Some(900), Some(1), Some(5)));
     event["invocation_id"] = json!("run-b");
@@ -261,6 +261,28 @@ fn unsupported_payload_is_not_saved() {
         store.consume(&serde_json::to_vec(&value).unwrap(), 0),
         Err(Error::UnsupportedContract)
     ));
+}
+
+#[test]
+fn play_side_applicability_must_match_play_type() {
+    let mut invalid_result = result(1, 100);
+    invalid_result["state"]["result"]["play_type"] = json!("double");
+    let score = json!({"status":"known", "value":100});
+    let miss = json!({"status":"known", "value":1});
+    let mut legacy_select = select(1, &score, &miss);
+    legacy_select["snapshot"]["chart"]["play_side"] = json!("one_player");
+    let mut invalid_double_select = select(1, &score, &miss);
+    invalid_double_select["snapshot"]["chart"]["play_type"] = json!("double");
+
+    for invalid in [invalid_result, legacy_select, invalid_double_select] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("db")).unwrap();
+        assert!(
+            store
+                .consume(&serde_json::to_vec(&invalid).unwrap(), 0)
+                .is_err()
+        );
+    }
 }
 
 #[test]
@@ -380,7 +402,7 @@ fn result_identity_and_presentation_are_required_before_persistence() {
 fn valid_unknown_event_advances_but_malformed_unknown_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("db")).unwrap();
-    let unknown = json!({"schema":"scorepeek-event-v2","invocation_id":"run-a","sequence":1,"event_id":"run-a:1","emitted_monotonic_ms":1,"emitted_unix_ms":1001,"capture":null,"event":"future_event","payload":{"additive":true}});
+    let unknown = json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":1,"event_id":"run-a:1","emitted_monotonic_ms":1,"emitted_unix_ms":1001,"capture":null,"event":"future_event","payload":{"additive":true}});
     assert!(!apply(&mut store, &unknown));
     assert!(!apply(&mut store, &result(1, 100)));
     assert!(apply(&mut store, &result(2, 200)));
@@ -433,6 +455,7 @@ fn chart_keys_and_tie_provenance_are_preserved() {
     );
     let mut dp = result(4, 200);
     dp["state"]["result"]["play_type"] = json!("double");
+    dp["state"]["result"]["play_side"] = json!({"status":"not_applicable"});
     apply(&mut store, &dp);
     let mut another = result(5, 300);
     another["state"]["result"]["difficulty"] = json!("another");

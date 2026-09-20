@@ -42,7 +42,7 @@ be established, the field is `unknown`.
 | --- | --- | --- |
 | result state | Precondition for every result event | Unique result-screen anchors; transition, cut-in, overlay, and unknown classes reject |
 | accepted play attempt | Precondition for result-event emission | The same attempt observed gameplay and result, and its result song confirms the selected or retry-inherited song; observing the decision transition is not required |
-| playside | Always | Current admitted corpus slice provisionally fixes 1P; widening requires unique 1P or 2P layout anchors |
+| play side | SP only | RESULT presence first requires exactly one panel anchor: left or right. Two fresh observations of the same panel side stabilize the episode. SP maps left to `known(one_player)` and right to `known(two_player)`; DP emits `not_applicable`. BPM position is not play-side evidence. |
 | play mode | Always | Derived from the final catalog play type as `single_play` or `double_play`; raw RESULT mode is independent evidence requiring exact `SP`/`DP` twice and no opposite observation in the episode |
 | play type | Always | The highest-consistency catalog play type after independent equal-weight SELECT and RESULT mode families; a conflict never removes either type, and insufficient chart margin remains unknown |
 | song | Always | Accepted title and artist consistent with independently recognized play mode, difficulty, level, and notes; a linked selection may corroborate identity but cannot establish result presence or result-only fields |
@@ -65,12 +65,19 @@ missing gameplay or selection linkage does not invalidate an otherwise complete 
 conflict or an abandoned attempt suppresses confirmation. Supplemental and previous-best unknowns do
 not get guessed values and do not block the shared result payload.
 
+The common RESULT header and title/artist/chart ROIs are screen-global. Clear, score, previous-best,
+judgment, FAST/SLOW, combo-break, and play-option ROIs are panel-local with origins `x=0` and
+`x=1360`. The screen predicate supplies `ResultPanelSide` to the crop router; cropping never
+re-detects the side. Only field observations whose side equals the stabilized episode side enter
+semantic accumulation. One opposite observation is discarded, unknown observations preserve the
+stable side, and two opposite observations retract a provisional result as an episode conflict.
+
 ## Music select
 
 | Field | Applicability predicate | Evidence required for `known` |
 | --- | --- | --- |
 | music-select state | Precondition for every music-select event | Unique layout/state anchors; rapid scroll, transition, overlay, and unknown classes reject |
-| play side | Always | Exactly one fixed footer label, `PLAYER 01 SIDE` on the left or `PLAYER 02 SIDE` on the right, exceeds the calibrated bright-pixel minimum and winner margin; the same side must occur twice with no opposite observation in the episode |
+| play side | SP only | For SP, exactly one fixed footer label, `PLAYER 01 SIDE` on the left or `PLAYER 02 SIDE` on the right, exceeds the calibrated bright-pixel minimum and winner margin; the same side must occur twice with no opposite observation in the episode. DP emits `not_applicable` and does not require either footer label. |
 | play mode | Always | The fixed SELECT badge matches exactly one registered SP/DP template above minimum score and winner margin; the same type must occur twice with no opposite observation in the episode |
 | song | Always | Accepted central title and artist consistent with play mode, selected difficulty, selected level, and the active right-list title when readable |
 | selected difficulty and level | Always | Unique selected state and complete level consistent with the accepted catalog chart |
@@ -80,11 +87,15 @@ not get guessed values and do not block the shared result payload.
 | DJ level | Derived presentation | Calculated from EX SCORE and catalog notes; never OCR input. |
 
 `music_selection_changed` is a UI-only lifecycle. `Selected` requires a unique catalog song/chart
-under title, artist, selected difficulty, stable SELECT play side, and stable SELECT play type. The
+under title, artist, selected difficulty, stable SELECT play type, and for SP a stable SELECT play
+side. DP does not wait for footer play-side evidence. The
 resolver emits no initial unknown, deduplicates equal states, emits unresolved after losing a
 previously selected chart, and emits episode-ended unresolved at SELECT finalization. This state
 cannot satisfy RESULT presence, attempt linkage, numeric stability, or `result_changed` acceptance;
-RESULT playside remains on its separately admitted contract above.
+RESULT play side remains on its separately admitted contract above. If stable SELECT and SP RESULT
+play sides disagree, the complete RESULT remains authoritative; only the attempt linkage and the
+retained SELECT context are discarded. The mismatch is recorded diagnostically, and that SELECT
+context is not reused until a new stable selection replaces it.
 
 A general-IIDX title whose INFINITAS status is `unknown` may be accepted only by
 the separately calibrated stricter title/context policy. The event preserves
@@ -95,6 +106,9 @@ the separately calibrated stricter title/context policy. The event preserves
 - Stability uses distinct, fresh observations from one capture generation and
   the versioned minimum dwell. A disconnected or stalled source cannot turn one
   old frame into temporal evidence.
+- RESULT panel-side state is cleared by positive screen exit, capture-session end, or a new
+  immutable binding. Unknown predicate frames never count as opposite-side evidence and do not age
+  out a stable side.
 - `result_changed` emits an envelope event ID and sequence for provisional, retracted, re-resolved,
   and confirmed transitions; there is no result-local revision. Confirmed emits once per attempt.
   Music select deduplicates a stable

@@ -3268,6 +3268,7 @@ fn live_session_event_value(
             monotonic_start_ms,
             monotonic_end_ms,
             screen,
+            result_panel_side,
         } => {
             let mut value = serde_json::json!({
                 "schema": schema,
@@ -3277,6 +3278,7 @@ fn live_session_event_value(
                 "monotonic_start_ms": monotonic_start_ms,
                 "monotonic_end_ms": monotonic_end_ms,
                 "screen": screen,
+                "result_panel_side": result_panel_side,
                 "unknown_reason": (screen == scorepeek::recognition::ScreenClass::Unknown)
                     .then_some("predicate_not_matched"),
             });
@@ -3319,6 +3321,7 @@ fn live_session_event_value(
                 scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
                     "result",
                     serde_json::json!({
+                        "panel_side": fields.panel_side,
                         "title": fields.title.open_text,
                         "artist": fields.artist.open_text,
                         "clear_type": observation.clear_type(),
@@ -5842,7 +5845,7 @@ node_name = "must-not-be-inherited"
             1,
             "the corpus reader rejects mixed-schema sessions"
         );
-        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v13"));
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v14"));
     }
 
     #[test]
@@ -5856,10 +5859,11 @@ node_name = "must-not-be-inherited"
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
                 screen: scorepeek::recognition::ScreenClass::Unknown,
+                result_panel_side: None,
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v13");
+        assert_eq!(value["schema"], "scorepeek-run-event-v14");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -5889,6 +5893,7 @@ node_name = "must-not-be-inherited"
         let output = RegisteredScreenFieldObservation::from_fields(
             &domain,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                panel_side: scorepeek::recognition::ResultPanelSide::Right,
                 title: text("TITLE EXACT"),
                 artist: text("ARTIST EXACT"),
                 clear_type: text("FAILED"),
@@ -5901,8 +5906,8 @@ node_name = "must-not-be-inherited"
             }),
         );
         let value = live_session_event_value(
-            None,
-            None,
+            Some("invocation-session-1"),
+            Some(1),
             GamescopeLiveSessionEvent::Observation {
                 screen_episode_id: 0,
                 sequence: 42,
@@ -5914,6 +5919,7 @@ node_name = "must-not-be-inherited"
         .unwrap();
         assert_eq!(value["event"], "field_observation");
         assert_eq!(value["sequence"], 42);
+        assert_eq!(value["fields"]["panel_side"], "right");
         assert_eq!(value["fields"]["title"], "TITLE EXACT");
         assert_eq!(value["fields"]["artist"], "ARTIST EXACT");
         assert_eq!(value["fields"]["clear_type"], "FAILED");
@@ -5922,6 +5928,170 @@ node_name = "must-not-be-inherited"
             value["result_song_resolution"]["reason"],
             "no_catalog_candidates"
         );
+        let event = crate::routine_output::RunEvent::from_value(value).unwrap();
+        let crate::routine_output::RunEventKind::FieldObservation { fields, .. } = event.kind
+        else {
+            panic!("live result observation changed event kind");
+        };
+        assert_eq!(fields["panel_side"], "right");
+    }
+
+    #[test]
+    fn production_result_serializer_reaches_provisional_and_confirmed_output() {
+        use crate::routine_output::{ResultState, RoutineOutput, RunEvent, RunEventKind};
+        use scorepeek::recognition::ResultPanelSide;
+
+        let catalog = catalog_from_records(&[
+            tachi_record("song-1", "SYNTHETIC SONG", "SYNTHETIC ARTIST"),
+            tachi_record("song-2", "DISTANT RUNNER UP", "OTHER ARTIST"),
+        ]);
+        let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
+        let numeric = |value: &str| DynamicTextObservation {
+            input_width: 1,
+            output_timesteps: 1,
+            open_text: value.to_owned(),
+            constrained_text: Some(value.to_owned()),
+        };
+        let observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
+            &domain,
+            &catalog,
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                panel_side: ResultPanelSide::Right,
+                title: text("SYNTHETIC SONG"),
+                artist: text("SYNTHETIC ARTIST"),
+                clear_type: text("CLEAR"),
+                difficulty: text("NORMAL"),
+                play_type: text("SP"),
+                level: numeric("1"),
+                notes: numeric("1"),
+                current_score: numeric("2"),
+                previous_clear_type: text("NO PLAY"),
+                previous_score: numeric("0"),
+                previous_miss_count: numeric("0"),
+                miss_count: numeric("0"),
+                pgreat: numeric("1"),
+                great: numeric("0"),
+                good: numeric("0"),
+                bad: numeric("0"),
+                poor: numeric("0"),
+                fast: numeric("0"),
+                slow: numeric("0"),
+                combo_break: numeric("0"),
+                ..Default::default()
+            }),
+        );
+        assert!(
+            observation.result_chart_resolution().is_some(),
+            "song={:?} fields={:?}",
+            observation.song_resolution(),
+            observation.parsed_result_fields()
+        );
+        assert!(observation.result_performance_resolution().is_some());
+
+        let mut routine = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
+        let mut publish = |event| {
+            let value =
+                live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
+            routine
+                .publish(&RunEvent::from_value(value).unwrap())
+                .unwrap();
+        };
+        for (screen_episode_id, sequence, screen, phase) in [
+            (
+                1,
+                1,
+                scorepeek::recognition::ScreenClass::MusicSelect,
+                crate::capture_live::SemanticScreenEpisodePhase::Started,
+            ),
+            (
+                1,
+                2,
+                scorepeek::recognition::ScreenClass::MusicSelect,
+                crate::capture_live::SemanticScreenEpisodePhase::Finalized,
+            ),
+            (
+                2,
+                3,
+                scorepeek::recognition::ScreenClass::Play,
+                crate::capture_live::SemanticScreenEpisodePhase::Started,
+            ),
+            (
+                2,
+                4,
+                scorepeek::recognition::ScreenClass::Play,
+                crate::capture_live::SemanticScreenEpisodePhase::Finalized,
+            ),
+            (
+                3,
+                5,
+                scorepeek::recognition::ScreenClass::Result,
+                crate::capture_live::SemanticScreenEpisodePhase::Started,
+            ),
+        ] {
+            publish(GamescopeLiveSessionEvent::SemanticScreenEpisode {
+                screen_episode_id,
+                sequence,
+                monotonic_end_ms: sequence * 100,
+                screen,
+                phase,
+            });
+        }
+        for sequence in [6, 7] {
+            publish(GamescopeLiveSessionEvent::RawScreenObserved {
+                semantic_episode_id: Some(3),
+                sequence,
+                monotonic_start_ms: sequence * 100,
+                monotonic_end_ms: sequence * 100 + 25,
+                screen: scorepeek::recognition::ScreenClass::Result,
+                result_panel_side: Some(ResultPanelSide::Right),
+            });
+        }
+        for sequence in [8, 9] {
+            publish(GamescopeLiveSessionEvent::Observation {
+                screen_episode_id: 3,
+                sequence,
+                monotonic_start_ms: sequence * 100,
+                monotonic_end_ms: sequence * 100 + 25,
+                output: &observation,
+            });
+        }
+        drop(publish);
+        assert!(routine.take_headless_events().iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Provisional { ref result, .. },
+                ..
+            } if result.play_side
+                == crate::routine_output::PlaySideApplicability::Known(
+                    scorepeek::recognition::PlaySide::TwoPlayer
+                )
+        )));
+
+        let value = live_session_event_value(
+            Some("invocation-session-1"),
+            Some(1),
+            GamescopeLiveSessionEvent::SemanticScreenEpisode {
+                screen_episode_id: 3,
+                sequence: 10,
+                monotonic_end_ms: 1_000,
+                screen: scorepeek::recognition::ScreenClass::Result,
+                phase: crate::capture_live::SemanticScreenEpisodePhase::Finalized,
+            },
+        )
+        .unwrap();
+        routine
+            .publish(&RunEvent::from_value(value).unwrap())
+            .unwrap();
+        assert!(routine.take_headless_events().iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { ref result, .. },
+                ..
+            } if result.play_side
+                == crate::routine_output::PlaySideApplicability::Known(
+                    scorepeek::recognition::PlaySide::TwoPlayer
+                )
+        )));
     }
 
     #[test]
@@ -5952,7 +6122,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v13");
+        assert_eq!(value["schema"], "scorepeek-run-event-v14");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

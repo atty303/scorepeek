@@ -433,8 +433,8 @@ impl DiagnosticBridge {
                 screen_path_layout_sha256: predicate.screen_path_layout_sha256.clone(),
                 result_warm_pixels: predicate.result_presence.warm_pixels,
                 result_warm_pixels_min: predicate.result_presence.warm_pixels_min,
-                result_upper_panel_edge_pixels: predicate.result_presence.upper_panel_edge_pixels,
-                result_lower_panel_edge_pixels: predicate.result_presence.lower_panel_edge_pixels,
+                result_panel_side: predicate.result_presence.panel_side,
+                result_panels: predicate.result_presence.panels,
                 result_horizontal_edge_pixels_min: predicate
                     .result_presence
                     .horizontal_edge_pixels_min,
@@ -483,31 +483,8 @@ impl DiagnosticBridge {
                 decide_transition_saturated_pixels_min: predicate
                     .decide_transition_presence
                     .saturated_pixels_min,
-                play_bpm_outline_cyan_component_pixels: predicate
-                    .play_presence
-                    .cyan_component_pixels,
-                play_bpm_outline_cyan_component_pixels_min: predicate
-                    .play_presence
-                    .cyan_component_pixels_min,
-                play_bpm_outline_cyan_component_pixels_max: predicate
-                    .play_presence
-                    .cyan_component_pixels_max,
-                play_bpm_outline_width: predicate.play_presence.outline_width,
-                play_bpm_outline_width_min: predicate.play_presence.outline_width_min,
-                play_bpm_outline_width_max: predicate.play_presence.outline_width_max,
-                play_bpm_outline_height: predicate.play_presence.outline_height,
-                play_bpm_outline_height_min: predicate.play_presence.outline_height_min,
-                play_bpm_outline_height_max: predicate.play_presence.outline_height_max,
-                play_bpm_outline_top_edge_pixels: predicate.play_presence.top_edge_pixels,
-                play_bpm_outline_top_edge_pixels_min: predicate.play_presence.top_edge_pixels_min,
-                play_bpm_outline_middle_row_pixels: predicate.play_presence.middle_row_pixels,
-                play_bpm_outline_middle_row_pixels_max: predicate
-                    .play_presence
-                    .middle_row_pixels_max,
-                play_bpm_outline_bottom_edge_pixels: predicate.play_presence.bottom_edge_pixels,
-                play_bpm_outline_bottom_edge_pixels_min: predicate
-                    .play_presence
-                    .bottom_edge_pixels_min,
+                play_qualifying_bpm_searches: predicate.play_presence.qualifying_searches,
+                play_bpm_outlines: predicate.play_presence.searches,
             },
         })
     }

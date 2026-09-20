@@ -79,15 +79,10 @@ impl PreparedRecognitionFrame {
         let predicate = inspect_canonical_rgb8(pixels)?;
         let screen_classification_us = duration_us(classification_started.elapsed());
         let crop_started = Instant::now();
-        let field_inputs = match predicate.screen {
-            ScreenClass::Result | ScreenClass::MusicSelect => {
-                Some(route_screen_rgb8_crops(pixels, predicate.screen)?)
-            }
-            ScreenClass::ModeSelect
-            | ScreenClass::DecideTransition
-            | ScreenClass::Play
-            | ScreenClass::Unknown => None,
-        };
+        let field_inputs = predicate
+            .crop_route()
+            .map(|route| route_screen_rgb8_crops(pixels, route))
+            .transpose()?;
         let crop_prepare_us = field_inputs
             .as_ref()
             .map(|_| duration_us(crop_started.elapsed()));
@@ -129,6 +124,11 @@ impl<'a> RecognitionObservation<'a> {
     #[must_use]
     pub const fn screen(&self) -> ScreenClass {
         self.predicate.screen
+    }
+
+    #[must_use]
+    pub const fn result_panel_side(&self) -> Option<scorepeek::recognition::ResultPanelSide> {
+        self.predicate.result_presence.panel_side.known()
     }
 
     #[must_use]
@@ -365,8 +365,12 @@ impl RecognitionSession {
             {
                 None
             }
-            screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
-                let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), screen) else {
+            ScreenClass::Result | ScreenClass::MusicSelect => {
+                let Some(route) = observation.predicate().crop_route() else {
+                    let _ = self.bridge.record_recognition_failure(frame);
+                    return Err(RecognitionSessionError::RecognitionFailed);
+                };
+                let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), route) else {
                     let _ = self.bridge.record_recognition_failure(frame);
                     return Err(RecognitionSessionError::RecognitionFailed);
                 };

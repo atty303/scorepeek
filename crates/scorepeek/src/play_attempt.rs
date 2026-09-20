@@ -158,6 +158,8 @@ impl PlayAttemptReducer {
             attempt.result_relation = if let Some(reason) = rejection {
                 push_reason(&mut attempt.reasons, reason);
                 PlayAttemptResultRelation::Conflict
+            } else if !attempt.path.select_observed && attempt.parent_attempt_id.is_none() {
+                PlayAttemptResultRelation::Unlinked
             } else {
                 PlayAttemptResultRelation::Confirmed
             };
@@ -170,16 +172,30 @@ impl PlayAttemptReducer {
         let PlayAttemptState::Attempt { attempt } = &self.state else {
             return None;
         };
-        let linked = attempt.path.select_observed || attempt.parent_attempt_id.is_some();
         (attempt.phase == PlayAttemptPhase::Completed
-            && linked
             && attempt.path.play_observed
             && attempt.path.result_observed
-            && attempt.result_relation == PlayAttemptResultRelation::Confirmed)
-            .then_some(AcceptedPlayAttempt {
-                attempt_id: attempt.attempt_id,
-                parent_attempt_id: attempt.parent_attempt_id,
-            })
+            && matches!(
+                attempt.result_relation,
+                PlayAttemptResultRelation::Confirmed | PlayAttemptResultRelation::Unlinked
+            ))
+        .then_some(AcceptedPlayAttempt {
+            attempt_id: attempt.attempt_id,
+            parent_attempt_id: attempt.parent_attempt_id,
+        })
+    }
+
+    pub fn detach_selection_linkage(&mut self) -> Option<PlayAttemptState> {
+        let previous = self.state.clone();
+        if let PlayAttemptState::Attempt { attempt } = &mut self.state
+            && attempt.phase == PlayAttemptPhase::Result
+            && (attempt.path.select_observed || attempt.parent_attempt_id.is_some())
+        {
+            attempt.path.select_observed = false;
+            attempt.parent_attempt_id = None;
+            push_reason(&mut attempt.reasons, PlayAttemptReason::LinkageConflict);
+        }
+        (self.state != previous).then(|| self.state.clone())
     }
 
     #[must_use]
@@ -358,6 +374,48 @@ mod tests {
             resolver.accepted_result().unwrap().parent_attempt_id,
             Some(1)
         );
+    }
+
+    #[test]
+    fn side_mismatch_detaches_selection_without_rejecting_complete_result() {
+        let mut resolver = PlayAttemptReducer::default();
+        resolver.observe_selection_screen();
+        resolver.observe_screen(PlayAttemptScreen::Play, 2);
+        resolver.observe_screen(PlayAttemptScreen::Result, 3);
+        resolver.detach_selection_linkage();
+        resolver.resolve_result_with_reason(None);
+        assert_eq!(resolver.accepted_result().unwrap().attempt_id, 1);
+        assert!(matches!(
+            resolver.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.result_relation == PlayAttemptResultRelation::Unlinked
+                    && attempt.reasons.contains(&PlayAttemptReason::LinkageConflict)
+                    && !attempt.path.select_observed
+        ));
+    }
+
+    #[test]
+    fn side_mismatch_detaches_inherited_retry_linkage() {
+        let mut resolver = PlayAttemptReducer::default();
+        resolver.observe_selection_screen();
+        resolver.observe_screen(PlayAttemptScreen::Play, 2);
+        resolver.observe_screen(PlayAttemptScreen::Result, 3);
+        resolver.resolve_result_with_reason(None);
+        resolver.observe_screen(PlayAttemptScreen::Play, 4);
+        resolver.observe_screen(PlayAttemptScreen::Result, 5);
+        assert_eq!(resolver.active_result().unwrap().parent_attempt_id, Some(1));
+
+        resolver.detach_selection_linkage();
+        resolver.resolve_result_with_reason(None);
+
+        assert_eq!(resolver.accepted_result().unwrap().parent_attempt_id, None);
+        assert!(matches!(
+            resolver.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.result_relation == PlayAttemptResultRelation::Unlinked
+                    && attempt.reasons.contains(&PlayAttemptReason::LinkageConflict)
+                    && !attempt.path.select_observed
+        ));
     }
 
     #[test]
