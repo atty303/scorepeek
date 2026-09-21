@@ -1,0 +1,12 @@
+Task: Eliminate flaky tests in clean and incremental validation
+Anchor: ac74dce076ddce9326199851df2428b6cf2e834f
+Base: 9de26fd3317988e6eac6fe87913af2c62004290d
+Branch: main
+Commits: ac74dce076ddce9326199851df2428b6cf2e834f fix: eliminate parallel test artifact races
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; design-program-observability; review; maintain-agent-guidance
+Conditions: durable test/build reliability repair; workspace-write sandbox; approved target-equivalent access used for Unix sockets, Git metadata, complete tests, and post-commit build; concurrent landing-page commit 751a88f was preserved; no push or deployment authorized
+Evidence: The initial full suite exposed a missing target/skins/result-aurora.zip while concurrent skin builders shared and deleted one staging directory. Per-run staging was moved under the publication directory and completed ZIPs are now atomically installed with mv -fT; interruption and cleanup failures preserve nonzero status. A later clean run exposed a one-byte broken-pipe assertion that could succeed while a transient inherited reader existed; the test now writes one production-sized canonical frame. The scorepeek library suite passed 10 consecutive target-equivalent runs. The final exact diff passed mise run test incrementally in 32.55 seconds and after cargo clean in 475.14 seconds. Fresh independent review reported no actionable findings. Post-commit mise run build passed in 100.87 seconds and skipped the unchanged web bundle.
+Authority: scripts/build-skins.sh defines skin package publication; crates/scorepeek/src/canonical_recording.rs defines the encoder stdin regression test; mise run test is the complete repository validation entry point.
+Transcript:
+- U1: flaky testを修正して。今毎回どこかが失敗して再実行で通すということをやっている。cargo cleanからのtestと、incremental buildでのtest両方を対象にflakyがなくなるまで改善する
+  - A: Investigated primary failures separately from cancellation noise, fixed concurrent skin ZIP publication and the undersized broken-pipe test input, stress-tested the affected library test, passed the complete suite from both incremental and clean states, obtained a fresh review with no findings, committed the two-file repair, and rebuilt the committed binary. No push was performed.
