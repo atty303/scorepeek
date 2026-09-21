@@ -1,3 +1,10 @@
 //! Recording-store capacity policy.
 
-pub use super::writer::RecordingRetention;
+use serde::Serialize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingRetention {
+    Selective,
+    All,
+}

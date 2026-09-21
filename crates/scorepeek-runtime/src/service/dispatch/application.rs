@@ -18,7 +18,11 @@ use crate::{
     inventory::{doctor as inventory, vulkan_layer},
     platform::signal as live_control,
     recognition_artifact,
-    recording::{simulation as recording_simulation, writer as canonical_recording},
+    recording::{
+        policy::{DEFAULT_RECORDING_MEMORY_MIB, RecordingMemoryLimit},
+        retention::RecordingRetention,
+        simulation as recording_simulation, writer as canonical_recording,
+    },
     service::session as routine_watcher,
 };
 use scorepeek::catalog::CatalogStore;
@@ -693,7 +697,7 @@ fn merge_run_options(config: ConfigFile, cli: RunArgs) -> Result<RoutineRunOptio
     if let Some(value) = environment_recording_memory {
         recording_memory_mib = Some(value);
     }
-    let mut recording_retention = canonical_recording::RecordingRetention::Selective;
+    let mut recording_retention = RecordingRetention::Selective;
     if cli.record || cli.record_all {
         recording = true;
     } else if cli.no_record {
@@ -704,13 +708,13 @@ fn merge_run_options(config: ConfigFile, cli: RunArgs) -> Result<RoutineRunOptio
         recording_memory_mib = Some(value);
     }
     if cli.record_all {
-        recording_retention = canonical_recording::RecordingRetention::All;
+        recording_retention = RecordingRetention::All;
     }
     if recording_memory_mib.is_some() && !recording {
         return Err("recording memory limit requires recording to be enabled".to_owned());
     }
-    let recording_memory_limit = canonical_recording::RecordingMemoryLimit::from_mib(
-        recording_memory_mib.unwrap_or(canonical_recording::DEFAULT_RECORDING_MEMORY_MIB),
+    let recording_memory_limit = RecordingMemoryLimit::from_mib(
+        recording_memory_mib.unwrap_or(DEFAULT_RECORDING_MEMORY_MIB),
     )?;
 
     let mut overlays = OverlayOptions {
@@ -1550,8 +1554,8 @@ struct RoutineRunOptions {
     scores_db: Option<PathBuf>,
     no_scores: bool,
     recording: bool,
-    recording_memory_limit: canonical_recording::RecordingMemoryLimit,
-    recording_retention: canonical_recording::RecordingRetention,
+    recording_memory_limit: RecordingMemoryLimit,
+    recording_retention: RecordingRetention,
 }
 
 #[derive(Clone)]
@@ -1658,7 +1662,7 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
     };
     let mut crop_seen = [false; 4];
     let mut recording = false;
-    let mut recording_retention = canonical_recording::RecordingRetention::Selective;
+    let mut recording_retention = RecordingRetention::Selective;
     let mut scores_db = None;
     let mut no_scores = false;
     let mut recording_memory_mib = None;
@@ -1684,7 +1688,7 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
             Some("--record") if !recording => recording = true,
             Some("--record-all") if !recording => {
                 recording = true;
-                recording_retention = canonical_recording::RecordingRetention::All;
+                recording_retention = RecordingRetention::All;
             }
             Some("--no-scores") if !no_scores => no_scores = true,
             Some("--scores-db") if scores_db.is_none() => {
@@ -1758,8 +1762,8 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions, 
     if recording_memory_mib.is_some() && !recording {
         return Err("--record-memory-mib requires --record or --record-all".to_owned());
     }
-    let recording_memory_limit = canonical_recording::RecordingMemoryLimit::from_mib(
-        recording_memory_mib.unwrap_or(canonical_recording::DEFAULT_RECORDING_MEMORY_MIB),
+    let recording_memory_limit = RecordingMemoryLimit::from_mib(
+        recording_memory_mib.unwrap_or(DEFAULT_RECORDING_MEMORY_MIB),
     )?;
     let capture = match (capture, node_name) {
         (Some("pipewire"), Some(node_name)) => RoutineCapture::Pipewire {
@@ -1800,8 +1804,8 @@ fn run_routine_live_session(
     capture: &RoutineCapture,
     crop: scorepeek::capture::EdgeCrop,
     recording: &str,
-    recording_memory_limit: canonical_recording::RecordingMemoryLimit,
-    recording_retention: canonical_recording::RecordingRetention,
+    recording_memory_limit: RecordingMemoryLimit,
+    recording_retention: RecordingRetention,
     scores_db: Option<&Path>,
     no_scores: bool,
     overlays: OverlayOptions,
@@ -2554,8 +2558,8 @@ fn run_live_session(
         values,
         bundle_root,
         persist_recognition,
-        canonical_recording::RecordingMemoryLimit::default_limit(),
-        canonical_recording::RecordingRetention::Selective,
+        RecordingMemoryLimit::default_limit(),
+        RecordingRetention::Selective,
         None,
         None,
         None,
@@ -2577,8 +2581,8 @@ fn execute_live_session(
     values: &[&OsStr],
     bundle_root: &Path,
     persist_recognition: bool,
-    recording_memory_limit: canonical_recording::RecordingMemoryLimit,
-    recording_retention: canonical_recording::RecordingRetention,
+    recording_memory_limit: RecordingMemoryLimit,
+    recording_retention: RecordingRetention,
     canonical_recording_root: Option<&Path>,
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
@@ -3337,8 +3341,8 @@ fn run_capture_field_observation(
             canonical_recording_root: None,
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
-            recording_memory_limit: canonical_recording::RecordingMemoryLimit::default_limit(),
-            recording_retention: canonical_recording::RecordingRetention::Selective,
+            recording_memory_limit: RecordingMemoryLimit::default_limit(),
+            recording_retention: RecordingRetention::Selective,
             runtime_capture: capture_live::RuntimeCaptureInput::LegacyGamescope {
                 binding_path: Path::new(binding),
                 expected_binding_sha256: &binding_digest,
@@ -4716,12 +4720,13 @@ fn print_usage() {
 mod tests {
     use super::{
         CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
-        ConfigFile, LIVE_SESSION_FLAGS, PrivatePublicationPoint, RunArgs, catalog_paths,
-        command_flag_values, initialize_routine_model, live_session_event_value, load_run_options,
-        optional_recognition_root, parse_diagnostic_recording_policy, parse_routine_run_options,
-        prepare_live_diagnostic_root, publish_private_file, publish_private_file_with,
-        routine_session_disposition, run_command, run_config_command, run_startup_stage,
-        run_with_model_initializer, transient_admission_capture_error, validate_config_file,
+        ConfigFile, LIVE_SESSION_FLAGS, PrivatePublicationPoint, RecordingRetention, RunArgs,
+        catalog_paths, command_flag_values, initialize_routine_model, live_session_event_value,
+        load_run_options, optional_recognition_root, parse_diagnostic_recording_policy,
+        parse_routine_run_options, prepare_live_diagnostic_root, publish_private_file,
+        publish_private_file_with, routine_session_disposition, run_command, run_config_command,
+        run_startup_stage, run_with_model_initializer, transient_admission_capture_error,
+        validate_config_file,
     };
     use super::{LiveSessionEmission, run_event_from_live_emission};
     use crate::capture_live::GamescopeLiveSessionEvent;
@@ -5351,10 +5356,7 @@ node_name = "must-not-be-inherited"
         let record = ["--capture", "vulkan-layer", "--record"].map(OsString::from);
         let parsed = parse_routine_run_options(&record).unwrap();
         assert!(parsed.recording);
-        assert_eq!(
-            parsed.recording_retention,
-            crate::recording::writer::RecordingRetention::Selective
-        );
+        assert_eq!(parsed.recording_retention, RecordingRetention::Selective);
         assert_eq!(
             parsed.recording_memory_limit.bytes(),
             1024_u64 * 1024 * 1024
@@ -5376,10 +5378,7 @@ node_name = "must-not-be-inherited"
         let record_all = ["--capture", "vulkan-layer", "--record-all"].map(OsString::from);
         let parsed = parse_routine_run_options(&record_all).unwrap();
         assert!(parsed.recording);
-        assert_eq!(
-            parsed.recording_retention,
-            crate::recording::writer::RecordingRetention::All
-        );
+        assert_eq!(parsed.recording_retention, RecordingRetention::All);
     }
 
     #[test]

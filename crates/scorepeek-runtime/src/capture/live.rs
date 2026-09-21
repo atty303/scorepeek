@@ -669,8 +669,8 @@ pub struct GamescopeFieldObservationGateConfig<'a> {
     pub recognition_artifact_root: Option<&'a std::path::Path>,
     pub canonical_recording_root: Option<&'a std::path::Path>,
     pub recognition_artifact_retention: RecognitionArtifactRetention,
-    pub recording_memory_limit: crate::recording::writer::RecordingMemoryLimit,
-    pub recording_retention: crate::recording::writer::RecordingRetention,
+    pub recording_memory_limit: crate::recording::policy::RecordingMemoryLimit,
+    pub recording_retention: crate::recording::retention::RecordingRetention,
     pub runtime_capture: RuntimeCaptureInput<'a>,
 }
 
@@ -1389,7 +1389,7 @@ struct StartedFieldObservationGate {
     artifact_requested: bool,
     canonical_recorder: Option<CanonicalRecordingWorker>,
     canonical_recording_start_failed: bool,
-    recording_memory_limit: crate::recording::writer::RecordingMemoryLimit,
+    recording_memory_limit: crate::recording::policy::RecordingMemoryLimit,
     sink: BoundedDiagnosticSink,
     capture_profile_document: Option<String>,
     normalizer_document: Option<String>,
