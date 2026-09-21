@@ -1,17 +1,14 @@
 use crate::bridge::data::Feed;
 use crate::host::lifecycle::{Backend, Config};
 use axum::{Router, routing::get};
-use std::{
-    sync::{Arc, Mutex, atomic::Ordering},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 use crate::server::state::Shared;
 
 pub(crate) async fn serve(
     config: Config,
-    mut input: impl std::io::Read + Send + 'static,
+    input: impl std::io::Read + Send + 'static,
 ) -> Result<(), String> {
     let skins = crate::skin::StoreRoot::new(config.skin_store.clone());
     for skin in config
@@ -27,14 +24,7 @@ pub(crate) async fn serve(
     let feed = Feed::start(config.clone(), Arc::new(move || wake.notify_waiters()))
         .map_err(|error| error.to_string())?;
     let stop = Arc::clone(&feed.stop);
-    std::thread::Builder::new()
-        .name("overlay-parent".into())
-        .spawn(move || {
-            let mut byte = [0];
-            let _ = input.read(&mut byte);
-            stop.store(true, Ordering::Release);
-        })
-        .map_err(|error| error.to_string())?;
+    crate::host::shutdown::watch_parent(input, Arc::clone(&stop))?;
     let managed_canvases = config
         .canvases
         .iter()
@@ -68,11 +58,7 @@ pub(crate) async fn serve(
         &serde_json::json!({"backend":"obs","status":"success"}),
     );
     axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            while !shared.feed.stop.load(Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
+        .with_graceful_shutdown(crate::host::shutdown::requested(stop))
         .await
         .map_err(|error| error.to_string())
 }
