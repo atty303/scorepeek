@@ -4,6 +4,8 @@ use blitz_dom::Document as _;
 use dioxus_native_dom::DioxusDocument;
 use std::sync::Arc;
 
+use super::focus::focus_clicked_button;
+
 #[derive(Default)]
 pub(crate) struct PointerInput {
     buttons: blitz_traits::events::MouseEventButtons,
@@ -13,33 +15,6 @@ impl PointerInput {
     #[cfg(test)]
     pub(crate) const fn buttons(&self) -> blitz_traits::events::MouseEventButtons {
         self.buttons
-    }
-
-    pub(crate) fn focus_clicked_button(document: &mut DioxusDocument, point: [f32; 2]) {
-        // Browsers focus an enabled button on primary click. Blitz currently only performs its
-        // pointer-down focus default for text inputs, so keep this proven renderer difference at
-        // the native event adapter rather than teaching shared Dioxus components about native.
-        let button = {
-            let inner = document.inner.borrow();
-            let mut candidate = inner.element_from_point(point[0], point[1]);
-            loop {
-                let Some(id) = candidate else { break None };
-                let Some(node) = inner.get_node(id) else {
-                    break None;
-                };
-                if node.is_focussable()
-                    && node.element_data().is_some_and(|element| {
-                        element.name.local.as_ref().eq_ignore_ascii_case("button")
-                    })
-                {
-                    break Some(id);
-                }
-                candidate = node.parent;
-            }
-        };
-        if let Some(button) = button {
-            document.inner.borrow_mut().set_focus_to(button);
-        }
     }
 
     pub(crate) fn dispatch_blitz(
@@ -98,7 +73,7 @@ impl PointerInput {
         self.dispatch_blitz(document, point, button, pressed);
         if pressed == Some(false) && button == 0x110 {
             let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
-            Self::focus_clicked_button(document, [point.x, point.y]);
+            focus_clicked_button(document, [point.x, point.y]);
         }
     }
     pub(crate) fn click(&mut self, document: &mut DioxusDocument, point: [f64; 2]) {

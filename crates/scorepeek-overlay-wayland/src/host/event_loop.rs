@@ -1,7 +1,9 @@
 //! Safe Wayland lifecycle, window, output, and input adapter.
 use crate::input::keyboard as input;
 pub use crate::input::keyboard::{TextCommand, TextInputState, TextUpdate};
+use crate::window::geometry::upper_right_x;
 pub use crate::window::scale::OutputDescription;
+use crate::window::scale::scaled_size;
 use raw_wayland_handles::SurfaceHandle;
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::{
@@ -489,11 +491,6 @@ impl Shell {
     }
 }
 
-fn upper_right_x(output_width: i32, surface_width: u32, inset: i32) -> Option<i32> {
-    output_width
-        .checked_sub(i32::try_from(surface_width).ok()?)?
-        .checked_sub(inset.max(0))
-}
 pub(crate) struct Platform {
     pub(crate) qh: QueueHandle<Self>,
     pub(crate) registry_state: RegistryState,
@@ -876,10 +873,6 @@ macro_rules! no_scale_events {
 }
 no_scale_events!(WpFractionalScaleManagerV1, WpViewporter, WpViewport);
 
-fn scaled_size(logical: u32, scale_120: u32) -> u32 {
-    u32::try_from((u64::from(logical) * u64::from(scale_120)).div_ceil(120)).unwrap_or(u32::MAX)
-}
-
 struct SelectedOutput {
     output: wl_output::WlOutput,
     info: OutputInfo,
@@ -951,10 +944,7 @@ fn choose_output_index<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        LayerStateTarget, apply_layer_state, choose_output_index, pointer_scroll_delta,
-        scaled_size, upper_right_x,
-    };
+    use super::{LayerStateTarget, apply_layer_state, choose_output_index, pointer_scroll_delta};
     use std::cell::RefCell;
 
     #[derive(Debug, Eq, PartialEq)]
@@ -1013,20 +1003,6 @@ mod tests {
                 LayerRequest::LogicalSize(560, 1040),
             ]
         );
-    }
-
-    #[test]
-    fn integer_and_fractional_buffers_round_up() {
-        assert_eq!(scaled_size(1920, 120), 1920);
-        assert_eq!(scaled_size(960, 240), 1920);
-        assert_eq!(scaled_size(1001, 150), 1252);
-    }
-
-    #[test]
-    fn upper_right_position_uses_logical_output_width_and_inset() {
-        assert_eq!(upper_right_x(1920, 560, 20), Some(1340));
-        assert_eq!(upper_right_x(1920, 560, -20), Some(1360));
-        assert_eq!(upper_right_x(100, 560, 20), Some(-480));
     }
 
     #[test]

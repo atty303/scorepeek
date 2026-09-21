@@ -10,6 +10,5 @@ pub mod game_version;
 pub mod model;
 pub mod recognition;
 pub mod replay;
-pub mod runtime;
 pub mod scores;
 pub mod session;
