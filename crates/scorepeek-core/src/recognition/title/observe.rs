@@ -187,11 +187,11 @@ fn candidate_match<T: Copy + Ord>(matches: BTreeSet<T>) -> CandidateMatch<T> {
     }
 }
 
-pub(super) fn exact_comparison_key(value: &str) -> String {
+pub(in crate::recognition) fn exact_comparison_key(value: &str) -> String {
     value.nfc().filter(|character| *character != ' ').collect()
 }
 
-pub(super) fn folded_comparison_key(value: &str) -> String {
+pub(in crate::recognition) fn folded_comparison_key(value: &str) -> String {
     value
         .nfc()
         .filter_map(|character| match character {

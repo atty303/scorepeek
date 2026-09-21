@@ -14,7 +14,6 @@ use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::ctc_sequence::CtcSequenceTrie;
 use super::title_decoder::{
     CatalogTitleDecision, CatalogTitleDecoderError, DiagnosticTitleThresholds,
     TITLE_DICTIONARY_SHA256, load_dictionary_contract, score_catalog_titles,
@@ -26,6 +25,7 @@ use super::title_preprocessor::{
 };
 use super::{RecognitionError, Rgb8Crop, read_title_crop_artifact};
 use crate::catalog::{Catalog, CatalogStore, CatalogStoreError};
+use crate::recognition::shared::ctc::CtcSequenceTrie;
 
 const MODEL_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-small-rec-onnx-v1.json");

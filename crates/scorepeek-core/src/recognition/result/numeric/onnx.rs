@@ -12,13 +12,13 @@ use super::numeric_fixed_slot::{
     FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID, extract_fixed_slot_fields,
     fixed_not_displayed_fields, fixed_slot_feature,
 };
-use super::numeric_specialist::{
-    FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
-    NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
-};
 use super::title_onnx::OnnxParityError;
 use super::{
     CanonicalLayout, DynamicTextObservation, ResultNumericCharacterLayout, ResultScreenRgb8Crops,
+};
+use crate::recognition::shared::{
+    FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
+    NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
 };
 
 pub const NUMERIC_PREPROCESSOR_ID: &str = FIXED_SLOT_PREPROCESSOR_ID;
@@ -681,7 +681,7 @@ fn encode_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recognition::numeric_specialist::NumericCandidate;
+    use crate::recognition::shared::NumericCandidate;
 
     fn calibration(minimum_runner_up_margin: f32) -> NumericCalibration {
         NumericCalibration {

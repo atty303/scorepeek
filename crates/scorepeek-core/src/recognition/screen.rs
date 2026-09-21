@@ -10,10 +10,6 @@ use sha2::{Digest as _, Sha256};
 use crate::catalog::Difficulty;
 use crate::frame::{CanonicalFrame, CanonicalLayout, Roi};
 
-#[path = "shared/candidates.rs"]
-pub(super) mod catalog_candidates;
-#[path = "shared/ctc.rs"]
-pub(super) mod ctc_sequence;
 #[path = "music_select/best.rs"]
 pub(super) mod music_select_best;
 #[path = "music_select/play_type.rs"]
@@ -26,8 +22,6 @@ pub(super) mod numeric_character_layout;
 pub(super) mod numeric_fixed_slot;
 #[path = "result/numeric/onnx.rs"]
 pub(super) mod numeric_onnx;
-#[path = "shared/confidence.rs"]
-pub(super) mod numeric_specialist;
 #[path = "result/play_options.rs"]
 pub(super) mod play_options;
 #[path = "result/observe.rs"]
@@ -45,12 +39,18 @@ pub(super) mod title_onnx;
 #[path = "title/preprocess.rs"]
 pub(super) mod title_preprocessor;
 
-pub use catalog_candidates::{
+pub use super::shared::{
     CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
     CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
     CatalogPrefixCandidateScore, CatalogTextCandidateScore, EvidenceFamily, JointEvidenceCandidate,
     JointEvidenceObservation, MusicSelectSongCandidateObservation, ResultSongCandidateObservation,
     ScreenCatalogCandidateObservations,
+};
+pub use super::shared::{
+    NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NUMERIC_TOP_CANDIDATES, NumericCalibration,
+    NumericCandidate, NumericField, NumericFieldInference, ScoreBreakdownCandidate,
+    ScoreBreakdownDecision, rank_numeric_probabilities, rank_numeric_sequences,
+    select_score_breakdown,
 };
 pub use music_select_best::{
     BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,
@@ -73,12 +73,6 @@ pub use numeric_onnx::{
     NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
     NumericBatchInference, NumericCellCandidate, NumericCellInference, NumericModelCalibrations,
     NumericModelContract, RegisteredNumericRuntime,
-};
-pub use numeric_specialist::{
-    NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NUMERIC_TOP_CANDIDATES, NumericCalibration,
-    NumericCandidate, NumericField, NumericFieldInference, ScoreBreakdownCandidate,
-    ScoreBreakdownDecision, rank_numeric_probabilities, rank_numeric_sequences,
-    select_score_breakdown,
 };
 pub use play_options::{
     PlayOption, PlayOptionMarkerObservation, PlayOptionMarkerState, PlayOptions,

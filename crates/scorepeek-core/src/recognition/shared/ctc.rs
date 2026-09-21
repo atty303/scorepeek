@@ -18,11 +18,11 @@ impl<T> Default for TrieNode<T> {
     }
 }
 
-pub(super) struct CtcSequenceTrie<T> {
+pub(in crate::recognition) struct CtcSequenceTrie<T> {
     nodes: Vec<TrieNode<T>>,
 }
 
-pub(super) struct CtcSequenceScores<'a, T> {
+pub(in crate::recognition) struct CtcSequenceScores<'a, T> {
     pub blank_log_probability: f64,
     pub values: Vec<(&'a T, f64)>,
 }

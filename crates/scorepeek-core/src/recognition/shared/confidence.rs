@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use super::ctc_sequence::CtcSequenceTrie;
+use super::ctc::CtcSequenceTrie;
 
 pub const NUMERIC_DICTIONARY: &str = "0123456789-";
 pub const NUMERIC_BLANK_INDEX: usize = 11;

@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
 use serde::{Deserialize, Serialize};
 
-use super::title::{
+use crate::recognition::screen::title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, exact_comparison_key, folded_comparison_key,
 };
-use super::{
+use crate::recognition::{
     MusicSelectScreenFieldObservations, ResultScreenFieldObservations, ScreenFieldObservations,
 };
 

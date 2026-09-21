@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::title::ctc_candidate_sequences;
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
-use crate::recognition::ctc_sequence::CtcSequenceTrie;
+use crate::recognition::shared::ctc::CtcSequenceTrie;
 
 pub const TITLE_DICTIONARY_SHA256: &str =
     "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1";
