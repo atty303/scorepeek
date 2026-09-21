@@ -1,0 +1,60 @@
+Task: Design and implement the bilingual scorepeek landing page
+Anchor: 751a88fb99c1da94262235a67e5e690a77b9bfe0
+Base: 9de26fd3317988e6eac6fe87913af2c62004290d
+Branch: main
+Commits: 751a88fb99c1da94262235a67e5e690a77b9bfe0 feat(site): add bilingual landing page
+Guidance: repository AGENTS.md; dig; imagegen; develop-repository; design-program-observability; investigate-problem; review; maintain-agent-guidance
+Conditions: durable static GitHub Pages change; workspace-write sandbox; approved target-equivalent access used for git metadata, Playwright user state, full tests, and post-commit build; no push or deployment authorized
+Evidence: Chromium rendered and was visually inspected for Japanese and English at desktop and mobile sizes; full mise run test passed on the second run in 80.86 seconds after an unrelated timing-sensitive recording test passed in isolation; fresh independent review reported no actionable findings
+Authority: The committed site pages, shared CSS and bundled assets, site checks, browser tests, and existing Pages workflow define the landing page.
+Transcript:
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) landing pageを作りたい
+  - A: Used dig, inspected the repository and product positioning, preserved existing work, and asked Q1 about the landing page's primary outcome.
+- U2: A. overlayは見た目にわかりやすいから重要度が高い。技術的なところは僕のこだわりポイントだけのせる
+  - A: Treated INFINITAS-player adoption as the primary outcome, kept overlay visually prominent, limited technical content, and asked Q2 how to position recording versus overlay.
+- U3: C. overlayがないと記録している意味がない。overlayは記録がないと意味がない
+  - A: Made automatic recording and overlay mutually necessary, equal product pillars and asked Q3 how the hero should demonstrate that relationship.
+- U4: B
+  - A: Chose a large finished overlay still for the hero, with recording linkage explained by copy and the following section, then asked Q4 which skin should represent the product.
+- U5: C
+  - A: Selected DJ Blackbox as the hero skin and asked Q5 whether its industrial visual language should govern the entire page.
+- U6: A
+  - A: Recorded the initial preference for a full industrial treatment; the user corrected it before the next design branch was finalized.
+- U7: B
+  - A: Adopted a neutral dark UI with lime accents and restrained DJ Blackbox texture, then asked Q6 for the primary-language strategy.
+- U8: C
+  - A: Chose complete Japanese and English versions and asked Q7 how their URLs and switching should work.
+- U9: A
+  - A: Chose separate /ja/ and /en/ URLs, persistent language links, and root browser-language guidance, then asked Q8 for the hero CTA destination.
+- U10: C. get startedは別途整備する。ctaだけでいい
+  - A: Limited the landing page to a GitHub CTA and deferred Get started, then asked Q9 which technical principles should appear.
+- U11: AとD
+  - A: Selected screen recognition without game-internal data dependency and separated extensibility through Event API, SQLite, and skins, then asked Q10 how deeply to present them.
+- U12: B
+  - A: Chose a compact Game screen to Recognition to Event API or SQLite to Overlays and tools flow diagram, then asked Q11 how strongly to communicate development status.
+- U13: C
+  - A: Left early-development messaging to GitHub rather than the landing page and asked Q12 for the hero headline tone.
+- U14: C
+  - A: Selected the explicit automatic IIDX tracking and overlay visualization headline and asked Q13 how to arrange copy and DJ Blackbox in the hero.
+- U15: B
+  - A: Chose left-side copy and CTA with a large right-side DJ Blackbox preview and asked Q14 what should follow the hero.
+- U16: A
+  - A: Chose the play-to-display story immediately after the hero and asked Q15 for its visual form.
+- U17: A
+  - A: Chose the three-stage Screen recognition to Automatic record to Overlay update flow and asked Q16 how to prove overlay customization.
+- U18: C
+  - A: Chose a three-skin gallery as the primary proof with the visual editor as supporting evidence and asked Q17 which overlay use case should lead.
+- U19: A
+  - A: Made personal everyday overlay use primary and OBS support secondary, then asked Q18 for overall information density.
+- U20: A
+  - A: Chose a concise single-page narrative from hero through closing GitHub CTA and asked Q19 whether to add analytics.
+- U21: A
+  - A: Chose no analytics or tracking and asked Q20 how to maintain the bilingual static pages.
+- U22: A
+  - A: Chose directly maintained Japanese and English HTML sharing CSS, images, and minimal JavaScript, then presented the full design contract for confirmation.
+- U23: 実際のデザインモックをcanvasかimagegenで作って
+  - A: Treated the accumulated design as approved, used imagegen with the existing logo and three skin previews, and produced a full-page Japanese desktop mock without official game imagery or gameplay captures.
+- U24: いいね、確定で
+  - A: Fixed the generated mock and all accumulated content, visual, language, CTA, and implementation decisions as the approved landing-page design.
+- U25: 実装して。
+  - A: Used the durable repository workflow and excluded independent telemetry for the deterministic root locale redirect. Implemented static Japanese and English pages, root locale routing with no-JavaScript links, shared responsive CSS, exact repository-owned logo and skin assets, GitHub-only CTAs, CSP, structural and asset checks, and pinned Chromium integration tests. Diagnosed a test-only whitespace assertion, verified Japanese and English desktop and mobile screenshots without overflow, passed repository checks and the complete test suite, obtained a fresh independent review with no findings, preserved an unrelated scripts/build-skins.sh change, committed only the landing-page files as 751a88f, and passed the required post-commit build. No push or deployment was performed.
