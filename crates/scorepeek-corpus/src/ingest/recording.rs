@@ -14,14 +14,14 @@ use std::{os::unix::ffi::OsStrExt as _, os::unix::ffi::OsStringExt as _};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
+use crate::manifest::CANONICAL_FRAME_CONTRACT_ID;
 #[cfg(test)]
-use crate::store::SOURCE_MANIFEST_SCHEMA;
+use crate::manifest::SOURCE_MANIFEST_SCHEMA;
 use crate::store::{
-    CANONICAL_FRAME_CONTRACT_ID, ContentRef, CorpusError, CorpusStore, ErrorContext,
-    ExtractorIdentity, MAX_REPLAY_FRAMES, MAX_REQUEST_BYTES, SourceManifest, TimeBase,
-    canonical_json, digest_bytes, digest_regular_file, is_sha256, read_bounded_regular,
-    resolve_stored_source_path_unverified, validate_directory, validate_opaque_id,
-    validate_regular_file, validate_sha256, validate_token, write_atomic_file,
+    ContentRef, CorpusError, CorpusStore, ErrorContext, ExtractorIdentity, MAX_REPLAY_FRAMES,
+    MAX_REQUEST_BYTES, SourceManifest, TimeBase, canonical_json, digest_bytes, digest_regular_file,
+    is_sha256, read_bounded_regular, resolve_stored_source_path_unverified, validate_directory,
+    validate_opaque_id, validate_regular_file, validate_sha256, validate_token, write_atomic_file,
 };
 
 const PROBE_SCHEMA: &str = "scorepeek-private-media-probe-v4";

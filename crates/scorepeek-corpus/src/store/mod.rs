@@ -16,6 +16,10 @@ pub use crate::ingest::labels::{
     CompleteLabel, CompleteLabelSummary, Difficulty, LabelShape, LabelState, NonRecognitionClass,
     PlayMode, PlaySide, PlayType, ScreenClass,
 };
+use crate::manifest::{CANONICAL_FRAME_CONTRACT_ID, GENERATION_SCHEMA, SOURCE_MANIFEST_SCHEMA};
+pub use crate::manifest::{
+    CanonicalFrameBinding, ContentRef, CorpusGeneration, GenerationSource, SourceManifest,
+};
 pub(crate) use integrity::*;
 pub use layout::CorpusStore;
 pub(crate) use reader::*;
@@ -23,8 +27,6 @@ pub(crate) use writer::*;
 
 pub(crate) const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v2";
 pub(crate) const INGEST_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-ingest-summary-v2";
-pub(crate) const SOURCE_MANIFEST_SCHEMA: &str = "scorepeek-private-corpus-source-v2";
-pub(crate) const GENERATION_SCHEMA: &str = "scorepeek-private-corpus-generation-v1";
 pub(crate) const GENERATION_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-generation-summary-v1";
 pub(crate) const REPLAY_INDEX_SCHEMA: &str = "scorepeek-private-corpus-replay-v2";
 pub(crate) const REPLAY_SUITE_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-v2";
@@ -38,7 +40,6 @@ pub(crate) const INDEX_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-index-su
 pub(crate) const SYNTHETIC_TITLE_REQUEST_SCHEMA: &str = "scorepeek-synthetic-title-request-v1";
 pub(crate) const SYNTHETIC_TITLE_MANIFEST_SCHEMA: &str = "scorepeek-synthetic-title-set-v1";
 pub(crate) const SYNTHETIC_TITLE_SUMMARY_SCHEMA: &str = "scorepeek-synthetic-title-summary-v1";
-pub(crate) const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 pub(crate) const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 pub(crate) const MAX_SOURCE_OBJECTS: usize = 1_024;
@@ -112,14 +113,6 @@ impl From<serde_json::Error> for CorpusError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CanonicalFrameBinding {
-    pub normalizer_artifact_sha256: String,
-    pub canonical_frame_contract_id: String,
-    pub canonical_layout_sha256: String,
-}
-
 impl CanonicalFrameBinding {
     fn validate(&self, context: ErrorContext) -> Result<(), CorpusError> {
         validate_sha256(
@@ -168,13 +161,6 @@ impl IngestRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ContentRef {
-    pub sha256: String,
-    pub bytes: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ExternalSourceLocator {
     schema: String,
     source: ContentRef,
@@ -207,16 +193,6 @@ impl ContentRef {
         }
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceManifest {
-    pub schema: String,
-    pub fixture_id: String,
-    pub session_id: String,
-    pub capture_profile_id: String,
-    pub source: ContentRef,
 }
 
 impl SourceManifest {
@@ -264,14 +240,6 @@ pub struct IngestSummary {
     pub source_manifest_sha256: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CorpusGeneration {
-    pub schema: String,
-    pub generation_id: String,
-    pub sources: Vec<GenerationSource>,
-}
-
 impl CorpusGeneration {
     fn validate(&self) -> Result<(), CorpusError> {
         if self.schema != GENERATION_SCHEMA {
@@ -302,13 +270,6 @@ impl CorpusGeneration {
         }
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GenerationSource {
-    pub fixture_id: String,
-    pub source_manifest_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
