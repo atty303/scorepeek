@@ -50,8 +50,9 @@ const MAX_BATCH_ROWS: usize = 4_096;
 const CENSUS_BATCH_SIZE: usize = 8;
 const SMALL_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-small-rec-onnx-bundle-v1.json");
-pub const LIVE_MODEL_BUNDLE_MANIFEST_SHA256: &str =
-    "4064dfa4124ada63613fe39fe2dee92f6ce6cae898e2830b302f5ae593f60672";
+pub use crate::model::registry::{
+    LIVE_MODEL_BUNDLE_MANIFEST_SHA256, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
+};
 const TINY_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-tiny-rec-onnx-bundle-v1.json");
 const TINY_BUNDLE_MANIFEST_SHA256: &str =
@@ -70,11 +71,7 @@ const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
     "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
 const LIVE_RUNTIME_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-small-live-runtime-v5.json");
-pub const LIVE_RUNTIME_SHA256: &str =
-    "ec784163f0cf8aa9caa00194ba258077a7a1225daf24011dd808de27ab44c7cb";
 pub const LIVE_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
-pub const LIVE_MODEL_SHA256: &str =
-    "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634";
 
 #[derive(Debug)]
 pub enum OnnxParityError {

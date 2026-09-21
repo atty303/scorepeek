@@ -12,6 +12,7 @@ use super::fixed_slot::{
     FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID, extract_fixed_slot_fields,
     fixed_not_displayed_fields, fixed_slot_feature,
 };
+pub use crate::model::registry::NUMERIC_MODEL_MANIFEST_SHA256;
 use crate::recognition::shared::{
     FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
     NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
@@ -26,8 +27,6 @@ pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../models/manifests/numeric-fixed-slot-hog-mlp-runtime-v3.json"
 ));
-pub const NUMERIC_MODEL_MANIFEST_SHA256: &str =
-    "2458eec35258fbe28e0022eb00d254261083d4e12a1586ddc717c8bb3ccaae2c";
 pub const NUMERIC_MODEL_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../models/numeric-fixed-slot-hog-mlp-runtime-v3/inference.onnx"
