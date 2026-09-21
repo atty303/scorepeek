@@ -1,16 +1,17 @@
 //! Owned subprocesses. Closing stdin revokes their lifetime lease.
 use scorepeek_overlay_wayland::bridge::data::{Backend, Config};
 use std::{
-    io::{BufRead as _, BufReader, Read as _, Write as _},
+    io::Write as _,
     os::unix::process::ExitStatusExt as _,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
-    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
-const MAX_DIAGNOSTIC_LINE_BYTES: u64 = 1024 * 1024;
+use super::child::OwnedChild;
+use super::protocol::{push_observation, read_diagnostics};
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn process_exit_observation(backend: &str, status: std::process::ExitStatus) -> serde_json::Value {
@@ -28,7 +29,7 @@ fn process_exit_observation(backend: &str, status: std::process::ExitStatus) -> 
 #[derive(Default)]
 pub struct Children {
     status: std::collections::BTreeMap<String, &'static str>,
-    owned: Vec<(String, Child, Option<JoinHandle<()>>)>,
+    owned: Vec<OwnedChild>,
     observations: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
@@ -89,7 +90,7 @@ impl Children {
                 match startup.and_then(|result| result) {
                     Ok(()) => {
                         self.status.insert(name.clone(), "running");
-                        self.owned.push((name, child, Some(reader)));
+                        self.owned.push(OwnedChild::new(name, child, Some(reader)));
                     }
                     Err(error) => {
                         let _ = child.kill();
@@ -122,9 +123,9 @@ impl Children {
     pub fn poll(&mut self) -> Vec<String> {
         let mut exits = Vec::new();
         let health = &mut self.status;
-        self.owned
-            .retain_mut(|(name, child, reader)| match child.try_wait() {
+        self.owned.retain_mut(|child| match child.try_wait() {
                 Ok(Some(status)) => {
+                    let name = child.name().to_owned();
                     health.insert(
                         name.clone(),
                         if status.success() {
@@ -133,22 +134,18 @@ impl Children {
                             "failed"
                         },
                     );
-                    if let Some(reader) = reader.take() {
-                        let _ = reader.join();
-                    }
-                    push_observation(&self.observations, process_exit_observation(name, status));
+                    child.join_diagnostics();
+                    push_observation(&self.observations, process_exit_observation(&name, status));
                     exits.push(format!("{name} overlay exited: {status}"));
                     false
                 }
                 Ok(None) => true,
                 Err(error) => {
+                    let name = child.name().to_owned();
                     health.insert(name.clone(), "failed");
                     exits.push(format!("{name} overlay wait failed: {error}"));
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    if let Some(reader) = reader.take() {
-                        let _ = reader.join();
-                    }
+                    let _ = child.kill_and_wait();
+                    child.join_diagnostics();
                     self.observations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
                         serde_json::json!({"backend": name, "operation":"process_wait", "error_type":"wait_failed", "error":error.to_string()})
                     );
@@ -176,20 +173,18 @@ impl Children {
     }
 
     fn shutdown_with_timeout(&mut self, timeout: Duration) {
-        for (_, child, _) in &mut self.owned {
-            child.stdin.take();
+        for child in &mut self.owned {
+            child.revoke_lease();
         }
         let deadline = Instant::now() + timeout;
         while !self.owned.is_empty() && Instant::now() < deadline {
             self.poll();
             std::thread::sleep(Duration::from_millis(10));
         }
-        for (name, mut child, reader) in self.owned.drain(..) {
-            let _ = child.kill();
-            let waited = child.wait();
-            if let Some(reader) = reader {
-                let _ = reader.join();
-            }
+        for mut child in self.owned.drain(..) {
+            let name = child.name().to_owned();
+            let waited = child.kill_and_wait();
+            child.join_diagnostics();
             match waited {
                 Ok(status) => {
                     self.status.insert(name.clone(), "failed");
@@ -207,105 +202,6 @@ impl Children {
     }
 }
 
-fn read_diagnostics(
-    stdout: impl std::io::Read,
-    observations: &Mutex<Vec<serde_json::Value>>,
-    backend: &str,
-    mut startup: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
-) {
-    let mut expected_sequence = 1_u64;
-    let mut terminal_seen = false;
-    let mut reader = BufReader::new(stdout);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = match reader
-            .by_ref()
-            .take(MAX_DIAGNOSTIC_LINE_BYTES + 1)
-            .read_until(b'\n', &mut line)
-        {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(error) => {
-                push_observation(
-                    observations,
-                    serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"read_failed", "error":error.to_string()}),
-                );
-                return;
-            }
-        };
-        if read as u64 > MAX_DIAGNOSTIC_LINE_BYTES {
-            push_observation(
-                observations,
-                serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"record_too_large", "limit_bytes":MAX_DIAGNOSTIC_LINE_BYTES}),
-            );
-            return;
-        }
-        if line.last() != Some(&b'\n') {
-            push_observation(
-                observations,
-                serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"malformed_ndjson", "error":"incomplete terminal record"}),
-            );
-            break;
-        }
-        line.pop();
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        let observation = match serde_json::from_slice::<serde_json::Value>(&line) {
-            Ok(record) => {
-                let sequence = record["sequence"].as_u64();
-                if sequence != Some(expected_sequence) {
-                    push_observation(
-                        observations,
-                        serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"sequence_gap", "expected_sequence":expected_sequence, "actual_sequence":sequence}),
-                    );
-                }
-                expected_sequence = sequence.unwrap_or(expected_sequence).saturating_add(1);
-                terminal_seen |= record["operation"] == "child_exit";
-                if record["operation"] == "child_ready" {
-                    if let Some(sender) = startup.take() {
-                        let _ = sender.send(Ok(()));
-                    }
-                } else if record["operation"] == "child_exit"
-                    && let Some(sender) = startup.take()
-                {
-                    let error = record["data"]["error"]
-                        .as_str()
-                        .unwrap_or("overlay exited before initialization completed")
-                        .to_owned();
-                    let _ = sender.send(Err(error));
-                }
-                serde_json::json!({"backend": backend, "record": record})
-            }
-            Err(error) => {
-                serde_json::json!({"backend": backend, "transport":"stdout", "error_type":"malformed_ndjson", "error":error.to_string()})
-            }
-        };
-        push_observation(observations, observation);
-    }
-    push_observation(
-        observations,
-        if terminal_seen {
-            serde_json::json!({"backend": backend, "transport":"stdout", "operation":"eof"})
-        } else {
-            serde_json::json!({"backend": backend, "transport":"stdout", "operation":"eof", "error_type":"unexpected_eof"})
-        },
-    );
-    if let Some(sender) = startup {
-        let _ = sender.send(Err(
-            "overlay diagnostic stream ended before initialization completed".into(),
-        ));
-    }
-}
-
-fn push_observation(observations: &Mutex<Vec<serde_json::Value>>, value: serde_json::Value) {
-    observations
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(value);
-}
-
 impl Drop for Children {
     fn drop(&mut self) {
         self.shutdown();
@@ -317,35 +213,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ready_boundary_ignores_later_child_failure_for_startup() {
-        let input = concat!(
-            "{\"sequence\":1,\"operation\":\"child_ready\",\"data\":{}}\n",
-            "{\"sequence\":2,\"operation\":\"child_exit\",\"data\":{\"success\":false,\"error\":\"later failure\"}}\n"
-        );
-        let observations = Mutex::new(Vec::new());
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-
-        read_diagnostics(input.as_bytes(), &observations, "Wayland", Some(sender));
-
-        assert_eq!(receiver.recv().unwrap(), Ok(()));
-        assert_eq!(observations.into_inner().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn child_failure_before_ready_fails_startup() {
-        let input = "{\"sequence\":1,\"operation\":\"child_exit\",\"data\":{\"success\":false,\"error\":\"initialization failed\"}}\n";
-        let observations = Mutex::new(Vec::new());
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-
-        read_diagnostics(input.as_bytes(), &observations, "Wayland", Some(sender));
-
-        assert_eq!(
-            receiver.recv().unwrap(),
-            Err("initialization failed".into())
-        );
-    }
-
-    #[test]
     fn forced_shutdown_records_the_child_exit() {
         let child = Command::new("sh")
             .args(["-c", "sleep 10"])
@@ -354,7 +221,9 @@ mod tests {
             .unwrap();
         let mut children = Children::default();
         children.status.insert("Wayland".into(), "running");
-        children.owned.push(("Wayland".into(), child, None));
+        children
+            .owned
+            .push(OwnedChild::without_diagnostics("Wayland", child));
 
         children.shutdown_with_timeout(Duration::ZERO);
 

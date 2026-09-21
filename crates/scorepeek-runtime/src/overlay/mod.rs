@@ -1,3 +1,3 @@
-pub mod child;
-pub mod protocol;
+pub(crate) mod child;
+pub(crate) mod protocol;
 pub mod supervisor;
