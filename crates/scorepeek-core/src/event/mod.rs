@@ -6,10 +6,14 @@ pub mod run;
 pub mod schema;
 
 pub use domain::{
-    BestChart, BestOutputState, CurrentSelectionDifficulty, MusicSelectBestSnapshot,
-    MusicSelectResolverState, MusicSelectionState, MusicSelectionUnresolvedReason,
-    SelectFrameIdentity, SelectIdentityStatus, SelectionDifficultyTarget,
-    SelectionDifficultyTransitionReason, SongPresentation,
+    BestChart, BestOutputState, CurrentSelectionDifficulty, EvidenceContribution,
+    MusicSelectBestSnapshot, MusicSelectResolverState, MusicSelectionState,
+    MusicSelectionUnresolvedReason, NumericResultEventSuppressionReason,
+    NumericResultTemporalState, NumericResultTransitionReason, ResolverHypothesisKey,
+    ResolverResolutionState, ResolverScope, ResultDomainEvent, ResultPanelSideEpisodeState,
+    ResultPanelSideTransitionReason, ResultRetractionReason, ResultState, SelectFrameIdentity,
+    SelectIdentityStatus, SelectionDifficultyTarget, SelectionDifficultyTransitionReason,
+    SongPresentation, SongResolutionPresentation,
 };
 pub use run::RunEventEnvelope;
 pub use schema::RUN_EVENT_SCHEMA;

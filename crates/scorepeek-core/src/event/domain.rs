@@ -2,7 +2,8 @@
 
 use crate::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use crate::recognition::{
-    BestClearType, BestValue, MusicSelectBestValues, PlaySide, StableBestField,
+    BestClearType, BestValue, MusicSelectBestValues, PlayOptions, PlaySide, PreviousBest,
+    ResultJudgments, ResultPanelSide, ResultTiming, StableBestField, SupplementalResultValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +42,191 @@ pub enum MusicSelectionState {
         level: u8,
         notes: u32,
         presentation: SongPresentation,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum NumericResultTemporalState {
+    Unknown,
+    Pending { observations: u8 },
+    Accepted,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumericResultTransitionReason {
+    Incomplete,
+    CandidateStarted,
+    CandidateRepeated,
+    Accepted,
+    Conflict,
+    ChronologyReset,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ResultPanelSideEpisodeState {
+    Pending,
+    Stable { side: ResultPanelSide },
+    Conflicted { stable_side: ResultPanelSide },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPanelSideTransitionReason {
+    CandidateStarted,
+    CandidateRepeated,
+    Accepted,
+    OppositeObserved,
+    Conflict,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumericResultEventSuppressionReason {
+    NumericNotAccepted,
+    SessionUnavailable,
+    ResultSongNotStable,
+    ClearTypeNotStable,
+    PlayAttemptNotAccepted,
+    LinkageConflict,
+    AlreadyEmitted,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResultDomainEvent {
+    pub contract: String,
+    pub attempt_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_attempt_id: Option<u64>,
+    pub scorepeek_song_id: ScorepeekSongId,
+    pub play_side: PlaySide,
+    pub play_mode: String,
+    pub play_type: PlayType,
+    pub difficulty: Difficulty,
+    pub level: u8,
+    pub notes: u32,
+    pub current_score: u32,
+    pub clear_type: String,
+    pub judgments: ResultJudgments,
+    pub miss_count: SupplementalResultValue<u32>,
+    pub timing: ResultTiming,
+    pub combo_break: SupplementalResultValue<u32>,
+    pub previous_best: PreviousBest,
+    pub play_options: PlayOptions,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultRetractionReason {
+    EvidenceUnresolved,
+    PanelSideConflict,
+    AttemptRejected,
+    SessionEnded,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ResultState {
+    Inactive,
+    Provisional {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<ResultDomainEvent>,
+    },
+    Retracted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<ResultDomainEvent>,
+        reason: ResultRetractionReason,
+    },
+    Confirmed {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<ResultDomainEvent>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolverResolutionState {
+    Unresolved,
+    SongProjected,
+    JointCandidate,
+    AcceptedJoint,
+    Conflict,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EvidenceContribution {
+    raw: u64,
+    normalized: u16,
+}
+
+impl EvidenceContribution {
+    #[must_use]
+    pub const fn new(raw: u64, normalized: u16) -> Self {
+        Self { raw, normalized }
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u64 {
+        self.raw
+    }
+
+    #[must_use]
+    pub const fn normalized(self) -> u16 {
+        self.normalized
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolverScope {
+    SelectionIncumbent,
+    SelectionSuccessor,
+    Result,
+    AttemptJoint,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct ResolverHypothesisKey {
+    song_id: ScorepeekSongId,
+    chart: crate::catalog::ChartKey,
+}
+
+impl ResolverHypothesisKey {
+    #[must_use]
+    pub const fn new(song_id: ScorepeekSongId, chart: crate::catalog::ChartKey) -> Self {
+        Self { song_id, chart }
+    }
+
+    #[must_use]
+    pub const fn song_id(&self) -> ScorepeekSongId {
+        self.song_id
+    }
+
+    #[must_use]
+    pub const fn chart(&self) -> crate::catalog::ChartKey {
+        self.chart
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SongResolutionPresentation {
+    Accepted {
+        reason: Option<serde_json::Value>,
+        selected: SongPresentation,
+        runner_up: SongPresentation,
+        evidence_summary: String,
+    },
+    Unknown {
+        reason: serde_json::Value,
+        selected: Option<SongPresentation>,
+        runner_up: Option<SongPresentation>,
+        evidence_summary: Option<String>,
     },
 }
 

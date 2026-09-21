@@ -32,20 +32,25 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek_core::event::{
-    BestChart, CurrentSelectionDifficulty, MusicSelectBestSnapshot, MusicSelectResolverState,
-    MusicSelectionState, MusicSelectionUnresolvedReason, SelectFrameIdentity, SelectIdentityStatus,
-    SelectionDifficultyTarget, SelectionDifficultyTransitionReason, SongPresentation,
+    BestChart, CurrentSelectionDifficulty, EvidenceContribution, MusicSelectBestSnapshot,
+    MusicSelectResolverState, MusicSelectionState, MusicSelectionUnresolvedReason,
+    NumericResultEventSuppressionReason, NumericResultTemporalState, NumericResultTransitionReason,
+    ResolverHypothesisKey, ResolverResolutionState, ResolverScope, ResultDomainEvent,
+    ResultPanelSideEpisodeState, ResultPanelSideTransitionReason, ResultRetractionReason,
+    ResultState, SelectFrameIdentity, SelectIdentityStatus, SelectionDifficultyTarget,
+    SelectionDifficultyTransitionReason, SongPresentation, SongResolutionPresentation,
 };
-#[cfg(test)]
-use scorepeek_core::recognition::PreviousBestValue;
 use scorepeek_core::recognition::{
     EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
 };
 use scorepeek_core::recognition::{
     ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
-    PlayPresenceEvidence, PlaySide, PreviousBest, ResultChartResolution, ResultJudgments,
-    ResultPanelSide, ResultPerformanceResolution, ResultPresenceEvidence, ResultTiming,
-    SupplementalResultValue, resolve_result_performance,
+    PlayPresenceEvidence, PlaySide, ResultChartResolution, ResultPanelSide,
+    ResultPerformanceResolution, ResultPresenceEvidence, resolve_result_performance,
+};
+#[cfg(test)]
+use scorepeek_core::recognition::{
+    PreviousBest, PreviousBestValue, ResultJudgments, ResultTiming, SupplementalResultValue,
 };
 use scorepeek_core::session::attempt::{
     AcceptedPlayAttempt, PlayAttemptReason, PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState,
@@ -54,6 +59,7 @@ use scorepeek_core::session::reducer::{
     MusicSelectTemporalState, MusicSelectTemporalTransitionReason, ResultTemporalState,
     TemporalFieldTransition,
 };
+use scorepeek_core::session::timeline::SemanticEpisodePhase;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -342,119 +348,6 @@ pub enum RunEventKind {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SemanticEpisodePhase {
-    Started,
-    Suspended,
-    Resumed,
-    Closing,
-    Finalized,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum NumericResultTemporalState {
-    Unknown,
-    Pending { observations: u8 },
-    Accepted,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NumericResultTransitionReason {
-    Incomplete,
-    CandidateStarted,
-    CandidateRepeated,
-    Accepted,
-    Conflict,
-    ChronologyReset,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ResultPanelSideEpisodeState {
-    Pending,
-    Stable { side: ResultPanelSide },
-    Conflicted { stable_side: ResultPanelSide },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResultPanelSideTransitionReason {
-    CandidateStarted,
-    CandidateRepeated,
-    Accepted,
-    OppositeObserved,
-    Conflict,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NumericResultEventSuppressionReason {
-    NumericNotAccepted,
-    SessionUnavailable,
-    ResultSongNotStable,
-    ClearTypeNotStable,
-    PlayAttemptNotAccepted,
-    LinkageConflict,
-    AlreadyEmitted,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ResultDomainEvent {
-    pub contract: String,
-    pub attempt_id: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_attempt_id: Option<u64>,
-    pub scorepeek_song_id: ScorepeekSongId,
-    pub play_side: PlaySide,
-    pub play_mode: String,
-    pub play_type: PlayType,
-    pub difficulty: Difficulty,
-    pub level: u8,
-    pub notes: u32,
-    pub current_score: u32,
-    pub clear_type: String,
-    pub judgments: ResultJudgments,
-    pub miss_count: SupplementalResultValue<u32>,
-    pub timing: ResultTiming,
-    pub combo_break: SupplementalResultValue<u32>,
-    pub previous_best: PreviousBest,
-    pub play_options: PlayOptions,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResultRetractionReason {
-    EvidenceUnresolved,
-    PanelSideConflict,
-    AttemptRejected,
-    SessionEnded,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ResultState {
-    Inactive,
-    Provisional {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        song: Option<SongPresentation>,
-        result: Box<ResultDomainEvent>,
-    },
-    Retracted {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        song: Option<SongPresentation>,
-        result: Box<ResultDomainEvent>,
-        reason: ResultRetractionReason,
-    },
-    Confirmed {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        song: Option<SongPresentation>,
-        result: Box<ResultDomainEvent>,
-    },
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveProvisionalResult {
     song: Option<SongPresentation>,
@@ -693,20 +586,14 @@ fn candidate_song_presentation(candidate: &JointEvidenceCandidate) -> SongPresen
     }
 }
 
+fn resolver_hypothesis_key(candidate: &JointEvidenceCandidate) -> ResolverHypothesisKey {
+    ResolverHypothesisKey::new(candidate.song_id, candidate.chart.key)
+}
+
 const EVIDENCE_FAMILY_CAP: u16 = 300;
 const JOINT_ACCEPT_SUPPORT: u16 = 260;
 const JOINT_ACCEPT_MARGIN: u16 = 50;
 const SELECTION_CHANGE_MARGIN: u16 = 120;
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolverResolutionState {
-    Unresolved,
-    SongProjected,
-    JointCandidate,
-    AcceptedJoint,
-    Conflict,
-}
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct JointKey {
@@ -718,36 +605,6 @@ struct JointKey {
 struct AccumulatedHypothesis {
     candidate: JointEvidenceCandidate,
     family_support: BTreeMap<EvidenceFamily, u64>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct EvidenceContribution {
-    raw: u64,
-    normalized: u16,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolverScope {
-    SelectionIncumbent,
-    SelectionSuccessor,
-    Result,
-    AttemptJoint,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct ResolverHypothesisKey {
-    song_id: ScorepeekSongId,
-    chart: scorepeek::catalog::ChartKey,
-}
-
-impl ResolverHypothesisKey {
-    fn from_candidate(candidate: &JointEvidenceCandidate) -> Self {
-        Self {
-            song_id: candidate.song_id,
-            chart: candidate.chart.key,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -992,18 +849,12 @@ impl HypothesisAccumulator {
                     .map(|(family, raw)| {
                         let maximum = family_maxima[family];
                         let normalized = normalize_family_support(*raw, maximum);
-                        (
-                            *family,
-                            EvidenceContribution {
-                                raw: *raw,
-                                normalized,
-                            },
-                        )
+                        (*family, EvidenceContribution::new(*raw, normalized))
                     })
                     .collect::<BTreeMap<_, _>>();
-                let support = family_support
-                    .values()
-                    .fold(0_u16, |total, value| total.saturating_add(value.normalized));
+                let support = family_support.values().fold(0_u16, |total, value| {
+                    total.saturating_add(value.normalized())
+                });
                 RankedHypothesis {
                     accumulated,
                     family_support,
@@ -1660,23 +1511,6 @@ struct ResultHistoryEntry {
     source_sequence: u64,
     song: Option<SongPresentation>,
     result: ResultDomainEvent,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum SongResolutionPresentation {
-    Accepted {
-        reason: Option<Value>,
-        selected: SongPresentation,
-        runner_up: SongPresentation,
-        evidence_summary: String,
-    },
-    Unknown {
-        reason: Value,
-        selected: Option<SongPresentation>,
-        runner_up: Option<SongPresentation>,
-        evidence_summary: Option<String>,
-    },
 }
 
 #[allow(
@@ -2788,22 +2622,10 @@ impl RoutineOutput {
             state: summary.state,
             select_play_type: summary.select_play_type,
             result_play_type: summary.result_play_type,
-            top: summary
-                .selected
-                .as_ref()
-                .map(ResolverHypothesisKey::from_candidate),
-            runner_up: summary
-                .runner_up
-                .as_ref()
-                .map(ResolverHypothesisKey::from_candidate),
-            runner_song: summary
-                .runner_song
-                .as_ref()
-                .map(ResolverHypothesisKey::from_candidate),
-            runner_chart: summary
-                .runner_chart
-                .as_ref()
-                .map(ResolverHypothesisKey::from_candidate),
+            top: summary.selected.as_ref().map(resolver_hypothesis_key),
+            runner_up: summary.runner_up.as_ref().map(resolver_hypothesis_key),
+            runner_song: summary.runner_song.as_ref().map(resolver_hypothesis_key),
+            runner_chart: summary.runner_chart.as_ref().map(resolver_hypothesis_key),
         };
         if self.resolver_transitions.get(&scope) == Some(&identity) {
             return Ok(());
@@ -2830,7 +2652,7 @@ impl RoutineOutput {
                 top_candidates: summary
                     .top_candidates
                     .iter()
-                    .map(ResolverHypothesisKey::from_candidate)
+                    .map(resolver_hypothesis_key)
                     .collect(),
                 support: summary.support,
                 margin: summary.margin,
@@ -5265,7 +5087,7 @@ fn family_contribution_labels(
             format!(
                 "{}={}",
                 format!("{family:?}").to_ascii_lowercase(),
-                contribution.normalized
+                contribution.normalized()
             )
         })
         .collect::<Vec<_>>();
@@ -8805,7 +8627,7 @@ mod tests {
                 .summary()
                 .selected_family_support
                 .values()
-                .all(|support| support.normalized <= EVIDENCE_FAMILY_CAP)
+                .all(|support| support.normalized() <= EVIDENCE_FAMILY_CAP)
         );
     }
 
@@ -8841,17 +8663,11 @@ mod tests {
         assert_eq!(summary.margin, 177);
         assert_eq!(
             summary.selected_family_support[&EvidenceFamily::ResultArtist],
-            EvidenceContribution {
-                raw: 510,
-                normalized: 300,
-            }
+            EvidenceContribution::new(510, 300)
         );
         assert_eq!(
             summary.runner_up_family_support[&EvidenceFamily::ResultArtist],
-            EvidenceContribution {
-                raw: 210,
-                normalized: 123,
-            }
+            EvidenceContribution::new(210, 123)
         );
     }
 
@@ -9398,7 +9214,7 @@ mod tests {
         );
         assert_eq!(summary.chart_margin, 100);
         assert_eq!(
-            summary.selected_family_support[&EvidenceFamily::ResultPlayType].normalized,
+            summary.selected_family_support[&EvidenceFamily::ResultPlayType].normalized(),
             100
         );
 
@@ -9619,7 +9435,7 @@ mod tests {
             PlayType::Double
         );
         assert_eq!(
-            summary.selected_family_support[&EvidenceFamily::SelectPlayType].normalized,
+            summary.selected_family_support[&EvidenceFamily::SelectPlayType].normalized(),
             100
         );
     }

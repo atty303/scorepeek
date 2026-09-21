@@ -3455,7 +3455,7 @@ struct ReplaySessionOutcome {
 #[derive(Default)]
 struct ReplayObserved {
     music_selections: Vec<(u64, scorepeek_core::event::MusicSelectionState)>,
-    confirmed_results: Vec<scorepeek_runtime::events::server::ResultDomainEvent>,
+    confirmed_results: Vec<scorepeek_core::event::ResultDomainEvent>,
     music_select_best_snapshots: usize,
     trace: Option<TraceStatus>,
 }
@@ -4232,10 +4232,12 @@ fn start_replay_observer(
                         ..
                     } => collected.music_selections.push((source_sequence, state)),
                     scorepeek_runtime::events::server::RunEventKind::ResultChanged {
-                        state: scorepeek_runtime::events::server::ResultState::Confirmed { result, .. },
+                        state: scorepeek_core::event::ResultState::Confirmed { result, .. },
                         ..
                     } => collected.confirmed_results.push(*result),
-                    scorepeek_runtime::events::server::RunEventKind::MusicSelectBestObserved { .. } => {
+                    scorepeek_runtime::events::server::RunEventKind::MusicSelectBestObserved {
+                        ..
+                    } => {
                         collected.music_select_best_snapshots =
                             collected.music_select_best_snapshots.saturating_add(1);
                     }
@@ -4875,7 +4877,7 @@ fn apply_replay_timeline_actions(
                     episode,
                     sequence,
                     monotonic_ms,
-                    replay_semantic_phase(phase),
+                    phase,
                 )?;
             }
             scorepeek_core::replay::TimelineAction::DrainAdmitted { .. } => {
@@ -4893,29 +4895,6 @@ fn apply_replay_timeline_actions(
     Ok(())
 }
 
-const fn replay_semantic_phase(
-    phase: scorepeek_core::replay::SemanticEpisodePhase,
-) -> scorepeek_runtime::events::server::SemanticEpisodePhase {
-    use scorepeek_core::replay::SemanticEpisodePhase;
-    match phase {
-        SemanticEpisodePhase::Started => {
-            scorepeek_runtime::events::server::SemanticEpisodePhase::Started
-        }
-        SemanticEpisodePhase::Suspended => {
-            scorepeek_runtime::events::server::SemanticEpisodePhase::Suspended
-        }
-        SemanticEpisodePhase::Resumed => {
-            scorepeek_runtime::events::server::SemanticEpisodePhase::Resumed
-        }
-        SemanticEpisodePhase::Closing => {
-            scorepeek_runtime::events::server::SemanticEpisodePhase::Closing
-        }
-        SemanticEpisodePhase::Finalized => {
-            scorepeek_runtime::events::server::SemanticEpisodePhase::Finalized
-        }
-    }
-}
-
 fn publish_replay_semantic(
     output: &mut scorepeek_runtime::events::server::RoutineOutput,
     session_id: &str,
@@ -4923,7 +4902,7 @@ fn publish_replay_semantic(
     episode: scorepeek_core::replay::SemanticScreenEpisode,
     sequence: u64,
     monotonic_ms: u64,
-    phase: scorepeek_runtime::events::server::SemanticEpisodePhase,
+    phase: scorepeek_core::session::timeline::SemanticEpisodePhase,
 ) -> Result<(), CorpusError> {
     output
         .publish(&scorepeek_runtime::events::server::RunEvent {
@@ -5222,7 +5201,7 @@ impl SegmentResolver {
 
 fn validate_semantic_oracle(
     label: &RegressionLabel,
-    emitted: &[scorepeek_runtime::events::server::ResultDomainEvent],
+    emitted: &[scorepeek_core::event::ResultDomainEvent],
     failures: &mut Vec<String>,
 ) {
     let accepted = label
@@ -5331,7 +5310,7 @@ fn validate_music_selection_oracle(
 }
 
 fn result_event_matches(
-    event: &scorepeek_runtime::events::server::ResultDomainEvent,
+    event: &scorepeek_core::event::ResultDomainEvent,
     episode: &RegressionEpisode,
 ) -> bool {
     let expected = &episode.expected_result;

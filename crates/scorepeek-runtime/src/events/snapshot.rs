@@ -1,8 +1,9 @@
 //! Public live API projection. Internal observations never become wire records implicitly.
-use super::server::{ResultState, RunEvent, RunEventKind};
+use super::server::{RunEvent, RunEventKind};
 #[cfg(test)]
 use scorepeek_core::event::MusicSelectionUnresolvedReason;
-use scorepeek_core::event::{MusicSelectBestSnapshot, MusicSelectionState};
+use scorepeek_core::event::{MusicSelectBestSnapshot, MusicSelectionState, ResultState};
+use scorepeek_core::session::timeline::SemanticEpisodePhase;
 use serde::Serialize;
 use std::io::{self, Write};
 use std::time::{Instant, SystemTime};
@@ -320,19 +321,20 @@ impl PublicState {
         } = &event.kind
         {
             let state = match phase {
-                super::server::SemanticEpisodePhase::Started
-                | super::server::SemanticEpisodePhase::Resumed => Some(ScreenState {
-                    screen_episode_id: *screen_episode_id,
-                    screen: screen.clone(),
-                    suspended: false,
-                }),
-                super::server::SemanticEpisodePhase::Suspended => Some(ScreenState {
+                SemanticEpisodePhase::Started | SemanticEpisodePhase::Resumed => {
+                    Some(ScreenState {
+                        screen_episode_id: *screen_episode_id,
+                        screen: screen.clone(),
+                        suspended: false,
+                    })
+                }
+                SemanticEpisodePhase::Suspended => Some(ScreenState {
                     screen_episode_id: *screen_episode_id,
                     screen: screen.clone(),
                     suspended: true,
                 }),
-                super::server::SemanticEpisodePhase::Finalized => None,
-                super::server::SemanticEpisodePhase::Closing => return records,
+                SemanticEpisodePhase::Finalized => None,
+                SemanticEpisodePhase::Closing => return records,
             };
             let screen_record = self.event(
                 EventKind::ScreenStateChanged { state },
@@ -812,9 +814,9 @@ pub(super) mod tests {
             })
         };
         for (phase, suspended) in [
-            (super::super::server::SemanticEpisodePhase::Started, false),
-            (super::super::server::SemanticEpisodePhase::Suspended, true),
-            (super::super::server::SemanticEpisodePhase::Resumed, false),
+            (SemanticEpisodePhase::Started, false),
+            (SemanticEpisodePhase::Suspended, true),
+            (SemanticEpisodePhase::Resumed, false),
         ] {
             let records = state.project(&event(phase));
             assert_eq!(records.len(), 1);
@@ -824,12 +826,10 @@ pub(super) mod tests {
         }
         assert!(
             state
-                .project(&event(super::super::server::SemanticEpisodePhase::Closing))
+                .project(&event(SemanticEpisodePhase::Closing))
                 .is_empty()
         );
-        let finalized = state.project(&event(
-            super::super::server::SemanticEpisodePhase::Finalized,
-        ));
+        let finalized = state.project(&event(SemanticEpisodePhase::Finalized));
         assert_eq!(finalized.len(), 1);
         assert!(serde_json::to_value(&finalized[0]).unwrap()["state"].is_null());
     }

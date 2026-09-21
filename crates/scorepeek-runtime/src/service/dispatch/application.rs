@@ -3070,12 +3070,12 @@ fn live_session_event_value(
 
 fn song_resolution_presentation(
     observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
-) -> Result<routine_output::SongResolutionPresentation, String> {
+) -> Result<scorepeek_core::event::SongResolutionPresentation, String> {
     use scorepeek_core::recognition::{MusicSelectSongResolution, ResultSongResolution};
 
     match observation.song_resolution() {
         scorepeek_core::recognition::ScreenSongResolution::Title => {
-            Ok(routine_output::SongResolutionPresentation::Unknown {
+            Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
                 reason: serde_json::Value::String("not_applicable".to_owned()),
                 selected: None,
                 runner_up: None,
@@ -3088,7 +3088,7 @@ fn song_resolution_presentation(
                 runner_up,
                 title_edit_margin,
                 ..
-            } => Ok(routine_output::SongResolutionPresentation::Accepted {
+            } => Ok(scorepeek_core::event::SongResolutionPresentation::Accepted {
                 reason: None,
                 selected: song_presentation(observation, selected.song_id)?,
                 runner_up: song_presentation(observation, runner_up.song_id)?,
@@ -3108,7 +3108,7 @@ fn song_resolution_presentation(
                 runner_up,
                 title_edit_margin,
                 ..
-            } => Ok(routine_output::SongResolutionPresentation::Unknown {
+            } => Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
                 reason: serde_json::to_value(reason).map_err(|error| format!("result resolution reason serialization failed: {error}"))?,
                 selected: selected.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
                 runner_up: runner_up.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
@@ -3130,7 +3130,7 @@ fn song_resolution_presentation(
                 active_prefix_edit_margin,
                 corroboration,
                 ..
-            } => Ok(routine_output::SongResolutionPresentation::Accepted {
+            } => Ok(scorepeek_core::event::SongResolutionPresentation::Accepted {
                 reason: None,
                 selected: song_presentation(observation, selected.song_id)?,
                 runner_up: song_presentation(observation, runner_up.song_id)?,
@@ -3150,7 +3150,7 @@ fn song_resolution_presentation(
                 runner_up,
                 active_prefix_edit_margin,
                 ..
-            } => Ok(routine_output::SongResolutionPresentation::Unknown {
+            } => Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
                 reason: serde_json::to_value(reason).map_err(|error| format!("music-select resolution reason serialization failed: {error}"))?,
                 selected: selected.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
                 runner_up: runner_up.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
@@ -5794,7 +5794,8 @@ node_name = "must-not-be-inherited"
 
     #[test]
     fn production_result_serializer_reaches_provisional_and_confirmed_output() {
-        use crate::events::server::{ResultState, RoutineOutput, RunEventKind};
+        use crate::events::server::{RoutineOutput, RunEventKind};
+        use scorepeek_core::event::ResultState;
 
         let observation = resolved_two_player_result_observation();
         let mut routine = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
