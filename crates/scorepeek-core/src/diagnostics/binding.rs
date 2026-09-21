@@ -30,7 +30,7 @@ impl DiagnosticBinding {
             return None;
         }
         let mut bytes = serde_json::to_vec(&DiagnosticBindingIdentity {
-            schema: "scorepeek-diagnostic-binding-identity-v1",
+            schema: super::BINDING_IDENTITY_SCHEMA,
             binding: self,
         })
         .ok()?;

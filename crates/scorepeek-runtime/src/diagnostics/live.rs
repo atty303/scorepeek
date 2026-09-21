@@ -1277,7 +1277,7 @@ mod tests {
             serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(
             manifest["schema"],
-            "scorepeek-private-diagnostic-capture-v4"
+            scorepeek_core::diagnostics::CAPTURE_MANIFEST_SCHEMA
         );
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 3);
         assert!(manifest["frames"][0]["source"].is_object());

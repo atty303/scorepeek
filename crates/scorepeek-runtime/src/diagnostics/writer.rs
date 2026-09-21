@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 use scorepeek_core::diagnostics::{
-    DEFAULT_AGGREGATE_BYTES, DiagnosticBinding, DiagnosticCompleteness, DiagnosticErrorType,
-    DiagnosticFact, DiagnosticPolicy, DiagnosticResource, DiagnosticRetention,
-    DiagnosticRunDescriptor, DiagnosticRunStatus, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
+    ARTIFACT_SCHEMA, CAPTURE_MANIFEST_SCHEMA, CAPTURE_START_SCHEMA, DEFAULT_AGGREGATE_BYTES,
+    DiagnosticBinding, DiagnosticCompleteness, DiagnosticErrorType, DiagnosticFact,
+    DiagnosticPolicy, DiagnosticResource, DiagnosticRetention, DiagnosticRunDescriptor,
+    DiagnosticRunStatus, FACT_SCHEMA, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
 };
 #[cfg(test)]
 use scorepeek_core::diagnostics::{
@@ -330,7 +331,7 @@ impl DiagnosticRecorder {
         };
         let _ = root_metadata;
         let start = DiagnosticRunStart {
-            schema: "scorepeek-private-diagnostic-capture-start-v4",
+            schema: CAPTURE_START_SCHEMA,
             run_id: &descriptor.run_id,
             monotonic_start_ms: descriptor.monotonic_start_ms,
             resource: &descriptor.resource,
@@ -408,7 +409,7 @@ impl DiagnosticRecorder {
             dropped_count: 0,
             last_error_type: None,
             start: DiagnosticStartArtifact {
-                schema: "scorepeek-private-diagnostic-artifact-v1",
+                schema: ARTIFACT_SCHEMA,
                 filename: "run.json",
                 file_sha256: encode_sha256(&start_bytes),
                 bytes: start_bytes.len() as u64,
@@ -682,7 +683,7 @@ impl ActiveDiagnosticRecorder {
             return self.drop(DiagnosticErrorType::FactLimitExceeded, fact.sequence);
         }
         let document = DiagnosticFactArtifactDocument {
-            schema: "scorepeek-private-diagnostic-fact-v1",
+            schema: FACT_SCHEMA,
             fact,
         };
         let bytes = canonical_json(&document).expect("typed diagnostic fact must serialize");
@@ -838,7 +839,7 @@ impl ActiveDiagnosticRecorder {
         let mut total_bytes = self.bytes;
         for _ in 0..8 {
             let manifest = DiagnosticRunManifest {
-                schema: "scorepeek-private-diagnostic-capture-v4",
+                schema: CAPTURE_MANIFEST_SCHEMA,
                 monotonic_end_ms,
                 status,
                 completeness,
@@ -1037,8 +1038,8 @@ pub fn completed_run_start_is_intact(directory: &Path) -> bool {
     else {
         return false;
     };
-    if manifest.schema != "scorepeek-private-diagnostic-capture-v4"
-        || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
+    if manifest.schema != CAPTURE_MANIFEST_SCHEMA
+        || manifest.start.schema != ARTIFACT_SCHEMA
         || manifest.start.filename != "run.json"
         || !valid_sha256(&manifest.start.file_sha256)
     {

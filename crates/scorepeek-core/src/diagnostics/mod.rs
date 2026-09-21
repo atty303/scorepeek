@@ -19,3 +19,7 @@ pub use record::{
     DiagnosticOperationStatus, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
     FrameFieldStatus, RecognitionSamplingSummary,
 };
+pub use schema::{
+    ARTIFACT_SCHEMA, BINDING_IDENTITY_SCHEMA, CAPTURE_MANIFEST_SCHEMA, CAPTURE_START_SCHEMA,
+    FACT_SCHEMA,
+};

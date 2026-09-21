@@ -742,7 +742,7 @@ pub fn plan_music_select_motion_review(
         run_artifact,
         MAX_DOCUMENT_BYTES as u64,
     )?)?;
-    if run.schema != "scorepeek-private-diagnostic-capture-start-v4"
+    if run.schema != scorepeek_core::diagnostics::CAPTURE_START_SCHEMA
         || run.run_id != session.source_session_id
         || run.source.kind != "video_replay"
         || run.source.video_sha256 != video_sha256
