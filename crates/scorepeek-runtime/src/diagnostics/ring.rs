@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 
 use crate::diagnostics::writer::{
     CANONICAL_BYTES, DiagnosticErrorType, DiagnosticExternalDegradation, DiagnosticFact,
-    DiagnosticFinishOutcome, DiagnosticFrameInput, DiagnosticPolicy, DiagnosticRecorder,
-    DiagnosticRunStatus, DiagnosticSourceFrameInput,
+    DiagnosticFinishOutcome, DiagnosticFrameInput, DiagnosticRecorder, DiagnosticRunStatus,
+    DiagnosticSourceFrameInput,
 };
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
-use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
 
 pub const DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY: usize = 2;
 const DIAGNOSTIC_FACT_QUEUE_CAPACITY: usize = 256;

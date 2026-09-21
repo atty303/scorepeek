@@ -7,7 +7,7 @@ use scorepeek::capture::{
     CalibratedSourceFrameEvidence, NormalizedCanonicalFrame, UncalibratedMemoryType,
     UncalibratedVideoContract,
 };
-use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention, DiagnosticRunDescriptor};
 use scorepeek_core::recognition::{
     CanonicalFrame, ScreenClass, ScreenFieldObservationError, ScreenFieldObservations,
     ScreenTextField,
@@ -19,8 +19,8 @@ use crate::diagnostics::ring::{
 };
 use crate::diagnostics::writer::{
     DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
-    DiagnosticFinishOutcome, DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy,
-    DiagnosticRetention, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
+    DiagnosticFinishOutcome, DiagnosticOperation, DiagnosticOperationStatus, DiagnosticRunStatus,
+    DiagnosticScreen, DiagnosticTextField,
 };
 use crate::recognition_live::RecognitionObservation;
 

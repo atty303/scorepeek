@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
 use scorepeek_core::recognition::RegisteredNumericRuntime;
 use scorepeek_core::recognition::ScreenFieldObservationError;
 
@@ -22,7 +22,7 @@ use super::{
 };
 use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
-use crate::diagnostics::writer::{DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunStatus};
+use crate::diagnostics::writer::{DiagnosticFinishOutcome, DiagnosticRunStatus};
 use scorepeek_core::model::session::{RecognitionExecutionMode, recommended_text_worker_count};
 
 #[derive(Debug)]

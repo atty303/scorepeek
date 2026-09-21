@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
 use scorepeek_core::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
     ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
@@ -17,7 +17,7 @@ use self::screen_field_observer::RegisteredScreenFieldObservation;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::{
-    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunStatus,
+    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticRunStatus,
 };
 
 pub mod field_observer;

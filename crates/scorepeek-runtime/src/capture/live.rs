@@ -30,7 +30,7 @@ use crate::canonical_source::CanonicalFrameSource;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::{
-    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunStatus,
+    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticRunStatus,
 };
 use crate::game_version::GameVersionResolver;
 use crate::recognition_artifact::{
@@ -50,7 +50,7 @@ use crate::recognition_live::screen_field_observer::{
     RegisteredScreenFieldObserverLoadError,
 };
 use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
-use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
 use scorepeek_core::recognition::{
     CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
     ScreenFieldObservationError,

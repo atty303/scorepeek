@@ -6,16 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
-use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource, DiagnosticRunDescriptor};
+use scorepeek_core::diagnostics::{
+    DEFAULT_AGGREGATE_BYTES, DiagnosticBinding, DiagnosticPolicy, DiagnosticResource,
+    DiagnosticRetention, DiagnosticRunDescriptor, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::publish_private_file;
-
-pub const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 100;
-pub const DEFAULT_AGGREGATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-pub const NORMAL_RETENTION_HOURS: u32 = 24;
-pub const PRIORITY_RETENTION_HOURS: u32 = 7 * 24;
 
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
@@ -108,33 +106,6 @@ pub enum DiagnosticRecordOutcome {
 pub enum DiagnosticExternalDegradation {
     Drop(DiagnosticErrorType, u64),
     SequenceGap(u64, u64),
-}
-
-#[derive(Clone, Debug)]
-pub struct DiagnosticPolicy {
-    pub enabled: bool,
-    pub sample_interval_ms: u64,
-    pub maximum_run_bytes: u64,
-    pub retention: DiagnosticRetention,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiagnosticRetention {
-    CompleteCadence,
-    ForegroundFailureWindowV1,
-    FactsOnly,
-}
-
-impl Default for DiagnosticPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            sample_interval_ms: DEFAULT_SAMPLE_INTERVAL_MS,
-            maximum_run_bytes: DEFAULT_AGGREGATE_BYTES,
-            retention: DiagnosticRetention::CompleteCadence,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

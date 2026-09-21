@@ -8,5 +8,8 @@ pub mod schema;
 pub use binding::{
     DiagnosticBinding, DiagnosticReplayBinding, DiagnosticResource, DiagnosticRunDescriptor,
 };
-pub use policy::DiagnosticPolicy;
+pub use policy::{
+    DEFAULT_AGGREGATE_BYTES, DEFAULT_SAMPLE_INTERVAL_MS, DiagnosticPolicy, DiagnosticRetention,
+    NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
+};
 pub use record::DiagnosticRecord;

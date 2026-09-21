@@ -963,9 +963,9 @@ mod tests {
 
     use super::*;
     use crate::diagnostics::live::BoundCanonicalFrame;
-    use crate::diagnostics::writer::{DiagnosticPolicy, DiagnosticRunStatus};
+    use crate::diagnostics::writer::DiagnosticRunStatus;
     use crate::recognition_live::RecognitionSession;
-    use scorepeek_core::diagnostics::DiagnosticResource;
+    use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticResource};
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {

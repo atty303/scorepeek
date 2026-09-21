@@ -2901,9 +2901,9 @@ pub fn replay_corpus_with_options(
             scorepeek_runtime::recognition_live::field_session::FieldObservationSession::start_registered(
                 diagnostic_root.path(),
                 descriptor,
-                scorepeek_runtime::diagnostics::writer::DiagnosticPolicy {
+                scorepeek_core::diagnostics::DiagnosticPolicy {
                     enabled: false,
-                    ..scorepeek_runtime::diagnostics::writer::DiagnosticPolicy::default()
+                    ..scorepeek_core::diagnostics::DiagnosticPolicy::default()
                 },
                 &catalog_root,
                 &bundle,
@@ -4383,9 +4383,9 @@ fn start_replay_session(
         scorepeek_runtime::recognition_live::field_session::FieldObservationSession::start_registered_shared(
             diagnostic_root,
             descriptor,
-            scorepeek_runtime::diagnostics::writer::DiagnosticPolicy {
+            scorepeek_core::diagnostics::DiagnosticPolicy {
                 enabled: false,
-                ..scorepeek_runtime::diagnostics::writer::DiagnosticPolicy::default()
+                ..scorepeek_core::diagnostics::DiagnosticPolicy::default()
             },
             shared,
         )

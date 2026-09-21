@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use crate::{
     capture_live,
     config::document as local_profiles,
-    diagnostics::{inspect as diagnostic_stream, writer as diagnostic_recording},
+    diagnostics::inspect as diagnostic_stream,
     events::server as routine_output,
     inventory::{doctor as inventory, vulkan_layer},
     platform::signal as live_control,
@@ -21,7 +21,10 @@ use crate::{
     service::session as routine_watcher,
 };
 use scorepeek::catalog::CatalogStore;
-use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource, DiagnosticRunDescriptor};
+use scorepeek_core::diagnostics::{
+    DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRetention,
+    DiagnosticRunDescriptor,
+};
 use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
 use scorepeek_core::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
@@ -2790,7 +2793,7 @@ struct LiveDiagnosticPreflight<'a> {
 
 fn prepare_live_diagnostic_root<'a>(
     root: &'a Path,
-    policy: &diagnostic_recording::DiagnosticPolicy,
+    policy: &DiagnosticPolicy,
 ) -> LiveDiagnosticPreflight<'a> {
     let ready = if policy.enabled {
         Some(prepare_private_directory(root))
@@ -3412,17 +3415,15 @@ fn parse_diagnostic_run_id(value: &OsStr) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn parse_diagnostic_recording_policy(
-    value: &OsStr,
-) -> Result<diagnostic_recording::DiagnosticPolicy, String> {
+fn parse_diagnostic_recording_policy(value: &OsStr) -> Result<DiagnosticPolicy, String> {
     match value.to_str() {
-        Some("enabled") => Ok(diagnostic_recording::DiagnosticPolicy {
-            retention: diagnostic_recording::DiagnosticRetention::FactsOnly,
-            ..diagnostic_recording::DiagnosticPolicy::default()
+        Some("enabled") => Ok(DiagnosticPolicy {
+            retention: DiagnosticRetention::FactsOnly,
+            ..DiagnosticPolicy::default()
         }),
-        Some("disabled") => Ok(diagnostic_recording::DiagnosticPolicy {
+        Some("disabled") => Ok(DiagnosticPolicy {
             enabled: false,
-            ..diagnostic_recording::DiagnosticPolicy::default()
+            ..DiagnosticPolicy::default()
         }),
         _ => Err("recording must be enabled or disabled".to_owned()),
     }
@@ -4735,6 +4736,7 @@ mod tests {
         SourceSnapshot, SourceTitleObservation, TachiObservation,
     };
     use scorepeek_core::catalog::FederationInput;
+    use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention};
     use scorepeek_core::event::{RunEvent, RunEventKind};
     use scorepeek_core::recognition::{
         CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
@@ -5573,10 +5575,7 @@ node_name = "must-not-be-inherited"
     fn live_session_prepares_an_absent_private_diagnostic_root() {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("diagnostics");
-        let preflight = prepare_live_diagnostic_root(
-            &root,
-            &crate::diagnostics::writer::DiagnosticPolicy::default(),
-        );
+        let preflight = prepare_live_diagnostic_root(&root, &DiagnosticPolicy::default());
         assert_eq!(preflight.status, "ready");
         assert_eq!(preflight.error_type, None);
         assert!(root.is_dir());
@@ -5586,10 +5585,7 @@ node_name = "must-not-be-inherited"
     fn internal_capture_cli_never_enables_runtime_frame_artifacts() {
         let policy = parse_diagnostic_recording_policy(OsStr::new("enabled")).unwrap();
         assert!(policy.enabled);
-        assert_eq!(
-            policy.retention,
-            crate::diagnostics::writer::DiagnosticRetention::FactsOnly
-        );
+        assert_eq!(policy.retention, DiagnosticRetention::FactsOnly);
     }
 
     #[test]
