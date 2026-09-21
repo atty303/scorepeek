@@ -3,10 +3,21 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 output="$root/target/skins"
-staging="$root/target/skin-package-staging"
-trap 'rm -rf "$staging"' EXIT
-rm -rf "$staging"
-mkdir -p "$output" "$staging"
+mkdir -p "$root/target" "$output"
+staging=
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [[ -n "$staging" ]] && ! rm -rf -- "$staging" && [[ "$status" -eq 0 ]]; then
+    status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+staging=$(mktemp -d "$output/.skin-package-staging.XXXXXX")
 
 scoper_probe=$(printf '@media(min-width:1px){.inside,.other{color:red}}.after{color:blue}' | awk -f "$root/scripts/scope-skin-css.awk")
 if [[ "$scoper_probe" != '@media(min-width:1px){.scorepeek-skin-scope .inside,.scorepeek-skin-scope .other{color:red}}.scorepeek-skin-scope .after{color:blue}' ]]; then
@@ -25,6 +36,7 @@ package() {
   name=$(basename "$skin_dir")
   local crate="scorepeek-skin-$name"
   local work="$staging/$name"
+  local archive="$staging/$name.zip"
   local module="${crate//-/_}.wasm"
   local shared=false
   if [[ -f "$skin_dir/skin.build.toml" ]] && grep -Eq '^shared[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$skin_dir/skin.build.toml"; then
@@ -47,8 +59,8 @@ package() {
   fi
 
   bash "$root/skins/shared/tools/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
-  rm -f "$output/$name.zip"
-  (cd "$work" && zip -q -X -9 "$output/$name.zip" ./*)
+  (cd "$work" && zip -q -X -9 "$archive" ./*)
+  mv -fT -- "$archive" "$output/$name.zip"
 }
 
 found=false

@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn stdin_writer_reports_a_broken_child_and_can_be_reaped() {
+    fn stdin_writer_reports_a_broken_child_for_a_full_frame_and_can_be_reaped() {
         let mut child = Command::new("true")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -1486,7 +1486,13 @@ mod tests {
         let stdin = child.stdin.take().unwrap();
         let writer = SegmentWriter::start(stdin).unwrap();
         assert!(child.wait().unwrap().success());
-        assert!(writer.write(Arc::new(vec![1].into_boxed_slice())).is_err());
+        assert!(
+            writer
+                .write(Arc::new(
+                    vec![1; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
+                ))
+                .is_err()
+        );
         writer.abort();
     }
 
