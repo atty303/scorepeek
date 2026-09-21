@@ -6,7 +6,10 @@ use serde::Serialize;
 
 use crate::catalog::PlayType;
 
-use super::{IntegratedContextLayout, RecognitionError, Rgb8Crop, encode_sha256};
+use crate::recognition::{
+    RecognitionError, Rgb8Crop,
+    screen::{IntegratedContextLayout, encode_sha256},
+};
 
 const SINGLE_REFERENCE_QOI: &[u8] =
     include_bytes!("../../../assets/music-select-play-type-v1/single.qoi");

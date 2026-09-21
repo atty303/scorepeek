@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{RecognitionError, Rgb8Crop, Roi};
+use crate::recognition::{RecognitionError, Rgb8Crop, Roi};
 
 pub const MUSIC_SELECT_BEST_LAYOUT: &[u8] =
     include_bytes!("../../music-select-best-layout-v1.json");
@@ -110,7 +110,7 @@ impl MusicSelectBestCrops {
         let crop = |roi| -> Result<Rgb8Crop, RecognitionError> {
             Ok(Rgb8Crop {
                 roi,
-                pixels: super::crop_canonical_pixels(pixels, roi)?,
+                pixels: crate::recognition::screen::crop_canonical_pixels(pixels, roi)?,
             })
         };
         Ok(Self {
@@ -121,7 +121,7 @@ impl MusicSelectBestCrops {
         })
     }
 
-    pub(super) fn numeric_cells(&self) -> Result<Vec<Rgb8Crop>, RecognitionError> {
+    pub(in crate::recognition) fn numeric_cells(&self) -> Result<Vec<Rgb8Crop>, RecognitionError> {
         let layout = MusicSelectBestLayout::load()?;
         let mut cells = Vec::with_capacity(8);
         for source in [&self.score, &self.miss_count] {
@@ -158,7 +158,7 @@ impl MusicSelectBestCrops {
         Ok(cells)
     }
 
-    pub(super) fn miss_dashes(&self) -> bool {
+    pub(in crate::recognition) fn miss_dashes(&self) -> bool {
         let crop = &self.miss_count;
         // Four independently measured 16x2 neutral dashes, with no numeral-height foreground.
         let mut rows = vec![0_u32; crop.roi.height as usize];

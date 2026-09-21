@@ -4,10 +4,11 @@ use serde::Serialize;
 
 use crate::catalog::ScorepeekSongId;
 
-use super::{
-    CatalogPrefixCandidateScore, CatalogTextCandidateScore, MusicSelectSongCandidateObservation,
-};
 use crate::recognition::title::observe::folded_comparison_key;
+use crate::recognition::{
+    CatalogNormalizedSimilarity, CatalogPrefixCandidateScore, CatalogTextCandidateScore,
+    MusicSelectSongCandidateObservation,
+};
 
 pub const MUSIC_SELECT_SONG_RESOLVER_ID: &str =
     "scorepeek-music-select-active-prefix-full-tiebreak-corroborated-v2";
@@ -473,8 +474,8 @@ fn ratio_at_least(
 }
 
 fn compare_similarity(
-    left: super::CatalogNormalizedSimilarity,
-    right: super::CatalogNormalizedSimilarity,
+    left: CatalogNormalizedSimilarity,
+    right: CatalogNormalizedSimilarity,
 ) -> std::cmp::Ordering {
     let left_scaled = (left.matching_units as u128) * (right.compared_units as u128);
     let right_scaled = (right.matching_units as u128) * (left.compared_units as u128);

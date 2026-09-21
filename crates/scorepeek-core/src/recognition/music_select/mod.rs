@@ -1,7 +1,10 @@
 //! Music-select observation and resolution.
 
+mod best;
 pub mod observe;
+mod play_type;
+mod resolve;
 
-pub use super::screen::music_select_best::*;
-pub use super::screen::music_select_play_type::*;
-pub use super::screen::music_select_resolver::*;
+pub use best::*;
+pub use play_type::*;
+pub use resolve::*;

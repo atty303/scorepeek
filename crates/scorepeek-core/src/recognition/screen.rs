@@ -10,12 +10,6 @@ use sha2::{Digest as _, Sha256};
 use crate::catalog::Difficulty;
 use crate::frame::{CanonicalFrame, CanonicalLayout, Roi};
 
-#[path = "music_select/best.rs"]
-pub(super) mod music_select_best;
-#[path = "music_select/play_type.rs"]
-pub(super) mod music_select_play_type;
-#[path = "music_select/resolve.rs"]
-pub(super) mod music_select_resolver;
 #[path = "result/panel.rs"]
 pub(super) mod numeric_character_layout;
 #[path = "result/numeric/fixed_slot.rs"]
@@ -31,6 +25,19 @@ pub(super) mod result_resolver;
 #[path = "screen_reference.rs"]
 pub(super) mod screen_reference;
 
+pub use super::music_select::{
+    BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,
+    MusicSelectBestCrops, MusicSelectBestLayout, MusicSelectBestObservation, MusicSelectBestValues,
+    StableBestField, dj_rank, resolve_music_select_best,
+};
+pub use super::music_select::{
+    MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
+    MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
+};
+pub use super::music_select::{
+    MusicSelectPlayTypeObservation, MusicSelectPlayTypeState, MusicSelectPlayTypeUnknownReason,
+    observe_music_select_play_type,
+};
 pub use super::shared::{
     CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
     CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
@@ -49,19 +56,6 @@ pub use super::title::{
     DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
     ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
     diagnostic_title_candidate, provisional_title_candidates,
-};
-pub use music_select_best::{
-    BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,
-    MusicSelectBestCrops, MusicSelectBestLayout, MusicSelectBestObservation, MusicSelectBestValues,
-    StableBestField, dj_rank, resolve_music_select_best,
-};
-pub use music_select_play_type::{
-    MusicSelectPlayTypeObservation, MusicSelectPlayTypeState, MusicSelectPlayTypeUnknownReason,
-    observe_music_select_play_type,
-};
-pub use music_select_resolver::{
-    MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
-    MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
 };
 pub use numeric_character_layout::{
     NumericCharacterFieldLayout, NumericCharacterLayoutVariant, ResultNumericCharacterLayout,
@@ -895,12 +889,12 @@ pub struct MusicSelectCropExportSummary {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct IntegratedContextLayout {
+pub(in crate::recognition) struct IntegratedContextLayout {
     schema: String,
     canonical_frame_contract_id: String,
     canonical_layout_sha256: String,
     result: ResultContextLayout,
-    music_select: MusicSelectContextLayout,
+    pub(in crate::recognition) music_select: MusicSelectContextLayout,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -912,10 +906,10 @@ struct ResultContextLayout {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct MusicSelectContextLayout {
+pub(in crate::recognition) struct MusicSelectContextLayout {
     artist: Roi,
     legacy_selected_chart: Roi,
-    play_type: MusicSelectPlayTypeLayout,
+    pub(in crate::recognition) play_type: MusicSelectPlayTypeLayout,
     selected_difficulty: MusicSelectDifficultyLayout,
     play_side: MusicSelectPlaySideLayout,
     active_list_title: Roi,
@@ -923,15 +917,15 @@ struct MusicSelectContextLayout {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct MusicSelectPlayTypeLayout {
-    algorithm_id: String,
-    roi: Roi,
-    template_width: u32,
-    template_height: u32,
-    single_asset_sha256: String,
-    double_asset_sha256: String,
-    score_min_ppm: u32,
-    winner_margin_min_ppm: u32,
+pub(in crate::recognition) struct MusicSelectPlayTypeLayout {
+    pub(in crate::recognition) algorithm_id: String,
+    pub(in crate::recognition) roi: Roi,
+    pub(in crate::recognition) template_width: u32,
+    pub(in crate::recognition) template_height: u32,
+    pub(in crate::recognition) single_asset_sha256: String,
+    pub(in crate::recognition) double_asset_sha256: String,
+    pub(in crate::recognition) score_min_ppm: u32,
+    pub(in crate::recognition) winner_margin_min_ppm: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -981,7 +975,7 @@ pub struct MusicSelectMotionRegions {
 }
 
 impl IntegratedContextLayout {
-    fn load() -> Result<Self, RecognitionError> {
+    pub(in crate::recognition) fn load() -> Result<Self, RecognitionError> {
         let layout: Self = serde_json::from_slice(INTEGRATED_CONTEXT_LAYOUT_BYTES)?;
         let canonical = CanonicalLayout::load()?;
         let active_list_slot = canonical
@@ -1113,7 +1107,7 @@ pub struct IntegratedContextCropExportSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rgb8Crop {
     pub roi: Roi,
-    pixels: Vec<u8>,
+    pub(in crate::recognition) pixels: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -2740,7 +2734,10 @@ fn horizontal_edge_pixels(pixels: &[u8], width: u32) -> u32 {
         .fold(0, |count, _| count + 1)
 }
 
-fn crop_canonical_pixels(pixels: &[u8], roi: Roi) -> Result<Vec<u8>, RecognitionError> {
+pub(in crate::recognition) fn crop_canonical_pixels(
+    pixels: &[u8],
+    roi: Roi,
+) -> Result<Vec<u8>, RecognitionError> {
     roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
     if pixels.len() != CANONICAL_BYTES {
         return Err(RecognitionError::InvalidCanonicalFrame);
