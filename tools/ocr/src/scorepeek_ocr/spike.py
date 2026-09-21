@@ -104,6 +104,7 @@ def load_layout_contract(
             "presence",
             "header",
             "panel_origins",
+            "numeric_panel_origins",
             "upper_panel_edge",
             "lower_panel_edge",
             "title",
@@ -161,6 +162,24 @@ def load_layout_contract(
     )
     if panel_origins != {"left": 0, "right": 1360}:
         raise SpikeError("canonical result panel origins are invalid")
+    numeric_panel_origins = _exact_object(
+        result["numeric_panel_origins"],
+        {"left", "right"},
+        "result numeric panel origins",
+    )
+    for side in ("left", "right"):
+        numeric_panel_origins[side] = _exact_object(
+            numeric_panel_origins[side],
+            {"score", "judgment", "timing", "combo_break"},
+            f"result {side} numeric panel origins",
+        )
+        if not all(
+            type(origin) is int and origin >= 0
+            for origin in numeric_panel_origins[side].values()
+        ):
+            raise SpikeError("canonical result numeric panel origins are invalid")
+    if any(numeric_panel_origins["left"].values()):
+        raise SpikeError("canonical left result numeric panel origins are invalid")
     for field in ("header", "upper_panel_edge", "lower_panel_edge"):
         roi = _exact_object(
             result[field], {"x", "y", "width", "height"}, f"{field} ROI"
@@ -187,6 +206,30 @@ def load_layout_contract(
         ):
             raise SpikeError("canonical result ROI is invalid")
         result_expected[field] = (filename, roi)
+    numeric_families = {
+        "current_score": "score",
+        "previous_score": "score",
+        "previous_miss_count": "score",
+        "miss_count": "score",
+        "pgreat": "judgment",
+        "great": "judgment",
+        "good": "judgment",
+        "bad": "judgment",
+        "poor": "judgment",
+        "fast": "timing",
+        "slow": "timing",
+        "combo_break": "combo_break",
+    }
+    for side in ("left", "right"):
+        for field, family in numeric_families.items():
+            roi = result[field]
+            if (
+                roi["x"]
+                + numeric_panel_origins[side][family]
+                + roi["width"]
+                > raw["width"]
+            ):
+                raise SpikeError("canonical result numeric ROI is invalid")
 
     music_select = _exact_object(
         raw["music_select"],

@@ -44,6 +44,7 @@ from scorepeek_ocr.provisional_labels import (
 )
 from scorepeek_ocr.spike import (
     CALIBRATED_NORMALIZER_SHA256,
+    CANONICAL_LAYOUT_PATH,
     SpikeError,
     _write_output,
     load_crops,
@@ -1521,6 +1522,16 @@ class ContractTests(unittest.TestCase):
             ctc_log_probability(probabilities, [1] * 21)
         with self.assertRaises(ParityError):
             _canonical_json({"score": math.inf})
+
+    def test_layout_contract_rejects_boolean_numeric_panel_origins(self) -> None:
+        layout = json.loads(CANONICAL_LAYOUT_PATH.read_bytes())
+        layout["result"]["numeric_panel_origins"]["right"]["score"] = True
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "canonical-layout-v2.json"
+            path.write_text(json.dumps(layout), encoding="utf-8")
+            with patch("scorepeek_ocr.spike.CANONICAL_LAYOUT_PATH", path):
+                with self.assertRaises(SpikeError):
+                    load_layout_contract()
 
     def test_crop_contract_accepts_exact_bytes_and_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
