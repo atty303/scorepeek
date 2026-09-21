@@ -9,6 +9,7 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::service::session::recognition as recognition_session;
 use crate::{
     capture_live,
     config::document as local_profiles,
@@ -16,7 +17,7 @@ use crate::{
     events::server as routine_output,
     inventory::{doctor as inventory, vulkan_layer},
     platform::signal as live_control,
-    recognition_artifact, recognition_live,
+    recognition_artifact,
     recording::{simulation as recording_simulation, writer as canonical_recording},
     service::session as routine_watcher,
 };
@@ -1269,12 +1270,12 @@ struct RegisteredResourceOwner {
     _resources: recognition::RegisteredRecognitionResources,
 }
 
-impl recognition_live::field_observer::FieldObserver for RegisteredResourceOwner {
+impl recognition_session::field_observer::FieldObserver for RegisteredResourceOwner {
     type Output = ();
 
     fn observe(
         &mut self,
-        _input: &recognition_live::field_observer::FieldObserverInput,
+        _input: &recognition_session::field_observer::FieldObserverInput,
     ) -> Self::Output {
     }
 }
@@ -1365,7 +1366,7 @@ fn registered_resource_gate(
         },
     };
     let worker =
-        recognition_live::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
+        recognition_session::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
             binding
                 .load_registered_resources(Path::new(catalog_root), bundle_root)
                 .map(|resources| RegisteredResourceOwner {
@@ -1375,18 +1376,18 @@ fn registered_resource_gate(
     match worker {
         Ok(worker) => {
             let outcome = worker
-                .finish(recognition_live::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT);
+                .finish(recognition_session::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT);
             if outcome.status
-                != recognition_live::field_observer::FieldObserverFinishStatus::Complete
+                != recognition_session::field_observer::FieldObserverFinishStatus::Complete
             {
                 let error_type = match outcome.status {
-                    recognition_live::field_observer::FieldObserverFinishStatus::Timeout => {
+                    recognition_session::field_observer::FieldObserverFinishStatus::Timeout => {
                         RegisteredResourceGateErrorType::FinishTimeout
                     }
-                    recognition_live::field_observer::FieldObserverFinishStatus::WorkerUnavailable => {
+                    recognition_session::field_observer::FieldObserverFinishStatus::WorkerUnavailable => {
                         RegisteredResourceGateErrorType::WorkerUnavailable
                     }
-                    recognition_live::field_observer::FieldObserverFinishStatus::Complete => {
+                    recognition_session::field_observer::FieldObserverFinishStatus::Complete => {
                         unreachable!("complete outcome was handled above")
                     }
                 };
@@ -1429,11 +1430,11 @@ fn registered_resource_gate(
 }
 
 fn registered_resource_start_error(
-    error: recognition_live::field_observer::FieldObserverStartError<
+    error: recognition_session::field_observer::FieldObserverStartError<
         recognition::RegisteredResourceLoadError,
     >,
 ) -> (RegisteredResourceGateErrorType, String) {
-    use recognition_live::field_observer::FieldObserverStartError;
+    use recognition_session::field_observer::FieldObserverStartError;
     match error {
         FieldObserverStartError::InvalidBinding => (
             RegisteredResourceGateErrorType::InvalidBinding,

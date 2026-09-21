@@ -34,18 +34,18 @@ use crate::recognition_artifact::{
     RecognitionArtifactEnqueueOutcome, RecognitionArtifactFinishOutcome,
     RecognitionArtifactFinishStatus, RecognitionArtifactRetention, RecognitionArtifactWorker,
 };
-use crate::recognition_live::RecognitionSession;
-use crate::recognition_live::field_observer::{
+use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
+use crate::service::session::recognition::RecognitionSession;
+use crate::service::session::recognition::field_observer::{
     DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT, FieldObserverFinishStatus, FieldObserverOfferError,
 };
-use crate::recognition_live::field_session::{
+use crate::service::session::recognition::field_session::{
     FieldObservationSession, FieldObservationSessionPoll, FieldObservationStartError,
     FieldObservationSubmission, PendingSessionFieldObservation,
 };
-use crate::recognition_live::screen_field_observer::{
+use crate::service::session::recognition::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
 };
-use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
 use scorepeek_core::diagnostics::{
     DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
     DiagnosticRunStatus,
@@ -222,7 +222,7 @@ pub enum GamescopeLiveSessionEvent<'a> {
     },
 }
 
-pub use crate::recognition_live::LiveEventProcessingTiming;
+pub use crate::service::session::recognition::LiveEventProcessingTiming;
 
 type LiveEventEmitter<'e> = dyn for<'a> FnMut(GamescopeLiveSessionEvent<'a>) -> Result<LiveEventProcessingTiming, String>
     + 'e;
@@ -1642,7 +1642,9 @@ fn empty_field_observation_report(
     error_type: FieldObservationGateErrorType,
     capture_error_type: Option<CaptureErrorType>,
     capture_generation: CaptureGeneration,
-    field_observer: Option<crate::recognition_live::field_observer::FieldObserverFinishOutcome>,
+    field_observer: Option<
+        crate::service::session::recognition::field_observer::FieldObserverFinishOutcome,
+    >,
     artifact_requested: bool,
     sink: BoundedDiagnosticSink,
 ) -> GamescopeFieldObservationGateReport {
@@ -1665,10 +1667,10 @@ fn field_start_error(
     error: FieldObservationStartError<RegisteredScreenFieldObserverLoadError>,
 ) -> (
     FieldObservationGateErrorType,
-    Option<crate::recognition_live::field_observer::FieldObserverFinishOutcome>,
+    Option<crate::service::session::recognition::field_observer::FieldObserverFinishOutcome>,
     Option<String>,
 ) {
-    use crate::recognition_live::field_observer::FieldObserverStartError;
+    use crate::service::session::recognition::field_observer::FieldObserverStartError;
     match error {
         FieldObservationStartError::FieldObserver(error) => match error {
             FieldObserverStartError::InvalidBinding => (
@@ -1952,12 +1954,12 @@ fn offer_live_field_observation_frames(
             let inspected = if game_version.identified().is_some() && field_busy {
                 session.inspect_with_field_policy(
                     &frame,
-                    crate::recognition_live::FieldInputPolicy::SkipBusyAndTitle,
+                    crate::service::session::recognition::FieldInputPolicy::SkipBusyAndTitle,
                 )
             } else if game_version.identified().is_some() {
                 session.inspect_with_field_policy(
                     &frame,
-                    crate::recognition_live::FieldInputPolicy::SkipTitle,
+                    crate::service::session::recognition::FieldInputPolicy::SkipTitle,
                 )
             } else if field_busy {
                 session.inspect_while_field_busy(&frame)
@@ -2621,7 +2623,8 @@ fn wait_live_field_observations(
 }
 
 struct FieldObservationFinishOutcomes {
-    field_observer: Option<crate::recognition_live::field_observer::FieldObserverFinishOutcome>,
+    field_observer:
+        Option<crate::service::session::recognition::field_observer::FieldObserverFinishOutcome>,
     diagnostic: Option<crate::diagnostics::writer::DiagnosticFinishOutcome>,
     recognition_artifact: Option<RecognitionArtifactFinishOutcome>,
     artifact_requested: bool,
@@ -4346,9 +4349,9 @@ mod tests {
             FieldObservationGateErrorType::RuntimeInitializationFailed
         );
         let (error_type, finish, detail) = field_start_error(
-            crate::recognition_live::field_session::FieldObservationStartError::FieldObserver(
-                crate::recognition_live::field_observer::FieldObserverStartError::Load(
-                    crate::recognition_live::screen_field_observer::RegisteredScreenFieldObserverLoadError::Resources(
+            crate::service::session::recognition::field_session::FieldObservationStartError::FieldObserver(
+                crate::service::session::recognition::field_observer::FieldObserverStartError::Load(
+                    crate::service::session::recognition::screen_field_observer::RegisteredScreenFieldObserverLoadError::Resources(
                         RegisteredResourceLoadError::InvalidLocation {
                             role: "model bundle",
                             source: Some(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),

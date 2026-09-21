@@ -673,7 +673,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::recognition_live::field_observer::{FieldObserverFinishStatus, FieldObserverInput};
+    use crate::service::session::recognition::field_observer::{
+        FieldObserverFinishStatus, FieldObserverInput,
+    };
     use scorepeek_core::diagnostics::{
         DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
     };

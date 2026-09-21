@@ -22,7 +22,7 @@ use crate::diagnostics::ring::{
     DiagnosticOwnedSourceFrame, DiagnosticWorkerHandle,
 };
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
-use crate::recognition_live::RecognitionObservation;
+use crate::service::session::recognition::RecognitionObservation;
 
 const FOREGROUND_RING_INTERVAL_MS: u64 = 1_000;
 const FOREGROUND_RING_FRAMES: usize = 12;
@@ -496,7 +496,7 @@ impl DiagnosticBridge {
 
     pub fn record_frame_processing_timing(
         &mut self,
-        timing: crate::recognition_live::FrameProcessingTiming,
+        timing: crate::service::session::recognition::FrameProcessingTiming,
         field_status: scorepeek_core::diagnostics::FrameFieldStatus,
         field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
@@ -914,7 +914,7 @@ fn diagnostic_text_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recognition_live::RecognitionObservation;
+    use crate::service::session::recognition::RecognitionObservation;
     use scorepeek_core::diagnostics::DiagnosticCompleteness;
     use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
     use scorepeek_core::recognition::{
@@ -1119,7 +1119,7 @@ mod tests {
             );
             assert_eq!(
                 bridge.record_frame_processing_timing(
-                    crate::recognition_live::FrameProcessingTiming {
+                    crate::service::session::recognition::FrameProcessingTiming {
                         frame_started: std::time::Instant::now(),
                         source_sequence: sequence,
                         monotonic_start_ms: sequence * 100,

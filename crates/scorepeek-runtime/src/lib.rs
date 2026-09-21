@@ -17,6 +17,7 @@ pub use scorepeek_core::session::attempt;
 pub use scorepeek_core::session::result;
 pub mod platform;
 pub mod recording;
+pub mod replay;
 pub mod resources;
 pub mod scores;
 #[allow(
@@ -36,7 +37,6 @@ pub(crate) use recording::source as canonical_source;
 pub use resources::model::cache::{ModelCacheError, ModelCacheEvent, ensure_small_model};
 pub use service::ServiceHandle;
 pub use service::dispatch::dev_operation_main;
-pub use service::session::recognition as recognition_live;
 
 #[must_use]
 pub fn dispatch_private_role(arguments: &[std::ffi::OsString]) -> Option<std::process::ExitCode> {

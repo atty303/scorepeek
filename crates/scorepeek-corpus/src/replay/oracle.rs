@@ -24,6 +24,10 @@ use scorepeek_core::replay::{
     ScreenClass, ScreenRgb8Crops, SupplementalResultValue, inspect_canonical_rgb8,
     resolve_clear_type, route_screen_rgb8_crops,
 };
+use scorepeek_runtime::replay::{
+    ReplayFieldPoll, ReplayFieldSubmission, ReplayPendingObservation, ReplayPreparedFrame,
+    ReplayRecognitionSession, ReplaySharedResources as RuntimeReplaySharedResources,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -677,8 +681,7 @@ struct CanonicalReplayEnvironment<'a> {
     segment_resolver: &'a SegmentResolver,
 }
 
-type SharedReplayFields =
-    scorepeek_runtime::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources;
+type SharedReplayFields = RuntimeReplaySharedResources;
 
 struct ReplaySharedResources {
     by_catalog: Mutex<BTreeMap<String, Arc<SharedReplayFields>>>,
@@ -2897,23 +2900,19 @@ pub fn replay_corpus_with_options(
                 replay: None,
             },
         };
-        let mut recognition =
-            scorepeek_runtime::recognition_live::field_session::FieldObservationSession::start_registered(
-                diagnostic_root.path(),
-                descriptor,
-                scorepeek_core::diagnostics::DiagnosticPolicy {
-                    enabled: false,
-                    ..scorepeek_core::diagnostics::DiagnosticPolicy::default()
-                },
-                &catalog_root,
-                &bundle,
-                scorepeek_core::model::session::RecognitionExecutionMode::Offline,
-            )
-            .map_err(|error| {
-                CorpusError::InvalidReplay(format!(
-                    "production recognizer could not start: {error:?}"
-                ))
-            })?;
+        let mut recognition = ReplayRecognitionSession::start_registered(
+            diagnostic_root.path(),
+            descriptor,
+            scorepeek_core::diagnostics::DiagnosticPolicy {
+                enabled: false,
+                ..scorepeek_core::diagnostics::DiagnosticPolicy::default()
+            },
+            &catalog_root,
+            &bundle,
+        )
+        .map_err(|error| {
+            CorpusError::InvalidReplay(format!("production recognizer could not start: {error:?}"))
+        })?;
         for artifact_sha256 in frame_map.values() {
             let pixels = read_canonical_object(store, artifact_sha256)?;
             scorepeek_core::replay::inspect_canonical_rgb8(&pixels)
@@ -2968,13 +2967,12 @@ pub fn replay_corpus_with_options(
                 let inspected = recognition.inspect(&frame).map_err(|_| {
                     CorpusError::InvalidReplay("production frame inspection failed".to_owned())
                 })?;
-                let scorepeek_runtime::recognition_live::field_session::FieldObservationSubmission::Submitted(pending) = inspected.field_submission else {
+                let ReplayFieldSubmission::Submitted(pending) = inspected.field_submission else {
                     return invalid_replay("stable result frame was not submitted for OCR");
                 };
-                let scorepeek_runtime::recognition_live::field_session::FieldObservationSessionPoll::Ready { observation, .. } = recognition.wait_field_observation(
-                    &pending,
-                    Duration::from_secs(5),
-                ) else {
+                let ReplayFieldPoll::Ready { observation, .. } =
+                    recognition.wait_field_observation(&pending, Duration::from_secs(5))
+                else {
                     return invalid_replay("production OCR did not complete");
                 };
                 let output = observation.output().as_ref().map_err(|error| {
@@ -3121,9 +3119,7 @@ pub fn replay_corpus_with_options(
             1,
             Duration::from_secs(5),
         );
-        if finish.field_observer.status
-            != scorepeek_runtime::recognition_live::field_observer::FieldObserverFinishStatus::Complete
-        {
+        if !finish.field_observer_complete {
             return invalid_replay("production recognizer did not finish cleanly");
         }
     }
@@ -3181,21 +3177,14 @@ fn optional_supplemental_matches<T: PartialEq>(
     observed == expected || matches!(observed, SupplementalResultValue::Unknown { .. })
 }
 
-type ReplayFieldOutput = Result<
-    scorepeek_core::model::session::RegisteredScreenFieldObservation,
-    scorepeek_core::replay::ScreenFieldObservationError<scorepeek_core::replay::OnnxParityError>,
->;
-
 struct ReplayPending {
-    pending: scorepeek_runtime::recognition_live::field_session::PendingSessionFieldObservation<
-        ReplayFieldOutput,
-    >,
+    pending: ReplayPendingObservation,
     _memory: ReplayPendingMemory,
 }
 
 struct PreparedReplayFrame {
     pixels: Box<[u8]>,
-    recognition: scorepeek_runtime::recognition_live::PreparedRecognitionFrame,
+    recognition: ReplayPreparedFrame,
     memory: ReplayPendingMemory,
     queue_wait_us: u64,
     wall_us: u64,
@@ -3236,10 +3225,7 @@ impl ReplayPreprocessPool {
                     let queue_wait_us = duration_us(job.queued_at.elapsed());
                     let started = Instant::now();
                     let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        scorepeek_runtime::recognition_live::PreparedRecognitionFrame::prepare_since(
-                            &job.pixels,
-                            job.queued_at,
-                        )
+                        ReplayPreparedFrame::prepare_since(&job.pixels, job.queued_at)
                     }));
                     let result = match prepared {
                         Ok(Ok(recognition)) => Ok(PreparedReplayFrame {
@@ -3342,11 +3328,6 @@ struct QueuedReplaySession {
     memory_wait_started: Instant,
     memory_wait_us: u64,
 }
-
-type ReplayRecognitionSession =
-    scorepeek_runtime::recognition_live::field_session::FieldObservationSession<
-        scorepeek_runtime::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
-    >;
 
 struct ReplaySessionRuntime {
     session: CaptureSession,
@@ -3711,7 +3692,7 @@ fn replay_canonical_suite(
             }
         };
         let descriptor = replay_descriptor(prepared.index, &prepared.session, &prepared.binding);
-        match scorepeek_runtime::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources::load(
+        match RuntimeReplaySharedResources::load(
             &descriptor,
             environment.catalog_root,
             environment.bundle,
@@ -4281,9 +4262,7 @@ fn start_replay_session(
     store: &Path,
     diagnostic_root: &Path,
     prepared: PreparedReplaySession,
-    shared: Arc<
-        scorepeek_runtime::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
-    >,
+    shared: Arc<RuntimeReplaySharedResources>,
     decode_activity: &Arc<ReplayDecodeActivity>,
     memory_wait_us: u64,
     trace: Option<&Arc<Mutex<ReplayTrace>>>,
@@ -4379,21 +4358,18 @@ fn start_replay_session(
             },
         })
         .map_err(CorpusError::InvalidReplay)?;
-    let recognition =
-        scorepeek_runtime::recognition_live::field_session::FieldObservationSession::start_registered_shared(
-            diagnostic_root,
-            descriptor,
-            scorepeek_core::diagnostics::DiagnosticPolicy {
-                enabled: false,
-                ..scorepeek_core::diagnostics::DiagnosticPolicy::default()
-            },
-            shared,
-        )
-        .map_err(|error| {
-            CorpusError::InvalidReplay(format!(
-                "production recognizer could not start: {error:?}"
-            ))
-        })?;
+    let recognition = ReplayRecognitionSession::start_registered_shared(
+        diagnostic_root,
+        descriptor,
+        scorepeek_core::diagnostics::DiagnosticPolicy {
+            enabled: false,
+            ..scorepeek_core::diagnostics::DiagnosticPolicy::default()
+        },
+        &shared,
+    )
+    .map_err(|error| {
+        CorpusError::InvalidReplay(format!("production recognizer could not start: {error:?}"))
+    })?;
     runtime.recognition = Some(recognition);
     Ok(runtime)
 }
@@ -4689,7 +4665,7 @@ fn process_replay_frame(
         .expect("recognizer is active")
         .inspect_prepared(&frame, prepared_recognition)
         .map_err(|_| CorpusError::InvalidReplay("production frame inspection failed".to_owned()))?;
-    let screen = inspected.observation.screen();
+    let screen = inspected.screen();
     for episode in &runtime.label.episodes {
         if episode
             .attempt
@@ -4722,8 +4698,8 @@ fn process_replay_frame(
                 monotonic_start_ms: tick.monotonic_ms,
                 monotonic_end_ms: tick.monotonic_ms,
                 screen: replay_screen_name(screen).to_owned(),
-                result_presence: inspected.observation.result_presence(),
-                play_presence: inspected.observation.play_presence(),
+                result_presence: inspected.result_presence(),
+                play_presence: inspected.play_presence(),
                 unknown_reason: (screen == ScreenClass::Unknown)
                     .then(|| "predicate_not_matched".to_owned()),
             },
@@ -4741,10 +4717,8 @@ fn process_replay_frame(
         &mut runtime.measurements,
     )?;
     match inspected.field_submission {
-        scorepeek_runtime::recognition_live::field_session::FieldObservationSubmission::NotApplicable => {}
-        scorepeek_runtime::recognition_live::field_session::FieldObservationSubmission::Submitted(
-            mut field,
-        ) => {
+        ReplayFieldSubmission::NotApplicable => {}
+        ReplayFieldSubmission::Submitted(mut field) => {
             let episode_id = runtime.timeline.active_episode_id().ok_or_else(|| {
                 CorpusError::InvalidReplay("field observation has no semantic episode".to_owned())
             })?;
@@ -4754,10 +4728,10 @@ fn process_replay_frame(
                 _memory: memory,
             });
         }
-        scorepeek_runtime::recognition_live::field_session::FieldObservationSubmission::BusySkipped => {
+        ReplayFieldSubmission::BusySkipped => {
             return invalid_replay("offline replay skipped field OCR as busy");
         }
-        scorepeek_runtime::recognition_live::field_session::FieldObservationSubmission::Rejected(error) => {
+        ReplayFieldSubmission::Rejected(error) => {
             return Err(CorpusError::InvalidReplay(format!(
                 "offline replay rejected field OCR: {error:?}"
             )));
@@ -4818,9 +4792,7 @@ fn finalize_replay_session(
         .event_stream
         .finish("success")
         .map_err(CorpusError::InvalidReplay)?;
-    if finish.field_observer.status
-        != scorepeek_runtime::recognition_live::field_observer::FieldObserverFinishStatus::Complete
-    {
+    if !finish.field_observer_complete {
         return invalid_replay("production recognizer did not finish cleanly");
     }
     validate_music_selection_oracle(
@@ -4854,9 +4826,7 @@ fn finalize_replay_session(
 )]
 fn apply_replay_timeline_actions(
     actions: Vec<scorepeek_core::replay::TimelineAction>,
-    recognition: &mut scorepeek_runtime::recognition_live::field_session::FieldObservationSession<
-        scorepeek_runtime::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
-    >,
+    recognition: &mut ReplayRecognitionSession,
     pending: &mut VecDeque<ReplayPending>,
     output: &mut scorepeek_runtime::events::server::RoutineOutput,
     session_id: &str,
@@ -4919,9 +4889,7 @@ fn publish_replay_semantic(
 }
 
 fn drain_replay_pending(
-    recognition: &mut scorepeek_runtime::recognition_live::field_session::FieldObservationSession<
-        scorepeek_runtime::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
-    >,
+    recognition: &mut ReplayRecognitionSession,
     pending: &mut VecDeque<ReplayPending>,
     output: &mut scorepeek_runtime::events::server::RoutineOutput,
     session_id: &str,
@@ -4943,9 +4911,7 @@ fn drain_replay_pending(
 }
 
 fn commit_replay_pending(
-    recognition: &mut scorepeek_runtime::recognition_live::field_session::FieldObservationSession<
-        scorepeek_runtime::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
-    >,
+    recognition: &mut ReplayRecognitionSession,
     pending: &mut VecDeque<ReplayPending>,
     output: &mut scorepeek_runtime::events::server::RoutineOutput,
     wait: bool,
@@ -4953,7 +4919,6 @@ fn commit_replay_pending(
     generation: u64,
     measurements: &mut ReplayMeasurements,
 ) -> Result<(), CorpusError> {
-    use scorepeek_runtime::recognition_live::field_session::FieldObservationSessionPoll;
     let Some(front) = pending.front() else {
         return Ok(());
     };
@@ -4968,14 +4933,13 @@ fn commit_replay_pending(
             .ordered_commit_wait_us
             .saturating_add(u64::try_from(wait_started.elapsed().as_micros()).unwrap_or(u64::MAX));
     }
-    let FieldObservationSessionPoll::Ready {
+    let ReplayFieldPoll::Ready {
         observation,
-        timing,
+        frame_processing_wall_us,
         screen_episode_id,
-        ..
     } = poll
     else {
-        return if !wait && matches!(poll, FieldObservationSessionPoll::Pending) {
+        return if !wait && matches!(poll, ReplayFieldPoll::Pending) {
             Ok(())
         } else {
             invalid_replay("production OCR did not complete in sequence order")
@@ -5012,7 +4976,7 @@ fn commit_replay_pending(
         .saturating_add(processing.catalog_evidence_us);
     measurements.field_frame_wall_us = measurements
         .field_frame_wall_us
-        .saturating_add(timing.frame_processing_wall_us);
+        .saturating_add(frame_processing_wall_us);
     output
         .publish(
             &scorepeek_runtime::events::server::run_event_from_field_observation(

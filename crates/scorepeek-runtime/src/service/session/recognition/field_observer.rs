@@ -963,7 +963,7 @@ mod tests {
 
     use super::*;
     use crate::diagnostics::live::BoundCanonicalFrame;
-    use crate::recognition_live::RecognitionSession;
+    use crate::service::session::recognition::RecognitionSession;
     use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticResource, DiagnosticRunStatus};
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {

@@ -27,13 +27,13 @@ use crate::canonical_source::{
 use crate::recognition_artifact::{
     RecognitionArtifactExpected, RecognitionArtifactTiming, RecognitionArtifactWriter,
 };
-use crate::recognition_live::field_observer::{
+use crate::service::session::recognition::field_observer::{
     DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT, FieldObserverFinishStatus,
 };
-use crate::recognition_live::field_session::{
+use crate::service::session::recognition::field_session::{
     FieldObservationSession, FieldObservationSessionPoll, FieldObservationSubmission,
 };
-use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObserver;
+use crate::service::session::recognition::screen_field_observer::RegisteredScreenFieldObserver;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 
 type RegisteredFieldObservationSession = FieldObservationSession<RegisteredScreenFieldObserver>;
