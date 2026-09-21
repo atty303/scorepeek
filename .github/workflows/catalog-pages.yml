@@ -58,6 +58,7 @@ jobs:
           current="$work_root/current.zip"
           selected="$site_root/catalog/v1/catalog.zip"
           if [[ "$regenerate" == true ]]; then
+            mise run overlay:web:bundle
             candidate="$work_root/candidate.zip"
             revision=$(tr -d '[:space:]' < catalog/artifact-revision.txt)
             cargo run --locked --quiet -p scorepeek-catalog-publisher -- build --output "$candidate" --notices "$GITHUB_WORKSPACE/THIRD_PARTY_NOTICES.md" --work-directory "$work_root" --artifact-revision "$revision" --generator-commit "$CURRENT_SHA" --workflow-run-url "$WORKFLOW_RUN_URL" | tee "$work_root/build-summary.json"

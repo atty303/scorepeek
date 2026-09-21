@@ -35,9 +35,7 @@ fn main() -> io::Result<()> {
     for byte in digest.finalize() {
         write!(identity, "{byte:02x}").expect("write identity to string");
     }
-    if env::var_os("CARGO_PKG_NAME").as_deref() == Some(OsStr::new("scorepeek-overlay"))
-        && env::var_os("CARGO_FEATURE_EMBEDDED_WEB").is_some()
-    {
+    if env::var_os("CARGO_PKG_NAME").as_deref() == Some(OsStr::new("scorepeek-overlay")) {
         validate_embedded_bundle(&identity)?;
     }
     println!("cargo:rustc-env=SCOREPEEK_OVERLAY_BUILD_ID={identity}");

@@ -61,9 +61,8 @@ mise run overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:1738
 - 終了後serverを止め、所有tabを閉じ、viewportを戻し、一時config/scenario/outputをcleanupする。比較証拠を残すなら保持先を明示する。
 
 `overlay:visual:obs` はbundle依存を持つ。backendだけを古いbundleと組み合わせない。
-通常のcargo build/testが `target/debug/scorepeek` をembedded-webなしに置き換える場合があるため、
-検証後にそのpathをOBS対応の起動成果物だと案内しない。実際に配布用binaryを作る依頼なら
-既存の `mise run dist:build` 等のbuild手順と成果物を確認する。
+通常のcargo build/testもbundleを埋め込み、bundleの欠落またはbuild identity不一致はbuild時に拒否する。
+実際に配布用binaryを作る依頼なら既存の `mise run dist:build` 等のbuild手順と成果物を確認する。
 
 ## 共通matrixと合否
 

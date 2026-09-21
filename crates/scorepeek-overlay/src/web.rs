@@ -1,16 +1,14 @@
 use crate::runtime::Config;
-#[cfg(feature = "embedded-web")]
 #[derive(rust_embed::Embed)]
 #[folder = "$SCOREPEEK_WEB_ASSET_DIR/"]
 struct Assets;
-#[cfg(feature = "embedded-web")]
 const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
-#[cfg(all(test, feature = "embedded-web"))]
+#[cfg(test)]
 #[path = "../../../scripts/overlay-build-assets.rs"]
 #[allow(dead_code)]
 mod overlay_build_assets;
 
-#[cfg(all(test, feature = "embedded-web"))]
+#[cfg(test)]
 mod tests {
     use super::{ASSET_VERSION, Assets};
     #[test]
@@ -46,25 +44,16 @@ mod tests {
 /// # Errors
 /// Returns runtime, bind or worker errors.
 pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result<(), String> {
-    #[cfg(not(feature = "embedded-web"))]
-    {
-        let _ = (config, input);
-        Err("OBS overlay requires the embedded-web build (mise run dist:build)".into())
+    if Assets::get("index.html").is_none() {
+        return Err("embedded index.html is missing".into());
     }
-    #[cfg(feature = "embedded-web")]
-    {
-        if Assets::get("index.html").is_none() {
-            return Err("embedded index.html is missing".into());
-        }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| error.to_string())?;
-        runtime.block_on(server::serve(config, input))
-    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(server::serve(config, input))
 }
 
-#[cfg(feature = "embedded-web")]
 mod server {
     use super::{ASSET_VERSION, Assets};
     use crate::runtime::{Config, Feed};
@@ -503,7 +492,6 @@ mod server {
         embedded(&path)
     }
     fn embedded(path: &str) -> Response {
-        #[cfg(feature = "embedded-web")]
         if let Some(asset) = Assets::get(path) {
             return (
                 [(header::CONTENT_TYPE, asset.metadata.mimetype())],
@@ -511,7 +499,6 @@ mod server {
             )
                 .into_response();
         }
-        let _ = path;
         StatusCode::NOT_FOUND.into_response()
     }
 

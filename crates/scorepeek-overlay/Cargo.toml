@@ -33,10 +33,7 @@ tokio = { workspace = true, features = ["net", "sync", "macros", "rt-multi-threa
 toml.workspace = true
 wasmtime.workspace = true
 zip.workspace = true
-rust-embed = { version = "8.12", features = ["mime-guess", "interpolate-folder-path", "deterministic-timestamps"], optional = true }
-
-[features]
-embedded-web = ["dep:rust-embed", "rust-embed/debug-embed"]
+rust-embed = { version = "8.12", features = ["mime-guess", "interpolate-folder-path", "deterministic-timestamps", "debug-embed"] }
 
 [lints]
 workspace = true

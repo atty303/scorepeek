@@ -44,8 +44,5 @@ workspace = true
 [dev-dependencies]
 scorepeek-catalog = { path = "../scorepeek-catalog", features = ["generation"] }
 
-[features]
-embedded-web = ["scorepeek-overlay/embedded-web"]
-
 [build-dependencies]
 zip.workspace = true

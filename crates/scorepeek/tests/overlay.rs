@@ -1,5 +1,4 @@
 //! Uses only synthetic inputs and an absent, isolated score database.
-#![cfg(feature = "embedded-web")]
 use scorepeek_overlay::{
     children::Children,
     runtime::{Backend, Config},
