@@ -26,15 +26,8 @@ impl RecognitionExecutionMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TextObserverPoolConfiguration {
-    pub available_parallelism: usize,
-    pub workers: usize,
-    pub execution_mode: RecognitionExecutionMode,
-}
-
 #[must_use]
-pub fn select_text_worker_count(
+pub fn recommended_text_worker_count(
     execution_mode: RecognitionExecutionMode,
     available_parallelism: usize,
 ) -> usize {
@@ -67,7 +60,7 @@ enum TextWorkerMessage {
     Finish,
 }
 
-pub struct TextObservationBatch {
+pub struct TextRecognitionResult {
     pub observations: Vec<(
         ScreenTextField,
         Result<DynamicTextObservation, OnnxParityError>,
@@ -79,14 +72,16 @@ pub struct TextObservationBatch {
     pub worker_ids: Vec<usize>,
 }
 
-pub struct RegisteredTextObserverPool {
+pub struct RegisteredTextRecognitionSession {
     senders: Vec<Sender<TextWorkerMessage>>,
     workers: Vec<JoinHandle<()>>,
-    configuration: TextObserverPoolConfiguration,
+    available_parallelism: usize,
+    worker_count: usize,
+    execution_mode: RecognitionExecutionMode,
     next_worker: AtomicUsize,
 }
 
-impl RegisteredTextObserverPool {
+impl RegisteredTextRecognitionSession {
     /// Constructs every persistent registered PP-OCR session before frame admission.
     ///
     /// # Errors
@@ -96,7 +91,7 @@ impl RegisteredTextObserverPool {
         execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, OnnxParityError> {
         let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
-        let worker_count = select_text_worker_count(execution_mode, available_parallelism);
+        let worker_count = recommended_text_worker_count(execution_mode, available_parallelism);
         Self::start_with_worker_count(first_runtime, execution_mode, worker_count)
     }
 
@@ -144,18 +139,26 @@ impl RegisteredTextObserverPool {
         Ok(Self {
             senders,
             workers,
-            configuration: TextObserverPoolConfiguration {
-                available_parallelism,
-                workers: worker_count,
-                execution_mode,
-            },
+            available_parallelism,
+            worker_count,
+            execution_mode,
             next_worker: AtomicUsize::new(0),
         })
     }
 
     #[must_use]
-    pub const fn configuration(&self) -> TextObserverPoolConfiguration {
-        self.configuration
+    pub const fn available_parallelism(&self) -> usize {
+        self.available_parallelism
+    }
+
+    #[must_use]
+    pub const fn worker_count(&self) -> usize {
+        self.worker_count
+    }
+
+    #[must_use]
+    pub const fn execution_mode(&self) -> RecognitionExecutionMode {
+        self.execution_mode
     }
 
     /// Transfers one bounded frame's independent text jobs without waiting for recognition.
@@ -165,7 +168,7 @@ impl RegisteredTextObserverPool {
     pub fn submit(
         &self,
         jobs: Vec<(ScreenTextField, Rgb8Crop)>,
-    ) -> Result<PendingTextObservationBatch, OnnxParityError> {
+    ) -> Result<PendingTextRecognition, OnnxParityError> {
         if jobs.is_empty() || jobs.len() > MAX_TEXT_FIELDS_PER_FRAME {
             return Err(OnnxParityError::InvalidArtifact);
         }
@@ -184,11 +187,11 @@ impl RegisteredTextObserverPool {
                 .map_err(|_| OnnxParityError::InvalidArtifact)?;
             pending.push((field, receiver));
         }
-        Ok(PendingTextObservationBatch { pending })
+        Ok(PendingTextRecognition { pending })
     }
 }
 
-impl Drop for RegisteredTextObserverPool {
+impl Drop for RegisteredTextRecognitionSession {
     fn drop(&mut self) {
         for sender in &self.senders {
             let _ = sender.send(TextWorkerMessage::Finish);
@@ -199,16 +202,16 @@ impl Drop for RegisteredTextObserverPool {
     }
 }
 
-pub struct PendingTextObservationBatch {
+pub struct PendingTextRecognition {
     pending: Vec<(ScreenTextField, Receiver<TextJobResult>)>,
 }
 
-impl PendingTextObservationBatch {
+impl PendingTextRecognition {
     /// Joins all submitted jobs in deterministic field order.
     ///
     /// # Errors
     /// Returns an error when a worker disappears or returns a mismatched field.
-    pub fn join(self) -> Result<TextObservationBatch, OnnxParityError> {
+    pub fn join(self) -> Result<TextRecognitionResult, OnnxParityError> {
         let mut observations = Vec::with_capacity(self.pending.len());
         let mut wall_us = 0;
         let mut maximum_queue_wait_us = 0;
@@ -231,7 +234,7 @@ impl PendingTextObservationBatch {
             }
             observations.push((expected_field, result.observation));
         }
-        Ok(TextObservationBatch {
+        Ok(TextRecognitionResult {
             observations,
             wall_us,
             maximum_queue_wait_us,
@@ -280,27 +283,27 @@ mod tests {
     #[test]
     fn worker_count_follows_bounded_execution_policy() {
         assert_eq!(
-            select_text_worker_count(RecognitionExecutionMode::Live, 1),
+            recommended_text_worker_count(RecognitionExecutionMode::Live, 1),
             1
         );
         assert_eq!(
-            select_text_worker_count(RecognitionExecutionMode::Live, 4),
+            recommended_text_worker_count(RecognitionExecutionMode::Live, 4),
             2
         );
         assert_eq!(
-            select_text_worker_count(RecognitionExecutionMode::Live, 32),
+            recommended_text_worker_count(RecognitionExecutionMode::Live, 32),
             12
         );
         assert_eq!(
-            select_text_worker_count(RecognitionExecutionMode::Offline, 1),
+            recommended_text_worker_count(RecognitionExecutionMode::Offline, 1),
             1
         );
         assert_eq!(
-            select_text_worker_count(RecognitionExecutionMode::Offline, 4),
+            recommended_text_worker_count(RecognitionExecutionMode::Offline, 4),
             1
         );
         assert_eq!(
-            select_text_worker_count(RecognitionExecutionMode::Offline, 32),
+            recommended_text_worker_count(RecognitionExecutionMode::Offline, 32),
             12
         );
     }

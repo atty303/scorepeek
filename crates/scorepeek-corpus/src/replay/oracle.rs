@@ -2907,7 +2907,7 @@ pub fn replay_corpus_with_options(
                 },
                 &catalog_root,
                 &bundle,
-                scorepeek_runtime::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
+                scorepeek_core::model::session::RecognitionExecutionMode::Offline,
             )
             .map_err(|error| {
                 CorpusError::InvalidReplay(format!(
@@ -3659,8 +3659,8 @@ fn replay_canonical_suite(
     let replay_started = std::time::Instant::now();
     let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
     let text_workers = options.text_workers.unwrap_or_else(|| {
-        scorepeek_runtime::recognition_live::text_observer_pool::select_text_worker_count(
-            scorepeek_runtime::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
+        scorepeek_core::model::session::recommended_text_worker_count(
+            scorepeek_core::model::session::RecognitionExecutionMode::Offline,
             available_parallelism,
         )
     });

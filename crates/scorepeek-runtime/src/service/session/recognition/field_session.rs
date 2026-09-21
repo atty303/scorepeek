@@ -15,7 +15,6 @@ use super::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
     SharedRegisteredScreenFieldResources,
 };
-use super::text_observer_pool::RecognitionExecutionMode;
 use super::{
     FieldInputPolicy, PreparedRecognitionFrame, RecognitionFrameResult, RecognitionObservation,
     RecognitionSession, RecognitionSessionError,
@@ -25,6 +24,7 @@ use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::{
     DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
+use scorepeek_core::model::session::{RecognitionExecutionMode, recommended_text_worker_count};
 
 #[derive(Debug)]
 pub enum FieldObservationStartError<E> {
@@ -485,10 +485,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-        let workers = super::text_observer_pool::select_text_worker_count(
-            execution_mode,
-            available_parallelism,
-        );
+        let workers = recommended_text_worker_count(execution_mode, available_parallelism);
         let capacity = match execution_mode {
             RecognitionExecutionMode::Live => 2,
             RecognitionExecutionMode::Offline => workers.saturating_mul(2),
@@ -511,10 +508,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-        let workers = super::text_observer_pool::select_text_worker_count(
-            execution_mode,
-            available_parallelism,
-        );
+        let workers = recommended_text_worker_count(execution_mode, available_parallelism);
         let capacity = match execution_mode {
             RecognitionExecutionMode::Live => 2,
             RecognitionExecutionMode::Offline => workers.saturating_mul(2),

@@ -1,4 +1,4 @@
-use scorepeek::capture::GamescopeSourceSnapshot;
+use scorepeek::capture::PipewireSourceSnapshot;
 
 pub mod recognition;
 
@@ -24,17 +24,17 @@ impl SourceLifetimes {
         }
     }
 
-    pub fn observe(&mut self, snapshot: GamescopeSourceSnapshot) -> WatchDecision {
+    pub fn observe(&mut self, snapshot: PipewireSourceSnapshot) -> WatchDecision {
         match snapshot {
-            GamescopeSourceSnapshot::Absent => {
+            PipewireSourceSnapshot::Absent => {
                 self.consumed_node = None;
                 WatchDecision::WaitAbsent
             }
-            GamescopeSourceSnapshot::Ambiguous { .. } => WatchDecision::WaitAmbiguous,
-            GamescopeSourceSnapshot::Unique { node_id } if self.consumed_node == Some(node_id) => {
+            PipewireSourceSnapshot::Ambiguous { .. } => WatchDecision::WaitAmbiguous,
+            PipewireSourceSnapshot::Unique { node_id } if self.consumed_node == Some(node_id) => {
                 WatchDecision::WaitConsumed
             }
-            GamescopeSourceSnapshot::Unique { node_id } => WatchDecision::Admit {
+            PipewireSourceSnapshot::Unique { node_id } => WatchDecision::Admit {
                 node_id,
                 generation: self.next_generation,
             },
@@ -68,7 +68,7 @@ impl WatcherState {
 
 #[cfg(test)]
 mod tests {
-    use scorepeek::capture::GamescopeSourceSnapshot;
+    use scorepeek::capture::PipewireSourceSnapshot;
 
     use super::{SourceLifetimes, WatchDecision};
 
@@ -76,7 +76,7 @@ mod tests {
     fn one_attempt_per_node_lifetime_and_new_generation_after_absence() {
         let mut lifetimes = SourceLifetimes::new();
         assert_eq!(
-            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 41 }),
+            lifetimes.observe(PipewireSourceSnapshot::Unique { node_id: 41 }),
             WatchDecision::Admit {
                 node_id: 41,
                 generation: 1
@@ -84,15 +84,15 @@ mod tests {
         );
         lifetimes.generation_ended(41, false);
         assert_eq!(
-            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 41 }),
+            lifetimes.observe(PipewireSourceSnapshot::Unique { node_id: 41 }),
             WatchDecision::WaitConsumed
         );
         assert_eq!(
-            lifetimes.observe(GamescopeSourceSnapshot::Absent),
+            lifetimes.observe(PipewireSourceSnapshot::Absent),
             WatchDecision::WaitAbsent
         );
         assert_eq!(
-            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 41 }),
+            lifetimes.observe(PipewireSourceSnapshot::Unique { node_id: 41 }),
             WatchDecision::Admit {
                 node_id: 41,
                 generation: 2
@@ -104,15 +104,15 @@ mod tests {
     fn rejected_lifetime_does_not_consume_a_generation() {
         let mut lifetimes = SourceLifetimes::new();
         assert!(matches!(
-            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 1 }),
+            lifetimes.observe(PipewireSourceSnapshot::Unique { node_id: 1 }),
             WatchDecision::Admit { generation: 1, .. }
         ));
         assert!(matches!(
-            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 1 }),
+            lifetimes.observe(PipewireSourceSnapshot::Unique { node_id: 1 }),
             WatchDecision::Admit { generation: 1, .. }
         ));
         assert!(matches!(
-            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 2 }),
+            lifetimes.observe(PipewireSourceSnapshot::Unique { node_id: 2 }),
             WatchDecision::Admit { generation: 1, .. }
         ));
     }
@@ -121,7 +121,7 @@ mod tests {
     fn ambiguous_candidates_are_never_admitted() {
         let mut lifetimes = SourceLifetimes::new();
         assert_eq!(
-            lifetimes.observe(GamescopeSourceSnapshot::Ambiguous { candidate_count: 2 }),
+            lifetimes.observe(PipewireSourceSnapshot::Ambiguous { candidate_count: 2 }),
             WatchDecision::WaitAmbiguous
         );
     }
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn contract_change_readmits_the_same_node_as_a_new_generation() {
         let mut lifetimes = SourceLifetimes::new();
-        let snapshot = GamescopeSourceSnapshot::Unique { node_id: 41 };
+        let snapshot = PipewireSourceSnapshot::Unique { node_id: 41 };
         assert_eq!(
             lifetimes.observe(snapshot),
             WatchDecision::Admit {

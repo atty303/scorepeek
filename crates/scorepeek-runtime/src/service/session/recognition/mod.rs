@@ -23,7 +23,6 @@ use crate::diagnostics::writer::{
 pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
-pub mod text_observer_pool;
 
 fn duration_us(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)

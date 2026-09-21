@@ -1465,7 +1465,7 @@ fn start_field_observation_gate(
                 config.handoff.policy.clone(),
                 config.catalog_root,
                 config.bundle_root,
-                crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Live,
+                scorepeek_core::model::session::RecognitionExecutionMode::Live,
             )
         },
         |directory_name| {
@@ -1476,7 +1476,7 @@ fn start_field_observation_gate(
                 config.handoff.policy.clone(),
                 config.catalog_root,
                 config.bundle_root,
-                crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Live,
+                scorepeek_core::model::session::RecognitionExecutionMode::Live,
             )
         },
     ) {

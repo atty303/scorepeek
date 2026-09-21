@@ -24,9 +24,9 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use super::field_observer::{FieldObserver, FieldObserverAdmission, FieldObserverInput};
-use super::text_observer_pool::{
-    PendingTextObservationBatch, RecognitionExecutionMode, RegisteredTextObserverPool,
-    TextObservationBatch,
+use scorepeek_core::model::session::{
+    PendingTextRecognition, RecognitionExecutionMode, RegisteredTextRecognitionSession,
+    TextRecognitionResult,
 };
 
 const TITLE_EVIDENCE_RUNTIME_MANIFEST: &[u8] =
@@ -37,10 +37,10 @@ pub const TITLE_EVIDENCE_RUNTIME_MANIFEST_SHA256: &str =
 /// Production screen-field observer owning the exact resources for one immutable run.
 pub struct RegisteredScreenFieldObserver {
     catalog: Catalog,
-    text_pool: Arc<RegisteredTextObserverPool>,
+    text_pool: Arc<RegisteredTextRecognitionSession>,
     numeric_worker: Arc<RegisteredNumericObserverWorker>,
     candidate_domain: CatalogCandidateDomain,
-    prefetched_text: Arc<Mutex<BTreeMap<u64, PendingTextObservationBatch>>>,
+    prefetched_text: Arc<Mutex<BTreeMap<u64, PendingTextRecognition>>>,
     prefetched_numeric: Arc<Mutex<BTreeMap<u64, PendingNumericObservationBatch>>>,
     projection_cache: VecDeque<ProjectionCacheEntry>,
 }
@@ -59,7 +59,7 @@ pub struct SharedRegisteredScreenFieldResources {
     model_sha256: String,
     runtime_sha256: String,
     catalog: Catalog,
-    text_pool: Arc<RegisteredTextObserverPool>,
+    text_pool: Arc<RegisteredTextRecognitionSession>,
 }
 
 #[derive(Debug)]
@@ -119,7 +119,7 @@ impl RegisteredScreenFieldObserver {
         }
         let (catalog, title_runtime) = resources.into_catalog_and_title_runtime();
         let candidate_domain = CatalogCandidateDomain::from_catalog(&catalog)?;
-        let text_pool = Arc::new(RegisteredTextObserverPool::start(
+        let text_pool = Arc::new(RegisteredTextRecognitionSession::start(
             title_runtime,
             execution_mode,
         )?);
@@ -305,9 +305,9 @@ impl PendingNumericObservationBatch {
 }
 
 fn submit_fields(
-    text_pool: &RegisteredTextObserverPool,
+    text_pool: &RegisteredTextRecognitionSession,
     numeric_worker: &RegisteredNumericObserverWorker,
-    prefetched_text: &Mutex<BTreeMap<u64, PendingTextObservationBatch>>,
+    prefetched_text: &Mutex<BTreeMap<u64, PendingTextRecognition>>,
     prefetched_numeric: &Mutex<BTreeMap<u64, PendingNumericObservationBatch>>,
     input: &FieldObserverInput,
 ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
@@ -365,8 +365,8 @@ fn music_select_text_jobs(
 }
 
 fn submit_text_fields(
-    text_pool: &RegisteredTextObserverPool,
-    prefetched_text: &Mutex<BTreeMap<u64, PendingTextObservationBatch>>,
+    text_pool: &RegisteredTextRecognitionSession,
+    prefetched_text: &Mutex<BTreeMap<u64, PendingTextRecognition>>,
     input: &FieldObserverInput,
 ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
     use scorepeek::recognition::ScreenTextField;
@@ -432,7 +432,7 @@ impl SharedRegisteredScreenFieldResources {
             &descriptor.binding.runtime_sha256,
         )?;
         let (catalog, title_runtime) = resources.into_catalog_and_title_runtime();
-        let text_pool = RegisteredTextObserverPool::start_with_worker_count(
+        let text_pool = RegisteredTextRecognitionSession::start_with_worker_count(
             title_runtime,
             RecognitionExecutionMode::Offline,
             text_workers,
@@ -487,7 +487,7 @@ impl SharedRegisteredScreenFieldResources {
 
     #[must_use]
     pub fn text_workers(&self) -> usize {
-        self.text_pool.configuration().workers
+        self.text_pool.worker_count()
     }
 
     pub(crate) fn observer(
@@ -1185,7 +1185,7 @@ impl RegisteredScreenFieldObserver {
     fn observe_music_select_best(
         &self,
         crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
-        text: &mut TextObservationBatch,
+        text: &mut TextRecognitionResult,
     ) -> scorepeek::recognition::MusicSelectBestObservation {
         use scorepeek::recognition::ScreenTextField;
         let mut failures = Vec::new();
@@ -1321,7 +1321,7 @@ impl FieldObserver for RegisteredScreenFieldObserver {
     const PIPELINED_PREFETCH: bool = true;
 
     fn outer_worker_count(&self, maximum_outstanding: usize) -> usize {
-        let maximum = match self.text_pool.configuration().execution_mode {
+        let maximum = match self.text_pool.execution_mode() {
             RecognitionExecutionMode::Live => 2,
             RecognitionExecutionMode::Offline => 4,
         };
@@ -1364,7 +1364,6 @@ impl FieldObserver for RegisteredScreenFieldObserver {
 
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
         let frame_started = Instant::now();
-        let configuration = self.text_pool.configuration();
         let observed = match input.crops() {
             scorepeek::recognition::ScreenRgb8Crops::Title(crops) => {
                 self.observe_title(input.sequence(), crops)?
@@ -1379,9 +1378,9 @@ impl FieldObserver for RegisteredScreenFieldObserver {
         let mut observation = self.project_fields(observed.fields, observed.title_evidence);
         observation.numeric_batch = observed.numeric_batch;
         observation.processing_timing = RecognitionProcessingTiming {
-            execution_policy: configuration.execution_mode.as_str(),
-            available_parallelism: configuration.available_parallelism,
-            text_workers: configuration.workers,
+            execution_policy: self.text_pool.execution_mode().as_str(),
+            available_parallelism: self.text_pool.available_parallelism(),
+            text_workers: self.text_pool.worker_count(),
             frame_total_us: duration_us(frame_started.elapsed()),
             field_queue_wait_us: input.field_queue_wait_us(),
             text_batch_wall_us: observed.text_batch_wall_us,
@@ -1407,14 +1406,14 @@ impl FieldObserver for RegisteredScreenFieldObserver {
 }
 
 fn take_text(
-    batch: &mut TextObservationBatch,
+    batch: &mut TextRecognitionResult,
     field: scorepeek::recognition::ScreenTextField,
 ) -> Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError> {
     take_text_result(batch, field)?
 }
 
 fn take_text_result(
-    batch: &mut TextObservationBatch,
+    batch: &mut TextRecognitionResult,
     field: scorepeek::recognition::ScreenTextField,
 ) -> Result<Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError>, OnnxParityError>
 {

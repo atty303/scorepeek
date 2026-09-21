@@ -6,20 +6,21 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use super::contract::{UncalibratedFrame, UncalibratedMemoryType, UncalibratedVideoContract};
+#[cfg(test)]
+use super::lifecycle::{admit_gamescope_profile, classify_profile_admission};
 use ::pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
 use pw::spa::buffer::{ChunkFlags, DataType};
 use pw::spa::param::video::{VideoFormat, VideoInfoRaw, VideoInterlaceMode};
 use pw::spa::pod::{Pod, Value};
-use serde::{Deserialize, Serialize};
 
 use super::super::{
     AuthoredGamescopeProfileBinding, CaptureDiagnosticDetail, CaptureDiagnosticFact,
     CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError,
     CaptureErrorType, CaptureGeneration, EdgeCrop, GamescopeProfileBinding, ITERATION_SLICE,
-    NormalizedCanonicalFrame, ObservedContractMismatch, RuntimeCaptureBackend,
-    UncalibratedGamescopeSourceLease, elapsed_ms,
+    NormalizedCanonicalFrame, UncalibratedPipewireSourceLease, elapsed_ms,
 };
 
 const MAX_WIDTH: u32 = 7_680;
@@ -37,119 +38,6 @@ const PERFORMANCE_SUMMARY_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_PERFORMANCE_SAMPLES: usize = 600;
 static RECEIVER_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct UncalibratedVideoContract {
-    pub width: u32,
-    pub height: u32,
-    pub framerate_num: u32,
-    pub framerate_denom: u32,
-    pub maximum_framerate_num: u32,
-    pub maximum_framerate_denom: u32,
-    pub pixel_aspect_num: u32,
-    pub pixel_aspect_denom: u32,
-    pub chroma_site: u32,
-    pub color_range: u32,
-    pub color_matrix: u32,
-    pub transfer_function: u32,
-    pub color_primaries: u32,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UncalibratedMemoryType {
-    MemoryPointer,
-    MemoryFileDescriptor,
-    DmaBuf,
-}
-
-impl UncalibratedMemoryType {
-    const fn diagnostic_name(self) -> &'static str {
-        match self {
-            Self::MemoryPointer => "memory_pointer",
-            Self::MemoryFileDescriptor => "memory_file_descriptor",
-            Self::DmaBuf => "dma_buf",
-        }
-    }
-}
-
-/// Raw `BGRx` evidence retained only for calibration and receiver diagnostics.
-///
-/// This type is not an `ObservedFrame`: it has no capture-profile or normalizer binding and must
-/// not enter recognition. Its debug representation deliberately omits pixel bytes.
-pub struct UncalibratedFrame {
-    contract: UncalibratedVideoContract,
-    memory_type: UncalibratedMemoryType,
-    stride: u32,
-    sequence: u64,
-    received_monotonic_ns: u64,
-    bytes: Vec<u8>,
-}
-
-impl fmt::Debug for UncalibratedFrame {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("UncalibratedFrame")
-            .field("contract", &self.contract)
-            .field("memory_type", &self.memory_type)
-            .field("stride", &self.stride)
-            .field("sequence", &self.sequence)
-            .field("received_monotonic_ns", &self.received_monotonic_ns)
-            .field("byte_count", &self.bytes.len())
-            .finish()
-    }
-}
-
-impl UncalibratedFrame {
-    #[must_use]
-    pub const fn contract(&self) -> UncalibratedVideoContract {
-        self.contract
-    }
-
-    #[must_use]
-    pub const fn memory_type(&self) -> UncalibratedMemoryType {
-        self.memory_type
-    }
-
-    #[must_use]
-    pub const fn stride(&self) -> u32 {
-        self.stride
-    }
-
-    #[must_use]
-    pub const fn sequence(&self) -> u64 {
-        self.sequence
-    }
-
-    #[must_use]
-    pub const fn received_monotonic_ns(&self) -> u64 {
-        self.received_monotonic_ns
-    }
-
-    #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_normalizer_test(
-        contract: UncalibratedVideoContract,
-        stride: u32,
-        sequence: u64,
-        received_monotonic_ns: u64,
-        bytes: Vec<u8>,
-    ) -> Self {
-        Self {
-            contract,
-            memory_type: UncalibratedMemoryType::MemoryFileDescriptor,
-            stride,
-            sequence,
-            received_monotonic_ns,
-            bytes,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ReceiverTerminal {
     error_type: CaptureErrorType,
@@ -163,11 +51,11 @@ enum StartupSnapshot {
     Terminal(ReceiverTerminal),
 }
 
-struct ReceiverState {
+pub(super) struct ReceiverState {
     started: Instant,
-    contract: Option<UncalibratedVideoContract>,
-    memory_type: Option<UncalibratedMemoryType>,
-    stride: Option<u32>,
+    pub(super) contract: Option<UncalibratedVideoContract>,
+    pub(super) memory_type: Option<UncalibratedMemoryType>,
+    pub(super) stride: Option<u32>,
     latest: Option<UncalibratedFrame>,
     next_sequence: u64,
     received_frames: u64,
@@ -459,8 +347,8 @@ impl ReceiverState {
 /// and receive timing. Provider lifetime remains owned by the enclosed source lease.
 pub struct UncalibratedPipeWireReceiver {
     worker: Option<ReceiverWorker>,
-    lease: Option<UncalibratedGamescopeSourceLease>,
-    state: Arc<Mutex<ReceiverState>>,
+    lease: Option<UncalibratedPipewireSourceLease>,
+    pub(super) state: Arc<Mutex<ReceiverState>>,
     receiver_started_ms: u64,
     shutdown_started_ms: Option<u64>,
     negotiation_recorded: bool,
@@ -661,14 +549,14 @@ fn quiesce_and_disconnect(
 /// Only this admitted lease can attach its generation/profile/normalizer identities to an
 /// `ObservedFrame`, and only the same lease can apply the binding-selected normalizer to that frame.
 pub struct CalibratedGamescopeLease {
-    receiver: UncalibratedPipeWireReceiver,
-    capture_profile_sha256: Arc<str>,
-    normalizer_artifact_sha256: Arc<str>,
-    geometry: super::super::FractionalLinearGeometry,
-    capture_generation: CaptureGeneration,
-    frame_domain: Arc<()>,
-    normalization_success_recorded: bool,
-    normalization_failure_recorded: bool,
+    pub(super) receiver: UncalibratedPipeWireReceiver,
+    pub(super) capture_profile_sha256: Arc<str>,
+    pub(super) normalizer_artifact_sha256: Arc<str>,
+    pub(super) geometry: super::super::FractionalLinearGeometry,
+    pub(super) capture_generation: CaptureGeneration,
+    pub(super) frame_domain: Arc<()>,
+    pub(super) normalization_success_recorded: bool,
+    pub(super) normalization_failure_recorded: bool,
 }
 
 /// One admitted Vulkan-layer producer lifetime using the same canonical normalizer contract.
@@ -1352,44 +1240,6 @@ pub fn admit_vulkan_session(
     ))
 }
 
-/// A rejected admission that retains ownership of the live receiver for explicit shutdown.
-pub struct GamescopeLeaseAdmissionFailure {
-    error_type: CaptureErrorType,
-    receiver: UncalibratedPipeWireReceiver,
-}
-
-impl fmt::Debug for GamescopeLeaseAdmissionFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("GamescopeLeaseAdmissionFailure")
-            .field("error_type", &self.error_type)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Display for GamescopeLeaseAdmissionFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        CaptureError::without_source(self.error_type).fmt(formatter)
-    }
-}
-
-impl std::error::Error for GamescopeLeaseAdmissionFailure {}
-
-impl GamescopeLeaseAdmissionFailure {
-    #[must_use]
-    pub const fn error_type(&self) -> CaptureErrorType {
-        self.error_type
-    }
-
-    /// Releases the rejected receiver and provider in the normal order.
-    ///
-    /// # Errors
-    /// Returns a receiver shutdown failure without replacing the admission rejection category.
-    pub fn shutdown(self, sink: &mut impl CaptureDiagnosticSink) -> Result<(), CaptureError> {
-        self.receiver.shutdown(sink)
-    }
-}
-
 impl fmt::Debug for UncalibratedPipeWireReceiver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.state.borrow();
@@ -1521,7 +1371,7 @@ impl UncalibratedPipeWireReceiver {
         }
     }
 
-    fn flush_observations(&mut self, sink: &mut impl CaptureDiagnosticSink) {
+    pub(super) fn flush_observations(&mut self, sink: &mut impl CaptureDiagnosticSink) {
         let state = self.state.borrow();
         // A mutable producer may renegotiate before delivering pixels. Publish only the contract
         // which actually produced the first valid frame.
@@ -1668,7 +1518,7 @@ impl UncalibratedPipeWireReceiver {
         );
     }
 
-    fn record(
+    pub(super) fn record(
         &mut self,
         sink: &mut impl CaptureDiagnosticSink,
         operation: CaptureDiagnosticOperation,
@@ -1743,131 +1593,6 @@ fn percentile(samples: &[u64], percentile: usize) -> u64 {
     samples[index.min(samples.len() - 1)]
 }
 
-/// Admits a started receiver only when its explicit session and negotiated contract match.
-///
-/// Exactly one value-free admission fact is offered to the host sink. Sink absence or capacity does
-/// not change the returned result. Rejection retains the receiver for explicit ordered shutdown.
-///
-/// # Errors
-/// Returns a stable provenance or negotiated-contract mismatch category.
-pub fn admit_gamescope_profile(
-    mut receiver: UncalibratedPipeWireReceiver,
-    binding: GamescopeProfileBinding,
-    capture_generation: CaptureGeneration,
-    sink: &mut impl CaptureDiagnosticSink,
-) -> Result<CalibratedGamescopeLease, Box<GamescopeLeaseAdmissionFailure>> {
-    receiver.flush_observations(sink);
-    let error_type = classify_profile_admission(&binding, &receiver.state.borrow()).err();
-    receiver.record(
-        sink,
-        CaptureDiagnosticOperation::ProfileBindingAdmission,
-        if error_type.is_some() {
-            CaptureDiagnosticStatus::Error
-        } else {
-            CaptureDiagnosticStatus::Success
-        },
-        error_type,
-        CaptureDiagnosticDetail::ProfileBindingAdmission,
-    );
-    if let Some(error_type) = error_type {
-        return Err(Box::new(GamescopeLeaseAdmissionFailure {
-            error_type,
-            receiver,
-        }));
-    }
-    let capture_profile_sha256 = Arc::from(binding.capture_profile_sha256());
-    let normalizer_artifact_sha256 = Arc::from(binding.normalizer_artifact_sha256());
-    let geometry = binding.geometry();
-    drop(binding);
-    Ok(CalibratedGamescopeLease {
-        receiver,
-        capture_profile_sha256,
-        normalizer_artifact_sha256,
-        geometry,
-        capture_generation,
-        frame_domain: Arc::new(()),
-        normalization_success_recorded: false,
-        normalization_failure_recorded: false,
-    })
-}
-
-/// Creates and admits an immutable runtime binding from the negotiated source contract.
-///
-/// # Errors
-/// Returns ownership of the receiver with a typed admission failure when its negotiated contract
-/// is incomplete, the crop is invalid, or the authored identity cannot be admitted.
-pub fn admit_runtime_profile(
-    receiver: UncalibratedPipeWireReceiver,
-    backend: RuntimeCaptureBackend,
-    selector: String,
-    crop: EdgeCrop,
-    capture_generation: CaptureGeneration,
-    sink: &mut impl CaptureDiagnosticSink,
-) -> Result<
-    (CalibratedGamescopeLease, AuthoredGamescopeProfileBinding),
-    Box<GamescopeLeaseAdmissionFailure>,
-> {
-    let observed = {
-        let state = receiver.state.borrow();
-        (state.contract, state.memory_type, state.stride)
-    };
-    let (Some(video), Some(memory_type), Some(stride)) = observed else {
-        return Err(Box::new(GamescopeLeaseAdmissionFailure {
-            error_type: CaptureErrorType::ProfileVideoContractMismatch,
-            receiver,
-        }));
-    };
-    let authored = GamescopeProfileBinding::author_runtime(
-        backend,
-        selector,
-        video,
-        memory_type,
-        stride,
-        crop,
-    );
-    let Ok(authored) = authored else {
-        return Err(Box::new(GamescopeLeaseAdmissionFailure {
-            error_type: CaptureErrorType::FrameNormalizationFailed,
-            receiver,
-        }));
-    };
-    let Ok(binding) = GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256)
-    else {
-        return Err(Box::new(GamescopeLeaseAdmissionFailure {
-            error_type: CaptureErrorType::FrameNormalizationFailed,
-            receiver,
-        }));
-    };
-    admit_gamescope_profile(receiver, binding, capture_generation, sink)
-        .map(|lease| (lease, authored))
-}
-
-fn classify_profile_admission(
-    binding: &GamescopeProfileBinding,
-    state: &ReceiverState,
-) -> Result<(), CaptureErrorType> {
-    let video = state
-        .contract
-        .ok_or(CaptureErrorType::ProfileVideoContractMismatch)?;
-    let memory_type = state
-        .memory_type
-        .ok_or(CaptureErrorType::ProfileMemoryTypeMismatch)?;
-    let stride = state
-        .stride
-        .ok_or(CaptureErrorType::ProfileStrideMismatch)?;
-    binding
-        .verify_observed_contract(video, memory_type, stride)
-        .map_err(observed_mismatch_error)
-}
-
-const fn observed_mismatch_error(mismatch: ObservedContractMismatch) -> CaptureErrorType {
-    match mismatch {
-        ObservedContractMismatch::Video => CaptureErrorType::ProfileVideoContractMismatch,
-        ObservedContractMismatch::MemoryType => CaptureErrorType::ProfileMemoryTypeMismatch,
-        ObservedContractMismatch::Stride => CaptureErrorType::ProfileStrideMismatch,
-    }
-}
-
 fn should_record_steady_summary(
     received_frames: u64,
     terminal_recorded: Option<CaptureDiagnosticOperation>,
@@ -1910,7 +1635,7 @@ fn receiver_fact_bounds(
 /// Returns a typed timeout or the first provider/stream terminal error. Failure cleanup still
 /// disconnects the stream before releasing the provider lease.
 pub fn start_uncalibrated_gamescope_receiver(
-    lease: UncalibratedGamescopeSourceLease,
+    lease: UncalibratedPipewireSourceLease,
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<UncalibratedPipeWireReceiver, CaptureError> {
@@ -1978,7 +1703,7 @@ fn wait_for_first_frame(
 }
 
 fn fail_before_receiver(
-    mut lease: UncalibratedGamescopeSourceLease,
+    mut lease: UncalibratedPipewireSourceLease,
     error: CaptureError,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> CaptureError {
@@ -2383,7 +2108,7 @@ mod tests {
         state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
         UncalibratedPipeWireReceiver {
             worker: None,
-            lease: Some(UncalibratedGamescopeSourceLease {
+            lease: Some(UncalibratedPipewireSourceLease {
                 runtime: None,
                 node_id: 7,
                 registry_global_count: 1,

@@ -281,7 +281,7 @@ pub fn run_recording_simulation(
         policy,
         config.catalog_root,
         config.bundle_root,
-        crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
+        scorepeek_core::model::session::RecognitionExecutionMode::Offline,
     ) else {
         return error_report(
             profile_digest,
