@@ -3169,7 +3169,7 @@ fn song_resolution_presentation(
 fn song_presentation(
     observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
     song_id: scorepeek::catalog::ScorepeekSongId,
-) -> Result<routine_output::SongPresentation, String> {
+) -> Result<scorepeek_core::event::SongPresentation, String> {
     let evidence = observation
         .candidates()
         .catalog_evidence()
@@ -3185,7 +3185,7 @@ fn song_presentation(
             "resolved song {song_id:?} does not have exactly one display artist"
         ));
     };
-    Ok(routine_output::SongPresentation {
+    Ok(scorepeek_core::event::SongPresentation {
         scorepeek_song_id: song_id,
         display_titles: evidence.title.display.clone(),
         artist: artist.clone(),

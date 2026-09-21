@@ -3,8 +3,8 @@
     reason = "internal event service methods retain their existing operation-specific errors"
 )]
 
+#[cfg(test)]
 use super::music_select_best;
-use super::music_select_best::{MusicSelectBestSnapshot, MusicSelectResolverState};
 use super::snapshot as event_api;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
@@ -31,6 +31,11 @@ use ratatui::text::{Line, Span};
 #[cfg(test)]
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
+use scorepeek_core::event::{
+    BestChart, CurrentSelectionDifficulty, MusicSelectBestSnapshot, MusicSelectResolverState,
+    MusicSelectionState, MusicSelectionUnresolvedReason, SelectFrameIdentity, SelectIdentityStatus,
+    SelectionDifficultyTarget, SelectionDifficultyTransitionReason, SongPresentation,
+};
 #[cfg(test)]
 use scorepeek_core::recognition::PreviousBestValue;
 use scorepeek_core::recognition::{
@@ -688,37 +693,6 @@ fn candidate_song_presentation(candidate: &JointEvidenceCandidate) -> SongPresen
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SongPresentation {
-    pub scorepeek_song_id: scorepeek::catalog::ScorepeekSongId,
-    pub display_titles: Vec<String>,
-    pub artist: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MusicSelectionUnresolvedReason {
-    EvidenceUnresolved,
-    EpisodeEnded,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum MusicSelectionState {
-    Unresolved {
-        reason: MusicSelectionUnresolvedReason,
-    },
-    Selected {
-        scorepeek_song_id: ScorepeekSongId,
-        play_side: PlaySide,
-        play_type: PlayType,
-        difficulty: Difficulty,
-        level: u8,
-        notes: u32,
-        presentation: SongPresentation,
-    },
-}
-
 const EVIDENCE_FAMILY_CAP: u16 = 300;
 const JOINT_ACCEPT_SUPPORT: u16 = 260;
 const JOINT_ACCEPT_MARGIN: u16 = 50;
@@ -732,23 +706,6 @@ pub enum ResolverResolutionState {
     JointCandidate,
     AcceptedJoint,
     Conflict,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SelectionDifficultyTarget {
-    Pending,
-    Incumbent,
-    Successor,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SelectionDifficultyTransitionReason {
-    Changed,
-    PendingApplied,
-    TargetSwitch,
-    Reset,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -822,47 +779,6 @@ struct HypothesisAccumulator {
     first_observation_ms: Option<u64>,
     last_observation_ms: Option<u64>,
     observation_count: u32,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CurrentSelectionDifficulty {
-    pub(super) difficulty: Difficulty,
-    pub(super) consecutive_known: u32,
-    first_sequence: u64,
-    last_sequence: u64,
-    first_monotonic_ms: u64,
-    last_monotonic_ms: u64,
-}
-
-impl CurrentSelectionDifficulty {
-    fn observed(difficulty: Difficulty, sequence: u64, monotonic_ms: u64) -> Self {
-        Self {
-            difficulty,
-            consecutive_known: 1,
-            first_sequence: sequence,
-            last_sequence: sequence,
-            first_monotonic_ms: monotonic_ms,
-            last_monotonic_ms: monotonic_ms,
-        }
-    }
-
-    fn observe(&mut self, difficulty: Difficulty, sequence: u64, monotonic_ms: u64) -> bool {
-        if sequence <= self.last_sequence || monotonic_ms < self.last_monotonic_ms {
-            return false;
-        }
-        if self.difficulty != difficulty {
-            *self = Self::observed(difficulty, sequence, monotonic_ms);
-            return true;
-        }
-        self.consecutive_known = self.consecutive_known.saturating_add(1);
-        self.last_sequence = sequence;
-        self.last_monotonic_ms = monotonic_ms;
-        false
-    }
-
-    fn support(self) -> u64 {
-        u64::from(self.consecutive_known).saturating_mul(50)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1243,7 +1159,7 @@ impl HypothesisAccumulator {
     fn adopt_newer_select_difficulty(&mut self, incoming: Option<CurrentSelectionDifficulty>) {
         if incoming.is_some_and(|value| {
             self.select_difficulty
-                .is_none_or(|current| value.last_sequence > current.last_sequence)
+                .is_none_or(|current| value.last_sequence() > current.last_sequence())
         }) {
             self.select_difficulty = incoming;
         }
@@ -1585,8 +1501,7 @@ impl MusicSelectResolver {
         &self,
         fields: &Value,
         evidence: &JointEvidenceObservation,
-    ) -> music_select_best::SelectFrameIdentity {
-        use music_select_best::{BestChart, SelectFrameIdentity, SelectIdentityStatus};
+    ) -> SelectFrameIdentity {
         let credible = credible_song_set(evidence);
         let difficulty = selected_difficulty(fields);
         let play_type = selected_play_type(fields);
@@ -3391,7 +3306,7 @@ impl RoutineOutput {
                 if screen == "music_select" {
                     self.music_select_resolver
                         .best
-                        .hold(music_select_best::SelectIdentityStatus::AwaitingEvidence);
+                        .hold(SelectIdentityStatus::AwaitingEvidence);
                 }
                 self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
                 self.refresh()
@@ -8532,14 +8447,12 @@ mod tests {
             notes: candidate.chart.notes,
             presentation: candidate_song_presentation(candidate),
         };
-        let mut state = MusicSelectResolverState {
-            active: true,
-            screen_episode_id: 1,
-            ..Default::default()
-        };
+        let mut state = MusicSelectResolverState::default();
+        state.active = true;
+        state.screen_episode_id = 1;
         for _ in 0..2 {
             state.observe(
-                music_select_best::BestChart::from_selection(selection.clone()).unwrap(),
+                BestChart::from_selection(selection.clone()).unwrap(),
                 MusicSelectBestValues {
                     score: BestValue::Known(1200),
                     miss_count: BestValue::Unknown,
@@ -8762,10 +8675,7 @@ mod tests {
             });
             state.music_select.active = true;
             state.music_select.observe(
-                music_select_best::BestChart::from_selection(
-                    state.latest_music_selection.clone().unwrap(),
-                )
-                .unwrap(),
+                BestChart::from_selection(state.latest_music_selection.clone().unwrap()).unwrap(),
                 scorepeek_core::recognition::MusicSelectBestValues::default(),
             );
             let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
@@ -9199,7 +9109,7 @@ mod tests {
         let current = retained.select_difficulty.unwrap();
         assert_eq!(current.difficulty, Difficulty::Another);
         assert_eq!(current.consecutive_known, 1);
-        assert_eq!(current.last_sequence, 200);
+        assert_eq!(current.last_sequence(), 200);
     }
 
     #[test]
@@ -9210,7 +9120,7 @@ mod tests {
         let current = accumulator.select_difficulty.unwrap();
         assert_eq!(current.difficulty, Difficulty::Another);
         assert_eq!(current.consecutive_known, 1);
-        assert_eq!(current.last_sequence, 200);
+        assert_eq!(current.last_sequence(), 200);
     }
 
     #[test]
@@ -10011,7 +9921,7 @@ mod tests {
         state.music_select = populated_select_test_state();
         state
             .music_select
-            .hold(music_select_best::SelectIdentityStatus::AwaitingDifficulty);
+            .hold(SelectIdentityStatus::AwaitingDifficulty);
         for suspended in [false, true] {
             state.music_select.suspended = suspended;
             for (width, height) in [(120, 40), (80, 25)] {
@@ -10098,7 +10008,7 @@ mod tests {
                 .best
                 .current_difficulty
                 .unwrap()
-                .last_sequence,
+                .last_sequence(),
             20
         );
         let events = output.take_headless_events();

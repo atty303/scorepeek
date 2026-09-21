@@ -1,6 +1,8 @@
 //! Public live API projection. Internal observations never become wire records implicitly.
-use super::music_select_best::MusicSelectBestSnapshot;
-use super::server::{MusicSelectionState, ResultState, RunEvent, RunEventKind};
+use super::server::{ResultState, RunEvent, RunEventKind};
+#[cfg(test)]
+use scorepeek_core::event::MusicSelectionUnresolvedReason;
+use scorepeek_core::event::{MusicSelectBestSnapshot, MusicSelectionState};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::time::{Instant, SystemTime};
@@ -680,8 +682,7 @@ pub(super) mod tests {
                 source_sequence: 10,
                 revision: 1,
                 state: MusicSelectionState::Unresolved {
-                    reason:
-                        crate::events::server::MusicSelectionUnresolvedReason::EvidenceUnresolved,
+                    reason: MusicSelectionUnresolvedReason::EvidenceUnresolved,
                 },
             }),
             run(RunEventKind::GameVersionChanged {

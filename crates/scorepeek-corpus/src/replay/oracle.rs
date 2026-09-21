@@ -3454,7 +3454,7 @@ struct ReplaySessionOutcome {
 
 #[derive(Default)]
 struct ReplayObserved {
-    music_selections: Vec<(u64, scorepeek_runtime::events::server::MusicSelectionState)>,
+    music_selections: Vec<(u64, scorepeek_core::event::MusicSelectionState)>,
     confirmed_results: Vec<scorepeek_runtime::events::server::ResultDomainEvent>,
     music_select_best_snapshots: usize,
     trace: Option<TraceStatus>,
@@ -5285,10 +5285,10 @@ fn episode_requires_clear_type(episode: &RegressionEpisode) -> bool {
 
 fn validate_music_selection_oracle(
     label: &RegressionLabel,
-    selections: &[(u64, scorepeek_runtime::events::server::MusicSelectionState)],
+    selections: &[(u64, scorepeek_core::event::MusicSelectionState)],
     failures: &mut Vec<String>,
 ) {
-    use scorepeek_runtime::events::server::MusicSelectionState;
+    use scorepeek_core::event::MusicSelectionState;
     for episode in &label.episodes {
         let Some(span) = episode
             .attempt
