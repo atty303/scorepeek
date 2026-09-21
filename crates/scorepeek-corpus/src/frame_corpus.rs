@@ -36,7 +36,7 @@ const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v4";
 const CORPUS_OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v2";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v6";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
@@ -3029,7 +3029,6 @@ pub fn replay_corpus_with_options(
                     }) => {
                         if !expected_play_side_matches(
                             fields.panel_side,
-                            expected.play_type,
                             &expected.play_side,
                         )
                             || !play_mode_matches_type(
@@ -5329,19 +5328,12 @@ fn result_event_matches(
         Value::String(episode.expected_song_id.clone()),
     )
     .ok();
-    event.contract == "scorepeek-result-detected-v3"
+    event.contract == "scorepeek-result-detected-v4"
         && Some(event.scorepeek_song_id) == expected_song
         && event.clear_type == episode.expected_clear_type
         && match event.play_side {
-            scorepeek::routine_output::PlaySideApplicability::Known(
-                scorepeek::recognition::PlaySide::OnePlayer,
-            ) => expected.play_side == "one_player",
-            scorepeek::routine_output::PlaySideApplicability::Known(
-                scorepeek::recognition::PlaySide::TwoPlayer,
-            ) => expected.play_side == "two_player",
-            scorepeek::routine_output::PlaySideApplicability::NotApplicable => {
-                expected.play_side == "not_applicable"
-            }
+            scorepeek::recognition::PlaySide::OnePlayer => expected.play_side == "one_player",
+            scorepeek::recognition::PlaySide::TwoPlayer => expected.play_side == "two_player",
         }
         && event.play_mode == expected.play_mode
         && event.play_type == expected.play_type
@@ -5718,10 +5710,7 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         if episode.episode_id.is_empty()
             || episode.expected_song_id.is_empty()
             || episode.expected_clear_type.is_empty()
-            || !valid_expected_play_side(
-                episode.expected_result.play_type,
-                &episode.expected_result.play_side,
-            )
+            || !valid_expected_play_side(&episode.expected_result.play_side)
             || !play_mode_matches_type(
                 &episode.expected_result.play_mode,
                 episode.expected_result.play_type,
@@ -5787,23 +5776,14 @@ fn play_mode_matches_type(play_mode: &str, play_type: PlayType) -> bool {
     )
 }
 
-fn valid_expected_play_side(play_type: PlayType, play_side: &str) -> bool {
-    matches!(
-        (play_type, play_side),
-        (PlayType::Single, "one_player" | "two_player") | (PlayType::Double, "not_applicable")
-    )
+fn valid_expected_play_side(play_side: &str) -> bool {
+    matches!(play_side, "one_player" | "two_player")
 }
 
-fn expected_play_side_matches(
-    panel_side: ResultPanelSide,
-    play_type: PlayType,
-    play_side: &str,
-) -> bool {
+fn expected_play_side_matches(panel_side: ResultPanelSide, play_side: &str) -> bool {
     matches!(
-        (play_type, panel_side, play_side),
-        (PlayType::Single, ResultPanelSide::Left, "one_player")
-            | (PlayType::Single, ResultPanelSide::Right, "two_player")
-            | (PlayType::Double, _, "not_applicable")
+        (panel_side, play_side),
+        (ResultPanelSide::Left, "one_player") | (ResultPanelSide::Right, "two_player")
     )
 }
 
@@ -7282,25 +7262,21 @@ mod tests {
     }
 
     #[test]
-    fn result_play_side_labels_follow_play_type_and_panel_side() {
-        assert!(valid_expected_play_side(PlayType::Single, "one_player"));
-        assert!(valid_expected_play_side(PlayType::Single, "two_player"));
-        assert!(valid_expected_play_side(PlayType::Double, "not_applicable"));
-        assert!(!valid_expected_play_side(PlayType::Double, "one_player"));
+    fn result_play_side_labels_follow_panel_side_for_sp_and_dp() {
+        assert!(valid_expected_play_side("one_player"));
+        assert!(valid_expected_play_side("two_player"));
+        assert!(!valid_expected_play_side("not_applicable"));
         assert!(expected_play_side_matches(
             ResultPanelSide::Left,
-            PlayType::Single,
             "one_player"
         ));
         assert!(expected_play_side_matches(
             ResultPanelSide::Right,
-            PlayType::Single,
             "two_player"
         ));
-        assert!(expected_play_side_matches(
+        assert!(!expected_play_side_matches(
             ResultPanelSide::Right,
-            PlayType::Double,
-            "not_applicable"
+            "one_player"
         ));
     }
 

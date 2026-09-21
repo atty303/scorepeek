@@ -51,7 +51,7 @@ const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
 const SOCKET_NAME: &str = "events.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v16";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v17";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -363,23 +363,6 @@ pub enum NumericResultTransitionReason {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "status", content = "value", rename_all = "snake_case")]
-pub enum PlaySideApplicability {
-    Known(PlaySide),
-    NotApplicable,
-}
-
-impl std::fmt::Display for PlaySideApplicability {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Known(PlaySide::OnePlayer) => "1P",
-            Self::Known(PlaySide::TwoPlayer) => "2P",
-            Self::NotApplicable => "N/A",
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResultPanelSideEpisodeState {
     Pending,
@@ -416,7 +399,7 @@ pub struct ResultDomainEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_attempt_id: Option<u64>,
     pub scorepeek_song_id: ScorepeekSongId,
-    pub play_side: PlaySideApplicability,
+    pub play_side: PlaySide,
     pub play_mode: String,
     pub play_type: PlayType,
     pub difficulty: Difficulty,
@@ -723,7 +706,7 @@ pub enum MusicSelectionState {
     },
     Selected {
         scorepeek_song_id: ScorepeekSongId,
-        play_side: PlaySideApplicability,
+        play_side: PlaySide,
         play_type: PlayType,
         difficulty: Difficulty,
         level: u8,
@@ -1653,12 +1636,7 @@ impl MusicSelectResolver {
         let summary = accumulator.summary();
         let selected = summary.selected.as_ref()?;
         let play_type = summary.select_play_type?;
-        let play_side = match play_type {
-            PlayType::Single => {
-                PlaySideApplicability::Known(accumulator.resolved_select_play_side()?)
-            }
-            PlayType::Double => PlaySideApplicability::NotApplicable,
-        };
+        let play_side = accumulator.resolved_select_play_side()?;
         let difficulty = accumulator.select_difficulty?.difficulty;
         if summary.support < JOINT_ACCEPT_SUPPORT
             || summary.song_margin < JOINT_ACCEPT_MARGIN
@@ -3720,10 +3698,7 @@ impl RoutineOutput {
         }
         let result_summary = self.engine.result_hypotheses.summary();
         if !self.result_select_context_detached
-            && result_summary.result_play_type == Some(PlayType::Single)
-            && let Some(result_side) =
-                result_play_side(PlayType::Single, self.result_panel_side.stable())
-            && let PlaySideApplicability::Known(result_side) = result_side
+            && let Some(result_side) = result_play_side(self.result_panel_side.stable())
             && let Some(select_side) = self.engine.retained_select.resolved_select_play_side()
             && select_side != result_side
         {
@@ -4127,9 +4102,7 @@ impl RoutineOutput {
         {
             return Ok(());
         }
-        let Some(play_side) =
-            result_play_side(numeric.chart.key.play_type, self.result_panel_side.stable())
-        else {
+        let Some(play_side) = result_play_side(self.result_panel_side.stable()) else {
             return Ok(());
         };
         let result = build_result_domain_event(
@@ -4188,8 +4161,7 @@ impl RoutineOutput {
             .filter(|(joint, numeric)| joint_matches_numeric(joint, numeric))
             .zip(self.engine.play_attempt.active_result())
             .and_then(|((joint, numeric), attempt)| {
-                let play_side =
-                    result_play_side(numeric.chart.key.play_type, self.result_panel_side.stable())?;
+                let play_side = result_play_side(self.result_panel_side.stable())?;
                 let song = Some(candidate_song_presentation(joint));
                 let result = build_result_domain_event(
                     attempt,
@@ -5178,7 +5150,7 @@ impl Drop for RoutineOutput {
 fn build_result_domain_event(
     attempt: AcceptedPlayAttempt,
     numeric: &NumericResultView,
-    play_side: PlaySideApplicability,
+    play_side: PlaySide,
     play_options: PlayOptions,
 ) -> ResultDomainEvent {
     let ResultPerformanceResolution::Accepted {
@@ -5193,7 +5165,7 @@ fn build_result_domain_event(
         unreachable!("accepted numeric view stores accepted performance");
     };
     ResultDomainEvent {
-        contract: "scorepeek-result-detected-v3".to_owned(),
+        contract: "scorepeek-result-detected-v4".to_owned(),
         attempt_id: attempt.attempt_id,
         parent_attempt_id: attempt.parent_attempt_id,
         scorepeek_song_id: numeric.song_id,
@@ -5218,19 +5190,13 @@ fn build_result_domain_event(
     }
 }
 
-const fn result_play_side(
-    play_type: PlayType,
-    panel_side: Option<ResultPanelSide>,
-) -> Option<PlaySideApplicability> {
+const fn result_play_side(panel_side: Option<ResultPanelSide>) -> Option<PlaySide> {
     let Some(panel_side) = panel_side else {
         return None;
     };
-    Some(match play_type {
-        PlayType::Single => PlaySideApplicability::Known(match panel_side {
-            ResultPanelSide::Left => PlaySide::OnePlayer,
-            ResultPanelSide::Right => PlaySide::TwoPlayer,
-        }),
-        PlayType::Double => PlaySideApplicability::NotApplicable,
+    Some(match panel_side {
+        ResultPanelSide::Left => PlaySide::OnePlayer,
+        ResultPanelSide::Right => PlaySide::TwoPlayer,
     })
 }
 
@@ -6182,7 +6148,7 @@ fn expanded_result_history_entry_lines(
                 .parent_attempt_id
                 .map_or_else(|| "-".to_owned(), |value| format!("{value}")),
             grouped_u32(result.notes),
-            result.play_side,
+            play_side_label(result.play_side),
             result.play_mode,
             entry.source_sequence,
         )),
@@ -6212,6 +6178,13 @@ const fn play_type_label(play_type: PlayType) -> &'static str {
     match play_type {
         PlayType::Single => "SP",
         PlayType::Double => "DP",
+    }
+}
+
+const fn play_side_label(play_side: PlaySide) -> &'static str {
+    match play_side {
+        PlaySide::OnePlayer => "1P",
+        PlaySide::TwoPlayer => "2P",
     }
 }
 
@@ -6423,7 +6396,7 @@ mod tests {
                     .query_row("SELECT event_json FROM play_results", [], |row| row.get(0))
                     .unwrap();
                 let stored = serde_json::from_str::<Value>(&json).unwrap();
-                assert_eq!(stored["schema"], "scorepeek-stored-result-v1");
+                assert_eq!(stored["schema"], "scorepeek-stored-result-v2");
                 assert_eq!(stored["result"], result["state"]["result"]);
                 assert_eq!(stored["event_id"], result["event_id"]);
                 let values: (i64, i64, i64) = database
@@ -6746,6 +6719,25 @@ mod tests {
         }
     }
 
+    fn accepted_double_result_event(sequence: u64) -> RunEvent {
+        let mut event = accepted_result_event(sequence);
+        let RunEventKind::FieldObservation {
+            parsed_result_fields: Some(parsed),
+            result_chart_resolution: Some(ResultChartResolution::Accepted { chart, .. }),
+            joint_evidence,
+            ..
+        } = &mut event.kind
+        else {
+            unreachable!();
+        };
+        parsed.play_type = ResultFieldValue::Known {
+            value: PlayType::Double,
+        };
+        chart.key.play_type = PlayType::Double;
+        joint_evidence.candidates[0].chart.key.play_type = PlayType::Double;
+        event
+    }
+
     fn detected_result_event(
         session_id: &str,
         capture_generation: u64,
@@ -6997,7 +6989,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v3");
+        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v4");
         assert_eq!(snapshot["invocation_id"], "invocation-1");
         assert_eq!(snapshot["next_sequence"], 1);
         assert_eq!(snapshot["status"]["watcher"], "starting");
@@ -7139,7 +7131,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(provisional.contract, "scorepeek-result-detected-v3");
+        assert_eq!(provisional.contract, "scorepeek-result-detected-v4");
         let encoded = output
             .headless_events
             .iter()
@@ -8023,7 +8015,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-event-snapshot-v3"));
+            assert!(snapshot.contains("scorepeek-event-snapshot-v4"));
         }
         channel.publish(wire_event(1));
         for reader in &mut readers {
@@ -8493,11 +8485,11 @@ mod tests {
                 1,
                 source_sequence,
                 ResultDomainEvent {
-                    contract: "scorepeek-result-detected-v3".to_owned(),
+                    contract: "scorepeek-result-detected-v4".to_owned(),
                     attempt_id: source_sequence,
                     parent_attempt_id: None,
                     scorepeek_song_id: song_id,
-                    play_side: PlaySideApplicability::Known(PlaySide::OnePlayer),
+                    play_side: PlaySide::OnePlayer,
                     play_mode: "single_play".to_owned(),
                     play_type: PlayType::Single,
                     difficulty: Difficulty::Normal,
@@ -8598,7 +8590,7 @@ mod tests {
         let candidate = &evidence.candidates[0];
         let selection = MusicSelectionState::Selected {
             scorepeek_song_id: candidate.song_id,
-            play_side: PlaySideApplicability::Known(PlaySide::OnePlayer),
+            play_side: PlaySide::OnePlayer,
             play_type: candidate.chart.key.play_type,
             difficulty: candidate.chart.key.difficulty,
             level: candidate.chart.level,
@@ -8822,7 +8814,7 @@ mod tests {
         for difficulty in [Difficulty::Hyper, Difficulty::Leggendaria] {
             state.latest_music_selection = Some(MusicSelectionState::Selected {
                 scorepeek_song_id,
-                play_side: PlaySideApplicability::Known(PlaySide::OnePlayer),
+                play_side: PlaySide::OnePlayer,
                 play_type: PlayType::Double,
                 difficulty,
                 level: 12,
@@ -10520,7 +10512,7 @@ mod tests {
         assert!(matches!(
             output.music_select_resolver.selected(),
             Some(MusicSelectionState::Selected {
-                play_side: PlaySideApplicability::NotApplicable,
+                play_side: PlaySide::TwoPlayer,
                 ..
             })
         ));
@@ -10552,7 +10544,7 @@ mod tests {
         assert!(matches!(
             resolver.selected(),
             Some(MusicSelectionState::Selected {
-                play_side: PlaySideApplicability::Known(PlaySide::TwoPlayer),
+                play_side: PlaySide::TwoPlayer,
                 ..
             })
         ));
@@ -10570,7 +10562,7 @@ mod tests {
     }
 
     #[test]
-    fn double_play_selection_does_not_require_a_footer_play_side() {
+    fn double_play_selection_requires_a_footer_play_side() {
         let mut resolver = MusicSelectResolver::default();
         let (fields, evidence, _) = music_selection_test_observation();
         for (sequence, monotonic_ms) in [(1, 100), (2, 200)] {
@@ -10580,13 +10572,26 @@ mod tests {
                 &evidence,
                 selected_difficulty(&fields),
                 selected_play_type(&fields),
-                None,
+                if sequence == 1 {
+                    None
+                } else {
+                    selected_play_side(&fields)
+                },
             );
         }
+        assert!(resolver.selected().is_none());
+        resolver.observe(
+            3,
+            300,
+            &evidence,
+            selected_difficulty(&fields),
+            selected_play_type(&fields),
+            selected_play_side(&fields),
+        );
         assert!(matches!(
             resolver.selected(),
             Some(MusicSelectionState::Selected {
-                play_side: PlaySideApplicability::NotApplicable,
+                play_side: PlaySide::TwoPlayer,
                 play_type: PlayType::Double,
                 ..
             })
@@ -10715,7 +10720,7 @@ mod tests {
     }
 
     #[test]
-    fn result_select_side_mismatch_detaches_only_the_attempt_linkage() {
+    fn side_mismatch_before_result_play_type_stabilizes_detaches_only_the_attempt_linkage() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         output.engine.play_attempt.observe_selection_screen();
         output
@@ -10731,6 +10736,11 @@ mod tests {
             .retained_select
             .select_play_sides
             .insert(PlaySide::OnePlayer, 2);
+        output
+            .engine
+            .retained_select
+            .select_play_types
+            .insert(PlayType::Double, 2);
         assert!(
             output
                 .result_panel_side
@@ -10745,7 +10755,7 @@ mod tests {
         );
 
         for sequence in [1, 2] {
-            let mut event = accepted_result_event(sequence);
+            let mut event = accepted_double_result_event(sequence);
             let RunEventKind::FieldObservation { fields, .. } = &mut event.kind else {
                 unreachable!();
             };
@@ -10759,6 +10769,7 @@ mod tests {
         assert!(output.headless_events.iter().any(|event| matches!(
             event.kind,
             RunEventKind::ResultSelectContextMismatch {
+                source_sequence: 1,
                 select_play_side: PlaySide::OnePlayer,
                 result_play_side: PlaySide::TwoPlayer,
                 ..
@@ -10776,33 +10787,19 @@ mod tests {
             RunEventKind::ResultChanged {
                 state: ResultState::Confirmed { result, .. },
                 ..
-            } if result.play_side
-                == PlaySideApplicability::Known(PlaySide::TwoPlayer)
+            } if result.play_side == PlaySide::TwoPlayer
         )));
     }
 
     #[test]
-    fn result_play_side_serializes_applicability_without_legacy_strings() {
+    fn result_play_side_serializes_plain_side_for_sp_and_dp() {
         assert_eq!(
-            serde_json::to_value(
-                result_play_side(PlayType::Single, Some(ResultPanelSide::Left)).unwrap()
-            )
-            .unwrap(),
-            json!({"status":"known", "value":"one_player"})
+            serde_json::to_value(result_play_side(Some(ResultPanelSide::Left)).unwrap()).unwrap(),
+            json!("one_player")
         );
         assert_eq!(
-            serde_json::to_value(
-                result_play_side(PlayType::Single, Some(ResultPanelSide::Right)).unwrap()
-            )
-            .unwrap(),
-            json!({"status":"known", "value":"two_player"})
-        );
-        assert_eq!(
-            serde_json::to_value(
-                result_play_side(PlayType::Double, Some(ResultPanelSide::Right)).unwrap()
-            )
-            .unwrap(),
-            json!({"status":"not_applicable"})
+            serde_json::to_value(result_play_side(Some(ResultPanelSide::Right)).unwrap()).unwrap(),
+            json!("two_player")
         );
     }
 

@@ -2,10 +2,10 @@ use super::*;
 use serde_json::json;
 
 fn select(sequence: u64, score: &Value, miss: &Value) -> Value {
-    json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"music_select_best_observed","snapshot":{"contract":"scorepeek-music-select-best-snapshot-v2","revision":sequence,"observation_id":format!("select:{sequence}"),"chart":{"scorepeek_song_id":"song-a","play_side":{"status":"known","value":"one_player"},"play_type":"single","difficulty":"hyper","presentation":{"display_titles":["Synthetic song"]}},"values":{"score":score,"miss_count":miss,"clear_type":{"status":"known","value":"hard_clear"}}}})
+    json!({"schema":"scorepeek-event-v4","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"music_select_best_observed","snapshot":{"contract":"scorepeek-music-select-best-snapshot-v3","revision":sequence,"observation_id":format!("select:{sequence}"),"chart":{"scorepeek_song_id":"song-a","play_side":"one_player","play_type":"single","difficulty":"hyper","presentation":{"display_titles":["Synthetic song"]}},"values":{"score":score,"miss_count":miss,"clear_type":{"status":"known","value":"hard_clear"}}}})
 }
 fn result(sequence: u64, score: u32) -> Value {
-    json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"result_changed","source_sequence":sequence,"state":{"status":"provisional","song":{"scorepeek_song_id":"song-a","display_titles":["Synthetic song"],"artist":"Synthetic artist"},"result":{"contract":"scorepeek-result-detected-v3","attempt_id":sequence,"scorepeek_song_id":"song-a","play_side":{"status":"known","value":"one_player"},"play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":score,"clear_type":"EXH-CLEAR","judgments":{"pgreat":50,"great":20,"good":3,"bad":2,"poor":1},"miss_count":{"status":"known","value":20},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":180},"miss_count":{"status":"unknown","reason":"empty"},"clear_type":{"status":"not_played"}},"play_options":{"status":"known","values":[]}}}})
+    json!({"schema":"scorepeek-event-v4","invocation_id":"run-a","sequence":sequence,"event_id":format!("run-a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+sequence,"capture":{"session_id":"session","capture_generation":1,"binding":null},"event":"result_changed","source_sequence":sequence,"state":{"status":"provisional","song":{"scorepeek_song_id":"song-a","display_titles":["Synthetic song"],"artist":"Synthetic artist"},"result":{"contract":"scorepeek-result-detected-v4","attempt_id":sequence,"scorepeek_song_id":"song-a","play_side":"one_player","play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":score,"clear_type":"EXH-CLEAR","judgments":{"pgreat":50,"great":20,"good":3,"bad":2,"poor":1},"miss_count":{"status":"known","value":20},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":180},"miss_count":{"status":"unknown","reason":"empty"},"clear_type":{"status":"not_played"}},"play_options":{"status":"known","values":[]}}}})
 }
 fn result_state(sequence: u64, attempt_id: u64, score: u32, status: &str) -> Value {
     let mut value = result(sequence, score);
@@ -30,6 +30,56 @@ fn values(store: &Store) -> (Option<i64>, Option<i64>, Option<i64>) {
         .unwrap()
 }
 
+fn downgrade_database_to_v3(path: &std::path::Path) {
+    let mut connection = Connection::open(path).unwrap();
+    let tx = connection.transaction().unwrap();
+    let rows = {
+        let mut statement = tx
+            .prepare("SELECT rowid,play_type,event_json FROM play_results ORDER BY rowid")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    for (rowid, play_type, json) in rows {
+        let mut stored: Value = serde_json::from_str(&json).unwrap();
+        stored["schema"] = json!("scorepeek-stored-result-v1");
+        stored["result"]["contract"] = json!("scorepeek-result-detected-v3");
+        stored["result"]["play_side"] = if play_type == "double" {
+            json!({"status":"not_applicable"})
+        } else {
+            let side = stored["result"]["play_side"].clone();
+            json!({"status":"known","value":side})
+        };
+        tx.execute(
+            "UPDATE play_results SET event_json=?1 WHERE rowid=?2",
+            params![serde_json::to_string(&stored).unwrap(), rowid],
+        )
+        .unwrap();
+    }
+    tx.execute_batch(
+        "DROP INDEX plays_chart;
+         DROP INDEX plays_attempt;
+         ALTER TABLE play_results RENAME TO play_results_v4;
+         CREATE TABLE play_results (event_id TEXT PRIMARY KEY, session_id TEXT, attempt_id INTEGER, state TEXT NOT NULL, latest_event_id TEXT NOT NULL, recovery_confirmed INTEGER NOT NULL DEFAULT 0, song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, score INTEGER NOT NULL, miss INTEGER, clear INTEGER NOT NULL, event_json TEXT NOT NULL);
+         INSERT INTO play_results(event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json) SELECT event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json FROM play_results_v4;
+         DROP TABLE play_results_v4;
+         CREATE INDEX plays_chart ON play_results(song_id,play_type,difficulty);
+         CREATE UNIQUE INDEX plays_attempt ON play_results(session_id,attempt_id);
+         PRAGMA user_version=3;",
+    )
+    .unwrap();
+    tx.commit().unwrap();
+}
+
 #[test]
 fn read_only_history_never_creates_and_tracks_committed_latest_five() {
     let dir = tempfile::tempdir().unwrap();
@@ -46,6 +96,7 @@ fn read_only_history_never_creates_and_tracks_committed_latest_five() {
     let history = query::chart_history(&path, "song-a", "single", "hyper").unwrap();
     assert_eq!(history.plays.len(), 5);
     assert_eq!(history.plays[0].event_id, "run-a:7");
+    assert_eq!(history.plays[0].play_side, PlaySide::OnePlayer);
     assert_eq!(history.plays[4].event_id, "run-a:3");
     assert_eq!(history.best.score, Some(700));
     assert!(
@@ -62,6 +113,116 @@ fn read_only_history_never_creates_and_tracks_committed_latest_five() {
             .score,
         800
     );
+}
+
+#[test]
+fn opening_v3_migrates_play_side_and_stored_results_atomically() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scores.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    let mut sp = result_state(1, 1, 200, "confirmed");
+    sp["state"]["result"]["play_side"] = json!("two_player");
+    assert!(apply(&mut store, &sp));
+    let mut dp = result_state(2, 2, 300, "confirmed");
+    dp["state"]["result"]["play_type"] = json!("double");
+    dp["state"]["result"]["play_mode"] = json!("dp");
+    dp["state"]["result"]["play_side"] = json!("two_player");
+    assert!(apply(&mut store, &dp));
+    drop(store);
+    downgrade_database_to_v3(&path);
+
+    let store = Store::open(&path).unwrap();
+    let version: i64 = store
+        .connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 4);
+    let play_side_not_null: i64 = store
+        .connection
+        .query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('play_results') WHERE name='play_side'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(play_side_not_null, 1);
+    let mut statement = store
+        .connection
+        .prepare("SELECT play_type,play_side,event_json FROM play_results ORDER BY attempt_id")
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for (play_type, play_side, json) in rows {
+        let expected = if play_type == "single" {
+            "two_player"
+        } else {
+            "one_player"
+        };
+        assert_eq!(play_side, expected);
+        let stored: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(stored["schema"], "scorepeek-stored-result-v2");
+        assert_eq!(stored["result"]["contract"], "scorepeek-result-detected-v4");
+        assert_eq!(stored["result"]["play_side"], expected);
+    }
+    drop(statement);
+    drop(store);
+    assert_eq!(
+        query::chart_history(&path, "song-a", "single", "hyper")
+            .unwrap()
+            .plays[0]
+            .play_side,
+        PlaySide::TwoPlayer
+    );
+    assert_eq!(
+        query::chart_history(&path, "song-a", "double", "hyper")
+            .unwrap()
+            .plays[0]
+            .play_side,
+        PlaySide::OnePlayer
+    );
+}
+
+#[test]
+fn malformed_v3_row_rolls_back_the_schema_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scores.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    assert!(apply(&mut store, &result_state(1, 1, 200, "confirmed")));
+    drop(store);
+    downgrade_database_to_v3(&path);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute("UPDATE play_results SET event_json='{}'", [])
+        .unwrap();
+    drop(connection);
+
+    assert!(matches!(
+        Store::open(&path),
+        Err(Error::UnsupportedContract)
+    ));
+    let connection = Connection::open(&path).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+    let play_side_columns: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('play_results') WHERE name='play_side'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(play_side_columns, 0);
 }
 #[test]
 fn select_only_updates_without_history_and_result_later_supports_best() {
@@ -162,7 +323,7 @@ fn order_clear_unknown_and_new_invocation() {
             &json!({"status":"no_record"})
         )
     ));
-    let clear = json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":6,"event_id":"run-a:6","emitted_monotonic_ms":6,"emitted_unix_ms":1006,"capture":null,"event":"music_select_best_observed","snapshot":null});
+    let clear = json!({"schema":"scorepeek-event-v4","invocation_id":"run-a","sequence":6,"event_id":"run-a:6","emitted_monotonic_ms":6,"emitted_unix_ms":1006,"capture":null,"event":"music_select_best_observed","snapshot":null});
     assert!(!apply(&mut store, &clear));
     assert_eq!(values(&store), (Some(900), Some(1), Some(5)));
     event["invocation_id"] = json!("run-b");
@@ -264,17 +425,16 @@ fn unsupported_payload_is_not_saved() {
 }
 
 #[test]
-fn play_side_applicability_must_match_play_type() {
+fn play_side_is_a_plain_enum_for_both_play_types() {
     let mut invalid_result = result(1, 100);
-    invalid_result["state"]["result"]["play_type"] = json!("double");
+    invalid_result["state"]["result"]["play_side"] = json!({"status":"known","value":"one_player"});
     let select_score = json!({"status":"known", "value":100});
     let select_miss = json!({"status":"known", "value":1});
     let mut legacy_select = select(1, &select_score, &select_miss);
-    legacy_select["snapshot"]["chart"]["play_side"] = json!("one_player");
-    let mut invalid_double_select = select(1, &select_score, &select_miss);
-    invalid_double_select["snapshot"]["chart"]["play_type"] = json!("double");
+    legacy_select["snapshot"]["chart"]["play_side"] =
+        json!({"status":"known","value":"one_player"});
 
-    for invalid in [invalid_result, legacy_select, invalid_double_select] {
+    for invalid in [invalid_result, legacy_select] {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("db")).unwrap();
         assert!(
@@ -283,6 +443,14 @@ fn play_side_applicability_must_match_play_type() {
                 .is_err()
         );
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let mut dp = result(1, 100);
+    dp["state"]["result"]["play_type"] = json!("double");
+    dp["state"]["result"]["play_mode"] = json!("dp");
+    dp["state"]["result"]["play_side"] = json!("two_player");
+    assert!(apply(&mut store, &dp));
 }
 
 #[test]
@@ -402,7 +570,7 @@ fn result_identity_and_presentation_are_required_before_persistence() {
 fn valid_unknown_event_advances_but_malformed_unknown_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::open(&dir.path().join("db")).unwrap();
-    let unknown = json!({"schema":"scorepeek-event-v3","invocation_id":"run-a","sequence":1,"event_id":"run-a:1","emitted_monotonic_ms":1,"emitted_unix_ms":1001,"capture":null,"event":"future_event","payload":{"additive":true}});
+    let unknown = json!({"schema":"scorepeek-event-v4","invocation_id":"run-a","sequence":1,"event_id":"run-a:1","emitted_monotonic_ms":1,"emitted_unix_ms":1001,"capture":null,"event":"future_event","payload":{"additive":true}});
     assert!(!apply(&mut store, &unknown));
     assert!(!apply(&mut store, &result(1, 100)));
     assert!(apply(&mut store, &result(2, 200)));
@@ -455,7 +623,8 @@ fn chart_keys_and_tie_provenance_are_preserved() {
     );
     let mut dp = result(4, 200);
     dp["state"]["result"]["play_type"] = json!("double");
-    dp["state"]["result"]["play_side"] = json!({"status":"not_applicable"});
+    dp["state"]["result"]["play_mode"] = json!("dp");
+    dp["state"]["result"]["play_side"] = json!("two_player");
     apply(&mut store, &dp);
     let mut another = result(5, 300);
     another["state"]["result"]["difficulty"] = json!("another");

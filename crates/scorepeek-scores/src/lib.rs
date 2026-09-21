@@ -1,4 +1,4 @@
-//! Persistence consumer for the public event v2 contract, independent of recognition.
+//! Persistence consumer for the public event v4 contract, independent of recognition.
 pub mod query;
 mod worker;
 pub use worker::{ChartIdentity, Completion, CompletionOutcome, Health, Worker};
@@ -11,6 +11,30 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaySide {
+    OnePlayer,
+    TwoPlayer,
+}
+
+impl PlaySide {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::OnePlayer => "one_player",
+            Self::TwoPlayer => "two_player",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "one_player" => Ok(Self::OnePlayer),
+            "two_player" => Ok(Self::TwoPlayer),
+            _ => Err(Error::UnsupportedContract),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -48,7 +72,7 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-fn validate_v3_envelope(raw: &Value) -> Result<(), Error> {
+fn validate_v4_envelope(raw: &Value) -> Result<(), Error> {
     let object = raw.as_object().ok_or(Error::UnsupportedContract)?;
     for key in [
         "schema",
@@ -64,7 +88,7 @@ fn validate_v3_envelope(raw: &Value) -> Result<(), Error> {
             return Err(Error::UnsupportedContract);
         }
     }
-    if raw["schema"].as_str() != Some("scorepeek-event-v3")
+    if raw["schema"].as_str() != Some("scorepeek-event-v4")
         || raw["invocation_id"].as_str().is_none()
         || raw["sequence"].as_u64().is_none()
         || raw["event_id"].as_str().is_none_or(str::is_empty)
@@ -190,7 +214,6 @@ fn validate_result_context(event: &Event, capture: &Value) -> Result<(), Error> 
     if song.scorepeek_song_id != result.chart.scorepeek_song_id
         || song.display_titles.is_empty()
         || song.display_titles.iter().any(String::is_empty)
-        || !valid_play_side(&result.chart.play_type, &result.play_side)
     {
         return Err(Error::UnsupportedContract);
     }
@@ -227,7 +250,7 @@ struct ResultData {
     attempt_id: u64,
     #[serde(flatten)]
     chart: Chart,
-    play_side: PlaySideApplicability,
+    play_side: PlaySide,
     play_mode: String,
     level: u8,
     notes: u32,
@@ -239,19 +262,6 @@ struct ResultData {
     combo_break: Supplemental<u32>,
     previous_best: Previous,
     play_options: PlayOptions,
-}
-#[allow(dead_code, reason = "the complete public play-side shape is validated")]
-#[derive(Deserialize)]
-#[serde(tag = "status", content = "value", rename_all = "snake_case")]
-enum PlaySideApplicability {
-    Known(PlaySide),
-    NotApplicable,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum PlaySide {
-    OnePlayer,
-    TwoPlayer,
 }
 #[allow(
     dead_code,
@@ -313,7 +323,7 @@ struct SelectData {
 struct SelectChart {
     #[serde(flatten)]
     chart: Chart,
-    play_side: PlaySideApplicability,
+    play_side: PlaySide,
     presentation: Value,
 }
 #[derive(Deserialize)]
@@ -497,13 +507,14 @@ type Prepared<'a> = (
     [Fields; 2],
     Option<ResultMutation>,
     Option<u64>,
+    Option<PlaySide>,
 );
 
-const DATABASE_VERSION: i64 = 3;
-const STORED_RESULT_SCHEMA: &str = "scorepeek-stored-result-v1";
+const DATABASE_VERSION: i64 = 4;
+const STORED_RESULT_SCHEMA: &str = "scorepeek-stored-result-v2";
 
 fn stored_result_from_event(raw: &Value) -> Result<Value, Error> {
-    if raw["schema"].as_str() != Some("scorepeek-event-v3")
+    if raw["schema"].as_str() != Some("scorepeek-event-v4")
         || raw["event"].as_str() != Some("result_changed")
     {
         return Err(Error::UnsupportedContract);
@@ -520,16 +531,124 @@ fn stored_result_from_event(raw: &Value) -> Result<Value, Error> {
         "result": result,
     }))
 }
+
+struct LegacyPlayRow {
+    event_id: String,
+    session_id: Option<String>,
+    attempt_id: Option<i64>,
+    state: String,
+    latest_event_id: String,
+    recovery_confirmed: i64,
+    song_id: String,
+    play_type: String,
+    difficulty: String,
+    emitted_unix_ms: i64,
+    received_unix_ms: i64,
+    score: i64,
+    miss: Option<i64>,
+    clear: i64,
+    event_json: String,
+}
+
+fn migrate_stored_result_v1(json: &str, row_play_type: &str) -> Result<(PlaySide, String), Error> {
+    let mut raw: Value = serde_json::from_str(json)?;
+    if raw["schema"].as_str() != Some("scorepeek-stored-result-v1")
+        || raw["result"]["contract"].as_str() != Some("scorepeek-result-detected-v3")
+        || raw["result"]["play_type"].as_str() != Some(row_play_type)
+    {
+        return Err(Error::UnsupportedContract);
+    }
+    let legacy = &raw["result"]["play_side"];
+    let play_side = match (row_play_type, legacy["status"].as_str()) {
+        ("single", Some("known")) => {
+            PlaySide::parse(legacy["value"].as_str().ok_or(Error::UnsupportedContract)?)?
+        }
+        ("double", Some("not_applicable")) if legacy.get("value").is_none() => PlaySide::OnePlayer,
+        _ => return Err(Error::UnsupportedContract),
+    };
+    raw["schema"] = Value::String(STORED_RESULT_SCHEMA.to_owned());
+    raw["result"]["contract"] = Value::String("scorepeek-result-detected-v4".to_owned());
+    raw["result"]["play_side"] = serde_json::to_value(play_side)?;
+    serde_json::from_value::<ResultData>(raw["result"].clone())?;
+    Ok((play_side, serde_json::to_string(&raw)?))
+}
+
+fn migrate_database_v3_to_v4(tx: &Transaction<'_>) -> Result<(), Error> {
+    let rows = {
+        let mut statement = tx.prepare(
+            "SELECT event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json FROM play_results ORDER BY rowid",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(LegacyPlayRow {
+                    event_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    attempt_id: row.get(2)?,
+                    state: row.get(3)?,
+                    latest_event_id: row.get(4)?,
+                    recovery_confirmed: row.get(5)?,
+                    song_id: row.get(6)?,
+                    play_type: row.get(7)?,
+                    difficulty: row.get(8)?,
+                    emitted_unix_ms: row.get(9)?,
+                    received_unix_ms: row.get(10)?,
+                    score: row.get(11)?,
+                    miss: row.get(12)?,
+                    clear: row.get(13)?,
+                    event_json: row.get(14)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let (play_side, event_json) =
+                migrate_stored_result_v1(&row.event_json, &row.play_type)?;
+            Ok((row, play_side, event_json))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    tx.execute_batch(
+        "DROP INDEX plays_chart;
+         DROP INDEX plays_attempt;
+         ALTER TABLE play_results RENAME TO play_results_v3;
+         CREATE TABLE play_results (event_id TEXT PRIMARY KEY, session_id TEXT, attempt_id INTEGER, state TEXT NOT NULL, latest_event_id TEXT NOT NULL, recovery_confirmed INTEGER NOT NULL DEFAULT 0, song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, play_side TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, score INTEGER NOT NULL, miss INTEGER, clear INTEGER NOT NULL, event_json TEXT NOT NULL);
+         CREATE INDEX plays_chart ON play_results(song_id,play_type,difficulty);
+         CREATE UNIQUE INDEX plays_attempt ON play_results(session_id,attempt_id);",
+    )?;
+    for (row, play_side, event_json) in rows {
+        tx.execute(
+            "INSERT INTO play_results(event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,play_side,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            params![
+                row.event_id,
+                row.session_id,
+                row.attempt_id,
+                row.state,
+                row.latest_event_id,
+                row.recovery_confirmed,
+                row.song_id,
+                row.play_type,
+                row.difficulty,
+                play_side.as_str(),
+                row.emitted_unix_ms,
+                row.received_unix_ms,
+                row.score,
+                row.miss,
+                row.clear,
+                event_json,
+            ],
+        )?;
+    }
+    tx.execute_batch("DROP TABLE play_results_v3; PRAGMA user_version=4;")?;
+    Ok(())
+}
 fn prepare_result<'a>(
     result: &'a ResultData,
     song: Option<&SongPresentation>,
     origin: &Origin,
     mutation: ResultMutation,
 ) -> Result<Prepared<'a>, Error> {
-    if result.contract != "scorepeek-result-detected-v3" {
-        return Err(Error::UnsupportedContract);
-    }
-    if !valid_play_side(&result.chart.play_type, &result.play_side) {
+    if result.contract != "scorepeek-result-detected-v4" {
         return Err(Error::UnsupportedContract);
     }
     if let Some(song) = song
@@ -558,6 +677,7 @@ fn prepare_result<'a>(
         ],
         Some(mutation),
         Some(result.attempt_id),
+        Some(result.play_side),
     ))
 }
 fn prepare<'a>(event: &'a Event, origin: &mut Origin) -> Result<Option<Prepared<'a>>, Error> {
@@ -595,12 +715,10 @@ fn prepare<'a>(event: &'a Event, origin: &mut Origin) -> Result<Option<Prepared<
         Event::MusicSelectBestObserved {
             snapshot: Some(snapshot),
         } => {
-            if snapshot.contract != "scorepeek-music-select-best-snapshot-v2" {
+            if snapshot.contract != "scorepeek-music-select-best-snapshot-v3" {
                 return Err(Error::UnsupportedContract);
             }
-            if !valid_play_side(&snapshot.chart.chart.play_type, &snapshot.chart.play_side) {
-                return Err(Error::UnsupportedContract);
-            }
+            let _ = snapshot.chart.play_side;
             origin.revision = Some(snapshot.revision);
             origin.observation_id = Some(snapshot.observation_id.clone());
             let values = &snapshot.values;
@@ -615,19 +733,12 @@ fn prepare<'a>(event: &'a Event, origin: &mut Origin) -> Result<Option<Prepared<
                 [fields, [None, None, None]],
                 None,
                 None,
+                None,
             )
         }
         _ => return Ok(None),
     };
     Ok(Some(prepared))
-}
-
-const fn valid_play_side(play_type: &PlayType, play_side: &PlaySideApplicability) -> bool {
-    matches!(
-        (play_type, play_side),
-        (PlayType::Single, PlaySideApplicability::Known(_))
-            | (PlayType::Double, PlaySideApplicability::NotApplicable)
-    )
 }
 
 /// Synchronous database core. The host chooses the path and owns diagnostics.
@@ -658,19 +769,21 @@ impl Store {
         connection.busy_timeout(Duration::from_millis(250))?;
         let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if !matches!(version, 0 | DATABASE_VERSION) {
+        if !matches!(version, 0 | 3 | DATABASE_VERSION) {
             return Err(Error::UnsupportedDatabase(version));
         }
         if version == 0 {
             tx.execute_batch(&format!(
-                "CREATE TABLE play_results (event_id TEXT PRIMARY KEY, session_id TEXT, attempt_id INTEGER, state TEXT NOT NULL, latest_event_id TEXT NOT NULL, recovery_confirmed INTEGER NOT NULL DEFAULT 0, song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, score INTEGER NOT NULL, miss INTEGER, clear INTEGER NOT NULL, event_json TEXT NOT NULL);\n\
+                "CREATE TABLE play_results (event_id TEXT PRIMARY KEY, session_id TEXT, attempt_id INTEGER, state TEXT NOT NULL, latest_event_id TEXT NOT NULL, recovery_confirmed INTEGER NOT NULL DEFAULT 0, song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, play_side TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, score INTEGER NOT NULL, miss INTEGER, clear INTEGER NOT NULL, event_json TEXT NOT NULL);\n\
                  CREATE INDEX plays_chart ON play_results(song_id,play_type,difficulty);\n\
                  CREATE UNIQUE INDEX plays_attempt ON play_results(session_id,attempt_id);\n\
                  CREATE TABLE result_attempt_origins(session_id TEXT NOT NULL, attempt_id INTEGER NOT NULL, event_id TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, PRIMARY KEY(session_id,attempt_id));\n\
                  CREATE TABLE chart_bests (song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, presentation TEXT, {}, score INTEGER, miss INTEGER, clear INTEGER, PRIMARY KEY(song_id,play_type,difficulty));\n\
-                 PRAGMA user_version=3;",
+                 PRAGMA user_version=4;",
                 COLUMNS.iter().map(|column| format!("{column} TEXT")).collect::<Vec<_>>().join(",")
             ))?;
+        } else if version == 3 {
+            migrate_database_v3_to_v4(&tx)?;
         }
         let recovered_provisional_count = tx.execute(
             "UPDATE play_results SET state='confirmed', recovery_confirmed=1 WHERE state='provisional'",
@@ -702,9 +815,9 @@ impl Store {
     /// Returns unsupported contract, parsing or transaction errors. No partial event is saved.
     pub fn consume(&mut self, bytes: &[u8], received_unix_ms: u64) -> Result<bool, Error> {
         let raw: Value = serde_json::from_slice(bytes)?;
-        validate_v3_envelope(&raw)?;
+        validate_v4_envelope(&raw)?;
         let envelope: Envelope = serde_json::from_slice(bytes)?;
-        if envelope.schema != "scorepeek-event-v3" {
+        if envelope.schema != "scorepeek-event-v4" {
             return Err(Error::UnsupportedContract);
         }
         validate_result_context(&envelope.event, &envelope.capture)?;
@@ -724,7 +837,7 @@ impl Store {
             observation_id: None,
             capture: envelope.capture.clone(),
         };
-        let Some((chart, presentation, incoming, result_mutation, attempt_id)) =
+        let Some((chart, presentation, incoming, result_mutation, attempt_id, result_play_side)) =
             prepare(&envelope.event, &mut origin)?
         else {
             self.cursor = Some((envelope.invocation_id, envelope.sequence));
@@ -753,6 +866,7 @@ impl Store {
                     difficulty: &difficulty,
                     incoming: &incoming,
                     attempt_id: attempt_id.ok_or(Error::UnsupportedContract)?,
+                    play_side: result_play_side.ok_or(Error::UnsupportedContract)?,
                     received_unix_ms,
                     stored_result: stored_result_from_event(&raw)?,
                 },
@@ -806,6 +920,7 @@ struct ResultWrite<'a> {
     difficulty: &'a str,
     incoming: &'a [Fields; 2],
     attempt_id: u64,
+    play_side: PlaySide,
     received_unix_ms: u64,
     stored_result: Value,
 }
@@ -840,8 +955,8 @@ fn apply_result_mutation(
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )?;
             tx.execute(
-                "INSERT INTO play_results(event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json) VALUES (?1,?2,?3,?4,?14,0,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(session_id,attempt_id) DO UPDATE SET state=excluded.state,latest_event_id=excluded.latest_event_id,recovery_confirmed=0,song_id=excluded.song_id,play_type=excluded.play_type,difficulty=excluded.difficulty,score=excluded.score,miss=excluded.miss,clear=excluded.clear,event_json=excluded.event_json WHERE play_results.state != 'confirmed' OR excluded.state = 'confirmed'",
-                params![first_event_id, session_id, attempt_id, state, write.chart.scorepeek_song_id, write.play_type, write.difficulty, first_emitted_unix_ms, first_received_unix_ms, write.incoming[0][0].as_ref().and_then(|f| f.value), write.incoming[0][1].as_ref().and_then(|f| f.value), write.incoming[0][2].as_ref().and_then(|f| f.value), serde_json::to_string(&write.stored_result)?, write.envelope.event_id],
+                "INSERT INTO play_results(event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,play_side,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json) VALUES (?1,?2,?3,?4,?15,0,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(session_id,attempt_id) DO UPDATE SET state=excluded.state,latest_event_id=excluded.latest_event_id,recovery_confirmed=0,song_id=excluded.song_id,play_type=excluded.play_type,difficulty=excluded.difficulty,play_side=excluded.play_side,score=excluded.score,miss=excluded.miss,clear=excluded.clear,event_json=excluded.event_json WHERE play_results.state != 'confirmed' OR excluded.state = 'confirmed'",
+                params![first_event_id, session_id, attempt_id, state, write.chart.scorepeek_song_id, write.play_type, write.difficulty, write.play_side.as_str(), first_emitted_unix_ms, first_received_unix_ms, write.incoming[0][0].as_ref().and_then(|f| f.value), write.incoming[0][1].as_ref().and_then(|f| f.value), write.incoming[0][2].as_ref().and_then(|f| f.value), serde_json::to_string(&write.stored_result)?, write.envelope.event_id],
             )?;
         }
         ResultMutation::Retract => {
@@ -908,7 +1023,7 @@ fn stored_result_facts(json: &str, received_unix_ms: i64) -> Result<[Fields; 2],
         observation_id: None,
         capture: raw["capture"].clone(),
     };
-    let (_, _, facts, _, _) =
+    let (_, _, facts, _, _, _) =
         prepare_result(&result, None, &origin, ResultMutation::Upsert("confirmed"))?;
     Ok(facts)
 }

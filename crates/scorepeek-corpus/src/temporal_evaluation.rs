@@ -17,7 +17,7 @@ use crate::{CorpusError, ErrorContext, digest_bytes, encode_digest, read_bounded
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v4";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v6";
 const OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;

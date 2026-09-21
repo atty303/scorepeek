@@ -1,6 +1,6 @@
 //! Read-only views of committed scores. Opening a reader never creates a database.
-use crate::Error;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use crate::{Error, PlaySide};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params, types::Type};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
 
@@ -16,9 +16,25 @@ pub struct Play {
     pub event_id: String,
     pub emitted_unix_ms: i64,
     pub received_unix_ms: i64,
+    pub play_side: PlaySide,
     pub score: i64,
     pub miss: Option<i64>,
     pub clear: i64,
+}
+
+fn play_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Play> {
+    let play_side = row.get::<_, String>(3)?;
+    Ok(Play {
+        event_id: row.get(0)?,
+        emitted_unix_ms: row.get(1)?,
+        received_unix_ms: row.get(2)?,
+        play_side: PlaySide::parse(&play_side).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
+        })?,
+        score: row.get(4)?,
+        miss: row.get(5)?,
+        clear: row.get(6)?,
+    })
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -49,7 +65,7 @@ pub fn chart_history(
     connection.busy_timeout(Duration::from_millis(250))?;
     let transaction = connection.transaction()?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != 3 {
+    if version != 4 {
         return Err(Error::UnsupportedDatabase(version));
     }
     let best = transaction.query_row(
@@ -59,19 +75,10 @@ pub fn chart_history(
     ).optional()?.unwrap_or_default();
     let plays = {
         let mut statement = transaction.prepare(
-            "SELECT event_id,emitted_unix_ms,received_unix_ms,score,miss,clear FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 5",
+            "SELECT event_id,emitted_unix_ms,received_unix_ms,play_side,score,miss,clear FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 5",
         )?;
         statement
-            .query_map(params![song_id, play_type, difficulty], |row| {
-                Ok(Play {
-                    event_id: row.get(0)?,
-                    emitted_unix_ms: row.get(1)?,
-                    received_unix_ms: row.get(2)?,
-                    score: row.get(3)?,
-                    miss: row.get(4)?,
-                    clear: row.get(5)?,
-                })
-            })?
+            .query_map(params![song_id, play_type, difficulty], play_from_row)?
             .collect::<Result<Vec<_>, _>>()?
     };
     transaction.commit()?;
@@ -94,7 +101,7 @@ pub fn chart_dashboard(
     connection.busy_timeout(Duration::from_millis(250))?;
     let tx = connection.transaction()?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != 3 {
+    if version != 4 {
         return Err(Error::UnsupportedDatabase(version));
     }
     let row:Option<(Option<i64>,Option<i64>,Option<i64>)>=tx.query_row("SELECT score,miss,clear FROM chart_bests WHERE song_id=?1 AND play_type=?2 AND difficulty=?3",params![song_id,play_type,difficulty],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -107,19 +114,12 @@ pub fn chart_dashboard(
     let representative=tx.query_row("SELECT event_json FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY score DESC, miss IS NULL, miss ASC, received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 1",params![song_id,play_type,difficulty],|r|r.get::<_,String>(0)).optional()?.map(|v|serde_json::from_str(&v)).transpose()?;
     let read = |sql: &str, extra: Option<i64>| -> Result<Vec<Play>, Error> {
         let mut stmt = tx.prepare(sql)?;
-        let map = |r: &rusqlite::Row<'_>| {
-            Ok(Play {
-                event_id: r.get(0)?,
-                emitted_unix_ms: r.get(1)?,
-                received_unix_ms: r.get(2)?,
-                score: r.get(3)?,
-                miss: r.get(4)?,
-                clear: r.get(5)?,
-            })
-        };
         if let Some(since) = extra {
             Ok(stmt
-                .query_map(params![song_id, play_type, difficulty, since], map)?
+                .query_map(
+                    params![song_id, play_type, difficulty, since],
+                    play_from_row,
+                )?
                 .collect::<Result<Vec<_>, _>>()?)
         } else {
             Ok(stmt
@@ -130,17 +130,17 @@ pub fn chart_dashboard(
                         difficulty,
                         i64::try_from(recent_limit).unwrap_or(50)
                     ],
-                    map,
+                    play_from_row,
                 )?
                 .collect::<Result<Vec<_>, _>>()?)
         }
     };
     let recent = read(
-        "SELECT event_id,emitted_unix_ms,received_unix_ms,score,miss,clear FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT ?4",
+        "SELECT event_id,emitted_unix_ms,received_unix_ms,play_side,score,miss,clear FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT ?4",
         None,
     )?;
     let graph = read(
-        "SELECT event_id,emitted_unix_ms,received_unix_ms,score,miss,clear FROM (SELECT event_id,emitted_unix_ms,received_unix_ms,score,miss,clear FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 AND received_unix_ms>=?4 ORDER BY received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 4096) ORDER BY received_unix_ms, emitted_unix_ms, event_id",
+        "SELECT event_id,emitted_unix_ms,received_unix_ms,play_side,score,miss,clear FROM (SELECT event_id,emitted_unix_ms,received_unix_ms,play_side,score,miss,clear FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 AND received_unix_ms>=?4 ORDER BY received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 4096) ORDER BY received_unix_ms, emitted_unix_ms, event_id",
         Some(since_unix_ms),
     )?;
     tx.commit()?;
@@ -166,17 +166,17 @@ mod tests {
             std::thread::current().name().unwrap_or("test")
         ));
         let mut connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 3).unwrap();
+        connection.pragma_update(None, "user_version", 4).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE chart_bests(song_id TEXT,play_type TEXT,difficulty TEXT,score INTEGER,miss INTEGER,clear INTEGER);
-                 CREATE TABLE play_results(event_id TEXT,emitted_unix_ms INTEGER,received_unix_ms INTEGER,score INTEGER,miss INTEGER,clear INTEGER,event_json TEXT,song_id TEXT,play_type TEXT,difficulty TEXT);",
+                 CREATE TABLE play_results(event_id TEXT,emitted_unix_ms INTEGER,received_unix_ms INTEGER,play_side TEXT,score INTEGER,miss INTEGER,clear INTEGER,event_json TEXT,song_id TEXT,play_type TEXT,difficulty TEXT);",
             )
             .unwrap();
         let tx = connection.transaction().unwrap();
         for sequence in 0_i64..4_100 {
             tx.execute(
-                "INSERT INTO play_results VALUES(?1,?2,?2,?2,NULL,0,'{}','song','single','hyper')",
+                "INSERT INTO play_results VALUES(?1,?2,?2,'one_player',?2,NULL,0,'{}','song','single','hyper')",
                 params![format!("event-{sequence:04}"), sequence],
             )
             .unwrap();

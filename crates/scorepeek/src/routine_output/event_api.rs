@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::time::{Instant, SystemTime};
 
 pub(super) const MAX_RECORD_BYTES: usize = 1024 * 1024;
-pub(super) const EVENT_SCHEMA: &str = "scorepeek-event-v3";
+pub(super) const EVENT_SCHEMA: &str = "scorepeek-event-v4";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Binding {
@@ -175,7 +175,7 @@ impl PublicState {
             },
         };
         Self {
-            schema: "scorepeek-event-snapshot-v3",
+            schema: "scorepeek-event-snapshot-v4",
             invocation_id,
             next_sequence: 1,
             status: Status {

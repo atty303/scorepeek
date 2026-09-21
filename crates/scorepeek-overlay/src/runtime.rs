@@ -434,7 +434,7 @@ mod tests {
             "play_options":{"status":"known","values":["RANDOM"]}
         });
         let stored = result_detail(&serde_json::json!({
-            "schema":"scorepeek-stored-result-v1",
+            "schema":"scorepeek-stored-result-v2",
             "result":result
         }));
         assert_eq!(stored.pgreat, "1");

@@ -1,8 +1,8 @@
-# Event API v3
+# Event API v4
 
 `scorepeek run` owns the stable Unix socket `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A connection
-receives one UTF-8 NDJSON `scorepeek-event-snapshot-v3` record followed by
-`scorepeek-event-v3` records. There is no request, handshake, subscription message, ACK, retained
+receives one UTF-8 NDJSON `scorepeek-event-snapshot-v4` record followed by
+`scorepeek-event-v4` records. There is no request, handshake, subscription message, ACK, retained
 event log, or second version-named socket.
 
 ## Envelope and identity
@@ -18,8 +18,8 @@ or result-local revision exists. Every state transition has its own envelope eve
 | `event` | Additional fields and meaning |
 | --- | --- |
 | `game_version_changed` | `source_sequence`, `version`. Emitted once, only when three equal structurally valid TITLE OCR observations identify the current capture session's complete 20-character version. |
-| `result_changed` | `source_sequence`, `state`. The state is `inactive`, `provisional`, `retracted`, or `confirmed`. Provisional, retracted, and confirmed states carry the same complete `song` and `scorepeek-result-detected-v3` `result` payload; retracted also carries a bounded `reason`. `result.play_side` is tagged applicability: SP carries `{"status":"known","value":"one_player"}` or `{"status":"known","value":"two_player"}`, while DP carries `{"status":"not_applicable"}`. The former untagged string is not accepted. |
-| `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation plus applicability-tagged `play_side`: SP carries `known(one_player|two_player)`, while DP carries `not_applicable`. |
+| `result_changed` | `source_sequence`, `state`. The state is `inactive`, `provisional`, `retracted`, or `confirmed`. Provisional, retracted, and confirmed states carry the same complete `song` and `scorepeek-result-detected-v4` `result` payload; retracted also carries a bounded `reason`. For SP and DP, `result.play_side` is the string `one_player` or `two_player`. |
+| `music_selection_changed` | `screen_episode_id`, `source_sequence`, `revision`, `state`. Current chart presentation plus required string `play_side` for both SP and DP. |
 | `music_select_best_observed` | Nullable supplemental SELECT-best snapshot. It is not a play. |
 | `screen_state_changed` | Nullable semantic screen presentation state. |
 | `status_changed` | Current watcher, capture, dependency, recording, and score-store readiness. |
@@ -49,7 +49,7 @@ its corresponding live event and require every live `sequence` to equal `next_se
 and replace local state after a disconnect or gap. `score_store_changed` has no snapshot slot; reread
 the named chart from SQLite.
 
-Unknown additive v3 event kinds and fields may be ignored after envelope and sequence validation.
+Unknown additive v4 event kinds and fields may be ignored after envelope and sequence validation.
 Consumers must reject unknown schema versions. A process restart creates a new invocation and loses
 socket-only state/history; SQLite is the durable play-history authority.
 
@@ -72,7 +72,11 @@ Provisional and confirmed states upsert one play row keyed by session and attemp
 not change its first-provisional display timestamp. Retraction deletes that play immediately and
 recomputes affected RESULT/previous-best facts, so history, BEST, and graph reads no longer include
 it. Confirmation updates the same row. The database stores one
-`scorepeek-stored-result-v1` projection instead of retaining a public event envelope. On database
+`scorepeek-stored-result-v2` projection instead of retaining a public event envelope. Each play row
+also stores `play_side` as a required queryable column; chart-best identity and aggregation remain
+`(song_id, play_type, difficulty)` and do not split by side. Opening a version-three database
+atomically migrates it to version four: stored SP sides are preserved and legacy DP rows are assigned
+`one_player`, while each stored-result document is rewritten to the current contract. On database
 open, an unclosed provisional row is promoted to confirmed with
 recovery provenance but no synthetic old-session socket event. A database-specific lifetime lock
 admits only one score writer, so another live writer's provisional row cannot be mistaken for crash

@@ -6079,7 +6079,7 @@ node_name = "must-not-be-inherited"
             1,
             "the corpus reader rejects mixed-schema sessions"
         );
-        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v16"));
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v17"));
     }
 
     #[test]
@@ -6102,7 +6102,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v16");
+        assert_eq!(value["schema"], "scorepeek-run-event-v17");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -6193,10 +6193,7 @@ node_name = "must-not-be-inherited"
             RunEventKind::ResultChanged {
                 state: ResultState::Provisional { ref result, .. },
                 ..
-            } if result.play_side
-                == crate::routine_output::PlaySideApplicability::Known(
-                    scorepeek::recognition::PlaySide::TwoPlayer
-                )
+            } if result.play_side == scorepeek::recognition::PlaySide::TwoPlayer
         )));
 
         publish_headless_live_event(
@@ -6214,10 +6211,7 @@ node_name = "must-not-be-inherited"
             RunEventKind::ResultChanged {
                 state: ResultState::Confirmed { ref result, .. },
                 ..
-            } if result.play_side
-                == crate::routine_output::PlaySideApplicability::Known(
-                    scorepeek::recognition::PlaySide::TwoPlayer
-                )
+            } if result.play_side == scorepeek::recognition::PlaySide::TwoPlayer
         )));
     }
 
@@ -6249,7 +6243,7 @@ node_name = "must-not-be-inherited"
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v16");
+        assert_eq!(value["schema"], "scorepeek-run-event-v17");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

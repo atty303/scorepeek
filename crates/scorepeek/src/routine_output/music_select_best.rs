@@ -1,15 +1,15 @@
 use std::fmt::Write as _;
 
 use super::{
-    Deserialize, Difficulty, Line, MusicSelectionState, PlaySideApplicability, PlayType,
-    ScorepeekSongId, Serialize, SongPresentation, difficulty_label, fitted_value, play_type_label,
+    Deserialize, Difficulty, Line, MusicSelectionState, PlaySide, PlayType, ScorepeekSongId,
+    Serialize, SongPresentation, difficulty_label, fitted_value, play_type_label,
 };
 use scorepeek::recognition::{BestClearType, BestValue, MusicSelectBestValues, StableBestField};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BestChart {
     pub scorepeek_song_id: ScorepeekSongId,
-    pub play_side: PlaySideApplicability,
+    pub play_side: PlaySide,
     pub play_type: PlayType,
     pub difficulty: Difficulty,
     pub notes: u32,
@@ -235,7 +235,7 @@ impl MusicSelectResolverState {
             _ => None,
         };
         let snapshot = MusicSelectBestSnapshot {
-            contract: "scorepeek-music-select-best-snapshot-v2".to_owned(),
+            contract: "scorepeek-music-select-best-snapshot-v3".to_owned(),
             source: "music_select".to_owned(),
             layout: "scorepeek-music-select-best-layout-v1".to_owned(),
             observation_id: format!(
@@ -328,11 +328,10 @@ fn output_line(state: &MusicSelectResolverState) -> String {
     }
 }
 
-const fn play_side_label(play_side: PlaySideApplicability) -> &'static str {
+const fn play_side_label(play_side: PlaySide) -> &'static str {
     match play_side {
-        PlaySideApplicability::Known(super::PlaySide::OnePlayer) => "1P",
-        PlaySideApplicability::Known(super::PlaySide::TwoPlayer) => "2P",
-        PlaySideApplicability::NotApplicable => "N/A",
+        PlaySide::OnePlayer => "1P",
+        PlaySide::TwoPlayer => "2P",
     }
 }
 
@@ -422,7 +421,7 @@ mod tests {
         let song = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         BestChart {
             scorepeek_song_id: song,
-            play_side: PlaySideApplicability::Known(scorepeek::recognition::PlaySide::OnePlayer),
+            play_side: PlaySide::OnePlayer,
             play_type: PlayType::Single,
             difficulty,
             notes: 1000,

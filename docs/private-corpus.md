@@ -86,12 +86,12 @@ The target bucket must also have an `AbortIncompleteMultipartUpload` lifecycle r
 process can clean up an upload ID after its own abrupt termination. Scorepeek aborts multipart
 uploads for failures it observes while still running.
 
-Regression truth uses only `scorepeek-private-session-regression-label-v5`. Each episode includes:
+Regression truth uses only `scorepeek-private-session-regression-label-v6`. Each episode includes:
 
 - a label-local `attempt_key` and optional earlier `parent_attempt_key`;
 - ordered select, decide, play, and result sequence spans;
 - an `accepted`, `abandoned`, `unlinked`, or `no_result` outcome;
-- song/chart identity, clear type, numeric performance, and an explicit ordered distinct
+- song/chart identity, RESULT-panel `play_side`, clear type, numeric performance, and an explicit ordered distinct
   `play_options` list, including `[]` when no option was shown.
 
 The existing `expected_result.play_type` is also SELECT play-type truth. `play_mode` must agree as
@@ -111,7 +111,7 @@ earlier attempt in the same label.
 Apply the reviewed truth create-only:
 
 ```text
-scorepeek-corpus review apply --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v5.json
+scorepeek-corpus review apply --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v6.json
 ```
 
 Partial sessions cannot become active regression entries. There is no alternate label reader,
@@ -173,7 +173,7 @@ always follows the available-parallelism-minus-four policy capped at twelve work
 operator explicitly supplies `--text-workers`; a one-worker comparison uses `--text-workers 1`.
 
 For every accepted label, replay requires exactly one ordered
-`scorepeek-result-detected-v3` event with equal semantic payload, ordered play options, and normalized
+`scorepeek-result-detected-v4` event with equal semantic payload, ordered play options, and normalized
 parent relation. The runtime session ID, runtime attempt IDs, emission tick, and diagnostic metadata
 are not truth. Missing, duplicate, extra, payload-different, play-option-order-different, and
 parent-different events fail replay. Non-accepted outcomes require no event.
@@ -190,7 +190,7 @@ starts the normalizer; FFmpeg is used only to decode the already-canonical lossl
 SELECT best replay uses the same production observer and reducer. Per-session replay summaries
 include `music_select_best_snapshots`; these never enter the accepted-result oracle. The current
 field semantics and snapshot authority are defined in
-[field semantics](field-semantics.md) and [Event API v3](event-api.md).
+[field semantics](field-semantics.md) and [Event API v4](event-api.md).
 
 ## Replay event traces
 
