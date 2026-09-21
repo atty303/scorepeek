@@ -21,7 +21,7 @@ use crate::{
     service::session as routine_watcher,
 };
 use scorepeek::catalog::CatalogStore;
-use scorepeek::recognition::{
+use scorepeek_core::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
 };
 use serde::{Deserialize, Serialize};
@@ -2737,8 +2737,7 @@ fn execute_live_session(
 struct LiveSessionEmission {
     public_binding: Option<crate::events::snapshot::Binding>,
     value: serde_json::Value,
-    authority_joint_evidence:
-        Option<recognition_live::screen_field_observer::JointEvidenceObservation>,
+    authority_joint_evidence: Option<scorepeek_core::recognition::JointEvidenceObservation>,
     diagnostic_identity: Option<serde_json::Value>,
     diagnostic_capture_fact: Option<serde_json::Value>,
 }
@@ -2934,7 +2933,7 @@ fn live_session_event_value(
                 "screen": screen,
                 "result_presence": result_presence,
                 "play_presence": play_presence,
-                "unknown_reason": (screen == scorepeek::recognition::ScreenClass::Unknown)
+                "unknown_reason": (screen == scorepeek_core::recognition::ScreenClass::Unknown)
                     .then_some("predicate_not_matched"),
             });
             if let Some(session_id) = session_id {
@@ -2989,13 +2988,13 @@ fn live_session_event_value(
             output: observation,
         } => {
             let (screen, fields) = match observation.fields() {
-                scorepeek::recognition::ScreenFieldObservations::Title(fields) => (
+                scorepeek_core::recognition::ScreenFieldObservations::Title(fields) => (
                     "title",
                     serde_json::json!({
                         "game_version": fields.game_version.open_text,
                     }),
                 ),
-                scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
+                scorepeek_core::recognition::ScreenFieldObservations::Result(fields) => (
                     "result",
                     serde_json::json!({
                         "panel_side": fields.panel_side,
@@ -3023,7 +3022,7 @@ fn live_session_event_value(
                         "play_options": fields.play_options,
                     }),
                 ),
-                scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
+                scorepeek_core::recognition::ScreenFieldObservations::MusicSelect(fields) => (
                     "music_select",
                     serde_json::json!({
                         "best": fields.best,
@@ -3072,10 +3071,10 @@ fn live_session_event_value(
 fn song_resolution_presentation(
     observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
 ) -> Result<routine_output::SongResolutionPresentation, String> {
-    use scorepeek::recognition::{MusicSelectSongResolution, ResultSongResolution};
+    use scorepeek_core::recognition::{MusicSelectSongResolution, ResultSongResolution};
 
     match observation.song_resolution() {
-        scorepeek::recognition::ScreenSongResolution::Title => {
+        scorepeek_core::recognition::ScreenSongResolution::Title => {
             Ok(routine_output::SongResolutionPresentation::Unknown {
                 reason: serde_json::Value::String("not_applicable".to_owned()),
                 selected: None,
@@ -3083,7 +3082,7 @@ fn song_resolution_presentation(
                 evidence_summary: None,
             })
         }
-        scorepeek::recognition::ScreenSongResolution::Result(resolution) => match resolution {
+        scorepeek_core::recognition::ScreenSongResolution::Result(resolution) => match resolution {
             ResultSongResolution::Accepted {
                 selected,
                 runner_up,
@@ -3124,7 +3123,7 @@ fn song_resolution_presentation(
                 )),
             }),
         },
-        scorepeek::recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
+        scorepeek_core::recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
             MusicSelectSongResolution::Accepted {
                 selected,
                 runner_up,
@@ -4739,11 +4738,11 @@ mod tests {
         SourceChartObservation, SourceEvidence, SourceId, SourceObservation, SourcePolicy,
         SourceSnapshot, SourceTitleObservation, TachiObservation,
     };
-    use scorepeek::recognition::{
+    use scorepeek_core::catalog::FederationInput;
+    use scorepeek_core::recognition::{
         CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
         ScreenFieldObservations,
     };
-    use scorepeek_core::catalog::FederationInput;
     use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::ffi::{OsStr, OsString};
@@ -4751,57 +4750,57 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn result_presence(
-        panel_side: scorepeek::recognition::ResultPanelSideState,
-    ) -> scorepeek::recognition::ResultPresenceEvidence {
+        panel_side: scorepeek_core::recognition::ResultPanelSideState,
+    ) -> scorepeek_core::recognition::ResultPresenceEvidence {
         let known = panel_side.known();
-        scorepeek::recognition::ResultPresenceEvidence {
+        scorepeek_core::recognition::ResultPresenceEvidence {
             warm_pixels: if known.is_some() { 3_100 } else { 2_900 },
             warm_pixels_min: 3_000,
             panel_side,
             panels: [
-                scorepeek::recognition::ResultPanelPresenceEvidence {
-                    panel_side: scorepeek::recognition::ResultPanelSide::Left,
+                scorepeek_core::recognition::ResultPanelPresenceEvidence {
+                    panel_side: scorepeek_core::recognition::ResultPanelSide::Left,
                     upper_panel_edge_pixels: if known
-                        == Some(scorepeek::recognition::ResultPanelSide::Left)
+                        == Some(scorepeek_core::recognition::ResultPanelSide::Left)
                     {
                         520
                     } else {
                         0
                     },
                     lower_panel_edge_pixels: if known
-                        == Some(scorepeek::recognition::ResultPanelSide::Left)
+                        == Some(scorepeek_core::recognition::ResultPanelSide::Left)
                     {
                         520
                     } else {
                         0
                     },
-                    qualifies: known == Some(scorepeek::recognition::ResultPanelSide::Left),
+                    qualifies: known == Some(scorepeek_core::recognition::ResultPanelSide::Left),
                 },
-                scorepeek::recognition::ResultPanelPresenceEvidence {
-                    panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                scorepeek_core::recognition::ResultPanelPresenceEvidence {
+                    panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
                     upper_panel_edge_pixels: if known
-                        == Some(scorepeek::recognition::ResultPanelSide::Right)
+                        == Some(scorepeek_core::recognition::ResultPanelSide::Right)
                     {
                         520
                     } else {
                         0
                     },
                     lower_panel_edge_pixels: if known
-                        == Some(scorepeek::recognition::ResultPanelSide::Right)
+                        == Some(scorepeek_core::recognition::ResultPanelSide::Right)
                     {
                         520
                     } else {
                         0
                     },
-                    qualifies: known == Some(scorepeek::recognition::ResultPanelSide::Right),
+                    qualifies: known == Some(scorepeek_core::recognition::ResultPanelSide::Right),
                 },
             ],
             horizontal_edge_pixels_min: 518,
         }
     }
 
-    fn play_presence() -> scorepeek::recognition::PlayPresenceEvidence {
-        scorepeek::recognition::PlayPresenceEvidence {
+    fn play_presence() -> scorepeek_core::recognition::PlayPresenceEvidence {
+        scorepeek_core::recognition::PlayPresenceEvidence {
             qualifying_candidates: 0,
             top_edge_runs: 0,
             bottom_edge_runs: 0,
@@ -4834,7 +4833,7 @@ mod tests {
             &domain,
             &catalog,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
-                panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
                 title: text("SYNTHETIC SONG"),
                 artist: text("SYNTHETIC ARTIST"),
                 clear_type: text("CLEAR"),
@@ -4881,31 +4880,31 @@ mod tests {
             (
                 1,
                 1,
-                scorepeek::recognition::ScreenClass::MusicSelect,
+                scorepeek_core::recognition::ScreenClass::MusicSelect,
                 crate::capture_live::SemanticScreenEpisodePhase::Started,
             ),
             (
                 1,
                 2,
-                scorepeek::recognition::ScreenClass::MusicSelect,
+                scorepeek_core::recognition::ScreenClass::MusicSelect,
                 crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             ),
             (
                 2,
                 3,
-                scorepeek::recognition::ScreenClass::Play,
+                scorepeek_core::recognition::ScreenClass::Play,
                 crate::capture_live::SemanticScreenEpisodePhase::Started,
             ),
             (
                 2,
                 4,
-                scorepeek::recognition::ScreenClass::Play,
+                scorepeek_core::recognition::ScreenClass::Play,
                 crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             ),
             (
                 3,
                 5,
-                scorepeek::recognition::ScreenClass::Result,
+                scorepeek_core::recognition::ScreenClass::Result,
                 crate::capture_live::SemanticScreenEpisodePhase::Started,
             ),
         ] {
@@ -4928,10 +4927,10 @@ mod tests {
                     sequence,
                     monotonic_start_ms: sequence * 100,
                     monotonic_end_ms: sequence * 100 + 25,
-                    screen: scorepeek::recognition::ScreenClass::Result,
+                    screen: scorepeek_core::recognition::ScreenClass::Result,
                     result_presence: result_presence(
-                        scorepeek::recognition::ResultPanelSideState::Known(
-                            scorepeek::recognition::ResultPanelSide::Right,
+                        scorepeek_core::recognition::ResultPanelSideState::Known(
+                            scorepeek_core::recognition::ResultPanelSide::Right,
                         ),
                     ),
                     play_presence: play_presence(),
@@ -5669,7 +5668,7 @@ node_name = "must-not-be-inherited"
                 screen_episode_id: 1,
                 sequence: 1,
                 monotonic_end_ms: 100,
-                screen: scorepeek::recognition::ScreenClass::MusicSelect,
+                screen: scorepeek_core::recognition::ScreenClass::MusicSelect,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Started,
             },
         ] {
@@ -5704,10 +5703,10 @@ node_name = "must-not-be-inherited"
                 sequence: 41,
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
-                screen: scorepeek::recognition::ScreenClass::Unknown,
+                screen: scorepeek_core::recognition::ScreenClass::Unknown,
                 result_presence: result_presence(
-                    scorepeek::recognition::ResultPanelSideState::Unknown(
-                        scorepeek::recognition::ResultPanelSideUnknownReason::NoCandidate,
+                    scorepeek_core::recognition::ResultPanelSideState::Unknown(
+                        scorepeek_core::recognition::ResultPanelSideUnknownReason::NoCandidate,
                     ),
                 ),
                 play_presence: play_presence(),
@@ -5735,7 +5734,7 @@ node_name = "must-not-be-inherited"
                 screen_episode_id: 1,
                 sequence: 42,
                 monotonic_end_ms: 150,
-                screen: scorepeek::recognition::ScreenClass::ModeSelect,
+                screen: scorepeek_core::recognition::ScreenClass::ModeSelect,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Started,
             },
         )
@@ -5750,7 +5749,7 @@ node_name = "must-not-be-inherited"
         let output = RegisteredScreenFieldObservation::from_fields(
             &domain,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
-                panel_side: scorepeek::recognition::ResultPanelSide::Right,
+                panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
                 title: text("TITLE EXACT"),
                 artist: text("ARTIST EXACT"),
                 clear_type: text("FAILED"),
@@ -5805,7 +5804,7 @@ node_name = "must-not-be-inherited"
             RunEventKind::ResultChanged {
                 state: ResultState::Provisional { ref result, .. },
                 ..
-            } if result.play_side == scorepeek::recognition::PlaySide::TwoPlayer
+            } if result.play_side == scorepeek_core::recognition::PlaySide::TwoPlayer
         )));
 
         publish_headless_live_event(
@@ -5814,7 +5813,7 @@ node_name = "must-not-be-inherited"
                 screen_episode_id: 3,
                 sequence: 10,
                 monotonic_end_ms: 1_000,
-                screen: scorepeek::recognition::ScreenClass::Result,
+                screen: scorepeek_core::recognition::ScreenClass::Result,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             },
         );
@@ -5823,7 +5822,7 @@ node_name = "must-not-be-inherited"
             RunEventKind::ResultChanged {
                 state: ResultState::Confirmed { ref result, .. },
                 ..
-            } if result.play_side == scorepeek::recognition::PlaySide::TwoPlayer
+            } if result.play_side == scorepeek_core::recognition::PlaySide::TwoPlayer
         )));
     }
 

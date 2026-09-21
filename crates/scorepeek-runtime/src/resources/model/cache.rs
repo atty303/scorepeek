@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::recognition::{
+use scorepeek_core::recognition::{
     LIVE_MODEL_BUNDLE_MANIFEST_SHA256, RegisteredLiveModelFile, registered_live_model_files,
     verify_registered_live_model_bundle,
 };

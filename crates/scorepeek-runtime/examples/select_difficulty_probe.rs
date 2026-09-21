@@ -1,5 +1,5 @@
 //! Read-only production marker evaluation; RGB stream input consists of canonical frames.
-use scorepeek_runtime::recognition::{
+use scorepeek_core::recognition::{
     ScreenCropRoute, ScreenRgb8Crops, observe_music_select_difficulty, route_screen_rgb8_crops,
 };
 use std::io::{BufRead, Read};

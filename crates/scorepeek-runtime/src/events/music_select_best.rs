@@ -7,8 +7,10 @@ use super::server::{difficulty_label, fitted_value, play_type_label};
 #[cfg(test)]
 use ratatui::text::Line;
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
-use scorepeek::recognition::PlaySide;
-use scorepeek::recognition::{BestClearType, BestValue, MusicSelectBestValues, StableBestField};
+use scorepeek_core::recognition::PlaySide;
+use scorepeek_core::recognition::{
+    BestClearType, BestValue, MusicSelectBestValues, StableBestField,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -235,7 +237,7 @@ impl MusicSelectResolverState {
         let derived_dj_rank = match (&values.score, &values.clear_type) {
             (_, BestValue::Known(BestClearType::NoPlay)) => None,
             (BestValue::Known(score), _) => {
-                scorepeek::recognition::dj_rank(*score, chart.notes).map(str::to_owned)
+                scorepeek_core::recognition::dj_rank(*score, chart.notes).map(str::to_owned)
             }
             _ => None,
         };

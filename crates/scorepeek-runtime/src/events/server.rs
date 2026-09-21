@@ -22,9 +22,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::diagnostics::inspect::{DiagnosticSink, RunDiagnostics};
-use crate::recognition_live::screen_field_observer::{
-    EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
-};
 #[cfg(test)]
 use ratatui::layout::{Constraint, Direction, Layout};
 #[cfg(test)]
@@ -35,8 +32,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 #[cfg(test)]
-use scorepeek::recognition::PreviousBestValue;
-use scorepeek::recognition::{
+use scorepeek_core::recognition::PreviousBestValue;
+use scorepeek_core::recognition::{
+    EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
+};
+use scorepeek_core::recognition::{
     ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
     PlayPresenceEvidence, PlaySide, PreviousBest, ResultChartResolution, ResultJudgments,
     ResultPanelSide, ResultPerformanceResolution, ResultPresenceEvidence, ResultTiming,
@@ -1778,13 +1778,13 @@ pub fn run_event_from_field_observation(
     observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
 ) -> Result<RunEvent, String> {
     let (screen, fields) = match observation.fields() {
-        scorepeek::recognition::ScreenFieldObservations::Title(fields) => (
+        scorepeek_core::recognition::ScreenFieldObservations::Title(fields) => (
             "title",
             json!({
                 "game_version": fields.game_version.open_text,
             }),
         ),
-        scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
+        scorepeek_core::recognition::ScreenFieldObservations::Result(fields) => (
             "result",
             json!({
                 "panel_side": fields.panel_side,
@@ -1812,7 +1812,7 @@ pub fn run_event_from_field_observation(
                 "play_options": fields.play_options,
             }),
         ),
-        scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
+        scorepeek_core::recognition::ScreenFieldObservations::MusicSelect(fields) => (
             "music_select",
             json!({
                 "best": fields.best,
@@ -1873,9 +1873,9 @@ pub fn run_event_from_field_observation(
 fn song_resolution_presentation_from_observation(
     observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
 ) -> Result<SongResolutionPresentation, String> {
-    use scorepeek::recognition::{MusicSelectSongResolution, ResultSongResolution};
+    use scorepeek_core::recognition::{MusicSelectSongResolution, ResultSongResolution};
     match observation.song_resolution() {
-        scorepeek::recognition::ScreenSongResolution::Title => {
+        scorepeek_core::recognition::ScreenSongResolution::Title => {
             Ok(SongResolutionPresentation::Unknown {
                 reason: Value::String("not_applicable".to_owned()),
                 selected: None,
@@ -1883,7 +1883,7 @@ fn song_resolution_presentation_from_observation(
                 evidence_summary: None,
             })
         }
-        scorepeek::recognition::ScreenSongResolution::Result(resolution) => match resolution {
+        scorepeek_core::recognition::ScreenSongResolution::Result(resolution) => match resolution {
             ResultSongResolution::Accepted {
                 selected,
                 runner_up,
@@ -1914,37 +1914,39 @@ fn song_resolution_presentation_from_observation(
                     .map(|_| "catalog_constrained_result".to_owned()),
             }),
         },
-        scorepeek::recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
-            MusicSelectSongResolution::Accepted {
-                selected,
-                runner_up,
-                ..
-            } => Ok(SongResolutionPresentation::Accepted {
-                reason: None,
-                selected: observed_song_presentation(observation, selected.song_id)?,
-                runner_up: observed_song_presentation(observation, runner_up.song_id)?,
-                evidence_summary: "catalog_constrained_music_select".to_owned(),
-            }),
-            MusicSelectSongResolution::Unknown {
-                reason,
-                selected,
-                runner_up,
-                ..
-            } => Ok(SongResolutionPresentation::Unknown {
-                reason: serde_json::to_value(reason).map_err(|error| error.to_string())?,
-                selected: selected
-                    .as_ref()
-                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
-                    .transpose()?,
-                runner_up: runner_up
-                    .as_ref()
-                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
-                    .transpose()?,
-                evidence_summary: selected
-                    .as_ref()
-                    .map(|_| "catalog_constrained_music_select".to_owned()),
-            }),
-        },
+        scorepeek_core::recognition::ScreenSongResolution::MusicSelect(resolution) => {
+            match resolution {
+                MusicSelectSongResolution::Accepted {
+                    selected,
+                    runner_up,
+                    ..
+                } => Ok(SongResolutionPresentation::Accepted {
+                    reason: None,
+                    selected: observed_song_presentation(observation, selected.song_id)?,
+                    runner_up: observed_song_presentation(observation, runner_up.song_id)?,
+                    evidence_summary: "catalog_constrained_music_select".to_owned(),
+                }),
+                MusicSelectSongResolution::Unknown {
+                    reason,
+                    selected,
+                    runner_up,
+                    ..
+                } => Ok(SongResolutionPresentation::Unknown {
+                    reason: serde_json::to_value(reason).map_err(|error| error.to_string())?,
+                    selected: selected
+                        .as_ref()
+                        .map(|candidate| observed_song_presentation(observation, candidate.song_id))
+                        .transpose()?,
+                    runner_up: runner_up
+                        .as_ref()
+                        .map(|candidate| observed_song_presentation(observation, candidate.song_id))
+                        .transpose()?,
+                    evidence_summary: selected
+                        .as_ref()
+                        .map(|_| "catalog_constrained_music_select".to_owned()),
+                }),
+            }
+        }
     }
 }
 
@@ -4307,11 +4309,10 @@ impl RoutineOutput {
             let identity = self
                 .music_select_resolver
                 .best_frame_identity(fields, joint_evidence);
-            let best =
-                serde_json::from_value::<scorepeek::recognition::MusicSelectBestObservation>(
-                    fields["best"].clone(),
-                )
-                .unwrap_or_default();
+            let best = serde_json::from_value::<
+                scorepeek_core::recognition::MusicSelectBestObservation,
+            >(fields["best"].clone())
+            .unwrap_or_default();
             self.music_select_resolver.best.screen_episode_id = self.screen_episode_id;
             self.music_select_resolver
                 .best
@@ -6252,7 +6253,7 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use scorepeek::recognition::ResultFieldValue;
+    use scorepeek_core::recognition::ResultFieldValue;
 
     use super::*;
 
@@ -6624,11 +6625,15 @@ mod tests {
                     },
                     combo_break: SupplementalResultValue::Known { value: 2 },
                     previous_best: PreviousBest {
-                        clear_type: scorepeek::recognition::PreviousBestValue::Known {
+                        clear_type: scorepeek_core::recognition::PreviousBestValue::Known {
                             value: "CLEAR".to_owned(),
                         },
-                        score: scorepeek::recognition::PreviousBestValue::Known { value: 1_200 },
-                        miss_count: scorepeek::recognition::PreviousBestValue::Known { value: 4 },
+                        score: scorepeek_core::recognition::PreviousBestValue::Known {
+                            value: 1_200,
+                        },
+                        miss_count: scorepeek_core::recognition::PreviousBestValue::Known {
+                            value: 4,
+                        },
                     },
                 }),
                 current_score_ocr_resolution: None,
@@ -7103,7 +7108,7 @@ mod tests {
             };
             parsed_result_fields.as_mut().unwrap().miss_count = if sequence == 3 {
                 SupplementalResultValue::Unknown {
-                    reason: scorepeek::recognition::ResultFieldUnknownReason::Empty,
+                    reason: scorepeek_core::recognition::ResultFieldUnknownReason::Empty,
                 }
             } else {
                 SupplementalResultValue::NotDisplayed
@@ -8441,9 +8446,9 @@ mod tests {
                     },
                     combo_break: SupplementalResultValue::Known { value: 1 },
                     previous_best: PreviousBest {
-                        clear_type: scorepeek::recognition::PreviousBestValue::NotPlayed,
-                        score: scorepeek::recognition::PreviousBestValue::NotPlayed,
-                        miss_count: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                        clear_type: scorepeek_core::recognition::PreviousBestValue::NotPlayed,
+                        score: scorepeek_core::recognition::PreviousBestValue::NotPlayed,
+                        miss_count: scorepeek_core::recognition::PreviousBestValue::NotPlayed,
                     },
                     play_options: PlayOptions::Known { values: Vec::new() },
                 },
@@ -8478,7 +8483,7 @@ mod tests {
 
     #[test]
     fn result_value_labels_preserve_domain_states_without_debug_reasons() {
-        use scorepeek::recognition::ResultFieldUnknownReason;
+        use scorepeek_core::recognition::ResultFieldUnknownReason;
 
         assert_eq!(
             supplemental_u32(&SupplementalResultValue::Known { value: 1_234 }),
@@ -8515,7 +8520,7 @@ mod tests {
     }
 
     fn populated_select_test_state() -> MusicSelectResolverState {
-        use scorepeek::recognition::{BestClearType, BestValue, MusicSelectBestValues};
+        use scorepeek_core::recognition::{BestClearType, BestValue, MusicSelectBestValues};
         let (_, evidence, _) = music_selection_test_observation();
         let candidate = &evidence.candidates[0];
         let selection = MusicSelectionState::Selected {
@@ -8761,7 +8766,7 @@ mod tests {
                     state.latest_music_selection.clone().unwrap(),
                 )
                 .unwrap(),
-                scorepeek::recognition::MusicSelectBestValues::default(),
+                scorepeek_core::recognition::MusicSelectBestValues::default(),
             );
             let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
             terminal
@@ -9868,18 +9873,19 @@ mod tests {
 
     fn select_best_test_observation()
     -> (Value, JointEvidenceObservation, SongResolutionPresentation) {
-        use scorepeek::recognition::{BestNumericObservation, BestValue};
+        use scorepeek_core::recognition::{BestNumericObservation, BestValue};
         let (mut fields, evidence, presentation) = music_selection_test_observation();
-        fields["best"] = serde_json::to_value(scorepeek::recognition::resolve_music_select_best(
-            "SCORE DATA".into(),
-            "CLEAR".into(),
-            BestNumericObservation {
-                score: BestValue::Known(1200),
-                miss_count: BestValue::Unknown,
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+        fields["best"] =
+            serde_json::to_value(scorepeek_core::recognition::resolve_music_select_best(
+                "SCORE DATA".into(),
+                "CLEAR".into(),
+                BestNumericObservation {
+                    score: BestValue::Known(1200),
+                    miss_count: BestValue::Unknown,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
         (fields, evidence, presentation)
     }
 
@@ -9896,7 +9902,7 @@ mod tests {
 
     #[test]
     fn select_best_is_frame_bound_suspended_and_separate_from_results() {
-        use scorepeek::recognition::{BestClearType, BestValue};
+        use scorepeek_core::recognition::{BestClearType, BestValue};
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         let session = "invocation-1-session-1".to_owned();
         let episode = |phase, sequence| select_best_test_episode(&session, phase, sequence);

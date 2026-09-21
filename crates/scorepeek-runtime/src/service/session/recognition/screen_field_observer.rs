@@ -1,5 +1,5 @@
-use scorepeek::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
-use scorepeek::recognition::{
+use scorepeek::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
+use scorepeek_core::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
     NumericBatchInference, OnnxParityError, ParsedResultFields, RegisteredNumericRuntime,
     RegisteredRecognitionResources, RegisteredResourceLoadError, ResultChartResolution,
@@ -11,7 +11,7 @@ use scorepeek::recognition::{
     resolve_clear_type, resolve_music_select_song, resolve_result_chart,
     resolve_result_performance, resolve_result_song,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
@@ -27,6 +27,9 @@ use super::field_observer::{FieldObserver, FieldObserverAdmission, FieldObserver
 use scorepeek_core::model::session::{
     PendingTextRecognition, RecognitionExecutionMode, RegisteredTextRecognitionSession,
     TextRecognitionResult,
+};
+use scorepeek_core::recognition::{
+    EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
 };
 
 const TITLE_EVIDENCE_RUNTIME_MANIFEST: &[u8] =
@@ -203,16 +206,17 @@ impl RegisteredScreenFieldObserver {
 }
 
 struct NumericObservationJob {
-    crops: scorepeek::recognition::ResultScreenRgb8Crops,
+    crops: scorepeek_core::recognition::ResultScreenRgb8Crops,
     response: mpsc::Sender<Result<NumericBatchInference, OnnxParityError>>,
 }
 
 enum NumericObserverMessage {
     Observe(Box<NumericObservationJob>),
     SelectBest {
-        crops: scorepeek::recognition::MusicSelectBestCrops,
-        response:
-            mpsc::Sender<Result<scorepeek::recognition::BestNumericObservation, OnnxParityError>>,
+        crops: scorepeek_core::recognition::MusicSelectBestCrops,
+        response: mpsc::Sender<
+            Result<scorepeek_core::recognition::BestNumericObservation, OnnxParityError>,
+        >,
     },
     Finish,
 }
@@ -225,8 +229,8 @@ struct RegisteredNumericObserverWorker {
 impl RegisteredNumericObserverWorker {
     fn observe_best(
         &self,
-        crops: &scorepeek::recognition::MusicSelectBestCrops,
-    ) -> Result<scorepeek::recognition::BestNumericObservation, OnnxParityError> {
+        crops: &scorepeek_core::recognition::MusicSelectBestCrops,
+    ) -> Result<scorepeek_core::recognition::BestNumericObservation, OnnxParityError> {
         let (response, receiver) = mpsc::channel();
         self.sender
             .send(NumericObserverMessage::SelectBest {
@@ -263,7 +267,7 @@ impl RegisteredNumericObserverWorker {
 
     fn submit(
         &self,
-        crops: &scorepeek::recognition::ResultScreenRgb8Crops,
+        crops: &scorepeek_core::recognition::ResultScreenRgb8Crops,
     ) -> Result<PendingNumericObservationBatch, OnnxParityError> {
         let (response, receiver) = mpsc::channel();
         self.sender
@@ -312,10 +316,10 @@ fn submit_fields(
     input: &FieldObserverInput,
 ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
     submit_text_fields(text_pool, prefetched_text, input)?;
-    if let scorepeek::recognition::ScreenRgb8Crops::Result(crops) = input.crops() {
+    if let scorepeek_core::recognition::ScreenRgb8Crops::Result(crops) = input.crops() {
         let pending = numeric_worker.submit(crops).map_err(|source| {
             ScreenFieldObservationError::new(
-                scorepeek::recognition::ScreenTextField::ResultNumericBatch,
+                scorepeek_core::recognition::ScreenTextField::ResultNumericBatch,
                 source,
             )
         })?;
@@ -326,7 +330,7 @@ fn submit_fields(
             .is_some()
         {
             return Err(ScreenFieldObservationError::new(
-                scorepeek::recognition::ScreenTextField::ResultNumericBatch,
+                scorepeek_core::recognition::ScreenTextField::ResultNumericBatch,
                 OnnxParityError::InvalidArtifact,
             ));
         }
@@ -335,13 +339,13 @@ fn submit_fields(
 }
 
 fn music_select_text_jobs(
-    crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
+    crops: &scorepeek_core::recognition::MusicSelectScreenRgb8Crops,
 ) -> Vec<(
-    scorepeek::recognition::ScreenTextField,
-    scorepeek::recognition::Rgb8Crop,
+    scorepeek_core::recognition::ScreenTextField,
+    scorepeek_core::recognition::Rgb8Crop,
 )> {
-    use scorepeek::recognition::ScreenTextField;
-    let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
+    use scorepeek_core::recognition::ScreenTextField;
+    let foreground = scorepeek_core::recognition::TitleEvidenceExtractor::REGISTERED
         .extract(&crops.active_list_title);
     let mut jobs = vec![
         (
@@ -369,13 +373,13 @@ fn submit_text_fields(
     prefetched_text: &Mutex<BTreeMap<u64, PendingTextRecognition>>,
     input: &FieldObserverInput,
 ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
-    use scorepeek::recognition::ScreenTextField;
+    use scorepeek_core::recognition::ScreenTextField;
     let jobs = match input.crops() {
-        scorepeek::recognition::ScreenRgb8Crops::Title(crops) => vec![(
+        scorepeek_core::recognition::ScreenRgb8Crops::Title(crops) => vec![(
             ScreenTextField::TitleGameVersion,
             crops.game_version.clone(),
         )],
-        scorepeek::recognition::ScreenRgb8Crops::Result(crops) => vec![
+        scorepeek_core::recognition::ScreenRgb8Crops::Result(crops) => vec![
             (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
             (ScreenTextField::ResultPlayType, crops.play_type.clone()),
             (ScreenTextField::ResultTitle, crops.title.clone()),
@@ -390,7 +394,7 @@ fn submit_text_fields(
                 crops.play_options.clone(),
             ),
         ],
-        scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
+        scorepeek_core::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
             music_select_text_jobs(crops)
         }
     };
@@ -539,56 +543,12 @@ pub struct TitleEvidenceObservation {
     pub extractor_id: &'static str,
     pub runtime_manifest_sha256: &'static str,
     pub selected_view: &'static str,
-    pub full: scorepeek::recognition::DynamicTextObservation,
-    pub foreground: Option<scorepeek::recognition::DynamicTextObservation>,
+    pub full: scorepeek_core::recognition::DynamicTextObservation,
+    pub foreground: Option<scorepeek_core::recognition::DynamicTextObservation>,
     pub normalized_text: String,
     pub normalized_scalar_count: usize,
-    pub geometry: Option<scorepeek::recognition::TitleForegroundGeometry>,
+    pub geometry: Option<scorepeek_core::recognition::TitleForegroundGeometry>,
     pub mask_absent: bool,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EvidenceFamily {
-    SelectTitle,
-    // Legacy v14 readers retain these variants. Production v15 observations
-    // collapse both correlated signals into SelectTitle.
-    SelectTitleLexical,
-    SelectTitleStructural,
-    SelectArtist,
-    SelectChart,
-    SelectPlayType,
-    ResultTitle,
-    ResultArtist,
-    ResultChart,
-    ResultPlayType,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct JointEvidenceCandidate {
-    pub song_id: ScorepeekSongId,
-    pub chart: Chart,
-    pub display_titles: Vec<String>,
-    pub artist: String,
-    pub family_support: BTreeMap<EvidenceFamily, u16>,
-    pub support: u16,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct JointEvidenceObservation {
-    #[serde(default)]
-    pub catalog_song_count: usize,
-    pub candidates: Vec<JointEvidenceCandidate>,
-}
-
-impl JointEvidenceObservation {
-    #[must_use]
-    pub fn diagnostic_top(&self) -> Self {
-        Self {
-            catalog_song_count: self.catalog_song_count,
-            candidates: self.candidates.iter().take(8).cloned().collect(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -672,8 +632,8 @@ pub struct CurrentScoreOcrAttempt {
     pub constrained_text: Option<String>,
 }
 
-impl From<&scorepeek::recognition::DynamicTextObservation> for CurrentScoreOcrAttempt {
-    fn from(value: &scorepeek::recognition::DynamicTextObservation) -> Self {
+impl From<&scorepeek_core::recognition::DynamicTextObservation> for CurrentScoreOcrAttempt {
+    fn from(value: &scorepeek_core::recognition::DynamicTextObservation) -> Self {
         Self {
             input_width: value.input_width,
             output_timesteps: value.output_timesteps,
@@ -993,14 +953,14 @@ fn structural_title_support(
     }
     u16::from(song.title_variants().iter().any(|variant| {
         variant.kind != DisplayVariantKind::SearchTerm
-            && scorepeek::recognition::normalized_title_key(&variant.value)
+            && scorepeek_core::recognition::normalized_title_key(&variant.value)
                 .chars()
                 .count()
                 == count
     })) * 60
 }
 
-fn text_support(score: scorepeek::recognition::CatalogTextCandidateScore) -> u16 {
+fn text_support(score: scorepeek_core::recognition::CatalogTextCandidateScore) -> u16 {
     similarity_support(
         score.minimum_edit_distance,
         score.maximum_normalized_similarity.matching_units,
@@ -1008,7 +968,7 @@ fn text_support(score: scorepeek::recognition::CatalogTextCandidateScore) -> u16
     )
 }
 
-fn prefix_support(score: scorepeek::recognition::CatalogPrefixCandidateScore) -> u16 {
+fn prefix_support(score: scorepeek_core::recognition::CatalogPrefixCandidateScore) -> u16 {
     similarity_support(
         score.minimum_edit_distance,
         score.maximum_normalized_similarity.matching_units,
@@ -1048,9 +1008,9 @@ impl RegisteredScreenFieldObserver {
     fn observe_title(
         &mut self,
         sequence: u64,
-        crops: &scorepeek::recognition::TitleScreenRgb8Crops,
+        crops: &scorepeek_core::recognition::TitleScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
-        use scorepeek::recognition::ScreenTextField;
+        use scorepeek_core::recognition::ScreenTextField;
         let pending = if let Some(pending) = self
             .prefetched_text
             .lock()
@@ -1078,7 +1038,7 @@ impl RegisteredScreenFieldObserver {
             })?;
         Ok(ObservedFrameFields {
             fields: ScreenFieldObservations::Title(
-                scorepeek::recognition::TitleScreenFieldObservations { game_version },
+                scorepeek_core::recognition::TitleScreenFieldObservations { game_version },
             ),
             numeric_batch: None,
             text_batch_wall_us: text.wall_us,
@@ -1094,9 +1054,9 @@ impl RegisteredScreenFieldObserver {
     fn observe_result(
         &mut self,
         sequence: u64,
-        crops: &scorepeek::recognition::ResultScreenRgb8Crops,
+        crops: &scorepeek_core::recognition::ResultScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
-        use scorepeek::recognition::ScreenTextField;
+        use scorepeek_core::recognition::ScreenTextField;
         let pending = if let Some(pending) = self
             .prefetched_text
             .lock()
@@ -1165,9 +1125,11 @@ impl RegisteredScreenFieldObserver {
                 ScreenFieldObservationError::new(ScreenTextField::ResultPlayOptions, source)
             })? {
             Ok(observation) => {
-                scorepeek::recognition::observe_play_options(&crops.play_options, &observation)
+                scorepeek_core::recognition::observe_play_options(&crops.play_options, &observation)
             }
-            Err(_) => scorepeek::recognition::PlayOptionsObservation::failed(&crops.play_options),
+            Err(_) => {
+                scorepeek_core::recognition::PlayOptionsObservation::failed(&crops.play_options)
+            }
         };
         Ok(ObservedFrameFields {
             fields: ScreenFieldObservations::Result(fields),
@@ -1184,17 +1146,17 @@ impl RegisteredScreenFieldObserver {
 
     fn observe_music_select_best(
         &self,
-        crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
+        crops: &scorepeek_core::recognition::MusicSelectScreenRgb8Crops,
         text: &mut TextRecognitionResult,
-    ) -> scorepeek::recognition::MusicSelectBestObservation {
-        use scorepeek::recognition::ScreenTextField;
+    ) -> scorepeek_core::recognition::MusicSelectBestObservation {
+        use scorepeek_core::recognition::ScreenTextField;
         let mut failures = Vec::new();
         let numeric = self
             .numeric_worker
             .observe_best(&crops.best)
             .unwrap_or_else(|error| {
                 failures.push(format!("numeric: {error}"));
-                scorepeek::recognition::BestNumericObservation::default()
+                scorepeek_core::recognition::BestNumericObservation::default()
             });
         let mut read = |field| {
             take_text(text, field).map_or_else(
@@ -1207,7 +1169,8 @@ impl RegisteredScreenFieldObserver {
         };
         let header = read(ScreenTextField::MusicSelectBestHeader);
         let clear = read(ScreenTextField::MusicSelectBestClearType);
-        let mut best = scorepeek::recognition::resolve_music_select_best(header, clear, numeric);
+        let mut best =
+            scorepeek_core::recognition::resolve_music_select_best(header, clear, numeric);
         best.failures = failures;
         best
     }
@@ -1215,9 +1178,9 @@ impl RegisteredScreenFieldObserver {
     fn observe_music_select(
         &mut self,
         sequence: u64,
-        crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
+        crops: &scorepeek_core::recognition::MusicSelectScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
-        use scorepeek::recognition::ScreenTextField;
+        use scorepeek_core::recognition::ScreenTextField;
         let selected_difficulty = observe_music_select_difficulty(&crops.difficulty_markers);
         let play_side = observe_music_select_play_side(&crops.play_side);
         let play_type = observe_music_select_play_type(&crops.play_type).map_err(|_| {
@@ -1226,7 +1189,7 @@ impl RegisteredScreenFieldObserver {
                 OnnxParityError::InvalidArtifact,
             )
         })?;
-        let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
+        let foreground = scorepeek_core::recognition::TitleEvidenceExtractor::REGISTERED
             .extract(&crops.active_list_title);
         let jobs = music_select_text_jobs(crops);
         let pending = if let Some(pending) = self
@@ -1268,7 +1231,8 @@ impl RegisteredScreenFieldObserver {
             None
         };
         let selected = foreground_observation.clone().unwrap_or_default();
-        let normalized_text = scorepeek::recognition::normalized_title_key(&selected.open_text);
+        let normalized_text =
+            scorepeek_core::recognition::normalized_title_key(&selected.open_text);
         let title_evidence = TitleEvidenceObservation {
             extractor_id: "scorepeek-active-title-gray80-bbox-x4-full-y-v1",
             runtime_manifest_sha256: TITLE_EVIDENCE_RUNTIME_MANIFEST_SHA256,
@@ -1286,9 +1250,9 @@ impl RegisteredScreenFieldObserver {
         };
         let best = self.observe_music_select_best(crops, &mut text);
         let fields = ScreenFieldObservations::MusicSelect(
-            scorepeek::recognition::MusicSelectScreenFieldObservations {
+            scorepeek_core::recognition::MusicSelectScreenFieldObservations {
                 best,
-                central_title: scorepeek::recognition::DynamicTextObservation::default(),
+                central_title: scorepeek_core::recognition::DynamicTextObservation::default(),
                 artist: take_text(&mut text, ScreenTextField::MusicSelectArtist).map_err(
                     |source| {
                         ScreenFieldObservationError::new(ScreenTextField::MusicSelectArtist, source)
@@ -1365,13 +1329,13 @@ impl FieldObserver for RegisteredScreenFieldObserver {
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
         let frame_started = Instant::now();
         let observed = match input.crops() {
-            scorepeek::recognition::ScreenRgb8Crops::Title(crops) => {
+            scorepeek_core::recognition::ScreenRgb8Crops::Title(crops) => {
                 self.observe_title(input.sequence(), crops)?
             }
-            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => {
+            scorepeek_core::recognition::ScreenRgb8Crops::Result(crops) => {
                 self.observe_result(input.sequence(), crops)?
             }
-            scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
+            scorepeek_core::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
                 self.observe_music_select(input.sequence(), crops)?
             }
         };
@@ -1407,16 +1371,18 @@ impl FieldObserver for RegisteredScreenFieldObserver {
 
 fn take_text(
     batch: &mut TextRecognitionResult,
-    field: scorepeek::recognition::ScreenTextField,
-) -> Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError> {
+    field: scorepeek_core::recognition::ScreenTextField,
+) -> Result<scorepeek_core::recognition::DynamicTextObservation, OnnxParityError> {
     take_text_result(batch, field)?
 }
 
 fn take_text_result(
     batch: &mut TextRecognitionResult,
-    field: scorepeek::recognition::ScreenTextField,
-) -> Result<Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError>, OnnxParityError>
-{
+    field: scorepeek_core::recognition::ScreenTextField,
+) -> Result<
+    Result<scorepeek_core::recognition::DynamicTextObservation, OnnxParityError>,
+    OnnxParityError,
+> {
     let index = batch
         .observations
         .iter()
@@ -1432,7 +1398,7 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use scorepeek::catalog::{Catalog, Difficulty};
-    use scorepeek::recognition::{
+    use scorepeek_core::recognition::{
         DynamicTextObservation, MusicSelectScreenFieldObservations, MusicSelectSongResolution,
         MusicSelectSongUnknownReason, ResultScreenFieldObservations, ResultSongResolution,
         ResultSongUnknownReason,
@@ -1530,12 +1496,12 @@ mod tests {
             constrained_text: None,
         };
         let fields = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
-            best: scorepeek::recognition::MusicSelectBestObservation::default(),
+            best: scorepeek_core::recognition::MusicSelectBestObservation::default(),
             central_title: text("texture"),
             artist: text("artist"),
-            play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),
+            play_type: scorepeek_core::recognition::MusicSelectPlayTypeObservation::default(),
             selected_difficulty: music_select_difficulty(Difficulty::Hyper),
-            play_side: scorepeek::recognition::test_music_select_play_side(None),
+            play_side: scorepeek_core::recognition::test_music_select_play_side(None),
             active_list_title: text("TITLE"),
         });
         let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());
@@ -1553,8 +1519,8 @@ mod tests {
 
     fn music_select_difficulty(
         selected: Difficulty,
-    ) -> scorepeek::recognition::MusicSelectDifficultyObservation {
-        use scorepeek::recognition::{
+    ) -> scorepeek_core::recognition::MusicSelectDifficultyObservation {
+        use scorepeek_core::recognition::{
             MusicSelectDifficultyMarkerEvidence, MusicSelectDifficultyObservation,
             MusicSelectDifficultyState,
         };

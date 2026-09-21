@@ -48,8 +48,9 @@ pub(super) mod title_preprocessor;
 pub use catalog_candidates::{
     CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
     CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
-    CatalogPrefixCandidateScore, CatalogTextCandidateScore, MusicSelectSongCandidateObservation,
-    ResultSongCandidateObservation, ScreenCatalogCandidateObservations,
+    CatalogPrefixCandidateScore, CatalogTextCandidateScore, EvidenceFamily, JointEvidenceCandidate,
+    JointEvidenceObservation, MusicSelectSongCandidateObservation, ResultSongCandidateObservation,
+    ScreenCatalogCandidateObservations,
 };
 pub use music_select_best::{
     BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,

@@ -12,7 +12,6 @@ pub mod events;
 mod inventory;
 pub mod overlay;
 mod process_role;
-pub use scorepeek_core::recognition;
 #[allow(dead_code)]
 pub use scorepeek_core::session::attempt;
 pub use scorepeek_core::session::result;

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use scorepeek::recognition::{
+use scorepeek_core::recognition::{
     CanonicalLayout, RegisteredRecognitionResources, RegisteredResourceLoadError, ScreenClass,
     ScreenRgb8Crops,
 };
@@ -954,7 +954,7 @@ mod tests {
     use std::sync::Condvar;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use scorepeek::recognition::{
+    use scorepeek_core::recognition::{
         CanonicalLayout, DynamicTextObservation, ScreenFieldObservationError,
         ScreenFieldObservations, ScreenRgb8Crops, observe_screen_fields,
     };
@@ -1237,7 +1237,7 @@ mod tests {
             result,
             Err(FieldObserverStartError::Load(error))
                 if error.error_type()
-                    == scorepeek::recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch
+                    == scorepeek_core::recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch
         ));
     }
 

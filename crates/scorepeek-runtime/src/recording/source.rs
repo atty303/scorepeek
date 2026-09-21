@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use scorepeek::recognition::CanonicalFrame;
+use scorepeek_core::recognition::CanonicalFrame;
 
 use crate::diagnostics::live::BoundCanonicalFrame;
 

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
-use serde::Serialize;
+use crate::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
+use serde::{Deserialize, Serialize};
 
 use super::title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, exact_comparison_key, folded_comparison_key,
@@ -14,6 +14,48 @@ use super::title::{
 use super::{
     MusicSelectScreenFieldObservations, ResultScreenFieldObservations, ScreenFieldObservations,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceFamily {
+    SelectTitle,
+    SelectTitleLexical,
+    SelectTitleStructural,
+    SelectArtist,
+    SelectChart,
+    SelectPlayType,
+    ResultTitle,
+    ResultArtist,
+    ResultChart,
+    ResultPlayType,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JointEvidenceCandidate {
+    pub song_id: ScorepeekSongId,
+    pub chart: Chart,
+    pub display_titles: Vec<String>,
+    pub artist: String,
+    pub family_support: BTreeMap<EvidenceFamily, u16>,
+    pub support: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JointEvidenceObservation {
+    #[serde(default)]
+    pub catalog_song_count: usize,
+    pub candidates: Vec<JointEvidenceCandidate>,
+}
+
+impl JointEvidenceObservation {
+    #[must_use]
+    pub fn diagnostic_top(&self) -> Self {
+        Self {
+            catalog_song_count: self.catalog_song_count,
+            candidates: self.candidates.iter().take(8).cloned().collect(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogNormalizedSimilarity {

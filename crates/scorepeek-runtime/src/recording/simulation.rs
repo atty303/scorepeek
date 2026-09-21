@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use scorepeek::catalog::ScorepeekSongId;
-use scorepeek::recognition::{
+use scorepeek_core::recognition::{
     CanonicalFrame, CanonicalLayout, ResultSongResolution, ScreenClass, ScreenFieldObservations,
 };
 use serde::{Deserialize, Serialize};
@@ -880,7 +880,7 @@ fn validate_profile_frames(
         {
             return Err("canonical extraction frame binding mismatch".to_owned());
         }
-        let screen = scorepeek::recognition::inspect_canonical_rgb8(frame.pixels())
+        let screen = scorepeek_core::recognition::inspect_canonical_rgb8(frame.pixels())
             .map_err(|_| "canonical extraction frame is invalid")?
             .screen;
         if screen == ScreenClass::Result {

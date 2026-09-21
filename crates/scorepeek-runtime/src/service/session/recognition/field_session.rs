@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use scorepeek::recognition::RegisteredNumericRuntime;
-use scorepeek::recognition::ScreenFieldObservationError;
+use scorepeek_core::recognition::RegisteredNumericRuntime;
+use scorepeek_core::recognition::ScreenFieldObservationError;
 
 use super::DiagnosticScreenFieldObservation;
 use super::field_observer::{
@@ -314,8 +314,8 @@ impl<O: FieldObserver> FieldObservationSession<O> {
             (FieldInputPolicy::SkipBusy | FieldInputPolicy::SkipBusyAndTitle, None)
                 if matches!(
                     observation.screen(),
-                    scorepeek::recognition::ScreenClass::Result
-                        | scorepeek::recognition::ScreenClass::MusicSelect
+                    scorepeek_core::recognition::ScreenClass::Result
+                        | scorepeek_core::recognition::ScreenClass::MusicSelect
                 ) =>
             {
                 let _ = self
@@ -668,7 +668,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
 mod tests {
     use std::fs;
 
-    use scorepeek::recognition::{
+    use scorepeek_core::recognition::{
         CanonicalLayout, DynamicTextObservation, ScreenClass, ScreenFieldObservationError,
         ScreenFieldObservations, observe_screen_fields,
     };

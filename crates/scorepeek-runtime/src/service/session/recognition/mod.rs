@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use scorepeek::recognition::{
+use scorepeek_core::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
     ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
     ScreenRgb8Crops, TitleScreenRgb8Crops, inspect_canonical_rgb8, route_screen_rgb8_crops,
@@ -128,12 +128,12 @@ impl<'a> RecognitionObservation<'a> {
     }
 
     #[must_use]
-    pub const fn result_presence(&self) -> scorepeek::recognition::ResultPresenceEvidence {
+    pub const fn result_presence(&self) -> scorepeek_core::recognition::ResultPresenceEvidence {
         self.predicate.result_presence
     }
 
     #[must_use]
-    pub const fn play_presence(&self) -> scorepeek::recognition::PlayPresenceEvidence {
+    pub const fn play_presence(&self) -> scorepeek_core::recognition::PlayPresenceEvidence {
         self.predicate.play_presence
     }
 
@@ -750,7 +750,7 @@ mod tests {
     use std::fs;
     use std::time::{Duration, Instant};
 
-    use scorepeek::recognition::{CanonicalLayout, ScreenClass};
+    use scorepeek_core::recognition::{CanonicalLayout, ScreenClass};
 
     use super::*;
     use crate::diagnostics::writer::{DiagnosticBinding, DiagnosticResource};
@@ -927,7 +927,7 @@ mod tests {
                 .all(|(_, crop)| !crop.pixels().is_empty())
         );
         assert_eq!(
-            scorepeek::recognition::observe_music_select_play_side(&crops.play_side).known(),
+            scorepeek_core::recognition::observe_music_select_play_side(&crops.play_side).known(),
             None
         );
         assert!(!crops.active_list_title.pixels().is_empty());

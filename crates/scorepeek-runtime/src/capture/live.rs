@@ -51,7 +51,7 @@ use crate::recognition_live::screen_field_observer::{
     RegisteredScreenFieldObserverLoadError,
 };
 use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
-use scorepeek::recognition::{
+use scorepeek_core::recognition::{
     CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
     ScreenFieldObservationError,
 };
@@ -199,8 +199,8 @@ pub enum GamescopeLiveSessionEvent<'a> {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: ScreenClass,
-        result_presence: scorepeek::recognition::ResultPresenceEvidence,
-        play_presence: scorepeek::recognition::PlayPresenceEvidence,
+        result_presence: scorepeek_core::recognition::ResultPresenceEvidence,
+        play_presence: scorepeek_core::recognition::PlayPresenceEvidence,
     },
     SemanticScreenEpisode {
         screen_episode_id: u64,
@@ -2453,14 +2453,14 @@ fn poll_field_observations(
                     );
                     if matches!(
                         output.fields(),
-                        scorepeek::recognition::ScreenFieldObservations::Result(_)
+                        scorepeek_core::recognition::ScreenFieldObservations::Result(_)
                     ) {
                         counters.result_observations =
                             counters.result_observations.saturating_add(1);
                     }
                     let identified_version = match (output.fields(), game_version.as_deref_mut()) {
                         (
-                            scorepeek::recognition::ScreenFieldObservations::Title(fields),
+                            scorepeek_core::recognition::ScreenFieldObservations::Title(fields),
                             Some(resolver),
                         ) => resolver
                             .observe_candidate(sequence, &fields.game_version.open_text)
@@ -3659,7 +3659,7 @@ mod tests {
         GamescopeProfileBindingAuthoringInput, RationalCoordinate, UncalibratedMemoryType,
         UncalibratedVideoContract,
     };
-    use scorepeek::recognition::{
+    use scorepeek_core::recognition::{
         CanonicalLayout, RegisteredResourceLoadError, RegisteredResourceLoadErrorType,
     };
 

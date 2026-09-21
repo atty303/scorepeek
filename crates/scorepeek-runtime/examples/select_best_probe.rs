@@ -1,5 +1,5 @@
 //! Offline, read-only evaluation using only the two registered recognition bundles.
-use scorepeek_runtime::recognition::{
+use scorepeek_core::recognition::{
     MusicSelectBestCrops, RegisteredDynamicTitleRuntime, RegisteredNumericRuntime,
     resolve_music_select_best,
 };

@@ -9,7 +9,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use scorepeek::catalog::ScorepeekSongId;
-use scorepeek::recognition::{
+use scorepeek_core::recognition::{
     CatalogCandidateEvidenceTable, MusicSelectSongResolution, NumericBatchInference,
     ParsedResultFields, ResultChartResolution, ResultFieldValue, ResultPerformanceResolution,
     ResultSongResolution, ScreenCatalogCandidateObservations, ScreenFieldObservations,
@@ -67,8 +67,7 @@ struct StoredObservation<'a> {
         Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     numeric_batch: Option<&'a NumericBatchInference>,
-    joint_evidence:
-        Option<&'a crate::recognition_live::screen_field_observer::JointEvidenceObservation>,
+    joint_evidence: Option<&'a scorepeek_core::recognition::JointEvidenceObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     processing_timing:
         Option<&'a crate::recognition_live::screen_field_observer::RecognitionProcessingTiming>,
@@ -145,15 +144,15 @@ enum StoredFields<'a> {
         fast: StoredText<'a>,
         slow: StoredText<'a>,
         combo_break: StoredText<'a>,
-        play_options: &'a scorepeek::recognition::PlayOptionsObservation,
+        play_options: &'a scorepeek_core::recognition::PlayOptionsObservation,
     },
     MusicSelect {
-        best: &'a scorepeek::recognition::MusicSelectBestObservation,
+        best: &'a scorepeek_core::recognition::MusicSelectBestObservation,
         central_title: StoredText<'a>,
         artist: StoredText<'a>,
-        play_type: &'a scorepeek::recognition::MusicSelectPlayTypeObservation,
-        selected_difficulty: &'a scorepeek::recognition::MusicSelectDifficultyObservation,
-        play_side: &'a scorepeek::recognition::MusicSelectPlaySideObservation,
+        play_type: &'a scorepeek_core::recognition::MusicSelectPlayTypeObservation,
+        selected_difficulty: &'a scorepeek_core::recognition::MusicSelectDifficultyObservation,
+        play_side: &'a scorepeek_core::recognition::MusicSelectPlaySideObservation,
         active_list_title: StoredText<'a>,
     },
 }
@@ -360,9 +359,7 @@ impl RecognitionArtifactWriter {
             &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
         >,
         numeric_batch: Option<&NumericBatchInference>,
-        joint_evidence: Option<
-            &crate::recognition_live::screen_field_observer::JointEvidenceObservation,
-        >,
+        joint_evidence: Option<&scorepeek_core::recognition::JointEvidenceObservation>,
         processing_timing: Option<
             &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
         >,
@@ -389,9 +386,8 @@ impl RecognitionArtifactWriter {
             ) => StoredDecision::MusicSelect { resolution },
             _ => return Err("recognition artifact decision does not match screen".to_owned()),
         };
-        let diagnostic_joint_evidence = joint_evidence.map(
-            crate::recognition_live::screen_field_observer::JointEvidenceObservation::diagnostic_top,
-        );
+        let diagnostic_joint_evidence = joint_evidence
+            .map(scorepeek_core::recognition::JointEvidenceObservation::diagnostic_top);
         let stored = StoredObservation {
             schema: OBSERVATION_SCHEMA,
             tick_sequence: sequence,
@@ -975,8 +971,8 @@ impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
     }
 }
 
-impl<'a> From<&'a scorepeek::recognition::DynamicTextObservation> for StoredText<'a> {
-    fn from(observation: &'a scorepeek::recognition::DynamicTextObservation) -> Self {
+impl<'a> From<&'a scorepeek_core::recognition::DynamicTextObservation> for StoredText<'a> {
+    fn from(observation: &'a scorepeek_core::recognition::DynamicTextObservation) -> Self {
         Self {
             input_width: observation.input_width,
             output_timesteps: observation.output_timesteps,
@@ -1091,7 +1087,7 @@ mod tests {
     use std::sync::Arc;
 
     use scorepeek::catalog::{Chart, ChartKey, Difficulty, PlayType};
-    use scorepeek::recognition::{
+    use scorepeek_core::recognition::{
         CatalogCandidateDomain, CatalogCandidateEvidenceTable, CatalogNormalizedSimilarity,
         CatalogTextCandidateScore, DynamicTextObservation, MusicSelectScreenFieldObservations,
         RESULT_SONG_RESOLVER_ID, ResultScreenFieldObservations, ResultSongCandidateObservation,
@@ -1152,21 +1148,21 @@ mod tests {
             constrained_text: None,
         };
         ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
-            best: scorepeek::recognition::MusicSelectBestObservation::default(),
+            best: scorepeek_core::recognition::MusicSelectBestObservation::default(),
             central_title: text("texture"),
             artist: text("artist"),
-            play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),
+            play_type: scorepeek_core::recognition::MusicSelectPlayTypeObservation::default(),
             selected_difficulty: music_select_difficulty(scorepeek::catalog::Difficulty::Hyper),
-            play_side: scorepeek::recognition::test_music_select_play_side(None),
+            play_side: scorepeek_core::recognition::test_music_select_play_side(None),
             active_list_title: text("VISIBLE TITLE"),
         })
     }
 
     fn music_select_difficulty(
         selected: scorepeek::catalog::Difficulty,
-    ) -> scorepeek::recognition::MusicSelectDifficultyObservation {
+    ) -> scorepeek_core::recognition::MusicSelectDifficultyObservation {
         use scorepeek::catalog::Difficulty;
-        use scorepeek::recognition::{
+        use scorepeek_core::recognition::{
             MusicSelectDifficultyMarkerEvidence, MusicSelectDifficultyObservation,
             MusicSelectDifficultyState,
         };
@@ -1201,14 +1197,14 @@ mod tests {
             comparison_key_id: "test-comparison-v1",
             catalog: Arc::new(CatalogCandidateEvidenceTable {
                 comparison_key_id: "test-comparison-v1",
-                songs: vec![scorepeek::recognition::CatalogCandidateSongEvidence {
+                songs: vec![scorepeek_core::recognition::CatalogCandidateSongEvidence {
                     song_id,
-                    title: scorepeek::recognition::CatalogCandidateTextEvidence {
+                    title: scorepeek_core::recognition::CatalogCandidateTextEvidence {
                         display: vec!["ABSOLUTE EVIL".to_owned()],
                         exact: vec!["ABSOLUTEEVIL".to_owned()],
                         folded: vec!["ABSOLUTEEVIL".to_owned()],
                     },
-                    artist: scorepeek::recognition::CatalogCandidateTextEvidence {
+                    artist: scorepeek_core::recognition::CatalogCandidateTextEvidence {
                         display: vec!["Yuta Imai".to_owned()],
                         exact: vec!["YutaImai".to_owned()],
                         folded: Vec::new(),
