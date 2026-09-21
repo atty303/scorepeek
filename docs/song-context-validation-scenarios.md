@@ -70,7 +70,7 @@ observer does not own mode and never rewrites earlier observations.
 ## Conformance
 
 The value-free projection in
-`crates/scorepeek/src/song-context-conformance-v1.json` contains opaque song
+`crates/scorepeek-core/src/song-context-conformance-v1.json` contains opaque song
 tokens and no recording identity, timestamp, path, player data, or game string.
 Its tests demonstrate only these context properties:
 

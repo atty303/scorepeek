@@ -1,13 +1,13 @@
 # Offline temporal evaluation
 
-`scorepeek-corpus temporal evaluate` compares candidate result-local temporal policies against the
+The `corpus_evaluate` target compares candidate result-local temporal policies against the
 ordered recognition observations in the active, operator-reviewed private corpus suite. It is a
 read-only descriptive evaluator: it does not alter the suite, select thresholds, accept events, or
 grant release-accuracy authority. The production v3 resolver instead finalizes one semantic RESULT
 episode after admitted field drain and does not use these time-gap policies.
 
 ```text
-scorepeek-corpus temporal evaluate --store /absolute/private-corpus-v2 --policy 2:250 --policy 3:250
+cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_evaluate -- --store /absolute/private-corpus-v2 --policy 2:250 --policy 3:250
 ```
 
 `--policy` is `REQUIRED_OBSERVATIONS:MAXIMUM_GAP_MS`. Omitting it compares the runtime policy

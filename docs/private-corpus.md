@@ -53,8 +53,8 @@ truncated output, or replay-observer failure kills and reaps the FFmpeg child be
 import:
 
 ```text
-scorepeek-corpus diagnostic verify /absolute/diagnostic-run --capture-session-id SESSION_ID
-scorepeek-corpus corpus import-diagnostic --store /absolute/private-corpus-v2 --diagnostic /absolute/diagnostic-run --capture-session-id SESSION_ID --review-draft /absolute/review.json
+cargo run --locked -p scorepeek-corpus --features runtime-replay --bin diagnostic_verify -- /absolute/diagnostic-run --capture-session-id SESSION_ID
+cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_ingest -- --store /absolute/private-corpus-v2 --diagnostic /absolute/diagnostic-run --capture-session-id SESSION_ID --review-draft /absolute/review.json
 ```
 
 Import requires video and the session's saved `recording_completed` terminal record. A later partial
@@ -98,7 +98,7 @@ The existing `expected_result.play_type` is also SELECT play-type truth. `play_m
 `single_play` with `single` or `double_play` with `double`; no separate SELECT label or alternate
 conversion exists. Real full frames, complete labels, and generated corpus objects remain outside
 the repository. The two independently measured 100x80 SP/DP templates under
-`crates/scorepeek/assets/music-select-play-type-v1` are the sole narrow
+`crates/scorepeek-core/assets/music-select-play-type-v1` are the sole narrow
 repository-inclusion exception.
 
 Every span endpoint must be retained on its expected raw screen, except that a PLAY endpoint may be
@@ -111,7 +111,7 @@ earlier attempt in the same label.
 Apply the reviewed truth create-only:
 
 ```text
-scorepeek-corpus review apply --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v6.json
+cargo run --locked -p scorepeek-corpus --features runtime-replay --bin review_apply -- --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v6.json
 ```
 
 Partial sessions cannot become active regression entries. There is no alternate label reader,
@@ -120,9 +120,9 @@ converter, or archive path.
 ## Replay semantics
 
 ```text
-scorepeek-corpus corpus replay --store /absolute/private-corpus-v2
+cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_replay -- --store /absolute/private-corpus-v2
 # Explicit single-worker comparison only; this is not the default.
-scorepeek-corpus corpus replay --store /absolute/private-corpus-v2 --text-workers 1 --memory-mib 2048
+cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_replay -- --store /absolute/private-corpus-v2 --text-workers 1 --memory-mib 2048
 ```
 
 Replay losslessly decodes retained segment frames and supplies their original sequence and

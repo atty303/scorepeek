@@ -14,7 +14,7 @@ readonly work_dir="$(mktemp -d)"
 
 restore_source() {
   if [[ -f "$work_dir/scorepeek-Cargo.toml" ]]; then
-    cp -p -- "$work_dir/scorepeek-Cargo.toml" crates/scorepeek/Cargo.toml
+    cp -p -- "$work_dir/scorepeek-Cargo.toml" crates/scorepeek-cli/Cargo.toml
     cp -p -- "$work_dir/Cargo.lock" Cargo.lock
   fi
   rm -rf -- "$work_dir"
@@ -28,9 +28,9 @@ if (( $# == 1 )); then
     printf 'release version must contain three numeric components: %s\n' "$version" >&2
     exit 2
   fi
-  cp -p -- crates/scorepeek/Cargo.toml "$work_dir/scorepeek-Cargo.toml"
+  cp -p -- crates/scorepeek-cli/Cargo.toml "$work_dir/scorepeek-Cargo.toml"
   cp -p -- Cargo.lock "$work_dir/Cargo.lock"
-  sed -i "0,/^version = \".*\"$/s//version = \"${version}\"/" crates/scorepeek/Cargo.toml
+  sed -i "0,/^version = \".*\"$/s//version = \"${version}\"/" crates/scorepeek-cli/Cargo.toml
   cargo metadata --format-version=1 --no-deps >/dev/null
   dist_args+=(--tag "v${version}")
 fi
@@ -54,7 +54,7 @@ tar -xJf "$archive" -C "$work_dir"
 
 readonly root="$work_dir/scorepeek-${target}"
 readonly binary="$root/scorepeek"
-SCOREPEEK_TEST_BINARY="$binary" cargo test --locked -p scorepeek --test overlay
+SCOREPEEK_TEST_BINARY="$binary" cargo test --locked -p scorepeek-cli --test overlay
 mkdir -p "$work_dir/home" "$work_dir/data" "$work_dir/cache"
 
 run_scorepeek() {

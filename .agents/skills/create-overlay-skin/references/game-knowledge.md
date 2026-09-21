@@ -28,16 +28,16 @@ source anchorはrepository rootから解決する。実装が変わったらanch
 
 | 表示 | sourceと意味 |
 | --- | --- |
-| `OverlayState` | `crates/scorepeek-overlay-ui/src/lib.rs`: chart、best、detail、history、system/result_signal、screenをskin ABI inputへ渡す |
-| BEST | `crates/scorepeek-overlay/src/runtime.rs` の `refresh_history()`、`crates/scorepeek-scores/src/query.rs` の `chart_dashboard()`: 統合されたchart best。各値が同じ一回のplayから得られたとは限らない |
+| `OverlayState` | `crates/scorepeek-overlay/src/lib.rs`: chart、best、detail、history、system/result_signal、screenをskin ABI inputへ渡す |
+| BEST | adapterの `runtime.rs` にある `refresh_history()`、`crates/scorepeek-core/src/scores/query.rs` の `chart_dashboard()`: 統合されたchart best。各値が同じ一回のplayから得られたとは限らない |
 | RESULT DETAIL | `query.rs`: 保存playの最高EX、同点なら既知かつ少ないmiss、その後新しい記録を代表にする。`runtime.rs` が内訳を抽出。最新画面のリザルトと断定しない |
 | DJ LEVEL | `runtime.rs` の `dj_level()`: N=notes、S=scoreとして `min(8, floor(9*max(S,0)/(2*N)))`。8/7/6/5/4/3/2/0–1をAAA/AA/A/B/C/D/E/Fへ対応。必要値なし/notes=0は中立表示 |
 | クリア文字 | `runtime.rs` の `clear()`: 保存rank 0–7をNO PLAY/FAILED/ASSIST/EASY/CLEAR/HARD/EX HARD/FULL COMBOへ対応。wire literalとは別 |
 | 履歴 | `query.rs`: 受信日時等による降順。skinがソートし直したり最高記録を再判定しない |
 | グラフ | `runtime.rs`: EX/(2*notes)、MISS/notes。notes不明/0はplotしない。UIは0–100%へclipし、不明missの区間を接続しない。各playの値であり累積best曲線ではない |
-| 軸 | `crates/scorepeek-overlay-ui/src/lib.rs`: DJ LEVEL境界と右側MISS RATE。missは大きいほど高い位置。成功率やaccuracyへ読み替えない。月・日時は親から渡される |
-| SYSTEM | `crates/scorepeek-overlay/src/state.rs` の `apply_status()`: watcher/session、catalog/model等の状態。ゲーム成績ではない |
-| RESULT | `state.rs`: inactive/provisional/confirmed/retractedをlampへ写す。DB保存完了や接続可否そのものではない。recorded indicatorとも別 |
+| 軸 | `skins/shared/src/lib.rs`: DJ LEVEL境界と右側MISS RATE。missは大きいほど高い位置。成功率やaccuracyへ読み替えない。月・日時は親から渡される |
+| SYSTEM | `crates/scorepeek-overlay/src/projection.rs` の `apply_status()`: watcher/session、catalog/model等の状態。ゲーム成績ではない |
+| RESULT | `projection.rs`: inactive/provisional/confirmed/retractedをlampへ写す。DB保存完了や接続可否そのものではない。recorded indicatorとも別 |
 | MISSとCB | `runtime.rs`: miss_countとcombo_breakは独立field。BAD+POORなどからskinが推定しない |
 | プレイ条件 | `runtime.rs` が渡す表示文字列を保持。知らないoptionも消さない |
 

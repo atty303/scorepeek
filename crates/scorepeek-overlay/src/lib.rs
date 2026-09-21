@@ -1,12 +1,18 @@
-//! Independent consumers of the public live API and committed scores.
-pub mod children;
-pub mod config;
-pub mod control;
-pub mod diagnostics;
-pub mod native;
-pub mod runtime;
-pub mod skin;
-pub mod state;
-pub mod web;
+//! Backend-neutral, wasm-compatible overlay UI authority.
 
-pub use scorepeek_overlay_ui::Skin;
+pub mod action;
+pub mod config;
+pub mod data;
+pub mod editor;
+pub mod geometry;
+pub mod skin;
+pub mod style;
+pub mod view;
+
+pub use data::*;
+pub use editor::effect as editor_surface;
+pub use editor::model as editor_model;
+pub use editor::runtime as editor_runtime;
+pub use skin::Skin;
+
+pub(crate) use data::validate_skin_id;

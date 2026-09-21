@@ -1,0 +1,42 @@
+[package]
+name = "scorepeek-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+autobins = false
+
+[dependencies]
+scorepeek-core = { path = "../scorepeek-core" }
+scorepeek-frontend-api = { path = "../scorepeek-frontend-api" }
+scorepeek-overlay-wayland = { path = "../scorepeek-overlay-wayland" }
+scorepeek-overlay-web-host = { path = "../scorepeek-overlay-web-host" }
+scorepeek-vulkan-capture = { path = "../scorepeek-vulkan-capture" }
+encoding_rs.workspace = true
+imageproc.workspace = true
+ort.workspace = true
+pipewire.workspace = true
+rustix.workspace = true
+qoi.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+signal-hook.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+unicode-normalization.workspace = true
+ureq.workspace = true
+url.workspace = true
+uuid.workspace = true
+x11rb.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true
+
+[build-dependencies]
+zip.workspace = true
+
+[dev-dependencies]
+ratatui.workspace = true

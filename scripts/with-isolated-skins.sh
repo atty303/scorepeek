@@ -29,6 +29,6 @@ if [[ "${SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR:-0}" != 1 ]]; then
   chmod 700 "$XDG_RUNTIME_DIR"
 fi
 
-cargo run --locked -p scorepeek-overlay --example install_skins -- "$root"/target/skins/*.zip
+cargo run --locked -p scorepeek-overlay-wayland --example install_skins -- "$root"/target/skins/*.zip
 
 "$@"

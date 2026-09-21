@@ -25,7 +25,7 @@ local linters = new Mapping<String, Step> {
   }
   ["taplo"] = Builtins.taplo
   ["overlay:web"] {
-    glob = List("crates/scorepeek-overlay-ui/**", "crates/scorepeek-overlay-web/**")
+    glob = List("crates/scorepeek-overlay/**", "crates/scorepeek-overlay-web-client/**")
     check = "mise run overlay:web:check"
   }
   ["site"] {

@@ -168,7 +168,7 @@ buffer and UI; it does not establish compositor keyboard focus or real IME candi
 ## Shared editor UI
 
 Native and OBS render the shared Dioxus `EditorPanel`, `EditorSurface`, `EditorCanvas`,
-`ResizeHandles` and `PlacementPreview` components in `scorepeek-overlay-ui`. The shared
+`ResizeHandles` and `PlacementPreview` components in `scorepeek-overlay`. The shared
 `editor_model::EditorSession` owns selection, settings, placement and gesture transitions, including
 four-corner resize, aspect ratios and canvas bounds. `Button` owns text alignment,
 sizing, selected/disabled state and tone; parent CSS owns placement and spacing.
@@ -221,10 +221,12 @@ The overlay backend and browser WASM compile the same SHA-256 build identity fro
 `scripts/overlay-build.rs`. Its inputs cover overlay sources, host styles,
 workspace dependencies and build configuration; this is a build identity, not the
 configuration revision. Rebuild the web bundle before building the embedded backend.
-The embedded backend build observes the bundle completion marker and generated assets,
-requires an absolute asset directory with exactly one browser WASM, and fails if that
-WASM does not contain the host's build identity. This prevents a binary from serving
-browser assets built from a different source revision.
+Repository tasks that build the embedded backend, release artifacts, or browser/OBS
+verification targets declare `overlay:web:bundle` as a prerequisite. That task owns the
+completion marker and generated assets, so the embedded build receives the bundle from
+the same source revision. Plain Cargo type checking does not enforce workflow-level
+bundle freshness; use the repository task when producing an executable or distributable
+artifact.
 
 Each stage connection and editing request must match the backend build identity.
 Until the first matching stage arrives, editing is disabled. A mismatch discards the

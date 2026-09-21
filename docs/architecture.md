@@ -34,6 +34,11 @@ flowchart LR
 
 ## Runtime boundary
 
+The installed `scorepeek` executable is provided by the binary-only `scorepeek-cli` package. It
+classifies CLI requests into the transport-neutral `scorepeek-frontend-api` protocol and dispatches
+them to the in-process Linux `scorepeek-runtime` service. Portable catalog, recognition, temporal,
+event, and score authority lives in `scorepeek-core`.
+
 The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX
 embedded in the binary, and one explicitly selected capture backend before admitting recognition work. Python is restricted
@@ -165,7 +170,7 @@ history. Its nullable session version becomes non-null only after identification
 to the SQLite score history. Reconnection restores current state, not every missed event. The wire
 contract and RESULT lifecycle are defined in [Event API v4](event-api.md).
 
-The in-process `scorepeek-scores` consumer persists provisional, retracted,
+The in-process `scorepeek-core::scores` consumer persists provisional, retracted,
 and confirmed RESULT transitions plus current MUSIC SELECT supplements in
 SQLite. Persistence is independent of socket clients and optional recording.
 Overlays query committed SQLite state for score/history presentation; they do
@@ -225,14 +230,14 @@ approved repository artifact. See
 | --- | --- |
 | External source bytes and catalog generation | `scorepeek-catalog-publisher` in GitHub Actions |
 | Pages packaging, validation, and no-op selection | `scorepeek-catalog-publisher` and `.github/workflows/catalog-pages.yml` |
-| Client ZIP verification, content store, and activation | `scorepeek::catalog` |
+| Client ZIP verification, content store, and activation | `scorepeek-core::catalog` plus `scorepeek-runtime::resources::catalog` |
 | PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
 | Runtime source identity, edge crop, and canonical normalization | Versioned capture profile and normalizer documents |
-| Canonical game coordinates | Versioned layout resources in `crates/scorepeek/src` |
+| Canonical game coordinates | Versioned layout resources in `crates/scorepeek-core/src` |
 | OCR preprocessing, models, and thresholds | Registered text bundle and embedded numeric model artifacts |
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
 | Public live compatibility | Event API v4 typed projection |
-| Durable local score state | `scorepeek-scores` SQLite consumer |
+| Durable local score state | `scorepeek-core::scores` SQLite consumer |
 | Canvas/editor state and skin execution | Overlay crates and skin SDK |
 | Private replay evidence | Diagnostic store and external private corpus |
 
