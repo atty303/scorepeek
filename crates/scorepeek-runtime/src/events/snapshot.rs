@@ -1,8 +1,9 @@
 //! Public live API projection. Internal observations never become wire records implicitly.
-use super::server::{RunEvent, RunEventKind};
 #[cfg(test)]
 use scorepeek_core::event::MusicSelectionUnresolvedReason;
-use scorepeek_core::event::{MusicSelectBestSnapshot, MusicSelectionState, ResultState};
+use scorepeek_core::event::{
+    MusicSelectBestSnapshot, MusicSelectionState, ResultState, RunEvent, RunEventKind,
+};
 use scorepeek_core::session::timeline::SemanticEpisodePhase;
 use serde::Serialize;
 use std::io::{self, Write};

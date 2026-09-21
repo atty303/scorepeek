@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use scorepeek_runtime::events::server::{RunEvent, RunEventKind};
+use scorepeek_core::event::{RunEvent, RunEventKind};
 use serde::Serialize;
 
 fn retained(event: &RunEvent) -> bool {
@@ -243,7 +243,8 @@ fn write_session(
             "executable_sha256": executable_sha256,
             "selected_sources_sha256": crate::replay::oracle::digest(concat!(
                 include_str!("../../../scorepeek-runtime/src/events/server.rs"),
-                include_str!("../../../scorepeek-runtime/src/events/music_select_best.rs"),
+                include_str!("../../../scorepeek-core/src/event/domain.rs"),
+                include_str!("../../../scorepeek-core/src/event/run.rs"),
                 include_str!("../../../scorepeek-core/src/recognition/screen.rs"),
                 include_str!("../../../scorepeek-core/src/recognition/title/observe.rs"),
                 include_str!("../../../scorepeek-core/src/recognition/title/preprocess.rs"),
@@ -267,7 +268,7 @@ fn write_session(
             "best_layout_sha256": crate::replay::oracle::digest(include_bytes!("../../../scorepeek-core/src/music-select-best-layout-v1.json")),
             "numeric_manifest_sha256": scorepeek_core::replay::NUMERIC_MODEL_MANIFEST_SHA256,
             "text_manifest_sha256": scorepeek_core::replay::LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
-            "run_event_schema": scorepeek_runtime::events::server::RUN_EVENT_SCHEMA,
+            "run_event_schema": scorepeek_core::event::RUN_EVENT_SCHEMA,
         });
         match write_line(remaining, opened, &metadata) {
             Ok(bytes) => add_bytes(status, bytes),
@@ -402,7 +403,7 @@ mod tests {
 
     fn watcher_started(sequence: usize) -> RunEvent {
         RunEvent {
-            schema: scorepeek_runtime::events::server::RUN_EVENT_SCHEMA.to_owned(),
+            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::WatcherStarted {
                 invocation_id: format!("replay-{sequence}"),
             },
@@ -411,7 +412,7 @@ mod tests {
 
     fn raw_result_candidate() -> RunEvent {
         RunEvent {
-            schema: scorepeek_runtime::events::server::RUN_EVENT_SCHEMA.to_owned(),
+            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::RawScreenObserved {
                 session_id: Some("session".to_owned()),
                 capture_generation: Some(1),

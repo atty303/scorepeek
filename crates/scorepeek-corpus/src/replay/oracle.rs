@@ -4212,10 +4212,10 @@ fn start_replay_observer(
                 let data = record
                     .get("data")
                     .ok_or_else(|| "diagnostic run event has no data".to_owned())?;
-                let event = scorepeek_runtime::events::server::RunEvent::from_value(data.clone())?;
+                let event = scorepeek_core::event::RunEvent::from_value(data.clone())?;
                 if matches!(
                     event.kind,
-                    scorepeek_runtime::events::server::RunEventKind::FieldObservation { .. }
+                    scorepeek_core::event::RunEventKind::FieldObservation { .. }
                 ) {
                     return Ok(());
                 }
@@ -4226,18 +4226,16 @@ fn start_replay_observer(
                         .observe(index, &event)?;
                 }
                 match event.kind {
-                    scorepeek_runtime::events::server::RunEventKind::MusicSelectionChanged {
+                    scorepeek_core::event::RunEventKind::MusicSelectionChanged {
                         source_sequence,
                         state,
                         ..
                     } => collected.music_selections.push((source_sequence, state)),
-                    scorepeek_runtime::events::server::RunEventKind::ResultChanged {
+                    scorepeek_core::event::RunEventKind::ResultChanged {
                         state: scorepeek_core::event::ResultState::Confirmed { result, .. },
                         ..
                     } => collected.confirmed_results.push(*result),
-                    scorepeek_runtime::events::server::RunEventKind::MusicSelectBestObserved {
-                        ..
-                    } => {
+                    scorepeek_core::event::RunEventKind::MusicSelectBestObserved { .. } => {
                         collected.music_select_best_snapshots =
                             collected.music_select_best_snapshots.saturating_add(1);
                     }
@@ -4371,9 +4369,9 @@ fn start_replay_session(
     runtime
         .event_stream
         .output
-        .publish(&scorepeek_runtime::events::server::RunEvent {
-            schema: scorepeek_runtime::events::server::RUN_EVENT_SCHEMA.to_owned(),
-            kind: scorepeek_runtime::events::server::RunEventKind::SessionStarted {
+        .publish(&scorepeek_core::event::RunEvent {
+            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.to_owned(),
+            kind: scorepeek_core::event::RunEventKind::SessionStarted {
                 session_id: Some(runtime.session_id.clone()),
                 capture_generation: runtime.session.capture_generation,
                 capture_profile_sha256: runtime.binding.capture_profile_sha256.clone(),
@@ -4714,9 +4712,9 @@ fn process_replay_frame(
     runtime
         .event_stream
         .output
-        .publish(&scorepeek_runtime::events::server::RunEvent {
-            schema: scorepeek_runtime::events::server::RUN_EVENT_SCHEMA.to_owned(),
-            kind: scorepeek_runtime::events::server::RunEventKind::RawScreenObserved {
+        .publish(&scorepeek_core::event::RunEvent {
+            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.to_owned(),
+            kind: scorepeek_core::event::RunEventKind::RawScreenObserved {
                 session_id: Some(runtime.session_id.clone()),
                 capture_generation: Some(runtime.session.capture_generation),
                 semantic_episode_id: timeline_step.active_episode_id,
@@ -4800,9 +4798,9 @@ fn finalize_replay_session(
     runtime
         .event_stream
         .output
-        .publish(&scorepeek_runtime::events::server::RunEvent {
-            schema: scorepeek_runtime::events::server::RUN_EVENT_SCHEMA.to_owned(),
-            kind: scorepeek_runtime::events::server::RunEventKind::SessionFinished {
+        .publish(&scorepeek_core::event::RunEvent {
+            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.to_owned(),
+            kind: scorepeek_core::event::RunEventKind::SessionFinished {
                 session_id: runtime.session_id.clone(),
                 capture_generation: runtime.session.capture_generation,
                 outcome: "replayed".to_owned(),
@@ -4905,9 +4903,9 @@ fn publish_replay_semantic(
     phase: scorepeek_core::session::timeline::SemanticEpisodePhase,
 ) -> Result<(), CorpusError> {
     output
-        .publish(&scorepeek_runtime::events::server::RunEvent {
-            schema: scorepeek_runtime::events::server::RUN_EVENT_SCHEMA.to_owned(),
-            kind: scorepeek_runtime::events::server::RunEventKind::SemanticScreenEpisodeChanged {
+        .publish(&scorepeek_core::event::RunEvent {
+            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.to_owned(),
+            kind: scorepeek_core::event::RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some(session_id.to_owned()),
                 capture_generation: Some(generation),
                 screen_episode_id: episode.id,

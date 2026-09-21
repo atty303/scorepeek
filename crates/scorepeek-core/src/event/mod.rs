@@ -15,5 +15,5 @@ pub use domain::{
     SelectIdentityStatus, SelectionDifficultyTarget, SelectionDifficultyTransitionReason,
     SongPresentation, SongResolutionPresentation,
 };
-pub use run::RunEventEnvelope;
+pub use run::{RunEvent, RunEventEnvelope, RunEventKind};
 pub use schema::RUN_EVENT_SCHEMA;

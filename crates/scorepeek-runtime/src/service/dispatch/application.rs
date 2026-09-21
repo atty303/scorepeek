@@ -21,6 +21,7 @@ use crate::{
     service::session as routine_watcher,
 };
 use scorepeek::catalog::CatalogStore;
+use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
 use scorepeek_core::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
 };
@@ -2027,9 +2028,9 @@ fn run_routine_live_session(
             if error == INTERRUPTED_ERROR || error == TERMINATED_ERROR {
                 return Err(error);
             }
-            let publish_result = output.publish(&routine_output::RunEvent {
-                schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
-                kind: routine_output::RunEventKind::OverlayObserved {
+            let publish_result = output.publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::OverlayObserved {
                     observation: serde_json::json!({
                         "backend": format!("{backend:?}"),
                         "operation": "spawn",
@@ -2044,9 +2045,9 @@ fn run_routine_live_session(
             ));
         }
     }
-    let watcher_started = output.publish(&routine_output::RunEvent {
-        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
-        kind: routine_output::RunEventKind::WatcherStarted {
+    let watcher_started = output.publish(&RunEvent {
+        schema: RUN_EVENT_SCHEMA.to_owned(),
+        kind: RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
         },
     });
@@ -2224,10 +2225,7 @@ fn run_routine_live_session(
                         return Ok(capture_live::LiveEventProcessingTiming::default());
                     }
                     let event = run_event_from_live_emission(emission)?;
-                    if matches!(
-                        &event.kind,
-                        routine_output::RunEventKind::SessionStarted { .. }
-                    ) {
+                    if matches!(&event.kind, RunEventKind::SessionStarted { .. }) {
                         started = true;
                     }
                     let output_overhead_us =
@@ -2268,9 +2266,9 @@ fn run_routine_live_session(
                         lifetimes.generation_ended(node_id, readmit_same_node);
                     }
                     announced = None;
-                    output.publish(&routine_output::RunEvent {
-                        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
-                        kind: routine_output::RunEventKind::SessionFinished {
+                    output.publish(&RunEvent {
+                        schema: RUN_EVENT_SCHEMA.to_owned(),
+                        kind: RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
                             capture_generation: generation,
                             outcome: outcome.to_owned(),
@@ -2282,9 +2280,9 @@ fn run_routine_live_session(
                     if state.recording_enabled {
                         if report.canonical_recording_is_complete() {
                             if let Some(session_paths) = session_paths.as_ref() {
-                                output.publish(&routine_output::RunEvent {
-                                    schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
-                                    kind: routine_output::RunEventKind::RecordingCompleted {
+                                output.publish(&RunEvent {
+                                    schema: RUN_EVENT_SCHEMA.to_owned(),
+                                    kind: RunEventKind::RecordingCompleted {
                                         session_id: session_id.clone(),
                                         directory: session_paths.root.display().to_string(),
                                     },
@@ -2345,9 +2343,9 @@ fn run_routine_live_session(
     }
     overlay_children.shutdown();
     output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
-    output.publish(&routine_output::RunEvent {
-        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
-        kind: routine_output::RunEventKind::WatcherStopped {
+    output.publish(&RunEvent {
+        schema: RUN_EVENT_SCHEMA.to_owned(),
+        kind: RunEventKind::WatcherStopped {
             invocation_id,
             reason: "signal".to_owned(),
         },
@@ -2742,13 +2740,10 @@ struct LiveSessionEmission {
     diagnostic_capture_fact: Option<serde_json::Value>,
 }
 
-fn run_event_from_live_emission(
-    emission: LiveSessionEmission,
-) -> Result<routine_output::RunEvent, String> {
-    let mut event = routine_output::RunEvent::from_value(emission.value)?;
+fn run_event_from_live_emission(emission: LiveSessionEmission) -> Result<RunEvent, String> {
+    let mut event = RunEvent::from_value(emission.value)?;
     if let Some(authority_joint_evidence) = emission.authority_joint_evidence {
-        let routine_output::RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind
-        else {
+        let RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind else {
             return Err("full joint evidence was attached to a non-field event".to_owned());
         };
         *joint_evidence = authority_joint_evidence;
@@ -2843,7 +2838,7 @@ fn live_session_event_value(
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
-        routine_output::RUN_EVENT_SCHEMA
+        RUN_EVENT_SCHEMA
     } else {
         "scorepeek-live-session-event-v1"
     };
@@ -4739,6 +4734,7 @@ mod tests {
         SourceSnapshot, SourceTitleObservation, TachiObservation,
     };
     use scorepeek_core::catalog::FederationInput;
+    use scorepeek_core::event::{RunEvent, RunEventKind};
     use scorepeek_core::recognition::{
         CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
         ScreenFieldObservations,
@@ -4868,7 +4864,7 @@ mod tests {
     ) {
         let value = live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
         routine
-            .publish(&crate::events::server::RunEvent::from_value(value).unwrap())
+            .publish(&RunEvent::from_value(value).unwrap())
             .unwrap();
     }
 
@@ -5654,7 +5650,7 @@ node_name = "must-not-be-inherited"
 
     #[test]
     fn live_serializer_and_reducer_keep_one_recording_schema() {
-        use crate::events::server::{RoutineOutput, RunEvent};
+        use crate::events::server::RoutineOutput;
         let mut output = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
         for event in [
             GamescopeLiveSessionEvent::Started {
@@ -5679,10 +5675,11 @@ node_name = "must-not-be-inherited"
                 .unwrap();
         }
         let events = output.take_headless_events();
-        assert!(events.iter().any(|event| matches!(
-            event.kind,
-            crate::events::server::RunEventKind::MusicSelectResolverChanged { .. }
-        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind, RunEventKind::MusicSelectResolverChanged { .. }))
+        );
         let schemas: std::collections::BTreeSet<_> =
             events.iter().map(|event| event.schema.as_str()).collect();
         assert_eq!(
@@ -5784,9 +5781,8 @@ node_name = "must-not-be-inherited"
             value["result_song_resolution"]["reason"],
             "no_catalog_candidates"
         );
-        let event = crate::events::server::RunEvent::from_value(value).unwrap();
-        let crate::events::server::RunEventKind::FieldObservation { fields, .. } = event.kind
-        else {
+        let event = RunEvent::from_value(value).unwrap();
+        let RunEventKind::FieldObservation { fields, .. } = event.kind else {
             panic!("live result observation changed event kind");
         };
         assert_eq!(fields["panel_side"], "right");
@@ -5794,7 +5790,7 @@ node_name = "must-not-be-inherited"
 
     #[test]
     fn production_result_serializer_reaches_provisional_and_confirmed_output() {
-        use crate::events::server::{RoutineOutput, RunEventKind};
+        use crate::events::server::RoutineOutput;
         use scorepeek_core::event::ResultState;
 
         let observation = resolved_two_player_result_observation();
@@ -5913,9 +5909,7 @@ node_name = "must-not-be-inherited"
             diagnostic_capture_fact: None,
         })
         .unwrap();
-        let crate::events::server::RunEventKind::FieldObservation { joint_evidence, .. } =
-            event.kind
-        else {
+        let RunEventKind::FieldObservation { joint_evidence, .. } = event.kind else {
             panic!("expected field observation");
         };
         assert_eq!(joint_evidence, authority);
