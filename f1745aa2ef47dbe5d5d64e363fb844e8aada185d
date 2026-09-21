@@ -1,0 +1,40 @@
+Task: synchronize Python OCR layout validation with the current canonical result layout
+
+Base: 405d38d8bc3e1dde0fd5a108a5e4bcfb9acc8fcf
+Branch: main
+Artifact profile: durable
+Control domain: checked-in repository source, canonical layout, and tests; no external service or runtime data mutation
+
+Authority and scope:
+- User requested that the Python tests also be fixed after the play-side implementation and corpus replay work.
+- Scope was limited to the Python OCR layout reader and its contract tests.
+
+Observed failure:
+- `mise run //tools/ocr:test` initially ran 99 tests with two errors in the RESULT and MUSIC SELECT crop contract tests.
+- Both failed in `_exact_object` with `SpikeError: invalid canonical result layout fields`.
+- The checked-in canonical layout and Rust reader require `result.numeric_panel_origins`, while the Python strict reader still expected the earlier exact result key set.
+
+Change:
+- Added exact parsing of left/right numeric panel origins and their score, judgment, timing, and combo-break families.
+- Required nonnegative JSON integers, zero left origins, and canonical-width bounds for all translated numeric ROIs on both sides.
+- Added regression coverage that rejects JSON booleans, matching the Rust `u32` contract.
+
+Review:
+- A fresh read-only reviewer found that `isinstance(origin, int)` accepted JSON booleans although Rust rejects them.
+- The finding was fixed with `type(origin) is int` and a regression test.
+- Delta review confirmed the finding was resolved with no new actionable issue.
+
+Verification:
+- `mise run //tools/ocr:test`: 100 tests passed.
+- `mise run check`: passed.
+- `git diff --check`: passed.
+- `mise run test`: final identical rerun passed all shards. One earlier run failed in an unrelated parallel overlay build race where the browser shard temporarily observed a binary without `embedded-web`; the rerun passed.
+- `mise run build`: passed after commit and rebuilt `target/debug/scorepeek` with `embedded-web`.
+
+Environment notes:
+- The first sandboxed Python suite attempt could not write the existing uv cache under `/home/atty/.cache/uv`; verification was rerun in the approved host-equivalent environment.
+- Remote notes were fetched into `refs/notes/origin-commits` because the local `refs/notes/commits` contains local unpushed history; no notes ref was overwritten.
+
+Transcript:
+- User: python testも修正して
+- Assistant: Diagnosed the strict Python layout reader drift, implemented and reviewed the numeric panel origin validation and regression test, verified the targeted and full suites, committed the change, and rebuilt the binary.
