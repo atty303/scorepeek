@@ -1,6 +1,9 @@
 //! Result numeric layout, preprocessing, inference, and confidence contracts.
 
-pub use super::super::screen::numeric_character_layout::*;
-pub use super::super::screen::numeric_fixed_slot::*;
-pub use super::super::screen::numeric_onnx::*;
+mod fixed_slot;
+mod onnx;
+
 pub use super::super::shared::confidence::*;
+pub use super::panel::*;
+pub use fixed_slot::*;
+pub use onnx::*;

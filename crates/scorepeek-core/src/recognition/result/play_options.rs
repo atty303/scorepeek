@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DynamicTextObservation, Rgb8Crop};
+use crate::recognition::{DynamicTextObservation, Rgb8Crop};
 
 const OPTION_PREFIX: &str = "USE OPTION ";
 const MARKER_WIDTH: usize = 120;

@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::catalog::ScorepeekSongId;
 
-use super::{CatalogTextCandidateScore, ResultSongCandidateObservation};
+use crate::recognition::{CatalogTextCandidateScore, ResultSongCandidateObservation};
 
 pub const RESULT_SONG_RESOLVER_ID: &str =
     "scorepeek-result-song-title-primary-artist-corroborated-v3";

@@ -1,10 +1,10 @@
 use crate::catalog::Difficulty;
 
-use super::{
+use crate::recognition::title::preprocess::resize_linear_gray;
+use crate::recognition::{
     CanonicalLayout, NumericField, RecognitionError, ResultNumericCharacterLayout,
     ResultScreenRgb8Crops, Rgb8Crop, Roi,
 };
-use crate::recognition::title::preprocess::resize_linear_gray;
 
 pub const FIXED_SLOT_PREPROCESSOR_ID: &str = "scorepeek-fixed-slot-hog-hybrid-0p25-v1";
 pub const FIXED_SLOT_FEATURE_DIMENSIONS: usize = 2_244;
@@ -406,7 +406,8 @@ fn normalize(values: &mut [f64]) {
 mod tests {
     use super::*;
     use crate::recognition::{
-        CANONICAL_BYTES, ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops, route_screen_rgb8_crops,
+        CANONICAL_BYTES, ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops,
+        route_screen_rgb8_crops, screen::encode_sha256,
     };
 
     #[test]
@@ -447,11 +448,11 @@ mod tests {
             }
         }
         assert_eq!(
-            super::super::encode_sha256(&hard_mask(&rgb, 27, 22, NumericField::Pgreat)),
+            encode_sha256(&hard_mask(&rgb, 27, 22, NumericField::Pgreat)),
             "04e2a96647d744fc1b3992c879cfe536f424dd3191dd7600dd0cf1d50d63bac1"
         );
         assert_eq!(
-            super::super::encode_sha256(&soft_mask(&rgb, 27, 22, NumericField::Pgreat)),
+            encode_sha256(&soft_mask(&rgb, 27, 22, NumericField::Pgreat)),
             "d711599e6e4da839b7bf49b3de9c22d7e090f11d32c5b9b6a9e24edde8fb02bf"
         );
         let hard_resized = resize_linear_gray(
@@ -471,11 +472,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            super::super::encode_sha256(&hard_resized),
+            encode_sha256(&hard_resized),
             "5218a105aabdd46c57388448979d1b81f8b4b5d678c295a3c28203fbcfa9b651"
         );
         assert_eq!(
-            super::super::encode_sha256(&soft_resized),
+            encode_sha256(&soft_resized),
             "59c5e8a9bac8a8703c2660e1a80e857d7cd009df59d4b1c9a456ca64da1abe52"
         );
         let coarse = normalized_hog(&hard_resized, 24, 32, 8).unwrap();
@@ -484,7 +485,7 @@ mod tests {
             .flat_map(|value| value.to_le_bytes())
             .collect::<Vec<_>>();
         assert_eq!(
-            super::super::encode_sha256(&coarse_bytes),
+            encode_sha256(&coarse_bytes),
             "1718672f978cbde7280cc09a569bfbbbce9bb24f7e0ed744f3e7917a8750241f"
         );
         let feature = fixed_slot_feature(&rgb, 27, 22, NumericField::Pgreat).unwrap();
@@ -510,7 +511,7 @@ mod tests {
             .flat_map(|value| value.to_le_bytes())
             .collect::<Vec<_>>();
         assert_eq!(
-            super::super::encode_sha256(&bytes),
+            encode_sha256(&bytes),
             "c293e0cbf9c4bbe6e3ba4d9d8d7d3a38539bf54b8373c28e266403059a0d1451"
         );
     }

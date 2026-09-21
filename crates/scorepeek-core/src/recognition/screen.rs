@@ -10,18 +10,6 @@ use sha2::{Digest as _, Sha256};
 use crate::catalog::Difficulty;
 use crate::frame::{CanonicalFrame, CanonicalLayout, Roi};
 
-#[path = "result/panel.rs"]
-pub(super) mod numeric_character_layout;
-#[path = "result/numeric/fixed_slot.rs"]
-pub(super) mod numeric_fixed_slot;
-#[path = "result/numeric/onnx.rs"]
-pub(super) mod numeric_onnx;
-#[path = "result/play_options.rs"]
-pub(super) mod play_options;
-#[path = "result/observe.rs"]
-pub(super) mod result_fields;
-#[path = "result/resolve.rs"]
-pub(super) mod result_resolver;
 #[path = "screen_reference.rs"]
 pub(super) mod screen_reference;
 
@@ -37,6 +25,32 @@ pub use super::music_select::{
 pub use super::music_select::{
     MusicSelectPlayTypeObservation, MusicSelectPlayTypeState, MusicSelectPlayTypeUnknownReason,
     observe_music_select_play_type,
+};
+pub use super::result::numeric::{FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID};
+pub use super::result::numeric::{
+    NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
+    NumericBatchInference, NumericCellCandidate, NumericCellInference, NumericModelCalibrations,
+    NumericModelContract, RegisteredNumericRuntime,
+};
+pub use super::result::{
+    NumericCharacterFieldLayout, NumericCharacterLayoutVariant, ResultNumericCharacterLayout,
+};
+pub use super::result::{
+    ParsedResultFields, PreviousBest, PreviousBestValue, RESULT_FIELD_RESOLVER_ID,
+    RESULT_PERFORMANCE_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
+    ResultFieldUnknownReason, ResultFieldValue, ResultJudgments, ResultPerformanceResolution,
+    ResultPerformanceUnknownReason, ResultTiming, SupplementalResultValue,
+    matching_observed_chart_songs, observed_result_difficulty, resolve_clear_type,
+    resolve_result_chart, resolve_result_performance,
+};
+pub use super::result::{
+    PlayOption, PlayOptionMarkerObservation, PlayOptionMarkerState, PlayOptions,
+    PlayOptionsObservation, PlayOptionsUnknownReason, observe_play_options,
+};
+pub use super::result::{
+    RESULT_SONG_CHART_ASSISTED_RESOLVER_ID, RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate,
+    ResultSongResolution, ResultSongUnknownReason, assist_unknown_result_song_with_chart,
+    resolve_result_song,
 };
 pub use super::shared::{
     CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
@@ -56,32 +70,6 @@ pub use super::title::{
     DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
     ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
     diagnostic_title_candidate, provisional_title_candidates,
-};
-pub use numeric_character_layout::{
-    NumericCharacterFieldLayout, NumericCharacterLayoutVariant, ResultNumericCharacterLayout,
-};
-pub use numeric_fixed_slot::{FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID};
-pub use numeric_onnx::{
-    NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
-    NumericBatchInference, NumericCellCandidate, NumericCellInference, NumericModelCalibrations,
-    NumericModelContract, RegisteredNumericRuntime,
-};
-pub use play_options::{
-    PlayOption, PlayOptionMarkerObservation, PlayOptionMarkerState, PlayOptions,
-    PlayOptionsObservation, PlayOptionsUnknownReason, observe_play_options,
-};
-pub use result_fields::{
-    ParsedResultFields, PreviousBest, PreviousBestValue, RESULT_FIELD_RESOLVER_ID,
-    RESULT_PERFORMANCE_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
-    ResultFieldUnknownReason, ResultFieldValue, ResultJudgments, ResultPerformanceResolution,
-    ResultPerformanceUnknownReason, ResultTiming, SupplementalResultValue,
-    matching_observed_chart_songs, observed_result_difficulty, resolve_clear_type,
-    resolve_result_chart, resolve_result_performance,
-};
-pub use result_resolver::{
-    RESULT_SONG_CHART_ASSISTED_RESOLVER_ID, RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate,
-    ResultSongResolution, ResultSongUnknownReason, assist_unknown_result_song_with_chart,
-    resolve_result_song,
 };
 
 #[must_use]
@@ -106,10 +94,11 @@ pub use super::title::{
 };
 pub use super::title::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
 
-const CANONICAL_WIDTH: u32 = 1_920;
-const CANONICAL_HEIGHT: u32 = 1_080;
+pub(in crate::recognition) const CANONICAL_WIDTH: u32 = 1_920;
+pub(in crate::recognition) const CANONICAL_HEIGHT: u32 = 1_080;
 pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
-const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
+pub(in crate::recognition) const CANONICAL_FRAME_CONTRACT_ID: &str =
+    "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
 const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v7";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
@@ -457,7 +446,11 @@ fn canonical_evidence_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json
 }
 
 impl Roi {
-    fn validate(self, width: u32, height: u32) -> Result<(), RecognitionError> {
+    pub(in crate::recognition) fn validate(
+        self,
+        width: u32,
+        height: u32,
+    ) -> Result<(), RecognitionError> {
         if self.width == 0
             || self.height == 0
             || self
@@ -474,7 +467,10 @@ impl Roi {
         Ok(())
     }
 
-    fn translated_x(self, origin_x: u32) -> Result<Self, RecognitionError> {
+    pub(in crate::recognition) fn translated_x(
+        self,
+        origin_x: u32,
+    ) -> Result<Self, RecognitionError> {
         Ok(Self {
             x: self
                 .x
@@ -522,13 +518,17 @@ impl ResultNumericFieldOrigins {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ResultNumericPanelOrigins {
+pub(in crate::recognition) struct ResultNumericPanelOrigins {
     left: ResultNumericFieldOrigins,
     right: ResultNumericFieldOrigins,
 }
 
 impl ResultNumericPanelOrigins {
-    const fn get(self, side: ResultPanelSide, field: NumericField) -> u32 {
+    pub(in crate::recognition) const fn get(
+        self,
+        side: ResultPanelSide,
+        field: NumericField,
+    ) -> u32 {
         match side {
             ResultPanelSide::Left => self.left,
             ResultPanelSide::Right => self.right,
@@ -552,7 +552,7 @@ pub struct ResultLayout {
     presence: ResultPresencePredicate,
     pub header: Roi,
     panel_origins: ResultPanelOrigins,
-    numeric_panel_origins: ResultNumericPanelOrigins,
+    pub(in crate::recognition) numeric_panel_origins: ResultNumericPanelOrigins,
     pub upper_panel_edge: Roi,
     pub lower_panel_edge: Roi,
     pub title: Roi,

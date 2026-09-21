@@ -8,18 +8,18 @@ use ort::value::{Tensor, TensorElementType, ValueType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::numeric_fixed_slot::{
+use super::fixed_slot::{
     FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID, extract_fixed_slot_fields,
     fixed_not_displayed_fields, fixed_slot_feature,
-};
-use super::{
-    CanonicalLayout, DynamicTextObservation, ResultNumericCharacterLayout, ResultScreenRgb8Crops,
 };
 use crate::recognition::shared::{
     FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
     NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
 };
 use crate::recognition::title::OnnxParityError;
+use crate::recognition::{
+    CanonicalLayout, DynamicTextObservation, ResultNumericCharacterLayout, ResultScreenRgb8Crops,
+};
 
 pub const NUMERIC_PREPROCESSOR_ID: &str = FIXED_SLOT_PREPROCESSOR_ID;
 pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
@@ -464,9 +464,9 @@ impl RegisteredNumericRuntime {
     /// Rejects invalid crops, nonfinite output, or inference failure.
     pub fn observe_music_select_best(
         &mut self,
-        crops: &super::MusicSelectBestCrops,
-    ) -> Result<super::BestNumericObservation, OnnxParityError> {
-        let layout = super::MusicSelectBestLayout::load()?;
+        crops: &crate::recognition::MusicSelectBestCrops,
+    ) -> Result<crate::recognition::BestNumericObservation, OnnxParityError> {
+        let layout = crate::recognition::MusicSelectBestLayout::load()?;
         let cells = crops.numeric_cells()?;
         let mut input = Vec::with_capacity(8 * FIXED_SLOT_FEATURE_DIMENSIONS);
         for cell in &cells {
@@ -485,7 +485,7 @@ impl RegisteredNumericRuntime {
         if shape.as_ref() != [8, 11] || logits.iter().any(|v| !v.is_finite()) {
             return Err(OnnxParityError::InvalidArtifact);
         }
-        let mut observation = super::BestNumericObservation::default();
+        let mut observation = crate::recognition::BestNumericObservation::default();
         let mut values = Vec::new();
         for field in logits.chunks_exact(44) {
             let mut text = String::new();
@@ -512,13 +512,16 @@ impl RegisteredNumericRuntime {
             } else {
                 None
             };
-            values.push(value.map_or(super::BestValue::Unknown, super::BestValue::Known));
+            values.push(value.map_or(
+                crate::recognition::BestValue::Unknown,
+                crate::recognition::BestValue::Known,
+            ));
             observation.cell_classes.push(text);
             observation.minimum_margins_milli.push(margin);
         }
         observation.score = values.remove(0);
         observation.miss_count = if crops.miss_dashes() {
-            super::BestValue::NoRecord
+            crate::recognition::BestValue::NoRecord
         } else {
             values.remove(0)
         };

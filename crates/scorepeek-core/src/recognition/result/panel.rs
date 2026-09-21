@@ -1,7 +1,10 @@
 use crate::catalog::Difficulty;
 use serde::Deserialize;
 
-use super::{CanonicalLayout, NumericField, RecognitionError, Roi};
+use crate::recognition::{
+    CanonicalLayout, NumericField, RecognitionError, Roi,
+    screen::{CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH, encode_sha256},
+};
 
 const LAYOUT_BYTES: &[u8] = include_bytes!("../../result-numeric-character-layout-v3.json");
 const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v3";
@@ -46,7 +49,7 @@ pub struct ResultNumericCharacterLayout {
 impl ResultNumericCharacterLayout {
     #[must_use]
     pub fn sha256() -> String {
-        super::encode_sha256(LAYOUT_BYTES)
+        encode_sha256(LAYOUT_BYTES)
     }
 
     /// Loads the fixed character cells measured in canonical-frame coordinates.
@@ -62,7 +65,7 @@ impl ResultNumericCharacterLayout {
         let layout: Self = serde_json::from_slice(LAYOUT_BYTES)?;
         let canonical = CanonicalLayout::load()?;
         if layout.schema != LAYOUT_SCHEMA
-            || layout.canonical_frame_contract_id != super::CANONICAL_FRAME_CONTRACT_ID
+            || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
@@ -223,7 +226,7 @@ fn validate_field(
 fn validate_cells(cells: &[Roi], source: Roi) -> Result<(), RecognitionError> {
     let mut previous_right = None;
     for cell in cells {
-        cell.validate(super::CANONICAL_WIDTH, super::CANONICAL_HEIGHT)?;
+        cell.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
         if !contains(source, *cell) || previous_right.is_some_and(|right| cell.x < right) {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -255,7 +258,7 @@ mod tests {
         assert_eq!(parsed.schema, LAYOUT_SCHEMA);
         assert_eq!(
             parsed.canonical_frame_contract_id,
-            super::super::CANONICAL_FRAME_CONTRACT_ID
+            CANONICAL_FRAME_CONTRACT_ID
         );
         assert_eq!(parsed.canonical_layout_sha256, CanonicalLayout::sha256());
         let canonical = CanonicalLayout::load().unwrap();
