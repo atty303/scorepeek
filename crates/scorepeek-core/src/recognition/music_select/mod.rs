@@ -6,5 +6,6 @@ mod play_type;
 mod resolve;
 
 pub use best::*;
+pub use observe::*;
 pub use play_type::*;
 pub use resolve::*;
