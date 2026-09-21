@@ -20,6 +20,7 @@ use scorepeek_core::diagnostics::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::retention::{MAX_DEGRADATIONS_PER_RUN, MAX_FACTS_PER_RUN, MAX_FRAMES_PER_RUN};
 use crate::publish_private_file;
 
 const CANONICAL_WIDTH: u32 = 1_920;
@@ -27,10 +28,7 @@ const CANONICAL_HEIGHT: u32 = 1_080;
 pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const MAX_SOURCE_FRAME_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
-pub const MAX_FRAMES_PER_RUN: usize = 8_192;
-pub const MAX_FACTS_PER_RUN: usize = 250_000;
 pub(crate) const MAX_FACT_BYTES: usize = 64 * 1024;
-pub const MAX_DEGRADATIONS_PER_RUN: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticRecordOutcome {

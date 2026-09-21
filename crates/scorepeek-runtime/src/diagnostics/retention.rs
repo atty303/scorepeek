@@ -1,3 +1,5 @@
-//! Diagnostic-run retention limits.
+//! Diagnostic-run bounded-record retention limits.
 
-pub use super::writer::{MAX_DEGRADATIONS_PER_RUN, MAX_FACTS_PER_RUN, MAX_FRAMES_PER_RUN};
+pub const MAX_FRAMES_PER_RUN: usize = 8_192;
+pub const MAX_FACTS_PER_RUN: usize = 250_000;
+pub const MAX_DEGRADATIONS_PER_RUN: usize = 4_096;
