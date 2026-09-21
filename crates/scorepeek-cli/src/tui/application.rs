@@ -12,8 +12,8 @@ impl Application {
     }
 
     pub fn render(&mut self, snapshot: &ApplicationSnapshot) {
-        if let Some(run) = &snapshot.run {
-            self.terminal.draw(&super::view::lines(run));
+        if let Some(run) = super::view::active_run(snapshot) {
+            self.terminal.draw(&super::render::lines(run));
         }
     }
 }
