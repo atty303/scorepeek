@@ -28,6 +28,10 @@ local linters = new Mapping<String, Step> {
     glob = List("crates/scorepeek-overlay-ui/**", "crates/scorepeek-overlay-web/**")
     check = "mise run overlay:web:check"
   }
+  ["site"] {
+    glob = List("site/**", "scripts/check-site.bash", "tests/site-browser.spec.js")
+    check = "mise run site:check"
+  }
 }
 
 hooks {

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090c0f">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    >
+    <title>scorepeek</title>
+    <link rel="stylesheet" href="assets/site.css">
+    <script>
+      const language = (navigator.languages?.[0] || navigator.language || "en").toLowerCase();
+      location.replace(language.startsWith("ja") ? "./ja/" : "./en/");
+    </script>
+  </head>
+  <body class="language-gateway">
+    <main class="gateway-card">
+      <img src="assets/scorepeek-logo-dark.png" alt="scorepeek" width="2172" height="724">
+      <h1>Choose your language</h1>
+      <nav aria-label="Language">
+        <a class="button" href="ja/" lang="ja">日本語</a>
+        <a class="button button-secondary" href="en/" lang="en">English</a>
+      </nav>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090c0f">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    >
+    <meta
+      name="description"
+      content="A local IIDX companion that automatically records results and brings bests, result details, and history into customizable overlays."
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="scorepeek — Automatic IIDX score tracking">
+    <meta property="og:description" content="Automatic IIDX score tracking, visualized in your overlay.">
+    <meta property="og:url" content="https://atty303.github.io/scorepeek/en/">
+    <meta property="og:image" content="https://atty303.github.io/scorepeek/assets/dj-blackbox.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <title>scorepeek — Automatic IIDX score tracking</title>
+    <link rel="canonical" href="https://atty303.github.io/scorepeek/en/">
+    <link rel="alternate" hreflang="ja" href="https://atty303.github.io/scorepeek/ja/">
+    <link rel="alternate" hreflang="en" href="https://atty303.github.io/scorepeek/en/">
+    <link rel="alternate" hreflang="x-default" href="https://atty303.github.io/scorepeek/">
+    <link rel="preload" as="image" href="../assets/dj-blackbox.png">
+    <link rel="stylesheet" href="../assets/site.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="../en/" aria-label="scorepeek home">
+          <img src="../assets/scorepeek-logo-dark.png" alt="scorepeek" width="2172" height="724">
+        </a>
+        <nav class="primary-nav" aria-label="Main navigation">
+          <a href="#how">How it works</a>
+          <a href="#overlay">Overlay</a>
+          <a href="#technology">Technology</a>
+        </nav>
+        <nav class="language-switch" aria-label="Language">
+          <a href="../ja/" lang="ja" hreflang="ja">JA</a>
+          <span aria-hidden="true">/</span>
+          <span aria-current="page">EN</span>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-grid page-shell">
+          <div class="hero-copy">
+            <p class="eyebrow"><span></span> IIDX score tracking &amp; overlay</p>
+            <h1 id="hero-title">
+              <span>Automatic IIDX score tracking.</span>
+              <span>Progress, visualized in your <em>overlay</em>.</span>
+            </h1>
+            <p class="hero-summary">
+              Recognize results from the game screen and record them locally. Bring your bests, result details, and history into your overlay.
+            </p>
+            <a class="button hero-cta" href="https://github.com/atty303/scorepeek">
+              View on GitHub
+              <span aria-hidden="true">↗</span>
+            </a>
+            <p class="hero-microcopy" aria-hidden="true">Score your play. A clearer tomorrow.</p>
+          </div>
+
+          <div class="hero-visual">
+            <span class="hero-visual-label hero-visual-label-top">play data<br>visualized<br>your growth</span>
+            <span class="hero-visual-label hero-visual-label-bottom">scorepeek<br>for a<br>better play</span>
+            <div class="product-frame">
+              <span class="frame-corner frame-corner-a"></span>
+              <span class="frame-corner frame-corner-b"></span>
+              <img
+                src="../assets/dj-blackbox.png"
+                alt="Scorepeek's DJ Blackbox overlay showing a best score, result details, and history graph"
+                width="640"
+                height="640"
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section process-section" id="how" aria-labelledby="how-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">How it works</p>
+              <h2 id="how-title">From play, to record, to display.</h2>
+            </div>
+            <p>No manual entry required. Every play flows directly into your records and your overlay.</p>
+          </div>
+
+          <ol class="process-grid">
+            <li class="process-card">
+              <span class="step-number">01</span>
+              <div class="step-copy">
+                <h3>Screen recognition</h3>
+                <p>Read results from the game screen</p>
+              </div>
+              <svg class="line-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="8" y="10" width="48" height="36" rx="2"></rect>
+                <path d="M18 24v-6h6M40 18h6v6M46 34v6h-6M24 40h-6v-6M25 54h14M32 46v8"></path>
+              </svg>
+            </li>
+            <li class="process-card">
+              <span class="step-number">02</span>
+              <div class="step-copy">
+                <h3>Automatic record</h3>
+                <p>Save scores and history locally</p>
+              </div>
+              <svg class="line-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <ellipse cx="23" cy="14" rx="13" ry="6"></ellipse>
+                <path d="M10 14v28c0 3 6 6 13 6s13-3 13-6V14M10 28c0 3 6 6 13 6s13-3 13-6"></path>
+                <path d="M44 24h10v28H34V36M44 24v10h10M40 41h9M40 47h9"></path>
+              </svg>
+            </li>
+            <li class="process-card">
+              <span class="step-number">03</span>
+              <div class="step-copy">
+                <h3>Overlay update</h3>
+                <p>See bests and progress right away</p>
+              </div>
+              <svg class="line-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="7" y="10" width="50" height="40" rx="2"></rect>
+                <path d="M15 42V29M15 42h34M20 36l8-8 7 5 12-14M43 19h4v4"></path>
+              </svg>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section overlay-section" id="overlay" aria-labelledby="overlay-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">Overlay customization</p>
+              <h2 id="overlay-title">Your screen. Your style.</h2>
+            </div>
+            <p>Choose from multiple skins and customize your widgets. Shape the display around the way you play and keep progress motivating.</p>
+          </div>
+
+          <div class="skin-gallery">
+            <figure class="skin-card skin-cyan">
+              <img src="../assets/cyan-system.png" alt="Cyan System overlay skin" width="640" height="640" loading="lazy">
+              <figcaption>
+                <span>Cyan System</span>
+                <small>A cool, refined system style.</small>
+              </figcaption>
+            </figure>
+            <figure class="skin-card skin-aurora">
+              <img src="../assets/result-aurora.png" alt="Result Aurora overlay skin" width="640" height="640" loading="lazy">
+              <figcaption>
+                <span>Result Aurora</span>
+                <small>A vivid, dynamic result style.</small>
+              </figcaption>
+            </figure>
+            <figure class="skin-card skin-blackbox">
+              <img src="../assets/dj-blackbox.png" alt="DJ Blackbox overlay skin" width="640" height="640" loading="lazy">
+              <figcaption>
+                <span>DJ Blackbox</span>
+                <small>A legible, industrial instrument style.</small>
+              </figcaption>
+            </figure>
+          </div>
+
+          <div class="editor-demo">
+            <div class="editor-window" aria-hidden="true">
+              <div class="editor-toolbar"><span></span><span></span><span></span></div>
+              <div class="editor-canvas">
+                <div class="widget-wire"><i></i><i></i><i></i><i></i></div>
+              </div>
+              <div class="editor-inspector">
+                <span>Widget</span>
+                <dl>
+                  <div><dt>X</dt><dd>120</dd></div>
+                  <div><dt>Y</dt><dd>90</dd></div>
+                  <div><dt>W</dt><dd>360</dd></div>
+                  <div><dt>H</dt><dd>240</dd></div>
+                </dl>
+                <span>Visibility</span>
+                <strong>Always⌄</strong>
+              </div>
+            </div>
+            <div class="editor-copy">
+              <p class="kicker">Visual editor</p>
+              <h3>Move widgets. Tune their size and visibility.</h3>
+              <p>Use the visual editor to create a layout that fits your screen.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section usage-section" id="use" aria-labelledby="use-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">In your play &amp; stream</p>
+              <h2 id="use-title">For your play. For your stream.</h2>
+            </div>
+            <p>Keep progress in view during your everyday play. Share the same scores and growth through your streaming overlay.</p>
+          </div>
+
+          <div class="usage-grid">
+            <article class="usage-card usage-primary">
+              <div class="monitor-shell">
+                <div class="monitor-screen">
+                  <img src="../assets/dj-blackbox.png" alt="Scorepeek overlay displayed on a personal play screen" width="640" height="640" loading="lazy">
+                </div>
+                <span class="monitor-stand"></span>
+              </div>
+              <div>
+                <p class="kicker">Your play</p>
+                <h3>Right beside every play.</h3>
+                <p>See your progress in real time and make everyday play more rewarding.</p>
+              </div>
+            </article>
+            <article class="usage-card usage-secondary">
+              <div class="broadcast-window" aria-hidden="true">
+                <div class="broadcast-bar"><span></span><strong>OBS</strong></div>
+                <img src="../assets/dj-blackbox.png" alt="" width="640" height="640" loading="lazy">
+                <i>LIVE</i>
+              </div>
+              <div>
+                <p class="kicker">Your stream</p>
+                <h3>The same view on stream.</h3>
+                <p>Bring the overlay into OBS and make your usual play easier to follow and share.</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section technology-section" id="technology" aria-labelledby="technology-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">Technical principles</p>
+              <h2 id="technology-title">Independent of the game. Independent of the display.</h2>
+            </div>
+            <p>Recognize and record from the screen without depending on internal game data. Keep recognition and presentation separate for flexible extensions.</p>
+          </div>
+
+          <div class="technology-flow" aria-label="Technical flow from Game Screen to Overlays and Tools">
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><rect x="5" y="8" width="38" height="27" rx="2"></rect><path d="M17 42h14M24 35v7"></path></svg>
+              <span>Game screen</span>
+              <small>No internal game data required.</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 18V9h9M31 9h9v9M40 30v9h-9M17 39H8v-9M15 24h18"></path></svg>
+              <span>Recognition</span>
+              <small>Read results from the screen.</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><ellipse cx="24" cy="11" rx="15" ry="6"></ellipse><path d="M9 11v26c0 3 7 6 15 6s15-3 15-6V11M9 24c0 3 7 6 15 6s15-3 15-6"></path></svg>
+              <span>Event API / SQLite</span>
+              <small>Keep scores and history local.</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><rect x="5" y="7" width="38" height="34" rx="2"></rect><path d="M12 34l9-10 7 5 8-13"></path></svg>
+              <span>Overlays &amp; tools</span>
+              <small>Connect your own displays and tools.</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing-cta" aria-labelledby="closing-title">
+        <div class="page-shell closing-inner">
+          <p class="closing-aside" aria-hidden="true">Play<br>Record<br>Grow</p>
+          <div>
+            <h2 id="closing-title">Turn your records into visible progress.</h2>
+            <a class="button" href="https://github.com/atty303/scorepeek">View on GitHub <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="closing-aside closing-aside-right" aria-hidden="true">Same play<br>New perspective</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="page-shell footer-inner">
+        <a class="brand brand-footer" href="../en/" aria-label="scorepeek home">
+          <img src="../assets/scorepeek-logo-dark.png" alt="scorepeek" width="2172" height="724" loading="lazy">
+        </a>
+        <nav aria-label="Footer navigation">
+          <a href="#how">How it works</a>
+          <a href="#overlay">Overlay</a>
+          <a href="#technology">Technology</a>
+        </nav>
+        <div class="footer-meta">
+          <span class="language-switch"><a href="../ja/" lang="ja" hreflang="ja">JA</a><span aria-hidden="true">/</span><span aria-current="page">EN</span></span>
+          <a href="https://github.com/atty303/scorepeek">GitHub</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

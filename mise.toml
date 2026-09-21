@@ -119,6 +119,15 @@ scripts/test-dist-artifact.bash "$version"
 cp -- "$archive" "$output_directory/"
 '''
 
+[tasks."site:check"]
+description = "Check the bilingual landing page structure and local assets"
+run = "scripts/check-site.bash"
+
+[tasks."site:browser:test"]
+description = "Test the bilingual landing page in pinned Chromium"
+depends = ["overlay:web:browser:install"]
+run = "scripts/test-site-browser.bash"
+
 [tasks."overlay:web:check"]
 description = "Type-check the shared browser UI without bundling assets"
 run = "cargo check --locked -p scorepeek-overlay-web --target wasm32-unknown-unknown"
@@ -335,6 +344,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run native:verify
+mise run site:browser:test
 exec scripts/with-isolated-skins.sh mise run overlay:web:browser:test
 '''
 

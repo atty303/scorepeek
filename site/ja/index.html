@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090c0f">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    >
+    <meta
+      name="description"
+      content="IIDXのリザルトを自動記録し、ベスト、リザルト詳細、履歴をカスタマイズ可能なoverlayに表示するローカルcompanion。"
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="scorepeek — IIDXのリザルトを自動記録">
+    <meta property="og:description" content="IIDXのリザルトを自動記録。overlayで成長を可視化。">
+    <meta property="og:url" content="https://atty303.github.io/scorepeek/ja/">
+    <meta property="og:image" content="https://atty303.github.io/scorepeek/assets/dj-blackbox.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <title>scorepeek — IIDXのリザルトを自動記録</title>
+    <link rel="canonical" href="https://atty303.github.io/scorepeek/ja/">
+    <link rel="alternate" hreflang="ja" href="https://atty303.github.io/scorepeek/ja/">
+    <link rel="alternate" hreflang="en" href="https://atty303.github.io/scorepeek/en/">
+    <link rel="alternate" hreflang="x-default" href="https://atty303.github.io/scorepeek/">
+    <link rel="preload" as="image" href="../assets/dj-blackbox.png">
+    <link rel="stylesheet" href="../assets/site.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">本文へ移動</a>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="../ja/" aria-label="scorepeek ホーム">
+          <img src="../assets/scorepeek-logo-dark.png" alt="scorepeek" width="2172" height="724">
+        </a>
+        <nav class="primary-nav" aria-label="メインナビゲーション">
+          <a href="#how">しくみ</a>
+          <a href="#overlay">Overlay</a>
+          <a href="#technology">Technology</a>
+        </nav>
+        <nav class="language-switch" aria-label="言語">
+          <span aria-current="page">JA</span>
+          <span aria-hidden="true">/</span>
+          <a href="../en/" lang="en" hreflang="en">EN</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-grid page-shell">
+          <div class="hero-copy">
+            <p class="eyebrow"><span></span> IIDX score tracking &amp; overlay</p>
+            <h1 id="hero-title">
+              <span>IIDXのリザルトを自動記録。</span>
+              <span><em>overlay</em>で成長を可視化。</span>
+            </h1>
+            <p class="hero-summary">
+              プレイ結果を画面から認識し、ローカルに記録。ベスト、リザルト詳細、履歴をoverlayに映し出します。
+            </p>
+            <a class="button hero-cta" href="https://github.com/atty303/scorepeek">
+              GitHubで見る
+              <span aria-hidden="true">↗</span>
+            </a>
+            <p class="hero-microcopy" aria-hidden="true">Score your play. A clearer tomorrow.</p>
+          </div>
+
+          <div class="hero-visual">
+            <span class="hero-visual-label hero-visual-label-top">play data<br>visualized<br>your growth</span>
+            <span class="hero-visual-label hero-visual-label-bottom">scorepeek<br>for a<br>better play</span>
+            <div class="product-frame">
+              <span class="frame-corner frame-corner-a"></span>
+              <span class="frame-corner frame-corner-b"></span>
+              <img
+                src="../assets/dj-blackbox.png"
+                alt="DJ Blackboxスキンで、ベストスコア、リザルト詳細、履歴グラフを表示したscorepeek overlay"
+                width="640"
+                height="640"
+              >
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section process-section" id="how" aria-labelledby="how-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">How it works</p>
+              <h2 id="how-title">プレイから、記録、表示まで。</h2>
+            </div>
+            <p>面倒な操作は必要ありません。いつものプレイが、そのまま記録と表示につながります。</p>
+          </div>
+
+          <ol class="process-grid">
+            <li class="process-card">
+              <span class="step-number">01</span>
+              <div class="step-copy">
+                <h3>Screen recognition</h3>
+                <p>画面からリザルトを読み取る</p>
+              </div>
+              <svg class="line-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="8" y="10" width="48" height="36" rx="2"></rect>
+                <path d="M18 24v-6h6M40 18h6v6M46 34v6h-6M24 40h-6v-6M25 54h14M32 46v8"></path>
+              </svg>
+            </li>
+            <li class="process-card">
+              <span class="step-number">02</span>
+              <div class="step-copy">
+                <h3>Automatic record</h3>
+                <p>スコアと履歴をローカルに保存</p>
+              </div>
+              <svg class="line-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <ellipse cx="23" cy="14" rx="13" ry="6"></ellipse>
+                <path d="M10 14v28c0 3 6 6 13 6s13-3 13-6V14M10 28c0 3 6 6 13 6s13-3 13-6"></path>
+                <path d="M44 24h10v28H34V36M44 24v10h10M40 41h9M40 47h9"></path>
+              </svg>
+            </li>
+            <li class="process-card">
+              <span class="step-number">03</span>
+              <div class="step-copy">
+                <h3>Overlay update</h3>
+                <p>ベストと成長をすぐに表示</p>
+              </div>
+              <svg class="line-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="7" y="10" width="50" height="40" rx="2"></rect>
+                <path d="M15 42V29M15 42h34M20 36l8-8 7 5 12-14M43 19h4v4"></path>
+              </svg>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="section overlay-section" id="overlay" aria-labelledby="overlay-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">Overlay customization</p>
+              <h2 id="overlay-title">自分の画面に、自分のスタイルを。</h2>
+            </div>
+            <p>複数のスキンと、カスタマイズ可能なwidget。プレイスタイルに合わせた表示で、モチベーションをもっと高く。</p>
+          </div>
+
+          <div class="skin-gallery">
+            <figure class="skin-card skin-cyan">
+              <img src="../assets/cyan-system.png" alt="Cyan System overlayスキン" width="640" height="640" loading="lazy">
+              <figcaption>
+                <span>Cyan System</span>
+                <small>クールで洗練されたスタイル。</small>
+              </figcaption>
+            </figure>
+            <figure class="skin-card skin-aurora">
+              <img src="../assets/result-aurora.png" alt="Result Aurora overlayスキン" width="640" height="640" loading="lazy">
+              <figcaption>
+                <span>Result Aurora</span>
+                <small>ダイナミックで華やかなスタイル。</small>
+              </figcaption>
+            </figure>
+            <figure class="skin-card skin-blackbox">
+              <img src="../assets/dj-blackbox.png" alt="DJ Blackbox overlayスキン" width="640" height="640" loading="lazy">
+              <figcaption>
+                <span>DJ Blackbox</span>
+                <small>視認性の高い工業的なスタイル。</small>
+              </figcaption>
+            </figure>
+          </div>
+
+          <div class="editor-demo">
+            <div class="editor-window" aria-hidden="true">
+              <div class="editor-toolbar"><span></span><span></span><span></span></div>
+              <div class="editor-canvas">
+                <div class="widget-wire"><i></i><i></i><i></i><i></i></div>
+              </div>
+              <div class="editor-inspector">
+                <span>Widget</span>
+                <dl>
+                  <div><dt>X</dt><dd>120</dd></div>
+                  <div><dt>Y</dt><dd>90</dd></div>
+                  <div><dt>W</dt><dd>360</dd></div>
+                  <div><dt>H</dt><dd>240</dd></div>
+                </dl>
+                <span>Visibility</span>
+                <strong>Always⌄</strong>
+              </div>
+            </div>
+            <div class="editor-copy">
+              <p class="kicker">Visual editor</p>
+              <h3>widgetを動かし、サイズと表示条件を調整。</h3>
+              <p>直感的なeditorで、あなたの画面に合うlayoutを作成できます。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section usage-section" id="use" aria-labelledby="use-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">In your play &amp; stream</p>
+              <h2 id="use-title">プレイ中も、配信でも。</h2>
+            </div>
+            <p>いつものプレイ環境で、リアルタイムに表示。配信でも、同じoverlayでスコアと成長を共有できます。</p>
+          </div>
+
+          <div class="usage-grid">
+            <article class="usage-card usage-primary">
+              <div class="monitor-shell">
+                <div class="monitor-screen">
+                  <img src="../assets/dj-blackbox.png" alt="プレイ画面に表示したscorepeek overlayのイメージ" width="640" height="640" loading="lazy">
+                </div>
+                <span class="monitor-stand"></span>
+              </div>
+              <div>
+                <p class="kicker">Your play</p>
+                <h3>プレイのそばに、いつでも。</h3>
+                <p>自分の成長をリアルタイムで確認しながら、より楽しくプレイできます。</p>
+              </div>
+            </article>
+            <article class="usage-card usage-secondary">
+              <div class="broadcast-window" aria-hidden="true">
+                <div class="broadcast-bar"><span></span><strong>OBS</strong></div>
+                <img src="../assets/dj-blackbox.png" alt="" width="640" height="640" loading="lazy">
+                <i>LIVE</i>
+              </div>
+              <div>
+                <p class="kicker">Your stream</p>
+                <h3>配信でも、同じように。</h3>
+                <p>OBSなどの配信softwareでも簡単に表示。いつものプレイを、もっと魅力的に共有できます。</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section technology-section" id="technology" aria-labelledby="technology-title">
+        <div class="page-shell">
+          <div class="section-heading split-heading">
+            <div>
+              <p class="kicker">Technical principles</p>
+              <h2 id="technology-title">ゲームから独立。表示からも独立。</h2>
+            </div>
+            <p>ゲームの内部データに依存せず、画面から認識して記録。認識と表示を分離した設計で、柔軟な拡張が可能です。</p>
+          </div>
+
+          <div class="technology-flow" aria-label="Game ScreenからOverlays and Toolsまでの技術フロー">
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><rect x="5" y="8" width="38" height="27" rx="2"></rect><path d="M17 42h14M24 35v7"></path></svg>
+              <span>Game screen</span>
+              <small>ゲームの内部データは必要ありません。</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 18V9h9M31 9h9v9M40 30v9h-9M17 39H8v-9M15 24h18"></path></svg>
+              <span>Recognition</span>
+              <small>画面からリザルトを認識します。</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><ellipse cx="24" cy="11" rx="15" ry="6"></ellipse><path d="M9 11v26c0 3 7 6 15 6s15-3 15-6V11M9 24c0 3 7 6 15 6s15-3 15-6"></path></svg>
+              <span>Event API / SQLite</span>
+              <small>スコアと履歴をローカルに保存。</small>
+            </div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="technology-node">
+              <svg class="tech-icon" viewBox="0 0 48 48" aria-hidden="true"><rect x="5" y="7" width="38" height="34" rx="2"></rect><path d="M12 34l9-10 7 5 8-13"></path></svg>
+              <span>Overlays &amp; tools</span>
+              <small>さまざまな表示toolにつなげられます。</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing-cta" aria-labelledby="closing-title">
+        <div class="page-shell closing-inner">
+          <p class="closing-aside" aria-hidden="true">Play<br>Record<br>Grow</p>
+          <div>
+            <h2 id="closing-title">プレイの記録を、見える成長へ。</h2>
+            <a class="button" href="https://github.com/atty303/scorepeek">GitHubで見る <span aria-hidden="true">↗</span></a>
+          </div>
+          <p class="closing-aside closing-aside-right" aria-hidden="true">Same play<br>New perspective</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="page-shell footer-inner">
+        <a class="brand brand-footer" href="../ja/" aria-label="scorepeek ホーム">
+          <img src="../assets/scorepeek-logo-dark.png" alt="scorepeek" width="2172" height="724" loading="lazy">
+        </a>
+        <nav aria-label="フッターナビゲーション">
+          <a href="#how">しくみ</a>
+          <a href="#overlay">Overlay</a>
+          <a href="#technology">Technology</a>
+        </nav>
+        <div class="footer-meta">
+          <span class="language-switch"><span aria-current="page">JA</span><span aria-hidden="true">/</span><a href="../en/" lang="en" hreflang="en">EN</a></span>
+          <a href="https://github.com/atty303/scorepeek">GitHub</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
