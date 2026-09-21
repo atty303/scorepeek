@@ -5,12 +5,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::diagnostics::writer::{
-    CANONICAL_BYTES, DiagnosticErrorType, DiagnosticExternalDegradation, DiagnosticFact,
-    DiagnosticFinishOutcome, DiagnosticFrameInput, DiagnosticRecorder, DiagnosticRunStatus,
-    DiagnosticSourceFrameInput,
+    CANONICAL_BYTES, DiagnosticExternalDegradation, DiagnosticFinishOutcome, DiagnosticFrameInput,
+    DiagnosticRecorder, DiagnosticSourceFrameInput,
 };
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
-use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
+use scorepeek_core::diagnostics::{
+    DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticOperation,
+    DiagnosticOperationStatus, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
+};
 
 pub const DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY: usize = 2;
 const DIAGNOSTIC_FACT_QUEUE_CAPACITY: usize = 256;
@@ -384,10 +386,10 @@ impl DiagnosticWorkerHandle {
             sequence,
             monotonic_start_ms,
             monotonic_end_ms,
-            operation: crate::diagnostics::writer::DiagnosticOperation::SampleRecognition,
-            status: crate::diagnostics::writer::DiagnosticOperationStatus::Success,
+            operation: DiagnosticOperation::SampleRecognition,
+            status: DiagnosticOperationStatus::Success,
             error_type: None,
-            detail: crate::diagnostics::writer::DiagnosticDetail::RecognitionBusySkip,
+            detail: DiagnosticDetail::RecognitionBusySkip,
         })
     }
 
@@ -817,7 +819,7 @@ fn acquire_worker_token(supervisor: &Mutex<Weak<()>>) -> Option<Arc<()>> {
 
 fn timeout_finish() -> DiagnosticFinishOutcome {
     DiagnosticFinishOutcome {
-        completeness: Some(crate::diagnostics::writer::DiagnosticCompleteness::Partial),
+        completeness: Some(scorepeek_core::diagnostics::DiagnosticCompleteness::Partial),
         error_type: Some(DiagnosticErrorType::FlushTimeout),
         manifest_sha256: None,
     }
@@ -825,7 +827,7 @@ fn timeout_finish() -> DiagnosticFinishOutcome {
 
 fn unavailable_finish() -> DiagnosticFinishOutcome {
     DiagnosticFinishOutcome {
-        completeness: Some(crate::diagnostics::writer::DiagnosticCompleteness::Dropped),
+        completeness: Some(scorepeek_core::diagnostics::DiagnosticCompleteness::Dropped),
         error_type: Some(DiagnosticErrorType::WorkerUnavailable),
         manifest_sha256: None,
     }
@@ -834,7 +836,7 @@ fn unavailable_finish() -> DiagnosticFinishOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::writer::DiagnosticCompleteness;
+    use scorepeek_core::diagnostics::DiagnosticCompleteness;
     use scorepeek_core::diagnostics::{
         DiagnosticBinding, DiagnosticReplayBinding, DiagnosticResource,
     };
@@ -941,10 +943,10 @@ mod tests {
                 sequence: 1,
                 monotonic_start_ms: 0,
                 monotonic_end_ms: 16,
-                operation: crate::diagnostics::writer::DiagnosticOperation::SampleRecognition,
-                status: crate::diagnostics::writer::DiagnosticOperationStatus::Success,
+                operation: DiagnosticOperation::SampleRecognition,
+                status: DiagnosticOperationStatus::Success,
                 error_type: None,
-                detail: crate::diagnostics::writer::DiagnosticDetail::SamplingSummary {
+                detail: DiagnosticDetail::SamplingSummary {
                     processed_ticks: 1,
                     busy_skips: 0,
                     maximum_consecutive_busy_skips: 0,

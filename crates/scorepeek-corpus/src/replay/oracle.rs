@@ -3117,7 +3117,7 @@ pub fn replay_corpus_with_options(
             episodes += 1;
         }
         let finish = recognition.finish(
-            scorepeek_runtime::diagnostics::writer::DiagnosticRunStatus::Success,
+            scorepeek_core::diagnostics::DiagnosticRunStatus::Success,
             1,
             Duration::from_secs(5),
         );
@@ -3377,7 +3377,7 @@ impl Drop for ReplaySessionRuntime {
     fn drop(&mut self) {
         if let Some(recognition) = self.recognition.take() {
             let _ = recognition.finish_offline(
-                scorepeek_runtime::diagnostics::writer::DiagnosticRunStatus::Error,
+                scorepeek_core::diagnostics::DiagnosticRunStatus::Error,
                 self.last_monotonic_ms,
             );
         }
@@ -4810,7 +4810,7 @@ fn finalize_replay_session(
         .map_err(CorpusError::InvalidReplay)?;
     let recognition = runtime.recognition.take().expect("recognizer is active");
     let finish = recognition.finish(
-        scorepeek_runtime::diagnostics::writer::DiagnosticRunStatus::Success,
+        scorepeek_core::diagnostics::DiagnosticRunStatus::Success,
         runtime.last_monotonic_ms,
         Duration::from_secs(30),
     );

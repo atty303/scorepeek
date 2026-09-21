@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
+use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus};
 use scorepeek_core::recognition::RegisteredNumericRuntime;
 use scorepeek_core::recognition::ScreenFieldObservationError;
 
@@ -22,7 +22,7 @@ use super::{
 };
 use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
-use crate::diagnostics::writer::{DiagnosticFinishOutcome, DiagnosticRunStatus};
+use crate::diagnostics::writer::DiagnosticFinishOutcome;
 use scorepeek_core::model::session::{RecognitionExecutionMode, recommended_text_worker_count};
 
 #[derive(Debug)]
@@ -104,7 +104,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        summary: crate::diagnostics::writer::RecognitionSamplingSummary,
+        summary: scorepeek_core::diagnostics::RecognitionSamplingSummary,
     ) {
         self.recognition
             .record_sampling_summary(sequence, monotonic_ms, summary);
@@ -591,7 +591,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
     pub fn record_frame_processing_timing(
         &mut self,
         mut timing: super::FrameProcessingTiming,
-        field_status: crate::diagnostics::writer::FrameFieldStatus,
+        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
         field_timing: Option<&super::screen_field_observer::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         timing.finish_wall();
@@ -673,9 +673,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::diagnostics::writer::DiagnosticCompleteness;
     use crate::recognition_live::field_observer::{FieldObserverFinishStatus, FieldObserverInput};
-    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
+    use scorepeek_core::diagnostics::{
+        DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
+    };
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {

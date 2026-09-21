@@ -72,7 +72,7 @@ struct StoredObservation<'a> {
     processing_timing:
         Option<&'a crate::recognition_live::screen_field_observer::RecognitionProcessingTiming>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    field_status: Option<crate::diagnostics::writer::FrameFieldStatus>,
+    field_status: Option<scorepeek_core::diagnostics::FrameFieldStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     title_evidence:
         Option<&'a crate::recognition_live::screen_field_observer::TitleEvidenceObservation>,
@@ -320,7 +320,7 @@ impl RecognitionArtifactWriter {
         sequence: u64,
         screen_episode_id: u64,
         timing: RecognitionArtifactTiming,
-        field_status: crate::diagnostics::writer::FrameFieldStatus,
+        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
         output: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
     ) -> Result<(), String> {
         self.record_with_result_context(
@@ -363,7 +363,7 @@ impl RecognitionArtifactWriter {
         processing_timing: Option<
             &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
         >,
-        field_status: Option<crate::diagnostics::writer::FrameFieldStatus>,
+        field_status: Option<scorepeek_core::diagnostics::FrameFieldStatus>,
         title_evidence: Option<
             &crate::recognition_live::screen_field_observer::TitleEvidenceObservation,
         >,
@@ -547,7 +547,7 @@ struct LiveRecord {
     screen_episode_id: u64,
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
-    field_status: crate::diagnostics::writer::FrameFieldStatus,
+    field_status: scorepeek_core::diagnostics::FrameFieldStatus,
     observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
 }
 
@@ -656,7 +656,7 @@ impl RecognitionArtifactWorker {
             0,
             monotonic_start_ms,
             monotonic_end_ms,
-            crate::diagnostics::writer::FrameFieldStatus::Completed,
+            scorepeek_core::diagnostics::FrameFieldStatus::Completed,
             observation,
         )
     }
@@ -667,7 +667,7 @@ impl RecognitionArtifactWorker {
         screen_episode_id: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
-        field_status: crate::diagnostics::writer::FrameFieldStatus,
+        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
         observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
     ) -> RecognitionArtifactEnqueueOutcome {
         let Some(sender) = &self.sender else {

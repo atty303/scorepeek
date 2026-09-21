@@ -2,7 +2,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor};
+use scorepeek_core::diagnostics::{
+    DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
+};
 use scorepeek_core::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
     ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
@@ -16,9 +18,7 @@ use self::field_observer::{
 use self::screen_field_observer::RegisteredScreenFieldObservation;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
-use crate::diagnostics::writer::{
-    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticRunStatus,
-};
+use crate::diagnostics::writer::DiagnosticFinishOutcome;
 
 pub mod field_observer;
 pub mod field_session;
@@ -527,7 +527,7 @@ impl RecognitionSession {
     pub fn record_frame_processing_timing(
         &mut self,
         timing: FrameProcessingTiming,
-        field_status: crate::diagnostics::writer::FrameFieldStatus,
+        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
         field_timing: Option<&screen_field_observer::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         self.bridge
@@ -597,7 +597,7 @@ impl RecognitionSession {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        summary: crate::diagnostics::writer::RecognitionSamplingSummary,
+        summary: scorepeek_core::diagnostics::RecognitionSamplingSummary,
     ) {
         let _ = self
             .bridge
@@ -1012,7 +1012,7 @@ mod tests {
             session
                 .finish(DiagnosticRunStatus::Success, 16)
                 .completeness,
-            Some(crate::diagnostics::writer::DiagnosticCompleteness::Complete)
+            Some(scorepeek_core::diagnostics::DiagnosticCompleteness::Complete)
         );
     }
 

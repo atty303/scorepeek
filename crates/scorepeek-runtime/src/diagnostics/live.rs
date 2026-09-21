@@ -7,7 +7,11 @@ use scorepeek::capture::{
     CalibratedSourceFrameEvidence, NormalizedCanonicalFrame, UncalibratedMemoryType,
     UncalibratedVideoContract,
 };
-use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention, DiagnosticRunDescriptor};
+use scorepeek_core::diagnostics::{
+    DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
+    DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy, DiagnosticRetention,
+    DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
+};
 use scorepeek_core::recognition::{
     CanonicalFrame, ScreenClass, ScreenFieldObservationError, ScreenFieldObservations,
     ScreenTextField,
@@ -17,11 +21,7 @@ use crate::diagnostics::ring::{
     DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT, DiagnosticEnqueueOutcome, DiagnosticOwnedFrame,
     DiagnosticOwnedSourceFrame, DiagnosticWorkerHandle,
 };
-use crate::diagnostics::writer::{
-    DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
-    DiagnosticFinishOutcome, DiagnosticOperation, DiagnosticOperationStatus, DiagnosticRunStatus,
-    DiagnosticScreen, DiagnosticTextField,
-};
+use crate::diagnostics::writer::DiagnosticFinishOutcome;
 use crate::recognition_live::RecognitionObservation;
 
 const FOREGROUND_RING_INTERVAL_MS: u64 = 1_000;
@@ -497,7 +497,7 @@ impl DiagnosticBridge {
     pub fn record_frame_processing_timing(
         &mut self,
         timing: crate::recognition_live::FrameProcessingTiming,
-        field_status: crate::diagnostics::writer::FrameFieldStatus,
+        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
         field_timing: Option<
             &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
         >,
@@ -706,7 +706,7 @@ impl DiagnosticBridge {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        summary: crate::diagnostics::writer::RecognitionSamplingSummary,
+        summary: scorepeek_core::diagnostics::RecognitionSamplingSummary,
     ) -> DiagnosticEnqueueOutcome {
         self.worker.try_record_fact(DiagnosticFact {
             sequence,
@@ -916,8 +916,8 @@ fn diagnostic_text_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::writer::DiagnosticCompleteness;
     use crate::recognition_live::RecognitionObservation;
+    use scorepeek_core::diagnostics::DiagnosticCompleteness;
     use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
     use scorepeek_core::recognition::{
         CanonicalLayout, DynamicTextObservation, ResultScreenFieldObservations, ScreenClass,
@@ -1108,12 +1108,12 @@ mod tests {
             8,
         );
         for (sequence, field_status) in [
-            (1, crate::diagnostics::writer::FrameFieldStatus::BusySkip),
+            (1, scorepeek_core::diagnostics::FrameFieldStatus::BusySkip),
             (
                 2,
-                crate::diagnostics::writer::FrameFieldStatus::NotApplicable,
+                scorepeek_core::diagnostics::FrameFieldStatus::NotApplicable,
             ),
-            (3, crate::diagnostics::writer::FrameFieldStatus::Failed),
+            (3, scorepeek_core::diagnostics::FrameFieldStatus::Failed),
         ] {
             assert_eq!(
                 bridge.offer(&frame(1, sequence, sequence * 100)),

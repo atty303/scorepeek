@@ -12,4 +12,10 @@ pub use policy::{
     DEFAULT_AGGREGATE_BYTES, DEFAULT_SAMPLE_INTERVAL_MS, DiagnosticPolicy, DiagnosticRetention,
     NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
 };
-pub use record::DiagnosticRecord;
+pub use record::{
+    DiagnosticCompleteness, DiagnosticContextChange, DiagnosticDecisionDomain,
+    DiagnosticDecisionOutcome, DiagnosticDetail, DiagnosticErrorType, DiagnosticEventKind,
+    DiagnosticEventOutcome, DiagnosticFact, DiagnosticFactErrorType, DiagnosticOperation,
+    DiagnosticOperationStatus, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
+    FrameFieldStatus, RecognitionSamplingSummary,
+};
