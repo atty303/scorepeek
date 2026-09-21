@@ -1,4 +1,4 @@
-use scorepeek_overlay_web_host::bridge::data::{Backend, Config};
+use scorepeek_overlay_web_host::host::lifecycle::{Backend, Config};
 use scorepeek_runtime::config::control::Controller;
 use std::io::Write as _;
 

@@ -1,4 +1,5 @@
-use crate::bridge::data::{Config, Feed};
+use crate::bridge::data::Feed;
+use crate::host::lifecycle::{Backend, Config};
 use axum::{Router, routing::get};
 use std::{
     sync::{Arc, Mutex, atomic::Ordering},
@@ -37,7 +38,7 @@ pub(crate) async fn serve(
     let managed_canvases = config
         .canvases
         .iter()
-        .filter(|canvas| canvas.backend == crate::bridge::data::Backend::Obs)
+        .filter(|canvas| canvas.backend == Backend::Obs)
         .cloned()
         .collect();
     let shared = Arc::new(Shared {

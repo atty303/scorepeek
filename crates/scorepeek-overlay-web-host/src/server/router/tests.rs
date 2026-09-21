@@ -1,6 +1,6 @@
 use super::*;
-use crate::bridge::data::Backend;
 use crate::bundle::embedded::ASSET_VERSION;
+use crate::host::lifecycle::Backend;
 use crate::websocket::session::display_state;
 use crate::{config::OverlayConfig, control::Controller};
 use serde_json::{Value, json};

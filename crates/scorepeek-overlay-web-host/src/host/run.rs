@@ -1,5 +1,5 @@
-use crate::bridge::data::Config;
 use crate::bundle::embedded::Assets;
+use crate::host::lifecycle::Config;
 
 /// Serves only local embedded UI assets and display snapshots.
 /// # Errors

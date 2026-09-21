@@ -178,7 +178,7 @@ pub(crate) fn effective_canvas_properties(
 pub(crate) fn display_canvas_specification_uses_the_skin_property_authority() {
     let mut canvas = crate::config::empty_canvas(
         "browser-background".into(),
-        crate::bridge::data::Backend::Obs,
+        crate::host::lifecycle::Backend::Obs,
         "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap(),
     );
     canvas

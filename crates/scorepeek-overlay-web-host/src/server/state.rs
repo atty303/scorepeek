@@ -48,7 +48,7 @@ impl EditorConnection {
             } => (backend, Some(editor_id)),
             Request::GetBackend { backend } => (backend, None),
         };
-        if *backend != crate::bridge::data::Backend::Obs {
+        if *backend != crate::host::lifecycle::Backend::Obs {
             return Err("stage control only accepts the OBS backend".into());
         }
         if let Some(editor) = editor {
@@ -77,7 +77,7 @@ impl EditorConnection {
                 } else {
                     let mut canvas = crate::config::empty_canvas(
                         presentation.id.clone(),
-                        crate::bridge::data::Backend::Obs,
+                        crate::host::lifecycle::Backend::Obs,
                         presentation.skin,
                     );
                     canvas.apply_presentation(presentation);
@@ -96,7 +96,7 @@ impl Drop for EditorConnection {
             return;
         }
         let result = self.request(crate::control::Request::ReleaseBackend {
-            backend: crate::bridge::data::Backend::Obs,
+            backend: crate::host::lifecycle::Backend::Obs,
             editor_id: self.id.clone(),
         });
         crate::diagnostics::emit(

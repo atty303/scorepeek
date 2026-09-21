@@ -43,8 +43,8 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
 mod test_authority {
     use super::{Request, Response};
     use crate::{
-        bridge::data::Backend,
         config::{Canvas, OverlayConfig},
+        host::lifecycle::Backend,
     };
     use scorepeek_overlay::CanvasPresentation;
     use std::{

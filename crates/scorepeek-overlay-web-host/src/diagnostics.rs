@@ -46,7 +46,7 @@ pub fn run() -> Result<(), String> {
 
 fn run_inner() -> Result<(), String> {
     let (config, input) = crate::bridge::data::read_config()?;
-    if config.backend != crate::bridge::data::Backend::Obs {
+    if config.backend != crate::host::lifecycle::Backend::Obs {
         return Err("Wayland config was sent to the Web host process role".into());
     }
     emit(
