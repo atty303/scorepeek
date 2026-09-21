@@ -498,9 +498,7 @@ impl DiagnosticBridge {
         &mut self,
         timing: crate::recognition_live::FrameProcessingTiming,
         field_status: scorepeek_core::diagnostics::FrameFieldStatus,
-        field_timing: Option<
-            &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
-        >,
+        field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         let screen = match timing.screen {
             ScreenClass::Title => DiagnosticScreen::Title,

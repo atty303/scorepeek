@@ -592,7 +592,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         &mut self,
         mut timing: super::FrameProcessingTiming,
         field_status: scorepeek_core::diagnostics::FrameFieldStatus,
-        field_timing: Option<&super::screen_field_observer::RecognitionProcessingTiming>,
+        field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         timing.finish_wall();
         self.recognition

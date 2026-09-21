@@ -43,14 +43,14 @@ use crate::recognition_live::field_session::{
     FieldObservationSubmission, PendingSessionFieldObservation,
 };
 use crate::recognition_live::screen_field_observer::{
-    RegisteredScreenFieldObservation, RegisteredScreenFieldObserver,
-    RegisteredScreenFieldObserverLoadError,
+    RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
 };
 use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
 use scorepeek_core::diagnostics::{
     DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
     DiagnosticRunStatus,
 };
+use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 use scorepeek_core::recognition::{
     CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
     ScreenFieldObservationError,
@@ -2444,7 +2444,7 @@ fn poll_field_observations(
                 let monotonic_start_ms = observation.monotonic_start_ms();
                 let monotonic_end_ms = observation.monotonic_end_ms();
                 let observation_screen = observation.screen();
-                if let Ok(mut output) = observation.into_output() {
+                if let Ok(output) = observation.into_output() {
                     let late = minimum_event_sequence.is_some_and(|minimum| sequence < minimum);
                     counters.field_ready_success = counters.field_ready_success.saturating_add(1);
                     counters.candidate_sets = counters.candidate_sets.saturating_add(1);
@@ -2502,7 +2502,16 @@ fn poll_field_observations(
                         }
                     }
                     timing.finish_wall();
-                    output.apply_frame_timing(timing);
+                    let output = output.with_frame_timing(
+                        scorepeek_core::model::session::RecognitionFrameTiming {
+                            screen_classification_us: timing.screen_classification_us,
+                            crop_prepare_us: timing.crop_prepare_us,
+                            screen_resolver_us: timing.screen_resolver_us,
+                            attempt_resolver_us: timing.attempt_resolver_us,
+                            output_us: timing.output_us,
+                            frame_processing_wall_us: timing.frame_processing_wall_us,
+                        },
+                    );
                     let _ = session.record_frame_processing_timing(
                         timing,
                         if late {

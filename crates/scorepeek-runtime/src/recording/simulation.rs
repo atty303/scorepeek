@@ -33,9 +33,8 @@ use crate::recognition_live::field_observer::{
 use crate::recognition_live::field_session::{
     FieldObservationSession, FieldObservationSessionPoll, FieldObservationSubmission,
 };
-use crate::recognition_live::screen_field_observer::{
-    RegisteredScreenFieldObservation, RegisteredScreenFieldObserver,
-};
+use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObserver;
+use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 
 type RegisteredFieldObservationSession = FieldObservationSession<RegisteredScreenFieldObserver>;
 

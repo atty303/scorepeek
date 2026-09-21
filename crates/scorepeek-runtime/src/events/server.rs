@@ -1247,7 +1247,7 @@ pub fn run_event_from_field_observation(
     sequence: u64,
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
-    observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
 ) -> Result<RunEvent, String> {
     let (screen, fields) = match observation.fields() {
         scorepeek_core::recognition::ScreenFieldObservations::Title(fields) => (
@@ -1343,7 +1343,7 @@ pub fn run_event_from_field_observation(
     reason = "used by the library-only corpus replay constructor"
 )]
 fn song_resolution_presentation_from_observation(
-    observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
 ) -> Result<SongResolutionPresentation, String> {
     use scorepeek_core::recognition::{MusicSelectSongResolution, ResultSongResolution};
     match observation.song_resolution() {
@@ -1427,7 +1427,7 @@ fn song_resolution_presentation_from_observation(
     reason = "used by the library-only corpus replay constructor"
 )]
 fn observed_song_presentation(
-    observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
     song_id: ScorepeekSongId,
 ) -> Result<SongPresentation, String> {
     let evidence = observation

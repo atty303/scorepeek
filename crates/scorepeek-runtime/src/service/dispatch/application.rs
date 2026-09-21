@@ -3068,7 +3068,7 @@ fn live_session_event_value(
 }
 
 fn song_resolution_presentation(
-    observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
 ) -> Result<scorepeek_core::event::SongResolutionPresentation, String> {
     use scorepeek_core::recognition::{MusicSelectSongResolution, ResultSongResolution};
 
@@ -3166,7 +3166,7 @@ fn song_resolution_presentation(
 }
 
 fn song_presentation(
-    observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
     song_id: scorepeek::catalog::ScorepeekSongId,
 ) -> Result<scorepeek_core::event::SongPresentation, String> {
     let evidence = observation
@@ -4724,7 +4724,6 @@ mod tests {
     };
     use super::{LiveSessionEmission, run_event_from_live_emission};
     use crate::capture_live::GamescopeLiveSessionEvent;
-    use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
     use scorepeek::capture::{
         CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
         CaptureDiagnosticStatus,
@@ -4738,6 +4737,7 @@ mod tests {
     use scorepeek_core::catalog::FederationInput;
     use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention};
     use scorepeek_core::event::{RunEvent, RunEventKind};
+    use scorepeek_core::model::session::RegisteredScreenFieldObservation;
     use scorepeek_core::recognition::{
         CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
         ScreenFieldObservations,
@@ -4828,7 +4828,7 @@ mod tests {
             open_text: value.to_owned(),
             constrained_text: Some(value.to_owned()),
         };
-        let observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
+        let observation = project_fields_with_catalog(
             &domain,
             &catalog,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
@@ -5740,7 +5740,7 @@ node_name = "must-not-be-inherited"
     #[test]
     fn live_result_output_retains_exact_ocr_and_typed_resolution() {
         let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
-        let output = RegisteredScreenFieldObservation::from_fields(
+        let output = project_fields(
             &domain,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
                 panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
@@ -5823,7 +5823,7 @@ node_name = "must-not-be-inherited"
     #[test]
     fn routine_observation_binds_session_and_generation() {
         let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
-        let output = RegisteredScreenFieldObservation::from_fields(
+        let output = project_fields(
             &domain,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
                 title: text("TITLE"),
@@ -5867,7 +5867,7 @@ node_name = "must-not-be-inherited"
             .collect::<Vec<_>>();
         let catalog = catalog_from_records(&records);
         let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
-        let output = RegisteredScreenFieldObservation::from_fields_with_catalog(
+        let output = project_fields_with_catalog(
             &domain,
             &catalog,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
@@ -5919,7 +5919,7 @@ node_name = "must-not-be-inherited"
             tachi_record("song-2", "OTHER SONG", "OTHER ARTIST"),
         ]);
         let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
-        let output = RegisteredScreenFieldObservation::from_fields(
+        let output = project_fields(
             &domain,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
                 title: text("CATALOG TITLE"),
@@ -5958,6 +5958,27 @@ node_name = "must-not-be-inherited"
                 .unwrap()
                 .contains("runner-up margin=")
         );
+    }
+
+    fn project_fields(
+        domain: &CatalogCandidateDomain,
+        fields: ScreenFieldObservations,
+    ) -> RegisteredScreenFieldObservation {
+        project_fields_with_catalog(domain, &Catalog::default(), fields)
+    }
+
+    fn project_fields_with_catalog(
+        domain: &CatalogCandidateDomain,
+        catalog: &Catalog,
+        fields: ScreenFieldObservations,
+    ) -> RegisteredScreenFieldObservation {
+        let projected = scorepeek_core::model::session::ProjectedScreenFieldObservation::project(
+            domain, catalog, fields, None,
+        );
+        let timing = scorepeek_core::model::session::RecognitionProcessingTiming::unmeasured(
+            projected.catalog_evidence_us(),
+        );
+        projected.complete(None, timing)
     }
 
     fn catalog_from_records(records: &[SourceObservation]) -> Catalog {

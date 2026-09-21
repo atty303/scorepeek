@@ -3182,7 +3182,7 @@ fn optional_supplemental_matches<T: PartialEq>(
 }
 
 type ReplayFieldOutput = Result<
-    scorepeek_runtime::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    scorepeek_core::model::session::RegisteredScreenFieldObservation,
     scorepeek_core::replay::ScreenFieldObservationError<scorepeek_core::replay::OnnxParityError>,
 >;
 

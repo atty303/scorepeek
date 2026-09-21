@@ -9,6 +9,10 @@ use std::time::Duration;
 use std::time::Instant;
 
 use scorepeek::catalog::ScorepeekSongId;
+use scorepeek_core::model::session::{
+    CurrentScoreOcrResolution, FrameTimedScreenFieldObservation, RecognitionProcessingTiming,
+    RegisteredScreenFieldObservation, TitleEvidenceObservation,
+};
 use scorepeek_core::recognition::{
     CatalogCandidateEvidenceTable, MusicSelectSongResolution, NumericBatchInference,
     ParsedResultFields, ResultChartResolution, ResultFieldValue, ResultPerformanceResolution,
@@ -63,19 +67,16 @@ struct StoredObservation<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     result_performance_resolution: Option<&'a ResultPerformanceResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    current_score_ocr_resolution:
-        Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
+    current_score_ocr_resolution: Option<&'a CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     numeric_batch: Option<&'a NumericBatchInference>,
     joint_evidence: Option<&'a scorepeek_core::recognition::JointEvidenceObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    processing_timing:
-        Option<&'a crate::recognition_live::screen_field_observer::RecognitionProcessingTiming>,
+    processing_timing: Option<&'a RecognitionProcessingTiming>,
     #[serde(skip_serializing_if = "Option::is_none")]
     field_status: Option<scorepeek_core::diagnostics::FrameFieldStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    title_evidence:
-        Option<&'a crate::recognition_live::screen_field_observer::TitleEvidenceObservation>,
+    title_evidence: Option<&'a TitleEvidenceObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level_catalog_mismatch: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -292,7 +293,7 @@ impl RecognitionArtifactWriter {
         &mut self,
         sequence: u64,
         timing: RecognitionArtifactTiming,
-        output: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+        output: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
         self.record_with_result_context(
@@ -321,7 +322,7 @@ impl RecognitionArtifactWriter {
         screen_episode_id: u64,
         timing: RecognitionArtifactTiming,
         field_status: scorepeek_core::diagnostics::FrameFieldStatus,
-        output: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+        output: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
     ) -> Result<(), String> {
         self.record_with_result_context(
             sequence,
@@ -355,18 +356,12 @@ impl RecognitionArtifactWriter {
         parsed_result_fields: Option<&ParsedResultFields>,
         result_chart_resolution: Option<&ResultChartResolution>,
         result_performance_resolution: Option<&ResultPerformanceResolution>,
-        current_score_ocr_resolution: Option<
-            &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
-        >,
+        current_score_ocr_resolution: Option<&CurrentScoreOcrResolution>,
         numeric_batch: Option<&NumericBatchInference>,
         joint_evidence: Option<&scorepeek_core::recognition::JointEvidenceObservation>,
-        processing_timing: Option<
-            &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
-        >,
+        processing_timing: Option<&RecognitionProcessingTiming>,
         field_status: Option<scorepeek_core::diagnostics::FrameFieldStatus>,
-        title_evidence: Option<
-            &crate::recognition_live::screen_field_observer::TitleEvidenceObservation,
-        >,
+        title_evidence: Option<&TitleEvidenceObservation>,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
         if self.observation_count >= MAX_OBSERVATIONS {
@@ -548,7 +543,23 @@ struct LiveRecord {
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
     field_status: scorepeek_core::diagnostics::FrameFieldStatus,
-    observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    observation: LiveObservation,
+}
+
+enum LiveObservation {
+    #[cfg(test)]
+    Completed(RegisteredScreenFieldObservation),
+    FrameTimed(FrameTimedScreenFieldObservation),
+}
+
+impl LiveObservation {
+    fn as_registered(&self) -> &RegisteredScreenFieldObservation {
+        match self {
+            #[cfg(test)]
+            Self::Completed(observation) => observation,
+            Self::FrameTimed(observation) => observation,
+        }
+    }
 }
 
 enum LiveWriterMessage {
@@ -649,15 +660,15 @@ impl RecognitionArtifactWorker {
         sequence: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
-        observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+        observation: scorepeek_core::model::session::RegisteredScreenFieldObservation,
     ) -> RecognitionArtifactEnqueueOutcome {
-        self.try_record_in_episode(
+        self.try_record_value(
             sequence,
             0,
             monotonic_start_ms,
             monotonic_end_ms,
             scorepeek_core::diagnostics::FrameFieldStatus::Completed,
-            observation,
+            LiveObservation::Completed(observation),
         )
     }
 
@@ -668,7 +679,26 @@ impl RecognitionArtifactWorker {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         field_status: scorepeek_core::diagnostics::FrameFieldStatus,
-        observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+        observation: FrameTimedScreenFieldObservation,
+    ) -> RecognitionArtifactEnqueueOutcome {
+        self.try_record_value(
+            sequence,
+            screen_episode_id,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            field_status,
+            LiveObservation::FrameTimed(observation),
+        )
+    }
+
+    fn try_record_value(
+        &mut self,
+        sequence: u64,
+        screen_episode_id: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        observation: LiveObservation,
     ) -> RecognitionArtifactEnqueueOutcome {
         let Some(sender) = &self.sender else {
             return RecognitionArtifactEnqueueOutcome::WorkerUnavailable;
@@ -781,7 +811,7 @@ fn run_live_writer(
                     }
                     RecognitionArtifactRetention::ForegroundCompactedV1 => {
                         if matches!(
-                            record.observation.fields(),
+                            record.observation.as_registered().fields(),
                             ScreenFieldObservations::Result(_)
                         ) {
                             let new_interval = pending_result.as_ref().is_some_and(|pending| {
@@ -903,12 +933,12 @@ fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> R
             monotonic_end_ms: record.monotonic_end_ms,
         },
         record.field_status,
-        &record.observation,
+        record.observation.as_registered(),
     )
 }
 
 fn result_record_priority(record: &LiveRecord) -> u8 {
-    match record.observation.result_resolution() {
+    match record.observation.as_registered().result_resolution() {
         Some(ResultSongResolution::Accepted { .. }) => 1,
         Some(ResultSongResolution::Unknown { .. }) | None => 0,
     }
@@ -1095,6 +1125,20 @@ mod tests {
     };
 
     use super::*;
+
+    fn project_fields(
+        domain: &CatalogCandidateDomain,
+        fields: ScreenFieldObservations,
+    ) -> scorepeek_core::model::session::RegisteredScreenFieldObservation {
+        let projected = scorepeek_core::model::session::ProjectedScreenFieldObservation::project(
+            domain,
+            &scorepeek::catalog::Catalog::default(),
+            fields,
+            None,
+        );
+        let timing = RecognitionProcessingTiming::unmeasured(projected.catalog_evidence_us());
+        projected.complete(None, timing)
+    }
 
     #[test]
     fn artifact_marks_observed_level_catalog_mismatch_without_changing_chart() {
@@ -1346,10 +1390,7 @@ mod tests {
         let root = parent.path().join("music-select");
         let domain =
             CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
-        let output = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
-            &domain,
-            music_select_fields(),
-        );
+        let output = project_fields(&domain, music_select_fields());
         let mut writer =
             RecognitionArtifactWriter::create(&root, "music-001".to_owned(), "d".repeat(64))
                 .unwrap();
@@ -1433,10 +1474,7 @@ mod tests {
         };
         result.bad.open_text = "只".to_owned();
         result.bad.constrained_text = Some("0".to_owned());
-        let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
-            &domain,
-            fields,
-        );
+        let observation = project_fields(&domain, fields);
         let mut worker = RecognitionArtifactWorker::start_inner(
             root.clone(),
             "live-001".to_owned(),
@@ -1486,10 +1524,7 @@ mod tests {
         );
 
         for sequence in 1..=20 {
-            let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
-                &domain,
-                result_fields(),
-            );
+            let observation = project_fields(&domain, result_fields());
             assert_eq!(
                 worker.try_record(sequence, sequence * 200, sequence * 200 + 17, observation),
                 RecognitionArtifactEnqueueOutcome::Enqueued
@@ -1522,10 +1557,7 @@ mod tests {
         let domain =
             CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
         for (sequence, time) in [(1, 0), (2, 1_000), (3, 60_000), (4, 61_000)] {
-            let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
-                &domain,
-                result_fields(),
-            );
+            let observation = project_fields(&domain, result_fields());
             assert_eq!(
                 worker.try_record(sequence, time, time + 17, observation),
                 RecognitionArtifactEnqueueOutcome::Enqueued
@@ -1550,10 +1582,7 @@ mod tests {
         );
         let domain =
             CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
-        let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
-            &domain,
-            result_fields(),
-        );
+        let observation = project_fields(&domain, result_fields());
 
         assert_eq!(
             worker.try_record(1, 1, 2, observation),
@@ -1573,12 +1602,7 @@ mod tests {
         };
         let domain =
             CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
-        let observation = || {
-            crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
-                &domain,
-                result_fields(),
-            )
-        };
+        let observation = || project_fields(&domain, result_fields());
 
         assert_eq!(
             worker.try_record(1, 1, 2, observation()),

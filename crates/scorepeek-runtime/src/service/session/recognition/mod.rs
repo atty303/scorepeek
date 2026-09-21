@@ -15,10 +15,10 @@ use self::field_observer::{
     BoundFieldObservation, FieldObserverFinishOutcome, FieldObserverFinishStatus,
     FieldObserverOfferError,
 };
-use self::screen_field_observer::RegisteredScreenFieldObservation;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
+use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 
 pub mod field_observer;
 pub mod field_session;
@@ -528,7 +528,7 @@ impl RecognitionSession {
         &mut self,
         timing: FrameProcessingTiming,
         field_status: scorepeek_core::diagnostics::FrameFieldStatus,
-        field_timing: Option<&screen_field_observer::RecognitionProcessingTiming>,
+        field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         self.bridge
             .record_frame_processing_timing(timing, field_status, field_timing)
