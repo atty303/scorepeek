@@ -24,6 +24,8 @@ use super::preprocess::{
     preprocess_title_crop, preprocess_title_image,
 };
 use crate::catalog::{Catalog, CatalogStore, CatalogStoreError};
+pub use crate::model::manifest::RegisteredLiveModelFile;
+use crate::model::manifest::{DynamicBundleManifest, ManifestError};
 pub use crate::model::text::DynamicTextObservation;
 use crate::recognition::{
     RecognitionError, Rgb8Crop, screen::read_title_crop_artifact, shared::ctc::CtcSequenceTrie,
@@ -48,27 +50,9 @@ const MAX_BATCH_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_BATCH_CROP_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_BATCH_ROWS: usize = 4_096;
 const CENSUS_BATCH_SIZE: usize = 8;
-const SMALL_BUNDLE_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../../models/manifests/pp-ocrv6-small-rec-onnx-bundle-v1.json");
 pub use crate::model::registry::{
     LIVE_MODEL_BUNDLE_MANIFEST_SHA256, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
 };
-const TINY_BUNDLE_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../../models/manifests/pp-ocrv6-tiny-rec-onnx-bundle-v1.json");
-const TINY_BUNDLE_MANIFEST_SHA256: &str =
-    "d24f1ec10098065efd24216b23b405bb2af5feabbb815bc499ba0a5735b8bfd0";
-const MEDIUM_BUNDLE_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../../models/manifests/pp-ocrv6-medium-rec-onnx-bundle-v1.json");
-const MEDIUM_BUNDLE_MANIFEST_SHA256: &str =
-    "f794d77fb6d9860e2aadedd1ef575bd67c044b83fe2821243867b66c9a7c5abe";
-const V5_MOBILE_BUNDLE_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../../models/manifests/pp-ocrv5-mobile-rec-onnx-bundle-v1.json");
-const V5_MOBILE_BUNDLE_MANIFEST_SHA256: &str =
-    "ebbd34d2c0e360b1cf55199fc1400886e7bfbb4d6917c7d86a994b79c2256971";
-const V5_SERVER_BUNDLE_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../../models/manifests/pp-ocrv5-server-rec-onnx-bundle-v1.json");
-const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
-    "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
 const LIVE_RUNTIME_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-small-live-runtime-v5.json");
 pub const LIVE_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
@@ -133,6 +117,32 @@ impl From<serde_json::Error> for OnnxParityError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
     }
+}
+
+impl From<ManifestError> for OnnxParityError {
+    fn from(error: ManifestError) -> Self {
+        match error {
+            ManifestError::Io(error) => Self::Io(error),
+            ManifestError::Json(error) => Self::Json(error),
+            ManifestError::InvalidArtifact => Self::InvalidArtifact,
+        }
+    }
+}
+
+/// Returns the verified download contract embedded for the live PP-OCRv6-small bundle.
+///
+/// # Errors
+/// Returns an error if the embedded manifest no longer matches the compiled registration.
+pub fn registered_live_model_files() -> Result<Vec<RegisteredLiveModelFile>, OnnxParityError> {
+    crate::model::manifest::registered_live_model_files().map_err(Into::into)
+}
+
+/// Verifies the complete registered live bundle without constructing an ONNX session.
+///
+/// # Errors
+/// Returns an error for missing, changed, non-regular, or malformed bundle files.
+pub fn verify_registered_live_model_bundle(bundle: &Path) -> Result<(), OnnxParityError> {
+    crate::model::manifest::verify_registered_live_model_bundle(bundle).map_err(Into::into)
 }
 
 impl From<ort::Error> for OnnxParityError {
@@ -203,79 +213,6 @@ impl OnnxModelManifest {
         }
         Ok(manifest)
     }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DynamicBundleManifest {
-    schema: String,
-    model_id: String,
-    model_name: String,
-    source_repository: String,
-    source_revision: String,
-    license_id: String,
-    license_url: String,
-    native_contract: DynamicNativeContract,
-    files: Vec<DynamicBundleFile>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DynamicNativeContract {
-    input_layout: String,
-    input_color_order: String,
-    input_channels: usize,
-    input_height: usize,
-    preprocessor_minimum_width: usize,
-    preprocessor_maximum_width: usize,
-    output_classes: usize,
-    ctc_blank_token: usize,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DynamicBundleFile {
-    filename: String,
-    source_url: String,
-    sha256: String,
-    bytes: u64,
-}
-
-/// One immutable file registered for the live PP-OCRv6-small bundle.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RegisteredLiveModelFile {
-    pub filename: String,
-    pub source_url: String,
-    pub sha256: String,
-    pub bytes: u64,
-}
-
-/// Returns the verified download contract embedded for the live PP-OCRv6-small bundle.
-///
-/// # Errors
-/// Returns an error if the embedded manifest no longer matches the compiled registration.
-pub fn registered_live_model_files() -> Result<Vec<RegisteredLiveModelFile>, OnnxParityError> {
-    let manifest = DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?;
-    Ok(manifest
-        .files
-        .into_iter()
-        .map(|file| RegisteredLiveModelFile {
-            filename: file.filename,
-            source_url: file.source_url,
-            sha256: file.sha256,
-            bytes: file.bytes,
-        })
-        .collect())
-}
-
-/// Verifies the complete registered live bundle without constructing an ONNX session.
-///
-/// # Errors
-/// Returns an error for missing, changed, non-regular, or malformed bundle files.
-pub fn verify_registered_live_model_bundle(bundle: &Path) -> Result<(), OnnxParityError> {
-    DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?
-        .verified_model_bytes(bundle)
-        .map(|_| ())
 }
 
 #[derive(Debug, Deserialize)]
@@ -643,21 +580,14 @@ impl RegisteredDynamicTitleRuntime {
         let manifest = DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?;
         let model_bytes: Arc<[u8]> = Arc::from(manifest.verified_model_bytes(bundle)?);
         let dictionary_file = manifest
-            .files
-            .iter()
-            .find(|file| file.filename == "inference.yml")
+            .file("inference.yml")
             .ok_or(OnnxParityError::InvalidArtifact)?;
         let dictionary = load_dictionary_contract(
             &bundle.join("inference.yml"),
-            &dictionary_file.sha256,
-            manifest.native_contract.output_classes,
+            dictionary_file.sha256(),
+            manifest.output_classes(),
         )?;
-        Self::from_verified(
-            &runtime,
-            model_bytes,
-            dictionary,
-            manifest.native_contract.output_classes,
-        )
+        Self::from_verified(&runtime, model_bytes, dictionary, manifest.output_classes())
     }
 
     /// Constructs another independent session from the already-verified model and dictionary.
@@ -762,211 +692,6 @@ impl RegisteredDynamicTitleRuntime {
             Some(numeric_decoder),
         )
         .map(|(observation, _)| observation)
-    }
-}
-
-type RegisteredDynamicBundle = (
-    &'static [u8],
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    usize,
-    &'static [(&'static str, &'static str, u64)],
-);
-
-const SMALL_BUNDLE_FILES: &[(&str, &str, u64)] = &[
-    (
-        "inference.onnx",
-        "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
-        21_159_378,
-    ),
-    (
-        "inference.json",
-        "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6",
-        208_004,
-    ),
-    (
-        "inference.yml",
-        "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
-        150_579,
-    ),
-];
-const TINY_BUNDLE_FILES: &[(&str, &str, u64)] = &[
-    (
-        "inference.onnx",
-        "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
-        4_462_639,
-    ),
-    (
-        "inference.json",
-        "b5b14770c7dcf092781e92f4278a2ae5f95048f08b4b8a04140e88cb2745f147",
-        108_959,
-    ),
-    (
-        "inference.yml",
-        "66170210bad538e83fff3c4a3867e547d6bf20b50d64b20347c4b913f3034ea1",
-        55_571,
-    ),
-];
-const MEDIUM_BUNDLE_FILES: &[(&str, &str, u64)] = &[
-    (
-        "inference.onnx",
-        "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
-        76_554_979,
-    ),
-    (
-        "inference.json",
-        "0b2e25e990bd072f1bf77d59d67d508bce6c4bd44af6624e0fb27d6da2cd00e8",
-        221_814,
-    ),
-    (
-        "inference.yml",
-        "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129",
-        150_580,
-    ),
-];
-const V5_MOBILE_BUNDLE_FILES: &[(&str, &str, u64)] = &[
-    (
-        "inference.onnx",
-        "da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092",
-        16_534_782,
-    ),
-    (
-        "inference.yml",
-        "5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e",
-        148_345,
-    ),
-];
-const V5_SERVER_BUNDLE_FILES: &[(&str, &str, u64)] = &[
-    (
-        "inference.onnx",
-        "d9dc333c9c7b042c6dffb8e33d72b6f65c9c1d463d0a3c2f78174fea55e94752",
-        84_503_027,
-    ),
-    (
-        "inference.yml",
-        "2c719dba044c4e2228aef8ff92f5f575394d75d24c16de096a33b7cfd902f66d",
-        148_345,
-    ),
-];
-
-fn registered_dynamic_bundle(model_id: &str) -> Result<RegisteredDynamicBundle, OnnxParityError> {
-    match model_id {
-        "pp-ocrv6-small-rec-onnx-v1" => Ok((
-            SMALL_BUNDLE_MANIFEST_BYTES,
-            LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
-            "PP-OCRv6_small_rec",
-            "PaddlePaddle/PP-OCRv6_small_rec_onnx",
-            "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
-            18_710,
-            SMALL_BUNDLE_FILES,
-        )),
-        "pp-ocrv6-tiny-rec-onnx-v1" => Ok((
-            TINY_BUNDLE_MANIFEST_BYTES,
-            TINY_BUNDLE_MANIFEST_SHA256,
-            "PP-OCRv6_tiny_rec",
-            "PaddlePaddle/PP-OCRv6_tiny_rec_onnx",
-            "2612ab37152ae0a677521bae4e1e3d4fb4cf7c30",
-            6_906,
-            TINY_BUNDLE_FILES,
-        )),
-        "pp-ocrv6-medium-rec-onnx-v1" => Ok((
-            MEDIUM_BUNDLE_MANIFEST_BYTES,
-            MEDIUM_BUNDLE_MANIFEST_SHA256,
-            "PP-OCRv6_medium_rec",
-            "PaddlePaddle/PP-OCRv6_medium_rec_onnx",
-            "50c7eacafc52fa7bcf4194e8cd08e46f8558504b",
-            18_710,
-            MEDIUM_BUNDLE_FILES,
-        )),
-        "pp-ocrv5-mobile-rec-onnx-v1" => Ok((
-            V5_MOBILE_BUNDLE_MANIFEST_BYTES,
-            V5_MOBILE_BUNDLE_MANIFEST_SHA256,
-            "PP-OCRv5_mobile_rec",
-            "PaddlePaddle/PP-OCRv5_mobile_rec_onnx",
-            "ed152b8b495f84de93cda5709d768548a9127622",
-            18_385,
-            V5_MOBILE_BUNDLE_FILES,
-        )),
-        "pp-ocrv5-server-rec-onnx-v1" => Ok((
-            V5_SERVER_BUNDLE_MANIFEST_BYTES,
-            V5_SERVER_BUNDLE_MANIFEST_SHA256,
-            "PP-OCRv5_server_rec",
-            "PaddlePaddle/PP-OCRv5_server_rec_onnx",
-            "b70df217f4fd99d14f970bad092cebe7d74cc4d1",
-            18_385,
-            V5_SERVER_BUNDLE_FILES,
-        )),
-        _ => Err(OnnxParityError::InvalidArtifact),
-    }
-}
-
-impl DynamicBundleManifest {
-    fn load_registered(model_id: &str) -> Result<Self, OnnxParityError> {
-        let (bytes, digest, model_name, repository, revision, output_classes, expected_files) =
-            registered_dynamic_bundle(model_id)?;
-        if encode_sha256(bytes) != digest {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        let manifest: Self = serde_json::from_slice(bytes)?;
-        if manifest.schema != "scorepeek-ocr-onnx-model-bundle-v1"
-            || manifest.model_id != model_id
-            || manifest.model_name != model_name
-            || manifest.source_repository != repository
-            || manifest.source_revision != revision
-            || manifest.license_id != "Apache-2.0"
-            || manifest.license_url
-                != format!("https://huggingface.co/{repository}/blob/{revision}/README.md")
-            || manifest.native_contract.input_layout != "NCHW"
-            || manifest.native_contract.input_color_order != "BGR"
-            || manifest.native_contract.input_channels != 3
-            || manifest.native_contract.input_height != DYNAMIC_TITLE_INPUT_HEIGHT
-            || manifest.native_contract.preprocessor_minimum_width != 320
-            || manifest.native_contract.preprocessor_maximum_width != 3_200
-            || manifest.native_contract.output_classes != output_classes
-            || manifest.native_contract.ctc_blank_token != 0
-            || manifest.files.len() != expected_files.len()
-        {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        for (file, (filename, sha256, bytes)) in
-            manifest.files.iter().zip(expected_files.iter().copied())
-        {
-            if file.filename != filename
-                || file.sha256 != sha256
-                || file.bytes != bytes
-                || file.source_url
-                    != format!("https://huggingface.co/{repository}/resolve/{revision}/{filename}")
-            {
-                return Err(OnnxParityError::InvalidArtifact);
-            }
-        }
-        Ok(manifest)
-    }
-
-    fn verified_file(&self, bundle: &Path, filename: &str) -> Result<Vec<u8>, OnnxParityError> {
-        let file = self
-            .files
-            .iter()
-            .find(|file| file.filename == filename)
-            .ok_or(OnnxParityError::InvalidArtifact)?;
-        let bytes = read_exact_regular(&bundle.join(filename), file.bytes)?;
-        if encode_sha256(&bytes) != file.sha256 {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        Ok(bytes)
-    }
-
-    fn verified_model_bytes(&self, bundle: &Path) -> Result<Vec<u8>, OnnxParityError> {
-        let mut model = None;
-        for file in &self.files {
-            let bytes = self.verified_file(bundle, &file.filename)?;
-            if file.filename == "inference.onnx" {
-                model = Some(bytes);
-            }
-        }
-        model.ok_or(OnnxParityError::InvalidArtifact)
     }
 }
 
@@ -1477,22 +1202,18 @@ pub fn decode_dynamic_official_onnx_crops(
     request_path: &Path,
 ) -> Result<DynamicOfficialOnnxDecodeSummary, OnnxParityError> {
     let manifest = DynamicBundleManifest::load_registered(model_id)?;
-    let output_classes = manifest.native_contract.output_classes;
+    let output_classes = manifest.output_classes();
     let model_bytes = manifest.verified_model_bytes(bundle_path)?;
     let dictionary_file = manifest
-        .files
-        .iter()
-        .find(|file| file.filename == "inference.yml")
+        .file("inference.yml")
         .ok_or(OnnxParityError::InvalidArtifact)?;
     let dictionary = load_dictionary_contract(
         &bundle_path.join("inference.yml"),
-        &dictionary_file.sha256,
+        dictionary_file.sha256(),
         output_classes,
     )?;
     let model_file = manifest
-        .files
-        .iter()
-        .find(|file| file.filename == "inference.onnx")
+        .file("inference.onnx")
         .ok_or(OnnxParityError::InvalidArtifact)?;
     let request_bytes = read_bounded_regular(request_path, MAX_BATCH_REQUEST_BYTES)?;
     let request_sha256 = encode_sha256(&request_bytes);
@@ -1539,9 +1260,9 @@ pub fn decode_dynamic_official_onnx_crops(
     Ok(DynamicOfficialOnnxDecodeSummary {
         schema: "scorepeek-official-onnx-dynamic-open-text-batch-v1",
         request_sha256,
-        model_id: manifest.model_id,
-        model_sha256: model_file.sha256.clone(),
-        dictionary_sha256: dictionary_file.sha256.clone(),
+        model_id: manifest.model_id().to_owned(),
+        model_sha256: model_file.sha256().to_owned(),
+        dictionary_sha256: dictionary_file.sha256().to_owned(),
         preprocessor_id: DYNAMIC_TITLE_PREPROCESSOR_ID,
         elapsed_ms: started.elapsed().as_millis(),
         input_widths,
@@ -1985,11 +1706,10 @@ fn encode_f32_sha256(values: &[f32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CtcCharacterSet, DynamicBundleManifest, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
-        LiveRuntimeManifest, NumericCtcDecoder, RegisteredRecognitionResources,
-        RegisteredResourceLoadError, RegisteredResourceLoadErrorType, argmax_tokens,
-        ctc_log_probability, strict_p6, valid_presentation_transform_id,
-        validate_argmax_probability_rows,
+        CtcCharacterSet, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, LiveRuntimeManifest,
+        NumericCtcDecoder, RegisteredRecognitionResources, RegisteredResourceLoadError,
+        RegisteredResourceLoadErrorType, argmax_tokens, ctc_log_probability, strict_p6,
+        valid_presentation_transform_id, validate_argmax_probability_rows,
     };
     use crate::catalog::{Catalog, CatalogStore};
 
@@ -2106,50 +1826,6 @@ mod tests {
                 .contains("model bundle metadata failed")
         );
         assert!(std::error::Error::source(&bundle_error).is_some());
-    }
-
-    #[test]
-    fn registered_tiny_bundle_manifest_is_exact() {
-        let manifest = DynamicBundleManifest::load_registered("pp-ocrv6-tiny-rec-onnx-v1").unwrap();
-        assert_eq!(manifest.model_id, "pp-ocrv6-tiny-rec-onnx-v1");
-        assert_eq!(manifest.native_contract.output_classes, 6_906);
-        assert_eq!(manifest.files.len(), 3);
-    }
-
-    #[test]
-    fn registered_small_bundle_manifest_is_exact() {
-        let manifest =
-            DynamicBundleManifest::load_registered("pp-ocrv6-small-rec-onnx-v1").unwrap();
-        assert_eq!(manifest.model_id, "pp-ocrv6-small-rec-onnx-v1");
-        assert_eq!(manifest.native_contract.output_classes, 18_710);
-        assert_eq!(manifest.files.len(), 3);
-    }
-
-    #[test]
-    fn registered_medium_bundle_manifest_is_exact() {
-        let manifest =
-            DynamicBundleManifest::load_registered("pp-ocrv6-medium-rec-onnx-v1").unwrap();
-        assert_eq!(manifest.model_id, "pp-ocrv6-medium-rec-onnx-v1");
-        assert_eq!(manifest.native_contract.output_classes, 18_710);
-        assert_eq!(manifest.files.len(), 3);
-    }
-
-    #[test]
-    fn registered_v5_mobile_bundle_manifest_is_exact() {
-        let manifest =
-            DynamicBundleManifest::load_registered("pp-ocrv5-mobile-rec-onnx-v1").unwrap();
-        assert_eq!(manifest.model_id, "pp-ocrv5-mobile-rec-onnx-v1");
-        assert_eq!(manifest.native_contract.output_classes, 18_385);
-        assert_eq!(manifest.files.len(), 2);
-    }
-
-    #[test]
-    fn registered_v5_server_bundle_manifest_is_exact() {
-        let manifest =
-            DynamicBundleManifest::load_registered("pp-ocrv5-server-rec-onnx-v1").unwrap();
-        assert_eq!(manifest.model_id, "pp-ocrv5-server-rec-onnx-v1");
-        assert_eq!(manifest.native_contract.output_classes, 18_385);
-        assert_eq!(manifest.files.len(), 2);
     }
 
     #[test]
