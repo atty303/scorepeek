@@ -1,0 +1,115 @@
+Task cycle: persist play side for SP and DP
+
+Start commit: a4abb1e7d613d1ec6d0ff0e59d0a661e1214d37f
+Working branch: main
+Task commits:
+- 405d38d8bc3e1dde0fd5a108a5e4bcfb9acc8fcf — feat: persist play side for SP and DP
+
+Guidance and skills:
+- Repository AGENTS.md and living README, architecture, event API, field semantics, and private-corpus references.
+- dig for the design decision tree.
+- develop-repository and its atty303 engineering policy for durable implementation, verification, commit, and note handling.
+- design-program-observability for the SQLite migration and versioned event/corpus boundaries. The existing score-store diagnostic operation, typed failures, transaction outcome, schema/data readback, and content-addressed corpus generation were sufficient; no new telemetry was added.
+- investigate-problem for the complete-suite OCR failure.
+- review with a fresh read-only subagent, followed by a delta review after addressing one accepted finding.
+
+Environment and authority:
+- Repository started clean on main at a4abb1e and was synchronized with origin/main; standard notes were fetched separately.
+- The source, tests, SQLite schema code, and living documentation were within the repository control domain. Existing local SQLite v3 files are durable operator-owned data handled by Store::open.
+- Private corpus artifacts and its active-generation pointer are external state. No private corpus migration, active-generation switch, deployment, push, or remote ref update was performed.
+- Sandbox initially denied writes to .git, mise state/cache, uv cache, and local Unix sockets. The corresponding repository operations and verification were rerun with approved normal host access. No functional workaround was used.
+
+Implemented outcome:
+- MUSIC SELECT and RESULT now produce plain one_player/two_player values for SP and DP. DP SELECT waits for the same stable footer-side evidence as SP.
+- Stable SELECT/RESULT side mismatch is detected even before RESULT play type stabilizes. It discards retained SELECT context and attempt linkage while a later result-only observation can preserve and confirm the RESULT.
+- Event API/snapshot moved to v4, RESULT to v4, SELECT-best to v3, internal run-event to v17, stored-result to v2, and private regression label to v6. Current readers do not retain old public contract compatibility.
+- SQLite schema v4 adds play_results.play_side TEXT NOT NULL. Store::open atomically migrates v3: SP side comes from stored JSON, DP side becomes one_player, and stored JSON is rewritten to current contracts. Malformed legacy data rolls the transaction back to v3.
+- Score query history rows expose play side. Chart identity, chart_bests, representative result, BEST, recent, and graph aggregation remain side-agnostic.
+- Overlay display and skin input are unchanged; only their versioned event/stored-result consumers were updated.
+- Living architecture, event API, field semantics, and private-corpus documentation were updated.
+
+Verification and review:
+- mise run check succeeded.
+- The affected scorepeek library suite succeeded with 572 passed, 0 failed under normal local-socket permissions.
+- scorepeek-scores succeeded with 22 passed, including v3-to-v4 migration, SP preservation, DP one_player fill, JSON rewrite, query exposure, and rollback on malformed legacy rows.
+- scorepeek-corpus succeeded with 127 passed; overlay state and affected event/corpus tests also passed during the complete repository run.
+- The targeted pre-stable RESULT play-type mismatch regression succeeded.
+- mise run build succeeded after the commit, producing target/debug/scorepeek from the committed source with embedded web UI.
+- mise run test reached and passed the changed Rust suites, then failed because the unchanged Python OCR reader rejects the numeric_panel_origins key already present in HEAD's canonical-layout-v2.json. The isolated //tools/ocr:test reproduced exactly the same two errors. This pre-existing unrelated inconsistency was not changed in this task.
+- Fresh review found a RESULT-side mismatch gate incorrectly depended on stable RESULT play type; the condition was removed and a regression test added. Delta review found no remaining actionable issue.
+- A proposed required SELECT-side corpus label was rejected because it would contradict the confirmed external migration contract that existing DP episodes may migrate from stable RESULT panel frames alone. SELECT footer behavior remains covered by reducer/unit integration rather than changing that migration prerequisite.
+
+Transcript:
+
+U: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) 現状sqliteにplay sideが記録されていないはずなので記録する。dpのplay sideもnot applicableにしていたが、spと同様に変更する。
+
+A: Announced use of dig, inspected the repository and memory-backed prior context, and confirmed that play_side was present in event JSON but not a queryable SQLite column. Confirmed that DP discarded already-observed SELECT footer and RESULT panel side as not_applicable. Asked Q1 whether DP should use SP-like side semantics for both MUSIC SELECT and RESULT; recommended A.
+
+U: A
+
+A: Fixed Q1 as SP/DP parity for SELECT and RESULT, including mismatch handling. Asked Q2 whether the breaking meaning change should advance Event API and nested contracts; recommended A.
+
+U: A
+
+A: Fixed Q2 as Event API v4 plus new RESULT/SELECT-best contracts with no old v3 reader. Explained that legacy SP side was recoverable from stored JSON while legacy DP side was not. Asked Q3 how to represent unrecoverable legacy DP rows; recommended nullable unknown.
+
+U: 1p扱いで埋める
+
+A: Recorded the explicit migration rule that legacy DP rows become one_player. Asked Q4 whether migration should be automatic in Store::open, a permanent CLI, a one-shot tool, or a fresh database; recommended a one-shot tool.
+
+U: A
+
+A: Fixed Q4 as an atomic Store::open v3-to-v4 migration despite the recommendation, with SP restored from JSON and DP filled as one_player. Asked Q5 whether play side should remain a play attribute or split chart/BEST/history aggregation; recommended A.
+
+U: A
+
+A: Fixed Q5 as a queryable per-play attribute while keeping chart identity and all BEST/recent/graph aggregation side-agnostic. Asked Q6 whether public play_side should become a plain enum instead of retaining an applicability wrapper; recommended A.
+
+U: A
+
+A: Fixed Q6 as plain one_player/two_player with PlaySideApplicability and not_applicable removed from current contracts. Read the active private corpus without changing it and found four legacy DP RESULT episodes. Asked Q7 how to migrate them; recommended deriving side from stable RESULT frames and creating a new content-addressed generation.
+
+U: A
+
+A: Fixed Q7 as stable RESULT frame truth: left to one_player, right to two_player, and fail on ambiguity or inconsistency. Kept corpus mutation as a later explicit external-state operation. Asked Q8 whether a real DP 2P capture must be a completion gate; recommended compositional real-frame plus deterministic test evidence.
+
+U: B
+
+A: Fixed Q8 as no mandatory real DP 2P session: combine real DP frames, real SP 2P frames, and DP 2P type/reducer/SQLite unit or integration coverage. Asked Q9 for final common-understanding confirmation and restated all contracts.
+
+U: A
+
+A: Closed dig with the agreed summary. No implementation, SQLite mutation, or corpus mutation had occurred at that point.
+
+U: 実装して。
+
+
+
+## まとめ
+
+### 決まったこと
+
+- SP/DP とも、MUSIC SELECT の footer side と RESULT の panel side から `one_player` / `two_player` を確定する。
+- DP の MUSIC SELECT も SP と同じ side 安定化条件を要求する。
+- SELECT と RESULT の side が不一致なら、RESULT は維持し、attempt linkage と保持中の SELECT context を破棄する。
+- Event API を `scorepeek-event-v4`、RESULT を `scorepeek-result-detected-v4`、SELECT-best も新契約版へ更新する。旧 v3 系との互換 reader は残さない。
+- 公開 `play_side` は applicability wrapper を廃止し、単純な `"one_player" | "two_player"` とする。`not_applicable` は削除する。
+- SQLite を schema v4 に更新し、`play_results.play_side TEXT NOT NULL` を追加する。
+- `Store::open` が v3 DB を transaction 内で自動的に v4 へ移行する。
+- 既存 SP 行は保存済み JSON から side を復元し、既存 DP 行は `one_player` で埋める。
+- 保存 JSON も新しい stored-result 契約へ書き換え、旧 `not_applicable` を残さない。
+- score query API の各履歴行に play side を追加する。
+- `chart_bests`、チャート識別子、BEST・recent・graph の集計は side で分割しない。
+- Overlay の表示と skin input は今回変更しない。
+- Private corpus label を新契約へ更新する。
+- Active corpus の既存 DP 4 episode は、stable RESULT frame の panel side が一貫している場合だけ、左を `one_player`、右を `two_player` として新しい content-addressed generation に移行する。
+- 実 DP 2P session は必須の完了条件にしない。実 DP frame、実 SP 2P frame、DP 2P の unit/integration test を組み合わせて検証する。
+- Corpus migration と active generation の切り替えは、コード変更とは別の外部データ変更として扱う。
+
+A: Applied develop-repository and design-program-observability, scoped the work as a durable repository change, and explicitly excluded private corpus activation. Implemented the production types, reducers, versioned contracts, SQLite migration, query API, consumers, tests, and living documentation. Added internal run-event v17 after identifying that the changed RESULT payload also crossed that versioned boundary. Ran formatting and static checks, then the complete repository test entry point.
+
+A: The complete test entry point exposed two unchanged OCR Python errors. Applied investigate-problem, reproduced the failure in isolation, and established that HEAD's canonical-layout-v2.json already contained numeric_panel_origins while the unchanged Python exact-key reader rejected it. Kept that unrelated issue out of this change. The changed Rust runtime, score store, overlay state, and corpus suites passed.
+
+A: Applied the review skill with a fresh read-only reviewer. Accepted the finding that mismatch detection must not wait for stable RESULT play type, removed that gate, added a reachable DP regression where mismatch occurs on the first play-type observation and the result becomes provisional on the second, and updated the semantics document. Rejected a proposed required SELECT-side corpus-label field because it would change the confirmed RESULT-frame-only prerequisite for the separately authorized external corpus migration. Delta review found no remaining actionable finding.
+
+A: Re-ran static checks, the targeted regression, all 572 scorepeek library tests with normal local-socket permissions, and the post-review build. Staged only the 16 task files, committed the implementation as 405d38d8bc3e1dde0fd5a108a5e4bcfb9acc8fcf, and ran the required post-commit build successfully. At this pre-handoff checkpoint, the worktree is expected to be clean; no push or external data mutation has been performed.
