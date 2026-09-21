@@ -14,18 +14,19 @@ use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::title_decoder::{
+use super::decode::{
     CatalogTitleDecision, CatalogTitleDecoderError, DiagnosticTitleThresholds,
     TITLE_DICTIONARY_SHA256, load_dictionary_contract, score_catalog_titles,
 };
-use super::title_preprocessor::{
+use super::preprocess::{
     DYNAMIC_TITLE_INPUT_HEIGHT, DYNAMIC_TITLE_PREPROCESSOR_ID, TITLE_INPUT_SHAPE,
     TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_dynamic_title_image,
     preprocess_title_crop, preprocess_title_image,
 };
-use super::{RecognitionError, Rgb8Crop, read_title_crop_artifact};
 use crate::catalog::{Catalog, CatalogStore, CatalogStoreError};
-use crate::recognition::shared::ctc::CtcSequenceTrie;
+use crate::recognition::{
+    RecognitionError, Rgb8Crop, screen::read_title_crop_artifact, shared::ctc::CtcSequenceTrie,
+};
 
 const MODEL_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-small-rec-onnx-v1.json");

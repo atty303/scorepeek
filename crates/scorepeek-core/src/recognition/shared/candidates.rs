@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
 use serde::{Deserialize, Serialize};
 
-use crate::recognition::screen::title::{
+use crate::recognition::title::observe::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, exact_comparison_key, folded_comparison_key,
 };
 use crate::recognition::{

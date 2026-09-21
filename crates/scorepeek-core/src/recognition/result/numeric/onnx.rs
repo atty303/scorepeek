@@ -12,7 +12,6 @@ use super::numeric_fixed_slot::{
     FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID, extract_fixed_slot_fields,
     fixed_not_displayed_fields, fixed_slot_feature,
 };
-use super::title_onnx::OnnxParityError;
 use super::{
     CanonicalLayout, DynamicTextObservation, ResultNumericCharacterLayout, ResultScreenRgb8Crops,
 };
@@ -20,6 +19,7 @@ use crate::recognition::shared::{
     FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
     NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
 };
+use crate::recognition::title::OnnxParityError;
 
 pub const NUMERIC_PREPROCESSOR_ID: &str = FIXED_SLOT_PREPROCESSOR_ID;
 pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(

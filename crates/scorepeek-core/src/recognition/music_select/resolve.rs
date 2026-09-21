@@ -4,10 +4,10 @@ use serde::Serialize;
 
 use crate::catalog::ScorepeekSongId;
 
-use super::title::folded_comparison_key;
 use super::{
     CatalogPrefixCandidateScore, CatalogTextCandidateScore, MusicSelectSongCandidateObservation,
 };
+use crate::recognition::title::observe::folded_comparison_key;
 
 pub const MUSIC_SELECT_SONG_RESOLVER_ID: &str =
     "scorepeek-music-select-active-prefix-full-tiebreak-corroborated-v2";

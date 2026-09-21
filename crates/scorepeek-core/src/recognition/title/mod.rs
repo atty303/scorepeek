@@ -1,6 +1,11 @@
 //! Title observation, preprocessing, decoding, and resolution.
 
-pub use super::screen::title::*;
-pub use super::screen::title_decoder::*;
-pub use super::screen::title_onnx::*;
-pub use super::screen::title_preprocessor::*;
+pub(in crate::recognition) mod decode;
+pub(in crate::recognition) mod observe;
+pub(in crate::recognition) mod preprocess;
+pub(in crate::recognition) mod resolve;
+
+pub use decode::*;
+pub use observe::*;
+pub use preprocess::*;
+pub use resolve::*;

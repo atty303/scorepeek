@@ -1,4 +1,4 @@
-use super::{RecognitionError, Roi};
+use crate::recognition::{CanonicalLayout, RecognitionError, Roi};
 
 pub const TITLE_PREPROCESSOR_ID: &str = "paddlex-3.7.0-bgr-rec-resize-3x48x320-v1";
 pub(super) const DYNAMIC_TITLE_PREPROCESSOR_ID: &str =
@@ -22,7 +22,7 @@ pub(super) struct DynamicTitleInput {
 /// # Errors
 /// Returns an error unless the crop is exactly the shared-layout title ROI.
 pub fn preprocess_title_crop(rgb: &[u8], roi: Roi) -> Result<Vec<f32>, RecognitionError> {
-    if roi != super::CanonicalLayout::load()?.result.title
+    if roi != CanonicalLayout::load()?.result.title
         || rgb.len() != roi.width as usize * roi.height as usize * 3
     {
         return Err(RecognitionError::InvalidCanonicalFrame);
@@ -140,7 +140,7 @@ fn resize_linear_rgb(
     output
 }
 
-pub(super) fn resize_linear_gray(
+pub(in crate::recognition) fn resize_linear_gray(
     source: &[u8],
     source_width: usize,
     source_height: usize,
@@ -225,11 +225,13 @@ fn interpolation_vertical_axis(
 
 #[cfg(test)]
 mod tests {
+    use crate::recognition::{CanonicalLayout, screen::encode_sha256};
+
     use super::*;
 
     #[test]
     fn preprocessor_is_bgr_chw_normalized_at_full_width() {
-        let roi = super::super::CanonicalLayout::load().unwrap().result.title;
+        let roi = CanonicalLayout::load().unwrap().result.title;
         let mut rgb = vec![0_u8; roi.width as usize * roi.height as usize * 3];
         rgb.chunks_exact_mut(3)
             .for_each(|pixel| pixel.copy_from_slice(&[255, 128, 0]));
@@ -244,7 +246,7 @@ mod tests {
 
     #[test]
     fn preprocessor_reproduces_registered_opencv_linear_resize() {
-        let roi = super::super::CanonicalLayout::load().unwrap().result.title;
+        let roi = CanonicalLayout::load().unwrap().result.title;
         let mut rgb = Vec::with_capacity(roi.width as usize * roi.height as usize * 3);
         for y in 0..roi.height {
             for x in 0..roi.width {
@@ -261,7 +263,7 @@ mod tests {
         assert_eq!(&resized[resized.len() - 3..], &[76, 76, 128]);
         let bytes: Vec<_> = tensor.into_iter().flat_map(f32::to_le_bytes).collect();
         assert_eq!(
-            super::super::encode_sha256(&bytes),
+            encode_sha256(&bytes),
             "856899b96510ffc8450a78328bb2527b3cacd8c886a4c58a54f41e5ed73f867d"
         );
     }
@@ -291,7 +293,7 @@ mod tests {
         }
         let resized = resize_linear_rgb(&rgb, 475, 45, 506, 48);
         assert_eq!(
-            super::super::encode_sha256(&resized),
+            encode_sha256(&resized),
             "3517280a382663fa282e91240319f1550895dadbcddfa42213af6c2d0b0bccbd"
         );
         let input = preprocess_dynamic_title_image(&rgb, 475, 45).unwrap();
@@ -303,7 +305,7 @@ mod tests {
             .flat_map(f32::to_le_bytes)
             .collect();
         assert_eq!(
-            super::super::encode_sha256(&bytes),
+            encode_sha256(&bytes),
             "a0c0e995661b0aeec61288ff0b97a42ec73223bce4d5a42a8bf13bbd640e78a1"
         );
     }

@@ -30,14 +30,6 @@ pub(super) mod result_fields;
 pub(super) mod result_resolver;
 #[path = "screen_reference.rs"]
 pub(super) mod screen_reference;
-#[path = "title/observe.rs"]
-pub(super) mod title;
-#[path = "title/decode.rs"]
-pub(super) mod title_decoder;
-#[path = "title/resolve.rs"]
-pub(super) mod title_onnx;
-#[path = "title/preprocess.rs"]
-pub(super) mod title_preprocessor;
 
 pub use super::shared::{
     CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
@@ -51,6 +43,12 @@ pub use super::shared::{
     NumericCandidate, NumericField, NumericFieldInference, ScoreBreakdownCandidate,
     ScoreBreakdownDecision, rank_numeric_probabilities, rank_numeric_sequences,
     select_score_breakdown,
+};
+pub use super::title::{
+    DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
+    DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
+    ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
+    diagnostic_title_candidate, provisional_title_candidates,
 };
 pub use music_select_best::{
     BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,
@@ -91,24 +89,18 @@ pub use result_resolver::{
     ResultSongResolution, ResultSongUnknownReason, assist_unknown_result_song_with_chart,
     resolve_result_song,
 };
-pub use title::{
-    DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
-    DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
-    ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
-    diagnostic_title_candidate, provisional_title_candidates,
-};
 
 #[must_use]
 pub fn normalized_title_key(value: &str) -> String {
-    title::folded_comparison_key(value)
+    super::title::observe::folded_comparison_key(value)
 }
-pub use title_decoder::{
+pub use super::title::{
     CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleDictionaryAudit,
     CatalogTitleUnknownReason, DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256,
     TitleDictionaryVariantKindAudit, TitleModelExportRequirements, audit_catalog_title_dictionary,
     score_catalog_titles, title_model_export_requirements,
 };
-pub use title_onnx::{
+pub use super::title::{
     CtcCharacterSet, DynamicOfficialOnnxDecodeSummary, DynamicTextObservation,
     ExportContractParityRequest, ExportContractParitySummary, LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
     LIVE_MODEL_ID, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OfficialOnnxDecodeSummary,
@@ -118,7 +110,7 @@ pub use title_onnx::{
     decode_dynamic_official_onnx_crops, decode_official_onnx_crops, registered_live_model_files,
     verify_registered_live_model_bundle,
 };
-pub use title_preprocessor::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
+pub use super::title::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
 
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
@@ -456,7 +448,7 @@ fn valid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn encode_sha256(bytes: &[u8]) -> String {
+pub(in crate::recognition) fn encode_sha256(bytes: &[u8]) -> String {
     let mut encoded = String::with_capacity(64);
     for byte in Sha256::digest(bytes) {
         write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");

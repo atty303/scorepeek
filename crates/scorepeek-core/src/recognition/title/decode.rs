@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::title::ctc_candidate_sequences;
+use super::observe::ctc_candidate_sequences;
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
 use crate::recognition::shared::ctc::CtcSequenceTrie;
 
@@ -489,7 +489,9 @@ pub(super) fn load_dictionary_contract(
     File::open(path)?
         .take(MAX_INFERENCE_YML_BYTES + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != metadata.len() || super::encode_sha256(&bytes) != expected_sha256 {
+    if bytes.len() as u64 != metadata.len()
+        || crate::recognition::screen::encode_sha256(&bytes) != expected_sha256
+    {
         return Err(CatalogTitleDecoderError::InvalidDictionary);
     }
     let text =

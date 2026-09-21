@@ -1,10 +1,10 @@
 use crate::catalog::Difficulty;
 
-use super::title_preprocessor::resize_linear_gray;
 use super::{
     CanonicalLayout, NumericField, RecognitionError, ResultNumericCharacterLayout,
     ResultScreenRgb8Crops, Rgb8Crop, Roi,
 };
+use crate::recognition::title::preprocess::resize_linear_gray;
 
 pub const FIXED_SLOT_PREPROCESSOR_ID: &str = "scorepeek-fixed-slot-hog-hybrid-0p25-v1";
 pub const FIXED_SLOT_FEATURE_DIMENSIONS: usize = 2_244;
