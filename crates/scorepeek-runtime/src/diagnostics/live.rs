@@ -7,6 +7,7 @@ use scorepeek::capture::{
     CalibratedSourceFrameEvidence, NormalizedCanonicalFrame, UncalibratedMemoryType,
     UncalibratedVideoContract,
 };
+use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
 use scorepeek_core::recognition::{
     CanonicalFrame, ScreenClass, ScreenFieldObservationError, ScreenFieldObservations,
     ScreenTextField,
@@ -19,8 +20,7 @@ use crate::diagnostics::ring::{
 use crate::diagnostics::writer::{
     DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
     DiagnosticFinishOutcome, DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy,
-    DiagnosticRetention, DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen,
-    DiagnosticTextField,
+    DiagnosticRetention, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
 };
 use crate::recognition_live::RecognitionObservation;
 
@@ -916,10 +916,9 @@ fn diagnostic_text_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::writer::{
-        DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
-    };
+    use crate::diagnostics::writer::DiagnosticCompleteness;
     use crate::recognition_live::RecognitionObservation;
+    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
     use scorepeek_core::recognition::{
         CanonicalLayout, DynamicTextObservation, ResultScreenFieldObservations, ScreenClass,
         ScreenFieldObservationError, ScreenFieldObservations, ScreenTextField,

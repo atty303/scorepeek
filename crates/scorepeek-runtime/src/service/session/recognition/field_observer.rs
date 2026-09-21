@@ -6,13 +6,15 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+#[cfg(test)]
+use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticReplayBinding};
 use scorepeek_core::recognition::{
     CanonicalLayout, RegisteredRecognitionResources, RegisteredResourceLoadError, ScreenClass,
     ScreenRgb8Crops,
 };
 
 use super::BoundScreenRgb8Crops;
-use crate::diagnostics::writer::DiagnosticRunDescriptor;
 
 pub const DEFAULT_FIELD_OBSERVER_QUEUE_CAPACITY: usize = 2;
 pub const DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -81,7 +83,7 @@ impl FieldObserverSessionBinding {
     }
 
     fn from_descriptor(descriptor: &DiagnosticRunDescriptor) -> Option<Self> {
-        if !descriptor.is_valid()
+        if !descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION"))
             || descriptor.binding.canonical_layout_sha256 != CanonicalLayout::sha256()
         {
             return None;
@@ -961,8 +963,9 @@ mod tests {
 
     use super::*;
     use crate::diagnostics::live::BoundCanonicalFrame;
-    use crate::diagnostics::writer::{DiagnosticPolicy, DiagnosticResource, DiagnosticRunStatus};
+    use crate::diagnostics::writer::{DiagnosticPolicy, DiagnosticRunStatus};
     use crate::recognition_live::RecognitionSession;
+    use scorepeek_core::diagnostics::DiagnosticResource;
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
@@ -973,7 +976,7 @@ mod tests {
                 version: env!("CARGO_PKG_VERSION"),
                 build_sha256: "1".repeat(64),
             },
-            binding: crate::diagnostics::writer::DiagnosticBinding {
+            binding: DiagnosticBinding {
                 capture_generation: generation,
                 capture_profile_sha256: "2".repeat(64),
                 normalizer_sha256: "3".repeat(64),
@@ -1671,7 +1674,7 @@ mod tests {
     #[test]
     fn replay_binding_is_accepted_but_invalid_layout_fails_before_loading() {
         let mut invalid = descriptor("invalid-observer", 1);
-        invalid.binding.replay = Some(crate::diagnostics::writer::DiagnosticReplayBinding {
+        invalid.binding.replay = Some(DiagnosticReplayBinding {
             request_sha256: "8".repeat(64),
             extraction_sha256: "9".repeat(64),
         });

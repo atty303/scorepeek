@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
+use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource, DiagnosticRunDescriptor};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -133,71 +134,6 @@ impl Default for DiagnosticPolicy {
             maximum_run_bytes: DEFAULT_AGGREGATE_BYTES,
             retention: DiagnosticRetention::CompleteCadence,
         }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DiagnosticResource {
-    pub program: &'static str,
-    pub version: &'static str,
-    pub build_sha256: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DiagnosticBinding {
-    pub capture_generation: u64,
-    pub capture_profile_sha256: String,
-    pub normalizer_sha256: String,
-    pub canonical_layout_sha256: String,
-    pub catalog_sha256: String,
-    pub model_sha256: String,
-    pub runtime_sha256: String,
-    pub replay: Option<DiagnosticReplayBinding>,
-}
-
-impl DiagnosticBinding {
-    /// Returns the stable identity of the immutable inputs owned by one diagnostic run.
-    ///
-    /// Invalid bindings have no identity and are rejected before a live recognition session
-    /// starts or changes binding.
-    #[must_use]
-    pub fn identity_sha256(&self) -> Option<String> {
-        if !valid_binding(self) {
-            return None;
-        }
-        canonical_json(&DiagnosticBindingIdentity {
-            schema: "scorepeek-diagnostic-binding-identity-v1",
-            binding: self,
-        })
-        .ok()
-        .map(|bytes| encode_sha256(&bytes))
-    }
-}
-
-#[derive(Serialize)]
-struct DiagnosticBindingIdentity<'a> {
-    schema: &'static str,
-    binding: &'a DiagnosticBinding,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DiagnosticReplayBinding {
-    pub request_sha256: String,
-    pub extraction_sha256: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct DiagnosticRunDescriptor {
-    pub run_id: String,
-    pub monotonic_start_ms: u64,
-    pub resource: DiagnosticResource,
-    pub binding: DiagnosticBinding,
-}
-
-impl DiagnosticRunDescriptor {
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        valid_descriptor(self)
     }
 }
 
@@ -709,7 +645,7 @@ impl DiagnosticRecorder {
             "diagnostic policy must be validated before recording"
         );
         assert!(
-            valid_descriptor(descriptor),
+            descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION")),
             "diagnostic descriptor must match its typed run"
         );
         assert!(
@@ -1369,42 +1305,12 @@ fn valid_policy(policy: &DiagnosticPolicy) -> bool {
         && policy.maximum_run_bytes <= DEFAULT_AGGREGATE_BYTES
 }
 
-fn valid_descriptor(descriptor: &DiagnosticRunDescriptor) -> bool {
-    !descriptor.run_id.is_empty()
-        && descriptor.run_id.len() <= 64
-        && descriptor
-            .run_id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && descriptor.resource.program == "scorepeek"
-        && descriptor.resource.version == env!("CARGO_PKG_VERSION")
-        && valid_sha256(&descriptor.resource.build_sha256)
-        && valid_binding(&descriptor.binding)
-}
-
 fn valid_run_directory_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
-fn valid_binding(binding: &DiagnosticBinding) -> bool {
-    binding.capture_generation > 0
-        && [
-            &binding.capture_profile_sha256,
-            &binding.normalizer_sha256,
-            &binding.canonical_layout_sha256,
-            &binding.catalog_sha256,
-            &binding.model_sha256,
-            &binding.runtime_sha256,
-        ]
-        .into_iter()
-        .all(|value| valid_sha256(value))
-        && binding.replay.as_ref().is_none_or(|replay| {
-            valid_sha256(&replay.request_sha256) && valid_sha256(&replay.extraction_sha256)
-        })
 }
 
 fn valid_sha256(value: &str) -> bool {

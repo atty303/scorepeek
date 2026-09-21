@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 use crate::diagnostics::writer::{
     CANONICAL_BYTES, DiagnosticErrorType, DiagnosticExternalDegradation, DiagnosticFact,
     DiagnosticFinishOutcome, DiagnosticFrameInput, DiagnosticPolicy, DiagnosticRecorder,
-    DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticSourceFrameInput,
+    DiagnosticRunStatus, DiagnosticSourceFrameInput,
 };
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
+use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
 
 pub const DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY: usize = 2;
 const DIAGNOSTIC_FACT_QUEUE_CAPACITY: usize = 256;
@@ -833,8 +834,9 @@ fn unavailable_finish() -> DiagnosticFinishOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diagnostics::writer::{
-        DiagnosticBinding, DiagnosticCompleteness, DiagnosticReplayBinding, DiagnosticResource,
+    use crate::diagnostics::writer::DiagnosticCompleteness;
+    use scorepeek_core::diagnostics::{
+        DiagnosticBinding, DiagnosticReplayBinding, DiagnosticResource,
     };
     use std::fs;
 

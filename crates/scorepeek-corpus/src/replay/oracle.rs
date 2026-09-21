@@ -2878,15 +2878,15 @@ pub fn replay_corpus_with_options(
         let frame_map = session_frame_map(&session);
         let binding = session_binding(store, &session)?;
         replay_normalization_pairs(store, &session)?;
-        let descriptor = scorepeek_runtime::diagnostics::writer::DiagnosticRunDescriptor {
+        let descriptor = scorepeek_core::diagnostics::DiagnosticRunDescriptor {
             run_id: format!("corpus-replay-{session_index}"),
             monotonic_start_ms: 0,
-            resource: scorepeek_runtime::diagnostics::writer::DiagnosticResource {
+            resource: scorepeek_core::diagnostics::DiagnosticResource {
                 program: "scorepeek",
                 version: env!("CARGO_PKG_VERSION"),
                 build_sha256: "0".repeat(64),
             },
-            binding: scorepeek_runtime::diagnostics::writer::DiagnosticBinding {
+            binding: scorepeek_core::diagnostics::DiagnosticBinding {
                 capture_generation: 1,
                 capture_profile_sha256: binding.capture_profile_sha256.clone(),
                 normalizer_sha256: binding.normalizer_sha256.clone(),
@@ -4130,16 +4130,16 @@ fn replay_descriptor(
     session_index: usize,
     session: &CaptureSession,
     binding: &SessionBinding,
-) -> scorepeek_runtime::diagnostics::writer::DiagnosticRunDescriptor {
-    scorepeek_runtime::diagnostics::writer::DiagnosticRunDescriptor {
+) -> scorepeek_core::diagnostics::DiagnosticRunDescriptor {
+    scorepeek_core::diagnostics::DiagnosticRunDescriptor {
         run_id: format!("canonical-corpus-replay-{session_index}"),
         monotonic_start_ms: 0,
-        resource: scorepeek_runtime::diagnostics::writer::DiagnosticResource {
+        resource: scorepeek_core::diagnostics::DiagnosticResource {
             program: "scorepeek",
             version: env!("CARGO_PKG_VERSION"),
             build_sha256: "0".repeat(64),
         },
-        binding: scorepeek_runtime::diagnostics::writer::DiagnosticBinding {
+        binding: scorepeek_core::diagnostics::DiagnosticBinding {
             capture_generation: session.capture_generation,
             capture_profile_sha256: binding.capture_profile_sha256.clone(),
             normalizer_sha256: binding.normalizer_sha256.clone(),

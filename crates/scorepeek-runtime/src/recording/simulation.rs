@@ -11,6 +11,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use scorepeek::catalog::ScorepeekSongId;
+use scorepeek_core::diagnostics::{
+    DiagnosticBinding, DiagnosticReplayBinding, DiagnosticResource, DiagnosticRunDescriptor,
+};
 use scorepeek_core::recognition::{
     CanonicalFrame, CanonicalLayout, ResultSongResolution, ScreenClass, ScreenFieldObservations,
 };
@@ -20,10 +23,7 @@ use sha2::{Digest as _, Sha256};
 use crate::canonical_source::{
     CanonicalFrameSource, ExtractionFrameSelection, RecordingCanonicalFrameSource,
 };
-use crate::diagnostics::writer::{
-    DiagnosticBinding, DiagnosticCompleteness, DiagnosticPolicy, DiagnosticReplayBinding,
-    DiagnosticResource, DiagnosticRunDescriptor, DiagnosticRunStatus,
-};
+use crate::diagnostics::writer::{DiagnosticCompleteness, DiagnosticPolicy, DiagnosticRunStatus};
 use crate::recognition_artifact::{
     RecognitionArtifactExpected, RecognitionArtifactTiming, RecognitionArtifactWriter,
 };

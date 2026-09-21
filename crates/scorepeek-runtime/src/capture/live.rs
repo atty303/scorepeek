@@ -30,8 +30,7 @@ use crate::canonical_source::CanonicalFrameSource;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::{
-    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
-    DiagnosticRunStatus,
+    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunStatus,
 };
 use crate::game_version::GameVersionResolver;
 use crate::recognition_artifact::{
@@ -51,6 +50,7 @@ use crate::recognition_live::screen_field_observer::{
     RegisteredScreenFieldObserverLoadError,
 };
 use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
+use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
 use scorepeek_core::recognition::{
     CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
     ScreenFieldObservationError,
@@ -3659,6 +3659,7 @@ mod tests {
         GamescopeProfileBindingAuthoringInput, RationalCoordinate, UncalibratedMemoryType,
         UncalibratedVideoContract,
     };
+    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
     use scorepeek_core::recognition::{
         CanonicalLayout, RegisteredResourceLoadError, RegisteredResourceLoadErrorType,
     };
@@ -3713,12 +3714,12 @@ mod tests {
         DiagnosticRunDescriptor {
             run_id: "handoff-test".to_owned(),
             monotonic_start_ms: 0,
-            resource: crate::diagnostics::writer::DiagnosticResource {
+            resource: DiagnosticResource {
                 program: "scorepeek",
                 version: env!("CARGO_PKG_VERSION"),
                 build_sha256: "1".repeat(64),
             },
-            binding: crate::diagnostics::writer::DiagnosticBinding {
+            binding: DiagnosticBinding {
                 capture_generation: generation,
                 capture_profile_sha256: String::new(),
                 normalizer_sha256: String::new(),

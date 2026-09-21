@@ -422,7 +422,7 @@ impl SharedRegisteredScreenFieldResources {
     /// # Errors
     /// Returns the registered resource or text runtime failure before session replay starts.
     pub fn load(
-        descriptor: &crate::diagnostics::writer::DiagnosticRunDescriptor,
+        descriptor: &scorepeek_core::diagnostics::DiagnosticRunDescriptor,
         catalog_root: &Path,
         bundle_root: &Path,
         text_workers: usize,
@@ -460,7 +460,7 @@ impl SharedRegisteredScreenFieldResources {
     /// Returns the registered resource error when the descriptor binding or catalog generation
     /// cannot be loaded.
     pub fn load_sharing_text_pool(
-        descriptor: &crate::diagnostics::writer::DiagnosticRunDescriptor,
+        descriptor: &scorepeek_core::diagnostics::DiagnosticRunDescriptor,
         catalog_root: &Path,
         bundle_root: &Path,
         shared: &Self,

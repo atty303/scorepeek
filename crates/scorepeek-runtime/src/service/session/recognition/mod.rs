@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
 use scorepeek_core::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
     ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
@@ -16,8 +17,7 @@ use self::screen_field_observer::RegisteredScreenFieldObservation;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::{
-    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor,
-    DiagnosticRunStatus,
+    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunStatus,
 };
 
 pub mod field_observer;
@@ -737,7 +737,7 @@ fn validate_descriptor(
     if binding.canonical_layout_sha256 != CanonicalLayout::sha256() {
         return Err(RecognitionSessionError::CanonicalLayoutMismatch);
     }
-    if !descriptor.is_valid() {
+    if !descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION")) {
         return Err(RecognitionSessionError::InvalidBinding);
     }
     binding
@@ -753,7 +753,7 @@ mod tests {
     use scorepeek_core::recognition::{CanonicalLayout, ScreenClass};
 
     use super::*;
-    use crate::diagnostics::writer::{DiagnosticBinding, DiagnosticResource};
+    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
 
     #[test]
     fn title_confirmation_starts_at_the_tenth_consecutive_candidate() {

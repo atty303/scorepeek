@@ -21,6 +21,7 @@ use crate::{
     service::session as routine_watcher,
 };
 use scorepeek::catalog::CatalogStore;
+use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource, DiagnosticRunDescriptor};
 use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
 use scorepeek_core::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
@@ -1341,15 +1342,15 @@ fn registered_resource_gate(
     let catalog_digest = parse_cli_sha256(catalog_digest, "catalog SHA-256")?;
     let model_digest = recognition::LIVE_MODEL_SHA256.to_owned();
     let runtime_digest = recognition::LIVE_RUNTIME_SHA256.to_owned();
-    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+    let descriptor = DiagnosticRunDescriptor {
         run_id: "field-resource-load-gate".to_owned(),
         monotonic_start_ms: 0,
-        resource: diagnostic_recording::DiagnosticResource {
+        resource: DiagnosticResource {
             program: "scorepeek",
             version: env!("CARGO_PKG_VERSION"),
             build_sha256: "0".repeat(64),
         },
-        binding: diagnostic_recording::DiagnosticBinding {
+        binding: DiagnosticBinding {
             capture_generation: 1,
             capture_profile_sha256: "0".repeat(64),
             normalizer_sha256: "0".repeat(64),
@@ -2601,15 +2602,15 @@ fn execute_live_session(
     };
     let binding_digest = parse_cli_sha256(binding_digest, "binding SHA-256")?;
     let generation = parse_capture_generation(generation)?;
-    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+    let descriptor = DiagnosticRunDescriptor {
         run_id: parse_diagnostic_run_id(run_id)?,
         monotonic_start_ms: 0,
-        resource: diagnostic_recording::DiagnosticResource {
+        resource: DiagnosticResource {
             program: "scorepeek",
             version: env!("CARGO_PKG_VERSION"),
             build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
         },
-        binding: diagnostic_recording::DiagnosticBinding {
+        binding: DiagnosticBinding {
             capture_generation: generation.get(),
             capture_profile_sha256: String::new(),
             normalizer_sha256: String::new(),
@@ -3219,15 +3220,15 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
     let duration_ms = capture_live::parse_duration_ms(duration)?;
     let run_id = parse_diagnostic_run_id(run_id)?;
     let policy = parse_diagnostic_recording_policy(recording)?;
-    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+    let descriptor = DiagnosticRunDescriptor {
         run_id,
         monotonic_start_ms: 0,
-        resource: diagnostic_recording::DiagnosticResource {
+        resource: DiagnosticResource {
             program: "scorepeek",
             version: env!("CARGO_PKG_VERSION"),
             build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
         },
-        binding: diagnostic_recording::DiagnosticBinding {
+        binding: DiagnosticBinding {
             capture_generation: generation.get(),
             capture_profile_sha256: String::new(),
             normalizer_sha256: String::new(),
@@ -3293,15 +3294,15 @@ fn run_capture_field_observation(
     let duration_ms = capture_live::parse_duration_ms(duration)?;
     let run_id = parse_diagnostic_run_id(run_id)?;
     let policy = parse_diagnostic_recording_policy(recording)?;
-    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+    let descriptor = DiagnosticRunDescriptor {
         run_id,
         monotonic_start_ms: 0,
-        resource: diagnostic_recording::DiagnosticResource {
+        resource: DiagnosticResource {
             program: "scorepeek",
             version: env!("CARGO_PKG_VERSION"),
             build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
         },
-        binding: diagnostic_recording::DiagnosticBinding {
+        binding: DiagnosticBinding {
             capture_generation: generation.get(),
             capture_profile_sha256: String::new(),
             normalizer_sha256: String::new(),

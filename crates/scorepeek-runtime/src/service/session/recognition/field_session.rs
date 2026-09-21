@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
 use scorepeek_core::recognition::RegisteredNumericRuntime;
 use scorepeek_core::recognition::ScreenFieldObservationError;
 
@@ -21,9 +22,7 @@ use super::{
 };
 use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
-use crate::diagnostics::writer::{
-    DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
-};
+use crate::diagnostics::writer::{DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunStatus};
 use scorepeek_core::model::session::{RecognitionExecutionMode, recommended_text_worker_count};
 
 #[derive(Debug)]
@@ -674,10 +673,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::diagnostics::writer::{
-        DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
-    };
+    use crate::diagnostics::writer::DiagnosticCompleteness;
     use crate::recognition_live::field_observer::{FieldObserverFinishStatus, FieldObserverInput};
+    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
