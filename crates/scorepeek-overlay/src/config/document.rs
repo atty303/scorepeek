@@ -1,6 +1,8 @@
-use crate::{Backend, Skin};
+use crate::{Backend, Skin, WidgetKind, WidgetSettings};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
+use super::layout::{Canvas, Widget, default_height, default_width};
 
 pub const SCHEMA_VERSION: u32 = 9;
 pub const OBS_OUTPUT_ID: &str = "obs-output";
@@ -53,55 +55,6 @@ impl ProjectionGenerations {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Canvas {
-    pub id: String,
-    pub name: String,
-    pub backend: Backend,
-    pub skin: Skin,
-    #[serde(default)]
-    pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
-    #[serde(default)]
-    pub show_on: Option<Vec<crate::ScreenKind>>,
-    #[serde(default = "default_opacity_percent")]
-    pub opacity_percent: u8,
-    pub output: String,
-    #[serde(default)]
-    pub x: i32,
-    #[serde(default)]
-    pub y: i32,
-    #[serde(default = "default_width")]
-    pub width: u32,
-    #[serde(default = "default_height")]
-    pub height: u32,
-    #[serde(default)]
-    pub widgets: Vec<Widget>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Widget {
-    pub id: String,
-    pub kind: WidgetKind,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub settings: WidgetSettings,
-    #[serde(default)]
-    pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
-}
-
-pub use crate::{WidgetKind, WidgetSettings};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConfigIssue {
-    pub canvas_id: String,
-    pub message: String,
-}
-
 impl OverlayConfig {
     #[must_use]
     pub fn initial() -> Self {
@@ -113,104 +66,6 @@ impl OverlayConfig {
             obs_listen: default_listen(),
             canvases: Vec::new(),
         }
-    }
-
-    /// Validates global invariants and returns individually valid canvases.
-    /// # Errors
-    /// Returns an unsupported schema or a backend without a valid canvas.
-    pub fn validated(&self) -> Result<(Vec<Canvas>, Vec<ConfigIssue>), String> {
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
-        }
-        if self.unknown_grace_ms > 10_000 {
-            return Err("overlay unknown_grace_ms must be at most 10000".into());
-        }
-        let listen = self
-            .obs_listen
-            .parse::<std::net::SocketAddr>()
-            .map_err(|error| format!("overlay obs_listen: {error}"))?;
-        if !listen.ip().is_loopback() {
-            return Err("overlay obs_listen must use a loopback address".into());
-        }
-        let mut canvas_ids = BTreeSet::new();
-        let mut canvas_names = BTreeSet::new();
-        let mut valid = Vec::new();
-        let mut issues = Vec::new();
-        for canvas in &self.canvases {
-            match validate_canvas(canvas, &mut canvas_ids, &mut canvas_names)
-                .and_then(|()| crate::validate_skin_id(canvas.skin.name()))
-            {
-                Ok(()) => valid.push(canvas.clone()),
-                Err(message) => issues.push(ConfigIssue {
-                    canvas_id: canvas.id.clone(),
-                    message,
-                }),
-            }
-        }
-        Ok((valid, issues))
-    }
-}
-
-impl Canvas {
-    #[must_use]
-    pub fn presentation(&self) -> crate::CanvasPresentation {
-        crate::CanvasPresentation {
-            id: self.id.clone(),
-            name: self.name.clone(),
-            skin: self.skin,
-            skin_properties: self.skin_properties.clone(),
-            show_on: self.show_on.clone(),
-            opacity_percent: self.opacity_percent,
-            output: Some(self.output.clone()),
-            x: self.x,
-            y: self.y,
-            width: self.width,
-            height: self.height,
-            widgets: self
-                .widgets
-                .iter()
-                .map(|widget| crate::WidgetLayout {
-                    id: widget.id.clone(),
-                    kind: widget.kind,
-                    x: widget.x,
-                    y: widget.y,
-                    width: widget.width,
-                    height: widget.height,
-                    settings: widget.settings.clone(),
-                    skin_properties: widget.skin_properties.clone(),
-                })
-                .collect(),
-        }
-    }
-
-    pub fn apply_presentation(&mut self, presentation: &crate::CanvasPresentation) {
-        self.name.clone_from(&presentation.name);
-        self.skin = presentation.skin;
-        self.skin_properties
-            .clone_from(&presentation.skin_properties);
-        self.show_on.clone_from(&presentation.show_on);
-        self.opacity_percent = presentation.opacity_percent;
-        if let Some(output) = &presentation.output {
-            self.output.clone_from(output);
-        }
-        self.x = presentation.x;
-        self.y = presentation.y;
-        self.width = presentation.width;
-        self.height = presentation.height;
-        self.widgets = presentation
-            .widgets
-            .iter()
-            .map(|widget| Widget {
-                id: widget.id.clone(),
-                kind: widget.kind,
-                x: widget.x,
-                y: widget.y,
-                width: widget.width,
-                height: widget.height,
-                settings: widget.settings.clone(),
-                skin_properties: widget.skin_properties.clone(),
-            })
-            .collect();
     }
 }
 
@@ -279,79 +134,6 @@ pub fn migrate_v8(text: &str) -> Result<(bool, String), String> {
     let text = toml::to_string_pretty(&document)
         .map_err(|error| format!("serialize migrated overlay TOML: {error}"))?;
     Ok((true, text))
-}
-
-fn validate_canvas(
-    canvas: &Canvas,
-    canvas_ids: &mut BTreeSet<(Backend, String)>,
-    canvas_names: &mut BTreeSet<(Backend, String)>,
-) -> Result<(), String> {
-    if canvas.id.is_empty()
-        || !canvas
-            .id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("id must use ASCII letters, digits, '-' or '_'".into());
-    }
-    if !canvas_ids.insert((canvas.backend, canvas.id.clone())) {
-        return Err("duplicate canvas id within backend workspace".into());
-    }
-    if canvas.name.trim().is_empty() {
-        return Err("canvas name must be non-empty".into());
-    }
-    if !canvas_names.insert((canvas.backend, canvas.name.clone())) {
-        return Err("duplicate canvas name within backend workspace".into());
-    }
-    if canvas.output.is_empty() || canvas.output == PENDING_WAYLAND_OUTPUT_ID {
-        return Err("output must be assigned".into());
-    }
-    if canvas.width < 32 || canvas.height < 32 {
-        return Err("canvas dimensions must be at least 32x32".into());
-    }
-    if canvas.opacity_percent == 0 || canvas.opacity_percent > 100 {
-        return Err("canvas opacity_percent must be between 1 and 100".into());
-    }
-    let mut widget_ids = BTreeSet::new();
-    for widget in &canvas.widgets {
-        if widget.id.is_empty() || !widget_ids.insert(widget.id.clone()) {
-            return Err("widget ids must be non-empty and unique per canvas".into());
-        }
-        if let crate::AspectRatio::Current([width, height]) = widget.settings.aspect_ratio
-            && (width == 0 || height == 0)
-        {
-            return Err(format!(
-                "widget {} locked aspect ratio dimensions must be positive",
-                widget.id
-            ));
-        }
-        if widget.width < 16 || widget.height < 16 {
-            return Err(format!("widget {} must be at least 16x16", widget.id));
-        }
-        if widget.x % 4 != 0
-            || widget.y % 4 != 0
-            || !widget.width.is_multiple_of(4)
-            || !widget.height.is_multiple_of(4)
-        {
-            return Err(format!(
-                "widget {} position and dimensions must align to the 4px grid",
-                widget.id
-            ));
-        }
-        if !matches!(widget.settings.history_count, 5 | 10 | 20 | 50) {
-            return Err(format!(
-                "widget {} history_count must be 5, 10, 20 or 50",
-                widget.id
-            ));
-        }
-        if !matches!(widget.settings.graph_months, 1 | 3 | 6 | 12) {
-            return Err(format!(
-                "widget {} graph_months must be 1, 3, 6 or 12",
-                widget.id
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[doc(hidden)]
@@ -484,18 +266,8 @@ const fn visual_debug_widget_size(kind: WidgetKind) -> (u32, u32) {
     }
 }
 
-const fn default_width() -> u32 {
-    560
-}
-const fn default_height() -> u32 {
-    1040
-}
-
 const fn default_unknown_grace_ms() -> u32 {
     1_000
-}
-const fn default_opacity_percent() -> u8 {
-    100
 }
 fn default_listen() -> String {
     "127.0.0.1:3939".into()

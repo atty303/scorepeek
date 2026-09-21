@@ -5,3 +5,5 @@ pub mod layout;
 pub mod validation;
 
 pub use document::*;
+pub use layout::{Canvas, Widget};
+pub use validation::ConfigIssue;
