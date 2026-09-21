@@ -2804,7 +2804,7 @@ impl RoutineOutput {
     pub fn refresh_overlays(
         &mut self,
         children: &mut crate::overlay::supervisor::Children,
-        controller: Option<&scorepeek_overlay_wayland::control::Controller>,
+        controller: Option<&crate::config::control::Controller>,
     ) -> Result<(), String> {
         for message in children.poll() {
             self.warning(message)?;

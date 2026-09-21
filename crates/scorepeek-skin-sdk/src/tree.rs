@@ -21,7 +21,9 @@ pub enum Node {
     Element {
         key: String,
         tag: String,
+        #[serde(default)]
         attributes: BTreeMap<String, String>,
+        #[serde(default)]
         children: Vec<Node>,
     },
     Text {

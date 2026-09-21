@@ -1,7 +1,5 @@
-use scorepeek_overlay_web_host::{
-    bridge::data::{Backend, Config},
-    control::Controller,
-};
+use scorepeek_overlay_web_host::bridge::data::{Backend, Config};
+use scorepeek_runtime::config::control::Controller;
 use std::io::Write as _;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

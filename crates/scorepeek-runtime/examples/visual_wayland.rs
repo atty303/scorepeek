@@ -1,7 +1,5 @@
-use scorepeek_overlay_wayland::{
-    bridge::data::{Backend, Config},
-    control::Controller,
-};
+use scorepeek_overlay_wayland::bridge::data::{Backend, Config};
+use scorepeek_runtime::config::control::Controller;
 use serde_json::json;
 use std::{
     io::{BufRead as _, BufReader, Write as _},
@@ -227,7 +225,7 @@ fn load_document(
                 .skin_properties
                 .insert("background".into(), serde_json::json!("animated"));
             if canvas.id == "wayland-status" {
-                canvas.show_on = Some(scorepeek_overlay::editor_model::SCREENS.to_vec());
+                canvas.show_on = Some(scorepeek_overlay_wayland::bridge::data::SCREENS.to_vec());
             }
             if let Some(widget) = canvas.widgets.first().cloned() {
                 let mut extra = widget;
@@ -326,7 +324,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         edit_on_start: true,
     };
     let scenario = if integration_fixture {
-        use scorepeek_overlay::editor::EditorAction;
+        use scorepeek_overlay_wayland::bridge::data::EditorAction;
         use scorepeek_overlay_wayland::native::NativeEditorScenarioStep;
 
         vec![

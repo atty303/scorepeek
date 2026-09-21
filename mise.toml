@@ -202,7 +202,7 @@ run = "playwright install --only-shell chromium"
 [tasks."overlay:web:browser:server:build"]
 description = "Build the OBS-equivalent browser test server with the current embedded bundle"
 depends = ["overlay:web:bundle"]
-run = "cargo build --locked -p scorepeek-overlay-web-host --example visual_obs"
+run = "cargo build --locked -p scorepeek-runtime --example visual_obs"
 
 [tasks."overlay:web:browser:test"]
 description = "Test the production browser editor and canvas replicas in pinned Chromium"
@@ -245,7 +245,7 @@ run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-wa
 [tasks."overlay:visual:wayland"]
 description = "Open the production Wayland editor with an isolated empty config for a bounded live check"
 depends = ["overlay:web:bundle"]
-run = 'SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-wayland --example visual_wayland -- "$@"'
+run = 'SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-runtime --example visual_wayland -- "$@"'
 
 [tasks."overlay:visual:wayland:nested"]
 description = "Run the production multi-output editor in a bounded headless nested Scroll scenario"
@@ -255,12 +255,12 @@ run = "scripts/test-overlay-wayland-nested.bash"
 [tasks."overlay:visual:wayland:nested:build"]
 description = "Build the production Wayland visual runner used by the nested Scroll scenario"
 depends = ["overlay:skins:build", "overlay:web:bundle"]
-run = "cargo build --release --locked -p scorepeek-overlay-wayland --example visual_wayland -p scorepeek-overlay-wayland-handles --example virtual_pointer"
+run = "cargo build --release --locked -p scorepeek-runtime --example visual_wayland -p scorepeek-overlay-wayland-handles --example virtual_pointer"
 
 [tasks."overlay:visual:obs"]
 description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
 depends = ["overlay:web:bundle"]
-run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-web-host --example visual_obs -- "$@"'
+run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-runtime --example visual_obs -- "$@"'
 
 [tasks."overlay:test:live"]
 description = "Explicit live overlay run; supply capture selection and a dedicated scores database"

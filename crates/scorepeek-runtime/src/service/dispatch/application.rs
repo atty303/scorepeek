@@ -1956,10 +1956,7 @@ fn run_routine_live_session(
     let overlay_controller = loaded_overlay_config
         .as_ref()
         .map(|(config, _)| {
-            scorepeek_overlay_wayland::control::Controller::start(
-                &overlay_config_path,
-                config.clone(),
-            )
+            crate::config::control::Controller::start(&overlay_config_path, config.clone())
         })
         .transpose();
     let overlay_controller =

@@ -14,7 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use scorepeek_overlay::Backend;
+pub use scorepeek_overlay::{Backend, CanvasPresentation, Skin};
+pub use scorepeek_overlay::{editor::EditorAction, editor_model::SCREENS};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
