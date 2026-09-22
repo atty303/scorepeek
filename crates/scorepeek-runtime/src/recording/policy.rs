@@ -31,6 +31,10 @@ impl RecordingMemoryLimit {
 
     #[cfg(test)]
     #[must_use]
+    /// Returns the registered default recording limit.
+    ///
+    /// # Panics
+    /// Panics if the compile-time default is outside the registered range.
     pub fn default_limit() -> Self {
         Self::from_mib(DEFAULT_RECORDING_MEMORY_MIB)
             .expect("the registered recording memory default is valid")

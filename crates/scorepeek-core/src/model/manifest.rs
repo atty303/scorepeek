@@ -1,5 +1,6 @@
 //! Registered text-model bundle manifests, identities, shapes, and file validation.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read as _;
 use std::path::Path;
@@ -370,7 +371,6 @@ fn read_exact_regular(path: &Path, exact: u64) -> Result<Vec<u8>, ManifestError>
 
 fn sha256(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(64);
-    use std::fmt::Write as _;
     for byte in Sha256::digest(bytes) {
         let _ = write!(output, "{byte:02x}");
     }

@@ -67,6 +67,7 @@ impl DiagnosticErrorType {
     ];
     pub const COUNT: usize = Self::ALL.len();
 
+    #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }

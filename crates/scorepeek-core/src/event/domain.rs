@@ -579,9 +579,11 @@ mod tests {
 
     #[test]
     fn partial_snapshots_deduplicate_and_revisit_has_a_new_identity() {
-        let mut state = MusicSelectResolverState::default();
-        state.active = true;
-        state.screen_episode_id = 2;
+        let mut state = MusicSelectResolverState {
+            active: true,
+            screen_episode_id: 2,
+            ..MusicSelectResolverState::default()
+        };
         state.observe(selected(Difficulty::Hyper), values(1500));
         assert!(state.publish_candidate("session", 1, 1, 100).is_none());
         state.observe(selected(Difficulty::Hyper), values(1500));
@@ -622,8 +624,10 @@ mod tests {
 
     #[test]
     fn missing_identity_retains_publication_but_restarts_fields() {
-        let mut state = MusicSelectResolverState::default();
-        state.active = true;
+        let mut state = MusicSelectResolverState {
+            active: true,
+            ..MusicSelectResolverState::default()
+        };
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }

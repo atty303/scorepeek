@@ -32,8 +32,10 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
         .write_all(&bytes)
         .map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
+    let read_limit = u64::try_from(CONTROL_MESSAGE_MAX_BYTES + 1)
+        .map_err(|_| "control message limit exceeds u64".to_owned())?;
     BufReader::new(stream)
-        .take(u64::try_from(CONTROL_MESSAGE_MAX_BYTES + 1).expect("control limit fits u64"))
+        .take(read_limit)
         .read_until(b'\n', &mut bytes)
         .map_err(|error| error.to_string())?;
     decode_message(&bytes)

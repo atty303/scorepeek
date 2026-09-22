@@ -219,33 +219,30 @@ fn handle(mut stream: UnixStream, path: &Path, shared: &Mutex<State>) {
             }
         }
     };
-    write_response(&mut stream, response, shared);
+    write_response(&mut stream, &response, shared);
 }
 
-fn write_response(stream: &mut UnixStream, response: Response, shared: &Mutex<State>) {
-    let bytes = match encode_message(&response) {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            if let Ok(mut state) = shared.lock() {
-                state.observe(
-                    "overlay_controller",
-                    serde_json::json!({
-                        "status":"failed", "error_type":"response_too_large",
-                        "maximum_bytes":CONTROL_MESSAGE_MAX_BYTES
-                    }),
-                );
-            }
-            encode_message(&Response {
-                ok: false,
-                readonly: true,
-                error: Some("overlay control response exceeds maximum size".to_owned()),
-                canvases: Vec::new(),
-                generation: None,
-                dirty: false,
-            })
-            .expect("bounded response serialization")
+fn write_response(stream: &mut UnixStream, response: &Response, shared: &Mutex<State>) {
+    let bytes = encode_message(response).unwrap_or_else(|_| {
+        if let Ok(mut state) = shared.lock() {
+            state.observe(
+                "overlay_controller",
+                serde_json::json!({
+                    "status":"failed", "error_type":"response_too_large",
+                    "maximum_bytes":CONTROL_MESSAGE_MAX_BYTES
+                }),
+            );
         }
-    };
+        encode_message(&Response {
+            ok: false,
+            readonly: true,
+            error: Some("overlay control response exceeds maximum size".to_owned()),
+            canvases: Vec::new(),
+            generation: None,
+            dirty: false,
+        })
+        .expect("bounded response serialization")
+    });
     let _ = stream.write_all(&bytes);
 }
 
@@ -568,8 +565,10 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
         .write_all(&bytes)
         .map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
+    let read_limit = u64::try_from(CONTROL_MESSAGE_MAX_BYTES + 1)
+        .map_err(|_| "control message limit exceeds u64".to_owned())?;
     BufReader::new(stream)
-        .take(u64::try_from(CONTROL_MESSAGE_MAX_BYTES + 1).expect("control limit fits u64"))
+        .take(read_limit)
         .read_until(b'\n', &mut bytes)
         .map_err(|error| error.to_string())?;
     decode_message(&bytes)

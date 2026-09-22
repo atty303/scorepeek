@@ -14,6 +14,7 @@ use super::lifecycle::{VulkanSession, VulkanSessionFailure};
 #[cfg(test)]
 use super::listener::VulkanListener;
 use super::listener::reject_pending_fd;
+#[allow(clippy::wildcard_imports)]
 use super::protocol::*;
 
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);

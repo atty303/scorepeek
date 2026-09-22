@@ -323,6 +323,8 @@ impl ReplayPendingObservation {
 }
 
 #[derive(Debug)]
+// The ready observation stays inline to avoid adding an allocation to every replay field result.
+#[allow(clippy::large_enum_variant)]
 pub enum ReplayFieldPoll {
     Pending,
     Ready {
@@ -377,12 +379,14 @@ impl ReplayFieldObservation {
         self.0.monotonic_end_ms()
     }
 
-    #[must_use]
     pub const fn output(&self) -> &ReplayFieldOutput {
         self.0.output()
     }
 
-    #[must_use]
+    /// Consumes the observation and returns its field-recognition result.
+    ///
+    /// # Errors
+    /// Returns the retained field-observation or ONNX inference error.
     pub fn into_output(self) -> ReplayFieldOutput {
         self.0.into_output()
     }

@@ -32,8 +32,10 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
         .write_all(&bytes)
         .map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
+    let read_limit = u64::try_from(CONTROL_MESSAGE_MAX_BYTES + 1)
+        .map_err(|_| "control message limit exceeds u64".to_owned())?;
     BufReader::new(stream)
-        .take(u64::try_from(CONTROL_MESSAGE_MAX_BYTES + 1).expect("control limit fits u64"))
+        .take(read_limit)
         .read_until(b'\n', &mut bytes)
         .map_err(|error| error.to_string())?;
     decode_message(&bytes)
@@ -66,14 +68,14 @@ mod test_authority {
         lease: Option<Lease>,
     }
 
-    pub struct Controller {
+    pub(crate) struct Controller {
         path: PathBuf,
         state: Arc<Mutex<State>>,
         worker: Option<JoinHandle<()>>,
     }
 
     impl Controller {
-        pub fn start(path: &Path, document: OverlayConfig) -> Result<Self, String> {
+        pub(crate) fn start(path: &Path, document: OverlayConfig) -> Result<Self, String> {
             let socket = path.with_extension("test-control.sock");
             let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
             let state = Arc::new(Mutex::new(State {
@@ -111,7 +113,7 @@ mod test_authority {
             })
         }
 
-        pub fn path(&self) -> &Path {
+        pub(crate) fn path(&self) -> &Path {
             &self.path
         }
     }
@@ -224,7 +226,7 @@ mod test_authority {
 }
 
 #[cfg(test)]
-pub use test_authority::Controller;
+pub(crate) use test_authority::Controller;
 
 #[cfg(test)]
 mod timeout_tests {

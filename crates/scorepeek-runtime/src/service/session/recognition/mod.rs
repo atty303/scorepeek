@@ -216,6 +216,7 @@ fn add_optional_duration(total: &mut Option<u64>, value: Option<u64>) {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[allow(clippy::struct_field_names)]
 pub struct LiveEventProcessingTiming {
     pub screen_resolver_us: Option<u64>,
     pub attempt_resolver_us: Option<u64>,
