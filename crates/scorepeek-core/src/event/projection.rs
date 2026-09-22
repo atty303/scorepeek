@@ -213,3 +213,57 @@ fn observed_song_presentation(
 pub struct ProjectionCursor {
     pub next_sequence: u64,
 }
+
+/// Projects a run event into the bounded diagnostic representation shared by live and replay.
+///
+/// # Errors
+/// Returns an error when the projected event cannot be represented as JSON.
+pub fn diagnostic_run_event_value(event: &RunEvent) -> Result<Value, String> {
+    let RunEventKind::FieldObservation {
+        session_id,
+        capture_generation,
+        screen_episode_id,
+        sequence,
+        monotonic_start_ms,
+        monotonic_end_ms,
+        screen,
+        fields,
+        result_song_resolution,
+        music_select_song_resolution,
+        parsed_result_fields,
+        result_chart_resolution,
+        result_performance_resolution,
+        current_score_ocr_resolution,
+        numeric_batch,
+        joint_evidence,
+        processing_timing,
+        song_resolution_presentation,
+    } = &event.kind
+    else {
+        return event.to_value();
+    };
+    RunEvent {
+        schema: event.schema.clone(),
+        kind: RunEventKind::FieldObservation {
+            session_id: session_id.clone(),
+            capture_generation: *capture_generation,
+            screen_episode_id: *screen_episode_id,
+            sequence: *sequence,
+            monotonic_start_ms: *monotonic_start_ms,
+            monotonic_end_ms: *monotonic_end_ms,
+            screen: screen.clone(),
+            fields: fields.clone(),
+            result_song_resolution: result_song_resolution.clone(),
+            music_select_song_resolution: music_select_song_resolution.clone(),
+            parsed_result_fields: parsed_result_fields.clone(),
+            result_chart_resolution: result_chart_resolution.clone(),
+            result_performance_resolution: result_performance_resolution.clone(),
+            current_score_ocr_resolution: current_score_ocr_resolution.clone(),
+            numeric_batch: numeric_batch.clone(),
+            joint_evidence: joint_evidence.diagnostic_top(),
+            processing_timing: processing_timing.clone(),
+            song_resolution_presentation: song_resolution_presentation.clone(),
+        },
+    }
+    .to_value()
+}

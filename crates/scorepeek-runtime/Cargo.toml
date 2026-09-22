@@ -40,3 +40,4 @@ zip.workspace = true
 
 [dev-dependencies]
 ratatui.workspace = true
+scorepeek-core = { path = "../scorepeek-core", features = ["reducer-test-support"] }

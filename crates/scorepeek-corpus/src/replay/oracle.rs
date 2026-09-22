@@ -2747,9 +2747,10 @@ use execution::{
 };
 #[cfg(test)]
 use execution::{
-    ReplayEventStream, episode_expects_result_event, episode_requires_clear_type,
-    expected_play_options_match, optional_previous_matches, optional_supplemental_matches,
-    parse_timestamp_ms, process_rss_bytes, session_binding, start_replay_observer,
+    ReplayEventOutput, ReplayEventStream, episode_expects_result_event,
+    episode_requires_clear_type, expected_play_options_match, optional_previous_matches,
+    optional_supplemental_matches, parse_timestamp_ms, process_rss_bytes, session_binding,
+    start_replay_observer,
 };
 pub use execution::{replay_corpus, replay_corpus_with_options};
 

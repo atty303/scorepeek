@@ -626,8 +626,46 @@ impl Drop for ReplaySessionRuntime {
 }
 
 pub(super) struct ReplayEventStream {
-    pub(super) output: scorepeek_runtime::events::server::RoutineOutput,
+    pub(super) output: ReplayEventOutput,
     pub(super) observer: Option<JoinHandle<Result<ReplayObserved, String>>>,
+}
+
+pub(super) struct ReplayEventOutput {
+    reducer: scorepeek_core::event::RunEventReducer,
+    diagnostics: scorepeek_runtime::diagnostics::inspect::RunDiagnostics,
+}
+
+impl ReplayEventOutput {
+    pub(super) fn new(
+        diagnostics: scorepeek_runtime::diagnostics::inspect::RunDiagnostics,
+    ) -> Self {
+        Self {
+            reducer: scorepeek_core::event::RunEventReducer::new(),
+            diagnostics,
+        }
+    }
+
+    fn publish(&mut self, event: &scorepeek_core::event::RunEvent) -> Result<(), String> {
+        let reduced = match self.reducer.reduce(event) {
+            Ok(reduced) => reduced,
+            Err(error) => match error {},
+        };
+        let sink = self.diagnostics.sink();
+        for effect in reduced.into_effects() {
+            if let scorepeek_core::event::RunReducerEffect::Event(event) = effect {
+                sink.record(
+                    "run_event",
+                    &scorepeek_core::event::diagnostic_run_event_value(&event)?,
+                    false,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_diagnostics(&mut self, status: &str) {
+        self.diagnostics.finish(status);
+    }
 }
 
 impl ReplayEventStream {
@@ -1572,11 +1610,7 @@ fn start_replay_session(
         false,
     )
     .map_err(CorpusError::InvalidReplay)?;
-    let output = scorepeek_runtime::events::server::RoutineOutput::start_headless_with_diagnostics(
-        format!("corpus-{session_index}"),
-        session.profile_sha256.clone(),
-        diagnostics,
-    );
+    let output = ReplayEventOutput::new(diagnostics);
     let descriptor = replay_descriptor(session_index, &session, &binding);
     let mut runtime = ReplaySessionRuntime {
         session,
@@ -2088,7 +2122,7 @@ fn apply_replay_timeline_actions(
     actions: Vec<scorepeek_core::replay::TimelineAction>,
     recognition: &mut ReplayRecognitionSession,
     pending: &mut VecDeque<ReplayPending>,
-    output: &mut scorepeek_runtime::events::server::RoutineOutput,
+    output: &mut ReplayEventOutput,
     session_id: &str,
     generation: u64,
     sequence: u64,
@@ -2124,7 +2158,7 @@ fn apply_replay_timeline_actions(
 }
 
 fn publish_replay_semantic(
-    output: &mut scorepeek_runtime::events::server::RoutineOutput,
+    output: &mut ReplayEventOutput,
     session_id: &str,
     generation: u64,
     episode: scorepeek_core::replay::SemanticScreenEpisode,
@@ -2151,7 +2185,7 @@ fn publish_replay_semantic(
 fn drain_replay_pending(
     recognition: &mut ReplayRecognitionSession,
     pending: &mut VecDeque<ReplayPending>,
-    output: &mut scorepeek_runtime::events::server::RoutineOutput,
+    output: &mut ReplayEventOutput,
     session_id: &str,
     generation: u64,
     measurements: &mut ReplayMeasurements,
@@ -2173,7 +2207,7 @@ fn drain_replay_pending(
 fn commit_replay_pending(
     recognition: &mut ReplayRecognitionSession,
     pending: &mut VecDeque<ReplayPending>,
-    output: &mut scorepeek_runtime::events::server::RoutineOutput,
+    output: &mut ReplayEventOutput,
     wait: bool,
     session_id: &str,
     generation: u64,

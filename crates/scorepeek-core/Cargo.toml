@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+reducer-test-support = []
+
 [dependencies]
 encoding_rs.workspace = true
 imageproc.workspace = true

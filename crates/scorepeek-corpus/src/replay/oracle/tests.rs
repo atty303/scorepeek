@@ -94,11 +94,7 @@ fn dropping_a_failed_replay_stream_reaps_its_observer_and_trace_writer() {
             .unwrap();
     let observer = start_replay_observer(stream_observer, 0, Some(&trace), false).unwrap();
     let event_stream = ReplayEventStream {
-        output: scorepeek_runtime::events::server::RoutineOutput::start_headless_with_diagnostics(
-            "replay-0".to_owned(),
-            "a".repeat(64),
-            diagnostics,
-        ),
+        output: ReplayEventOutput::new(diagnostics),
         observer: Some(observer),
     };
 

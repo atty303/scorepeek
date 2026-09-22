@@ -245,35 +245,10 @@ fn test_output(state: Arc<Mutex<RunViewState>>, channel: EventChannel) -> Routin
         scores: None,
         publish_frontend_snapshots: false,
         next_sequence: 1,
-        engine: ResolverEngine::default(),
-        pending_numeric_result: None,
-        pending_supplemental_result: None,
-        accepted_numeric_result: None,
-        active_provisional_result: None,
-        music_selection_revision: 0,
-        music_select_resolver: MusicSelectResolver::default(),
-        active_music_selection: None,
-        music_selection_episode_active: false,
-        numeric_evidence: VecDeque::with_capacity(8),
-        play_options: PlayOptionsEpisodeAccumulator::default(),
-        result_panel_side: ResultPanelSideAccumulator::default(),
-        result_select_context_detached: false,
-        last_numeric_sequence: None,
-        last_numeric_monotonic_ms: None,
-        emitted_attempt_ids: BTreeSet::new(),
-        latest_screen_boundary_sequence: None,
-        screen_episode_id: 0,
-        screen_episode_started_ms: None,
-        screen_episode_last_ms: None,
-        result_resolver_active: false,
-        result_episode_finalizing: false,
-        semantic_episode_suspended: false,
-        resolver_transitions: BTreeMap::new(),
-        attempt_started_ms: None,
-        attempt_phase_started_ms: None,
         timing_active: false,
         output_us: 0,
         headless_events: Vec::new(),
+        core_reducer: RunEventReducer::new(),
         diagnostics: None,
     }
 }
@@ -474,35 +449,70 @@ fn detected_result_event(
 }
 
 fn prepare_accepted_attempt(output: &mut RoutineOutput) {
+    output.publish(&screen_event(0, "music_select")).unwrap();
+    output.publish(&screen_event(0, "play")).unwrap();
+    output.publish(&screen_event(0, "result")).unwrap();
     prime_left_result_panel(output);
-    output.engine.play_attempt.observe_selection_screen();
-    output
-        .engine
-        .play_attempt
-        .observe_screen(PlayAttemptScreen::Play, 0);
-    output
-        .engine
-        .play_attempt
-        .observe_screen(PlayAttemptScreen::Result, 0);
 }
 
 fn prime_left_result_panel(output: &mut RoutineOutput) {
-    assert!(
+    prime_result_panel(output, ResultPanelSide::Left, 0);
+}
+
+fn prime_result_panel(output: &mut RoutineOutput, side: ResultPanelSide, first_sequence: u64) {
+    for sequence in [first_sequence, first_sequence.saturating_add(1)] {
         output
-            .result_panel_side
-            .observe(0, 0, ResultPanelSide::Left)
-            .is_some()
-    );
-    assert!(
-        output
-            .result_panel_side
-            .observe(0, 1, ResultPanelSide::Left)
-            .is_some()
-    );
-    assert_eq!(
-        output.result_panel_side.stable(),
-        Some(ResultPanelSide::Left)
-    );
+            .publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::RawScreenObserved {
+                    session_id: Some("invocation-1-session-1".to_owned()),
+                    capture_generation: Some(1),
+                    semantic_episode_id: Some(0),
+                    sequence,
+                    monotonic_start_ms: sequence,
+                    monotonic_end_ms: sequence,
+                    screen: "result".to_owned(),
+                    result_presence: scorepeek_core::recognition::screen::ResultPresenceEvidence {
+                        warm_pixels: 0,
+                        warm_pixels_min: 0,
+                        panel_side:
+                            scorepeek_core::recognition::screen::ResultPanelSideState::Known(side),
+                        panels: [
+                            scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
+                                panel_side: ResultPanelSide::Left,
+                                upper_panel_edge_pixels: 0,
+                                lower_panel_edge_pixels: 0,
+                                qualifies: side == ResultPanelSide::Left,
+                            },
+                            scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
+                                panel_side: ResultPanelSide::Right,
+                                upper_panel_edge_pixels: 0,
+                                lower_panel_edge_pixels: 0,
+                                qualifies: side == ResultPanelSide::Right,
+                            },
+                        ],
+                        horizontal_edge_pixels_min: 0,
+                    },
+                    play_presence: scorepeek_core::recognition::screen::PlayPresenceEvidence {
+                        qualifying_candidates: 0,
+                        top_edge_runs: 0,
+                        bottom_edge_runs: 0,
+                        candidates: [None, None],
+                        top_edge_pixels_min: 0,
+                        top_edge_pixels_max: 0,
+                        bottom_edge_pixels_min: 0,
+                        bottom_edge_pixels_max: 0,
+                        vertical_distance_min: 0,
+                        vertical_distance_max: 0,
+                        edge_center_delta_x2_max: 0,
+                        candidate_cluster_delta_x2_max: 0,
+                        candidate_cluster_delta_y_max: 0,
+                    },
+                    unknown_reason: None,
+                },
+            })
+            .unwrap();
+    }
 }
 
 fn play_options_observation(values: Vec<PlayOption>) -> PlayOptionsObservation {
@@ -691,15 +701,16 @@ fn numeric_before_joint_identity_emits_once_after_attempt_confirmation() {
     let temporary = tempfile::tempdir().unwrap();
     let state = state();
     let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-    let stream = UnixStream::connect(&channel.socket_path).unwrap();
+    let socket_path = channel.socket_path.clone();
+    let mut output = test_output(state, channel);
+    prepare_accepted_attempt(&mut output);
+    let stream = UnixStream::connect(&socket_path).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
     let mut reader = BufReader::new(stream);
     let mut snapshot = String::new();
     reader.read_line(&mut snapshot).unwrap();
-    let mut output = test_output(state, channel);
-    prepare_accepted_attempt(&mut output);
 
     output
         .publish(&accepted_result_without_joint_identity(1))
@@ -909,7 +920,7 @@ fn supplemental_changes_never_gate_mandatory_acceptance_and_can_update_afterward
             SupplementalResultValue::Known { value: miss };
         output.publish(&event).unwrap();
         if sequence >= 2 {
-            assert!(output.accepted_numeric_result.is_some());
+            assert!(output.core_reducer.test_accepted_numeric_result().is_some());
         }
     }
     output
@@ -1012,7 +1023,10 @@ fn mandatory_challenger_stabilizes_independently_of_supplemental_changes() {
     output.publish(&changed(3, 4)).unwrap();
     output.publish(&changed(4, 5)).unwrap();
 
-    let provisional = output.active_provisional_result.as_ref().unwrap();
+    let provisional = output
+        .core_reducer
+        .test_active_provisional_result()
+        .unwrap();
     assert_eq!(provisional.result.clear_type, "HARD CLEAR");
     assert_eq!(
         provisional.result.miss_count,
@@ -1034,7 +1048,10 @@ fn mandatory_challenger_stabilizes_independently_of_supplemental_changes() {
     );
 
     output.publish(&changed(5, 5)).unwrap();
-    let provisional = output.active_provisional_result.as_ref().unwrap();
+    let provisional = output
+        .core_reducer
+        .test_active_provisional_result()
+        .unwrap();
     assert_eq!(
         provisional.result.miss_count,
         SupplementalResultValue::Known { value: 5 }
@@ -1049,14 +1066,33 @@ fn one_different_song_challenger_cannot_confirm_the_stable_result() {
     output.publish(&accepted_result_event(2)).unwrap();
 
     let other_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
-    output.engine.provisional_joint.as_mut().unwrap().song_id = other_song;
-    let mut challenger = output.accepted_numeric_result.clone().unwrap();
+    output
+        .core_reducer
+        .test_engine_mut()
+        .provisional_joint
+        .as_mut()
+        .unwrap()
+        .song_id = other_song;
+    let mut challenger = output
+        .core_reducer
+        .test_accepted_numeric_result()
+        .cloned()
+        .unwrap();
     challenger.song_id = other_song;
     challenger.source_sequence = 3;
-    assert!(output.stabilize_numeric_result(challenger, false).is_none());
+    assert!(
+        output
+            .core_reducer
+            .test_stabilize_numeric_result(challenger, false)
+            .is_none()
+    );
 
     output
-        .finalize_result_attempt(Some("invocation-1-session-1".to_owned()), Some(1), 4)
+        .publish(&semantic_episode_event(
+            4,
+            "result",
+            SemanticEpisodePhase::Finalized,
+        ))
         .unwrap();
 
     assert_eq!(output.state.lock().unwrap().result_count, 0);
@@ -1077,20 +1113,34 @@ fn one_different_chart_challenger_cannot_confirm_the_stable_result() {
     output.publish(&accepted_result_event(2)).unwrap();
 
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
         .provisional_joint
         .as_mut()
         .unwrap()
         .chart
         .key
         .difficulty = Difficulty::Another;
-    let mut challenger = output.accepted_numeric_result.clone().unwrap();
+    let mut challenger = output
+        .core_reducer
+        .test_accepted_numeric_result()
+        .cloned()
+        .unwrap();
     challenger.chart.key.difficulty = Difficulty::Another;
     challenger.source_sequence = 3;
-    assert!(output.stabilize_numeric_result(challenger, false).is_none());
+    assert!(
+        output
+            .core_reducer
+            .test_stabilize_numeric_result(challenger, false)
+            .is_none()
+    );
 
     output
-        .finalize_result_attempt(Some("invocation-1-session-1".to_owned()), Some(1), 4)
+        .publish(&semantic_episode_event(
+            4,
+            "result",
+            SemanticEpisodePhase::Finalized,
+        ))
         .unwrap();
 
     assert_eq!(output.state.lock().unwrap().result_count, 0);
@@ -1102,7 +1152,7 @@ fn one_different_chart_challenger_cannot_confirm_the_stable_result() {
         }
     )));
     assert!(matches!(
-        output.engine.play_attempt.state(),
+        output.core_reducer.test_engine().play_attempt.state(),
         PlayAttemptState::Attempt { attempt }
             if attempt.result_relation
                 == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict
@@ -1132,7 +1182,12 @@ fn provisional_result_retracts_and_re_resolves_as_one_state_stream() {
             ..
         }
     )));
-    assert!(output.active_provisional_result.is_some());
+    assert!(
+        output
+            .core_reducer
+            .test_active_provisional_result()
+            .is_some()
+    );
     output.publish(&changed_clear(4)).unwrap();
 
     let lifecycle = output
@@ -1278,7 +1333,11 @@ fn tui_shows_each_result_state_without_falling_back_after_retraction() {
     prepare_accepted_attempt(&mut output);
     output.publish(&accepted_result_event(1)).unwrap();
     output.publish(&accepted_result_event(2)).unwrap();
-    let provisional = output.active_provisional_result.clone().unwrap();
+    let provisional = output
+        .core_reducer
+        .test_active_provisional_result()
+        .cloned()
+        .unwrap();
     output
         .publish(&semantic_episode_event(
             3,
@@ -1352,13 +1411,19 @@ fn tui_shows_each_result_state_without_falling_back_after_retraction() {
 fn linkage_deficient_attempt_is_provisional_then_withdrawn_on_rejection() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
     prime_left_result_panel(&mut output);
-    output.engine.play_attempt.observe_selection_screen();
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
+        .play_attempt
+        .observe_selection_screen();
+    output
+        .core_reducer
+        .test_engine_mut()
         .play_attempt
         .observe_screen(PlayAttemptScreen::DecideTransition, 0);
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
         .play_attempt
         .observe_screen(PlayAttemptScreen::Result, 0);
     output.publish(&accepted_result_event(1)).unwrap();
@@ -1424,9 +1489,9 @@ fn incomplete_numeric_finalizes_the_attempt_as_rejected() {
         ))
         .unwrap();
 
-    assert!(output.emitted_attempt_ids.is_empty());
+    assert!(output.core_reducer.test_emitted_attempt_ids().is_empty());
     assert!(matches!(
-        output.engine.play_attempt.state(),
+        output.core_reducer.test_engine().play_attempt.state(),
         PlayAttemptState::Attempt { attempt }
             if attempt.result_relation
                 == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict
@@ -1445,7 +1510,8 @@ fn stale_numeric_from_another_chart_cannot_confirm_the_attempt() {
     output.publish(&accepted_result_event(1)).unwrap();
     output.publish(&accepted_result_event(2)).unwrap();
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
         .provisional_joint
         .as_mut()
         .unwrap()
@@ -1460,9 +1526,9 @@ fn stale_numeric_from_another_chart_cannot_confirm_the_attempt() {
         ))
         .unwrap();
 
-    assert!(output.emitted_attempt_ids.is_empty());
+    assert!(output.core_reducer.test_emitted_attempt_ids().is_empty());
     assert!(matches!(
-        output.engine.play_attempt.state(),
+        output.core_reducer.test_engine().play_attempt.state(),
         PlayAttemptState::Attempt { attempt }
             if attempt.result_relation
                 == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict
@@ -1482,9 +1548,9 @@ fn failed_session_boundary_cannot_replace_semantic_result_finalization() {
     output.publish(&accepted_result_event(2)).unwrap();
     output.publish(&failed_session_finished_event()).unwrap();
 
-    assert!(output.emitted_attempt_ids.is_empty());
+    assert!(output.core_reducer.test_emitted_attempt_ids().is_empty());
     assert!(matches!(
-        output.engine.play_attempt.state(),
+        output.core_reducer.test_engine().play_attempt.state(),
         PlayAttemptState::Attempt { attempt }
             if attempt.phase == scorepeek_core::session::attempt::PlayAttemptPhase::Abandoned
                 && attempt.reasons.contains(&PlayAttemptReason::SessionEnded)
@@ -1512,40 +1578,44 @@ fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() 
     };
 
     output.publish(&screen_event(1, "music_select")).unwrap();
-    output.engine.retained_select.observe(
-        100,
-        &JointEvidenceObservation {
-            catalog_song_count: 0,
-            candidates: vec![
-                JointEvidenceCandidate {
-                    song_id: wrong_song_id,
-                    chart: chart.clone(),
-                    display_titles: vec!["X".to_owned()],
-                    artist: "D.J.Amuro".to_owned(),
-                    family_support: BTreeMap::from([
-                        (EvidenceFamily::SelectTitleLexical, 300),
-                        (EvidenceFamily::SelectTitleStructural, 60),
-                        (EvidenceFamily::SelectChart, 50),
-                    ]),
-                    support: 410,
-                },
-                JointEvidenceCandidate {
-                    song_id: correct_song_id,
-                    chart: chart.clone(),
-                    display_titles: vec!["〆".to_owned()],
-                    artist: "lapix".to_owned(),
-                    family_support: BTreeMap::from([
-                        (EvidenceFamily::SelectTitleStructural, 60),
-                        (EvidenceFamily::SelectArtist, 300),
-                        (EvidenceFamily::SelectChart, 50),
-                    ]),
-                    support: 410,
-                },
-            ],
-        },
-        None,
-        None,
-    );
+    output
+        .core_reducer
+        .test_engine_mut()
+        .retained_select
+        .observe(
+            100,
+            &JointEvidenceObservation {
+                catalog_song_count: 0,
+                candidates: vec![
+                    JointEvidenceCandidate {
+                        song_id: wrong_song_id,
+                        chart: chart.clone(),
+                        display_titles: vec!["X".to_owned()],
+                        artist: "D.J.Amuro".to_owned(),
+                        family_support: BTreeMap::from([
+                            (EvidenceFamily::SelectTitleLexical, 300),
+                            (EvidenceFamily::SelectTitleStructural, 60),
+                            (EvidenceFamily::SelectChart, 50),
+                        ]),
+                        support: 410,
+                    },
+                    JointEvidenceCandidate {
+                        song_id: correct_song_id,
+                        chart: chart.clone(),
+                        display_titles: vec!["〆".to_owned()],
+                        artist: "lapix".to_owned(),
+                        family_support: BTreeMap::from([
+                            (EvidenceFamily::SelectTitleStructural, 60),
+                            (EvidenceFamily::SelectArtist, 300),
+                            (EvidenceFamily::SelectChart, 50),
+                        ]),
+                        support: 410,
+                    },
+                ],
+            },
+            None,
+            None,
+        );
     output
         .publish(&screen_event(2, "decide_transition"))
         .unwrap();
@@ -1595,7 +1665,7 @@ fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() 
     output.publish(&result(6)).unwrap();
     output.publish(&result(7)).unwrap();
 
-    assert_eq!(output.emitted_attempt_ids.len(), 0);
+    assert_eq!(output.core_reducer.test_emitted_attempt_ids().len(), 0);
     output
         .publish(&semantic_episode_event(
             8,
@@ -1610,7 +1680,7 @@ fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() 
             SemanticEpisodePhase::Finalized,
         ))
         .unwrap();
-    assert_eq!(output.emitted_attempt_ids.len(), 1);
+    assert_eq!(output.core_reducer.test_emitted_attempt_ids().len(), 1);
     assert_eq!(state.lock().unwrap().result_count, 1);
     assert_eq!(
         state
@@ -1639,7 +1709,7 @@ fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() 
         "〆"
     );
     assert!(matches!(
-        output.engine.play_attempt.state(),
+        output.core_reducer.test_engine().play_attempt.state(),
         PlayAttemptState::Attempt { attempt }
             if attempt.result_relation
                 == scorepeek_core::session::attempt::PlayAttemptResultRelation::Confirmed
@@ -2995,7 +3065,7 @@ fn diagnostic_top_does_not_truncate_resolver_authority() {
     authority.observe(100, joint_evidence, None, None);
     assert_eq!(authority.summary().state, ResolverResolutionState::Conflict);
     assert_eq!(joint_evidence.candidates.len(), 9);
-    let diagnostic = bounded_run_event_value(&event).unwrap();
+    let diagnostic = diagnostic_run_event_value(&event).unwrap();
     assert_eq!(
         diagnostic["joint_evidence"]["candidates"]
             .as_array()
@@ -3456,6 +3526,7 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
     let shared = state();
     shared.lock().unwrap().current_screen = Some("music_select".to_owned());
     let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
+    output.publish(&screen_event(0, "music_select")).unwrap();
     let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000041\"").unwrap();
     let fields = json!({
         "active_list_title": "A",
@@ -3826,7 +3897,8 @@ fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot(
     }
     assert_eq!(
         output
-            .music_select_resolver
+            .core_reducer
+            .test_music_select_resolver()
             .best
             .current_difficulty
             .unwrap()
@@ -3874,7 +3946,13 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
                 )
                 .unwrap();
         }
-        let first = output.music_select_resolver.best.snapshot.clone().unwrap();
+        let first = output
+            .core_reducer
+            .test_music_select_resolver()
+            .best
+            .snapshot
+            .clone()
+            .unwrap();
         output.take_headless_events();
         let mut missing_fields = fields.clone();
         let mut missing_evidence = evidence.clone();
@@ -3899,12 +3977,23 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
                 )
                 .unwrap();
             assert_eq!(
-                output.music_select_resolver.best.snapshot.as_ref(),
+                output
+                    .core_reducer
+                    .test_music_select_resolver()
+                    .best
+                    .snapshot
+                    .as_ref(),
                 Some(&first),
                 "{missing}"
             );
             assert_eq!(
-                output.music_select_resolver.best.score.consecutive, 0,
+                output
+                    .core_reducer
+                    .test_music_select_resolver()
+                    .best
+                    .score
+                    .consecutive,
+                0,
                 "{missing}"
             );
         }
@@ -3921,12 +4010,22 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
                 )
                 .unwrap();
             assert_eq!(
-                output.music_select_resolver.best.score.consecutive,
+                output
+                    .core_reducer
+                    .test_music_select_resolver()
+                    .best
+                    .score
+                    .consecutive,
                 u8::try_from(sequence - 8).unwrap()
             );
         }
         assert_eq!(
-            output.music_select_resolver.best.snapshot.as_ref(),
+            output
+                .core_reducer
+                .test_music_select_resolver()
+                .best
+                .snapshot
+                .as_ref(),
             Some(&first)
         );
         assert!(
@@ -3964,7 +4063,13 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
                 )
                 .unwrap();
         }
-        let first = output.music_select_resolver.best.snapshot.clone().unwrap();
+        let first = output
+            .core_reducer
+            .test_music_select_resolver()
+            .best
+            .snapshot
+            .clone()
+            .unwrap();
         let mut changed_fields = fields.clone();
         let mut changed_evidence = evidence.clone();
         match conflict {
@@ -3997,11 +4102,21 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
             )
             .unwrap();
         assert!(
-            output.music_select_resolver.best.chart.is_none(),
+            output
+                .core_reducer
+                .test_music_select_resolver()
+                .best
+                .chart
+                .is_none(),
             "{conflict}"
         );
         assert!(
-            output.music_select_resolver.best.snapshot.is_none(),
+            output
+                .core_reducer
+                .test_music_select_resolver()
+                .best
+                .snapshot
+                .is_none(),
             "{conflict}"
         );
         for sequence in 7..=15 {
@@ -4020,16 +4135,31 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
         if conflict == "mode" {
             // Conflicting mode support remains unresolved in the existing identity resolver.
             assert!(
-                output.music_select_resolver.selected().is_none(),
+                output
+                    .core_reducer
+                    .test_music_select_resolver()
+                    .selected()
+                    .is_none(),
                 "{conflict}"
             );
             assert!(
-                output.music_select_resolver.best.snapshot.is_none(),
+                output
+                    .core_reducer
+                    .test_music_select_resolver()
+                    .best
+                    .snapshot
+                    .is_none(),
                 "{conflict}"
             );
             continue;
         }
-        let revisit = output.music_select_resolver.best.snapshot.as_ref().unwrap();
+        let revisit = output
+            .core_reducer
+            .test_music_select_resolver()
+            .best
+            .snapshot
+            .as_ref()
+            .unwrap();
         assert_ne!(
             first.selection_interval, revisit.selection_interval,
             "{conflict}"
@@ -4071,7 +4201,13 @@ fn best_suppression_does_not_discard_admitted_selection_identity() {
                 )
                 .unwrap();
         }
-        assert!(output.music_select_resolver.selected().is_some());
+        assert!(
+            output
+                .core_reducer
+                .test_music_select_resolver()
+                .selected()
+                .is_some()
+        );
         assert!(output.state.lock().unwrap().music_select.snapshot.is_none());
     }
 }
@@ -4079,8 +4215,7 @@ fn best_suppression_does_not_discard_admitted_selection_identity() {
 #[test]
 fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-    output.screen_episode_id = 9;
-    output.music_selection_episode_active = true;
+    output.publish(&screen_event(0, "music_select")).unwrap();
     let session_id = "invocation-1-session-1".to_owned();
     let (fields, evidence, presentation) = music_selection_test_observation();
     for sequence in [1, 2, 3] {
@@ -4097,8 +4232,14 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
             .unwrap();
     }
     assert_double_play_selection(&output);
-    output.engine.selection_epochs = SelectionEpochTracker::default();
-    assert!(output.music_select_resolver.selected().is_some());
+    output.core_reducer.test_engine_mut().selection_epochs = SelectionEpochTracker::default();
+    assert!(
+        output
+            .core_reducer
+            .test_music_select_resolver()
+            .selected()
+            .is_some()
+    );
     let mut changed_song = evidence.clone();
     changed_song.candidates[0].song_id =
         serde_json::from_str("\"00000000-0000-0000-0000-000000000047\"").unwrap();
@@ -4115,7 +4256,13 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
             &presentation,
         )
         .unwrap();
-    assert!(output.music_select_resolver.selected().is_none());
+    assert!(
+        output
+            .core_reducer
+            .test_music_select_resolver()
+            .selected()
+            .is_none()
+    );
     output
         .publish_screen_change(
             &RunEvent {
@@ -4177,7 +4324,7 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
 
 fn assert_double_play_selection(output: &RoutineOutput) {
     assert!(matches!(
-        output.music_select_resolver.selected(),
+        output.core_reducer.test_music_select_resolver().selected(),
         Some(MusicSelectionState::Selected {
             play_side: PlaySide::TwoPlayer,
             ..
@@ -4351,29 +4498,27 @@ fn panel_side_conflict_retracts_the_provisional_result() {
     prepare_accepted_attempt(&mut output);
     output.publish(&accepted_result_event(1)).unwrap();
     output.publish(&accepted_result_event(2)).unwrap();
-    assert!(output.active_provisional_result.is_some());
+    assert!(
+        output
+            .core_reducer
+            .test_active_provisional_result()
+            .is_some()
+    );
 
-    output
-        .observe_result_panel_side(
-            Some(&"invocation-1-session-1".to_owned()),
-            Some(1),
-            0,
-            3,
-            ResultPanelSide::Right,
-        )
-        .unwrap();
-    assert!(output.active_provisional_result.is_some());
-    output
-        .observe_result_panel_side(
-            Some(&"invocation-1-session-1".to_owned()),
-            Some(1),
-            0,
-            4,
-            ResultPanelSide::Right,
-        )
-        .unwrap();
+    prime_result_panel(&mut output, ResultPanelSide::Right, 3);
+    assert!(
+        output
+            .core_reducer
+            .test_active_provisional_result()
+            .is_none()
+    );
 
-    assert!(output.active_provisional_result.is_none());
+    assert!(
+        output
+            .core_reducer
+            .test_active_provisional_result()
+            .is_none()
+    );
     assert!(output.headless_events.iter().any(|event| matches!(
         event.kind,
         RunEventKind::ResultChanged {
@@ -4389,37 +4534,34 @@ fn panel_side_conflict_retracts_the_provisional_result() {
 #[test]
 fn side_mismatch_before_result_play_type_stabilizes_detaches_only_the_attempt_linkage() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-    output.engine.play_attempt.observe_selection_screen();
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
+        .play_attempt
+        .observe_selection_screen();
+    output
+        .core_reducer
+        .test_engine_mut()
         .play_attempt
         .observe_screen(PlayAttemptScreen::Play, 0);
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
         .play_attempt
         .observe_screen(PlayAttemptScreen::Result, 0);
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
         .retained_select
         .select_play_sides
         .insert(PlaySide::OnePlayer, 2);
     output
-        .engine
+        .core_reducer
+        .test_engine_mut()
         .retained_select
         .select_play_types
         .insert(PlayType::Double, 2);
-    assert!(
-        output
-            .result_panel_side
-            .observe(0, 0, ResultPanelSide::Right)
-            .is_some()
-    );
-    assert!(
-        output
-            .result_panel_side
-            .observe(0, 1, ResultPanelSide::Right)
-            .is_some()
-    );
+    prime_result_panel(&mut output, ResultPanelSide::Right, 0);
 
     for sequence in [1, 2] {
         let mut event = accepted_double_result_event(sequence);
@@ -4430,9 +4572,21 @@ fn side_mismatch_before_result_play_type_stabilizes_detaches_only_the_attempt_li
         output.publish(&event).unwrap();
     }
 
-    assert!(output.result_select_context_detached);
-    assert_eq!(output.engine.retained_select.observation_count, 0);
-    assert!(output.active_provisional_result.is_some());
+    assert!(output.core_reducer.test_result_select_context_detached());
+    assert_eq!(
+        output
+            .core_reducer
+            .test_engine()
+            .retained_select
+            .observation_count,
+        0
+    );
+    assert!(
+        output
+            .core_reducer
+            .test_active_provisional_result()
+            .is_some()
+    );
     assert!(output.headless_events.iter().any(|event| matches!(
         event.kind,
         RunEventKind::ResultSelectContextMismatch {
@@ -4505,7 +4659,7 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
                 .unwrap();
         }
         assert!(matches!(
-            output.active_music_selection,
+            output.core_reducer.test_active_music_selection(),
             Some(MusicSelectionState::Selected { .. })
         ));
         output
@@ -4527,11 +4681,14 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
                 },
             })
             .unwrap();
-        assert!(!output.music_selection_episode_active);
+        assert!(!output.core_reducer.test_music_selection_episode_active());
         let ended = MusicSelectionState::Unresolved {
             reason: MusicSelectionUnresolvedReason::EpisodeEnded,
         };
-        assert_eq!(output.active_music_selection, Some(ended.clone()));
+        assert_eq!(
+            output.core_reducer.test_active_music_selection(),
+            Some(&ended)
+        );
         assert_eq!(
             output.state.lock().unwrap().latest_music_selection,
             Some(ended.clone())
@@ -4565,7 +4722,7 @@ fn pending_marker_is_visible_before_any_song_evidence() {
     let shared = state();
     shared.lock().unwrap().current_screen = Some("music_select".to_owned());
     let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
-    output.music_selection_episode_active = true;
+    output.publish(&screen_event(0, "music_select")).unwrap();
     let fields = json!({
         "selected_difficulty": {
             "state": { "status": "known", "value": "normal" },
@@ -4630,7 +4787,14 @@ fn music_select_handoff_waits_for_admitted_field_drain() {
     output
         .publish(&semantic(71, SemanticEpisodePhase::Closing))
         .unwrap();
-    assert_eq!(output.engine.retained_select.observation_count, 0);
+    assert_eq!(
+        output
+            .core_reducer
+            .test_engine()
+            .retained_select
+            .observation_count,
+        0
+    );
 
     let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000061\"").unwrap();
     output
@@ -4685,17 +4849,37 @@ fn music_select_handoff_waits_for_admitted_field_drain() {
         })
         .unwrap();
     assert_eq!(
-        output.engine.selection_epochs.incumbent.observation_count,
+        output
+            .core_reducer
+            .test_engine()
+            .selection_epochs
+            .incumbent
+            .observation_count,
         1
     );
-    assert_eq!(output.engine.retained_select.observation_count, 0);
+    assert_eq!(
+        output
+            .core_reducer
+            .test_engine()
+            .retained_select
+            .observation_count,
+        0
+    );
     output
         .publish(&semantic(72, SemanticEpisodePhase::Finalized))
         .unwrap();
-    assert_eq!(output.engine.retained_select.observation_count, 1);
     assert_eq!(
         output
-            .engine
+            .core_reducer
+            .test_engine()
+            .retained_select
+            .observation_count,
+        1
+    );
+    assert_eq!(
+        output
+            .core_reducer
+            .test_engine()
             .retained_select
             .summary()
             .selected
@@ -4874,6 +5058,7 @@ fn accepted_hypothesis_can_return_to_conflict_on_new_contradictory_evidence() {
 fn resolver_transition_records_raw_and_normalized_family_contributions() {
     let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
     prime_left_result_panel(&mut output);
+    output.take_headless_events();
 
     output.publish(&accepted_result_event(1)).unwrap();
     let events = output.take_headless_events();
