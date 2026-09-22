@@ -180,7 +180,7 @@ pub enum EditorInput {
     },
     SetOutputs(Vec<crate::editor::EditorOutput>),
     Action(EditorAction),
-    Surface(crate::editor_surface::SurfaceAction),
+    Surface(crate::editor::effect::SurfaceAction),
     Resize {
         output: String,
         logical_size: [u32; 2],
@@ -456,9 +456,9 @@ impl EditorSession {
 
     fn reduce_surface_action(
         &mut self,
-        action: crate::editor_surface::SurfaceAction,
+        action: crate::editor::effect::SurfaceAction,
     ) -> Vec<EditorEffect> {
-        if let crate::editor_surface::SurfaceAction::Enter(canvas) = action {
+        if let crate::editor::effect::SurfaceAction::Enter(canvas) = action {
             if !self.editing {
                 self.enter(canvas, self.screen.unwrap_or(ScreenKind::MusicSelect));
                 return vec![EditorEffect::Acquire];
@@ -1363,8 +1363,8 @@ impl EditorSession {
         self.undo = Some(before);
         true
     }
-    pub fn surface(&mut self, action: crate::editor_surface::SurfaceAction) -> bool {
-        use crate::editor_surface::SurfaceAction;
+    pub fn surface(&mut self, action: crate::editor::effect::SurfaceAction) -> bool {
+        use crate::editor::effect::SurfaceAction;
         match action {
             SurfaceAction::Enter(canvas) => {
                 self.enter(canvas, self.screen.unwrap_or(ScreenKind::MusicSelect));
@@ -2141,7 +2141,7 @@ mod skin_tests {
         assert!(!model.editing);
         assert_eq!(
             model.reduce(EditorInput::Surface(
-                crate::editor_surface::SurfaceAction::Enter(None)
+                crate::editor::effect::SurfaceAction::Enter(None)
             )),
             vec![EditorEffect::Acquire]
         );
@@ -2154,7 +2154,7 @@ mod skin_tests {
 
         assert_eq!(
             model.reduce(EditorInput::Surface(
-                crate::editor_surface::SurfaceAction::Enter(None)
+                crate::editor::effect::SurfaceAction::Enter(None)
             )),
             vec![EditorEffect::Acquire]
         );
@@ -2434,7 +2434,7 @@ mod skin_tests {
         assert!(model.action(&EditorAction::AddCanvas));
         let canvas = model.selected_canvas.clone().unwrap();
         model.reduce(EditorInput::Surface(
-            crate::editor_surface::SurfaceAction::Start {
+            crate::editor::effect::SurfaceAction::Start {
                 canvas,
                 widget: None,
                 corner: None,
@@ -2443,7 +2443,7 @@ mod skin_tests {
         ));
         let before = model.revision;
         let effects = model.reduce(EditorInput::Surface(
-            crate::editor_surface::SurfaceAction::Move([20, 20]),
+            crate::editor::effect::SurfaceAction::Move([20, 20]),
         ));
 
         assert!(
@@ -2468,7 +2468,7 @@ mod skin_tests {
         let canvas = model.selected_canvas.clone().unwrap();
         let requested = model.draft.clone();
         model.reduce(EditorInput::Surface(
-            crate::editor_surface::SurfaceAction::Start {
+            crate::editor::effect::SurfaceAction::Start {
                 canvas,
                 widget: None,
                 corner: None,
@@ -2476,7 +2476,7 @@ mod skin_tests {
             },
         ));
         model.reduce(EditorInput::Surface(
-            crate::editor_surface::SurfaceAction::Move([40, 24]),
+            crate::editor::effect::SurfaceAction::Move([40, 24]),
         ));
         let current = model.draft.clone();
 
@@ -2547,7 +2547,7 @@ mod skin_tests {
         let projections = model.stage_projections();
 
         let effects = model.reduce(EditorInput::Surface(
-            crate::editor_surface::SurfaceAction::Move([320, 180]),
+            crate::editor::effect::SurfaceAction::Move([320, 180]),
         ));
 
         assert!(effects.is_empty());
@@ -2570,7 +2570,7 @@ mod skin_tests {
         let before = model.revision;
 
         let effects = model.reduce(EditorInput::Surface(
-            crate::editor_surface::SurfaceAction::Move([320, 180]),
+            crate::editor::effect::SurfaceAction::Move([320, 180]),
         ));
 
         assert!(effects.is_empty());

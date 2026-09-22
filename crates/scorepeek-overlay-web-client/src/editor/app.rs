@@ -7,12 +7,12 @@ use crate::transport::connection::Connection;
 use crate::transport::reconnect::Compatibility;
 use dioxus::prelude::*;
 use scorepeek_overlay::CanvasPresentation;
-use scorepeek_overlay::editor::{EditorAction, EditorOutput, EditorPanel};
-use scorepeek_overlay::editor_model::EditorInput;
-use scorepeek_overlay::editor_runtime::use_editor_runtime;
-use scorepeek_overlay::editor_surface::{
+use scorepeek_overlay::editor::effect::{
     EditorCanvas, EditorSelectionMetrics, EditorSurface, PlacementPreview, SurfaceAction,
 };
+use scorepeek_overlay::editor::model::EditorInput;
+use scorepeek_overlay::editor::runtime::use_editor_runtime;
+use scorepeek_overlay::editor::{EditorAction, EditorOutput, EditorPanel};
 use std::rc::Rc;
 
 #[allow(clippy::too_many_lines)]

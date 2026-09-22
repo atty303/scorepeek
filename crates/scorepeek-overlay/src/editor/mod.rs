@@ -323,7 +323,7 @@ pub fn canvas_geometry_bounds(canvas: &CanvasPresentation, outputs: &[EditorOutp
 #[component]
 pub fn EditorPanel(
     view: EditorView,
-    title: Option<crate::editor_model::TitleDraft>,
+    title: Option<crate::editor::model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let canvas = view
@@ -364,14 +364,14 @@ pub fn CollapsedEditorButton(dirty: bool, onaction: EventHandler<EditorAction>) 
 
 #[component]
 pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Element {
-    let options = crate::editor_model::SCREENS
+    let options = crate::editor::model::SCREENS
         .into_iter()
         .map(|screen| ListPickerOption {
             label: screen_label(screen).into(),
             detail: None,
         })
         .collect::<Vec<_>>();
-    let selected = crate::editor_model::SCREENS
+    let selected = crate::editor::model::SCREENS
         .iter()
         .position(|screen| *screen == view.preview_screen)
         .unwrap_or_default();
@@ -387,7 +387,7 @@ pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Ele
                 cursor: view.chrome.picker_cursors.get("screen").copied().unwrap_or(selected),
                 open: view.chrome.screen_picker_open,
                 onopen: move |open| onaction.call(EditorAction::SetScreenPickerOpen(open)),
-                onselect: move |index| if let Some(screen) = crate::editor_model::SCREENS.get(index) { onaction.call(EditorAction::PreviewScreen(*screen)); },
+                onselect: move |index| if let Some(screen) = crate::editor::model::SCREENS.get(index) { onaction.call(EditorAction::PreviewScreen(*screen)); },
                 oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("screen".into(), index)),
             }
             if view.access.dirty {
@@ -400,7 +400,7 @@ pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Ele
 #[component]
 pub fn EditorWorkspace(
     view: EditorView,
-    title: Option<crate::editor_model::TitleDraft>,
+    title: Option<crate::editor::model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     rsx! {
@@ -555,7 +555,7 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
 #[component]
 pub fn Inspector(
     view: EditorView,
-    title: Option<crate::editor_model::TitleDraft>,
+    title: Option<crate::editor::model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let canvas = view
@@ -739,7 +739,7 @@ fn visibility_toggles(
 ) -> Element {
     let canvas_id = canvas_id.to_owned();
     let show_on = show_on.map(<[ScreenKind]>::to_vec);
-    rsx! { ToggleGroup { class: "visibility-grid", label: "Canvas visibility", for (index, screen) in crate::editor_model::SCREENS.into_iter().enumerate() {
+    rsx! { ToggleGroup { class: "visibility-grid", label: "Canvas visibility", for (index, screen) in crate::editor::model::SCREENS.into_iter().enumerate() {
         Toggle {
             class: "screen-toggle",
             label: screen_label(screen),
@@ -1031,7 +1031,7 @@ mod property_tests {
 fn widget_settings(
     widget: &WidgetLayout,
     view: &EditorView,
-    title: Option<crate::editor_model::TitleDraft>,
+    title: Option<crate::editor::model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     rsx! {

@@ -15,7 +15,7 @@ use std::{
 };
 
 pub use scorepeek_overlay::{Backend, CanvasPresentation, Skin};
-pub use scorepeek_overlay::{editor::EditorAction, editor_model::SCREENS};
+pub use scorepeek_overlay::{editor::EditorAction, editor::model::SCREENS};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {

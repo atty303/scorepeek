@@ -1,6 +1,6 @@
 use crate::CanvasPresentation;
 use crate::editor::EditorView;
-use crate::editor_model::{EditorEffect, EditorInput, EditorSession, StageProjection};
+use crate::editor::model::{EditorEffect, EditorInput, EditorSession, StageProjection};
 use dioxus::prelude::*;
 
 #[derive(Clone, Copy)]
@@ -37,7 +37,7 @@ pub fn use_editor_runtime(initialize: impl FnOnce() -> EditorSession + 'static) 
     let dispatch = Callback::new(move |input| {
         if matches!(
             input,
-            EditorInput::Surface(crate::editor_surface::SurfaceAction::Move(_))
+            EditorInput::Surface(crate::editor::effect::SurfaceAction::Move(_))
         ) {
             let current = session.read();
             if current.drag.is_none() && current.placing.is_none() {

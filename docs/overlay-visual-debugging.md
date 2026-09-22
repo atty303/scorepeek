@@ -169,7 +169,7 @@ buffer and UI; it does not establish compositor keyboard focus or real IME candi
 
 Native and OBS render the shared Dioxus `EditorPanel`, `EditorSurface`, `EditorCanvas`,
 `ResizeHandles` and `PlacementPreview` components in `scorepeek-overlay`. The shared
-`editor_model::EditorSession` owns selection, settings, placement and gesture transitions, including
+`editor::model::EditorSession` owns selection, settings, placement and gesture transitions, including
 four-corner resize, aspect ratios and canvas bounds. `Button` owns text alignment,
 sizing, selected/disabled state and tone; parent CSS owns placement and spacing.
 

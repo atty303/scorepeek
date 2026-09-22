@@ -325,7 +325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let scenario = if integration_fixture {
         use scorepeek_overlay_wayland::bridge::data::EditorAction;
-        use scorepeek_overlay_wayland::native::NativeEditorScenarioStep;
+        use scorepeek_overlay_wayland::host::NativeEditorScenarioStep;
 
         vec![
             NativeEditorScenarioStep {
@@ -357,7 +357,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Vec::new()
     };
     eprintln!("Wayland editor will remain open for {seconds} seconds.");
-    let result = scorepeek_overlay_wayland::native::run_with_editor_scenario(
+    let result = scorepeek_overlay_wayland::host::run_with_editor_scenario(
         runtime_config(),
         TimedLease(Duration::from_secs(seconds)),
         scenario,

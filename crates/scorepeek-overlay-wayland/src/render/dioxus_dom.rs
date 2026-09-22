@@ -1,13 +1,13 @@
 pub(crate) mod text;
-#[cfg(test)]
-use scorepeek_overlay::editor_model::EditorEffectKind;
-use scorepeek_overlay::editor_model::{
-    EditorBackendReply, EditorEffect, EditorInput, EditorSession, StageProjection,
-};
-use scorepeek_overlay::editor_runtime::{EditorRuntime, use_editor_runtime};
-use scorepeek_overlay::editor_surface::{
+use scorepeek_overlay::editor::effect::{
     EditorCanvas, EditorSelectionMetrics, EditorSurface, PlacementPreview, SurfaceAction,
 };
+#[cfg(test)]
+use scorepeek_overlay::editor::model::EditorEffectKind;
+use scorepeek_overlay::editor::model::{
+    EditorBackendReply, EditorEffect, EditorInput, EditorSession, StageProjection,
+};
+use scorepeek_overlay::editor::runtime::{EditorRuntime, use_editor_runtime};
 use std::{
     cell::RefCell,
     rc::Rc,

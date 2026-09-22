@@ -1,4 +1,4 @@
-pub use scorepeek_overlay::editor_model::*;
+pub use scorepeek_overlay::editor::model::*;
 #[cfg(test)]
 mod tests {
     use super::*;

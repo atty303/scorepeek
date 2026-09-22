@@ -55,7 +55,7 @@ fn run_inner() -> Result<(), String> {
         }),
     );
     match config.backend {
-        crate::bridge::data::Backend::Wayland => crate::native::run(config, input),
+        crate::bridge::data::Backend::Wayland => crate::host::run(config, input),
         crate::bridge::data::Backend::Obs => {
             Err("OBS config was sent to the Wayland process role".into())
         }

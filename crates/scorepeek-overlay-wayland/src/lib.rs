@@ -6,7 +6,6 @@ pub mod config;
 pub mod control;
 pub mod diagnostics;
 pub mod host;
-pub use host as native;
 pub mod input;
 pub mod render;
 pub use host::event_loop::{TextCommand, TextInputState, TextUpdate};

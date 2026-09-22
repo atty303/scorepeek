@@ -241,7 +241,7 @@ fn passive_pointer_motion_does_not_publish_a_native_stage_replica() {
     let before = published.lock().unwrap().publications;
 
     let effects = authority.dispatch(EditorInput::Surface(
-        scorepeek_overlay::editor_surface::SurfaceAction::Move([320, 180]),
+        scorepeek_overlay::editor::effect::SurfaceAction::Move([320, 180]),
     ));
 
     assert!(effects.is_empty());
@@ -3245,7 +3245,7 @@ fn resize_widget(
     y: f64,
     canvas: [u32; 2],
 ) {
-    let rect = scorepeek_overlay::editor_model::resize(
+    let rect = scorepeek_overlay::editor::model::resize(
         [
             original.x,
             original.y,
@@ -4074,7 +4074,7 @@ fn compact_canvas_editor_expands_inside_the_output() {
 
 #[test]
 fn aggregate_canvas_visibility_preserves_explicit_screen_membership() {
-    use scorepeek_overlay::editor_model::SCREENS;
+    use scorepeek_overlay::editor::model::SCREENS;
     let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
     canvas.show_on = None;
     let mut model = EditorSession::new(vec![canvas.clone()], [1920, 1080], "wayland");

@@ -1,4 +1,4 @@
-use scorepeek_overlay_wayland::native::{VisualDebugScenario, run_visual_debug};
+use scorepeek_overlay_wayland::render::dioxus_dom::{VisualDebugScenario, run_visual_debug};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);

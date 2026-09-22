@@ -1,7 +1,7 @@
 //! Browser viewport observation and resize subscription.
 
 use dioxus::prelude::Callback;
-use scorepeek_overlay::editor_model::{EditorEffect, EditorInput};
+use scorepeek_overlay::editor::model::{EditorEffect, EditorInput};
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
 pub(crate) fn viewport() -> [u32; 2] {

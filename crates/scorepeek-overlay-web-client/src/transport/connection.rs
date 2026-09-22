@@ -2,7 +2,7 @@ use super::protocol::Message;
 use super::reconnect::Compatibility;
 use dioxus::prelude::*;
 use scorepeek_overlay::LampState;
-use scorepeek_overlay::editor_model::{
+use scorepeek_overlay::editor::model::{
     EditorBackendReply, EditorEffect, EditorEffectKind, EditorInput,
 };
 use serde_json::json;

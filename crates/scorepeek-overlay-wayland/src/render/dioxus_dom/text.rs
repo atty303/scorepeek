@@ -49,7 +49,7 @@ impl super::App {
         let _ = self
             .coordinator
             .send(super::CoordinatorCommand::EditorInput {
-                input: scorepeek_overlay::editor_model::EditorInput::Action(
+                input: scorepeek_overlay::editor::model::EditorInput::Action(
                     scorepeek_overlay::editor::EditorAction::TextComposition {
                         field_key,
                         composing,
