@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,46 @@ use crate::service::session::recognition::{
 type ReplayFieldOutput =
     Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 type InnerSession = FieldObservationSession<RegisteredScreenFieldObserver>;
+
+fn operation_main(operation: &'static str) -> ExitCode {
+    crate::service::dispatch::development_operation_main(operation)
+}
+
+/// Runs the standalone canonical-frame inspector.
+#[must_use]
+pub fn recognition_inspect_main() -> ExitCode {
+    operation_main("inspect")
+}
+
+/// Runs the standalone RESULT crop exporter.
+#[must_use]
+pub fn recognition_crop_main() -> ExitCode {
+    operation_main("crop")
+}
+
+/// Runs the standalone MUSIC SELECT crop exporter.
+#[must_use]
+pub fn music_select_crop_main() -> ExitCode {
+    operation_main("music-select-crop")
+}
+
+/// Runs the standalone integrated-context crop exporter.
+#[must_use]
+pub fn integrated_context_crop_main() -> ExitCode {
+    operation_main("integrated-context-crop")
+}
+
+/// Runs the standalone provisional title candidate exporter.
+#[must_use]
+pub fn provisional_title_candidates_main() -> ExitCode {
+    operation_main("provisional-title-candidates")
+}
+
+/// Runs the standalone title resolution probe.
+#[must_use]
+pub fn title_spike_main() -> ExitCode {
+    operation_main("title-spike")
+}
 
 /// Immutable registered resources shared by offline replay sessions.
 pub struct ReplaySharedResources(Arc<SharedRegisteredScreenFieldResources>);

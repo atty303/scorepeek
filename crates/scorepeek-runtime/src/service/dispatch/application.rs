@@ -187,7 +187,7 @@ enum VulkanLayerCommand {
 }
 
 #[must_use]
-pub fn dev_operation_main(operation: &'static str) -> ExitCode {
+pub(crate) fn development_operation_main(operation: &'static str) -> ExitCode {
     let mut args = vec![OsString::from("recognition"), OsString::from(operation)];
     args.extend(env::args_os().skip(1));
     exit_for_result(run(&args))

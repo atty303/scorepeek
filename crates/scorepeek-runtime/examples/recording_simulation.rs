@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("recording-simulation")
+    scorepeek_runtime::recording::simulation_main()
 }

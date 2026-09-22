@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("title-model-export-requirements")
+    scorepeek_runtime::resources::model::title_model_export_requirements_main()
 }

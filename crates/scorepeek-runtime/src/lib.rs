@@ -35,7 +35,6 @@ pub(crate) use capture::live as capture_live;
 pub(crate) use recording::artifact as recognition_artifact;
 pub(crate) use recording::source as canonical_source;
 pub use service::ServiceHandle;
-pub use service::dispatch::dev_operation_main;
 
 #[must_use]
 pub fn dispatch_private_role(arguments: &[std::ffi::OsString]) -> Option<std::process::ExitCode> {

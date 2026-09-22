@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("field-resource-load-gate")
+    scorepeek_runtime::resources::model::field_resource_load_gate_main()
 }

@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("title-onnx-parity")
+    scorepeek_runtime::resources::model::title_onnx_parity_main()
 }

@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("recording-recognition-evidence")
+    scorepeek_runtime::recording::recognition_evidence_main()
 }

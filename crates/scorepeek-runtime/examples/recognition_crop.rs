@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("crop")
+    scorepeek_runtime::replay::recognition_crop_main()
 }

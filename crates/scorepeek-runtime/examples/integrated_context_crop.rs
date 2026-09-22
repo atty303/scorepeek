@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("integrated-context-crop")
+    scorepeek_runtime::replay::integrated_context_crop_main()
 }

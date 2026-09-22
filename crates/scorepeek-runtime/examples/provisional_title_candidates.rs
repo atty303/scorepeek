@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("provisional-title-candidates")
+    scorepeek_runtime::replay::provisional_title_candidates_main()
 }

@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    scorepeek_runtime::dev_operation_main("title-official-dynamic-onnx-decode")
+    scorepeek_runtime::resources::model::title_official_dynamic_onnx_decode_main()
 }
