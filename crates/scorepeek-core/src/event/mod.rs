@@ -15,5 +15,6 @@ pub use domain::{
     SelectIdentityStatus, SelectionDifficultyTarget, SelectionDifficultyTransitionReason,
     SongPresentation, SongResolutionPresentation,
 };
+pub use projection::{ProjectionCursor, run_event_from_field_observation};
 pub use run::{RunEvent, RunEventEnvelope, RunEventKind};
 pub use schema::RUN_EVENT_SCHEMA;

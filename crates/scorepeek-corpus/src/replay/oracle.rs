@@ -4979,7 +4979,7 @@ fn commit_replay_pending(
         .saturating_add(frame_processing_wall_us);
     output
         .publish(
-            &scorepeek_runtime::events::server::run_event_from_field_observation(
+            &scorepeek_core::event::run_event_from_field_observation(
                 session_id,
                 generation,
                 screen_episode_id,
