@@ -1,9 +1,9 @@
 use crate::catalog::Difficulty;
 use serde::Deserialize;
 
+use crate::frame::{CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH};
 use crate::recognition::{
-    CanonicalLayout, NumericField, RecognitionError, Roi,
-    screen::{CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH, encode_sha256},
+    CanonicalLayout, NumericField, RecognitionError, Roi, screen::encode_sha256,
 };
 
 const LAYOUT_BYTES: &[u8] = include_bytes!("../../result-numeric-character-layout-v3.json");

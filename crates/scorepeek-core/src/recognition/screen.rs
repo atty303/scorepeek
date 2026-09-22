@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::catalog::Difficulty;
-use crate::frame::{CanonicalFrame, CanonicalLayout, Roi};
+use crate::frame::{
+    CANONICAL_BYTES, CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH,
+    CanonicalFrame, CanonicalLayout, FrameError, Roi, crop_pixels as crop_canonical_pixels,
+};
 
 #[path = "screen_reference.rs"]
 pub(super) mod screen_reference;
@@ -105,11 +108,6 @@ pub use super::title::{
 };
 pub use super::title::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
 
-pub(in crate::recognition) const CANONICAL_WIDTH: u32 = 1_920;
-pub(in crate::recognition) const CANONICAL_HEIGHT: u32 = 1_080;
-pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
-pub(in crate::recognition) const CANONICAL_FRAME_CONTRACT_ID: &str =
-    "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
 const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v7";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
@@ -180,6 +178,15 @@ impl From<serde_json::Error> for RecognitionError {
     }
 }
 
+impl From<FrameError> for RecognitionError {
+    fn from(error: FrameError) -> Self {
+        match error {
+            FrameError::InvalidCanonicalFrame => Self::InvalidCanonicalFrame,
+            FrameError::InvalidCanonicalLayout => Self::InvalidCanonicalLayout,
+        }
+    }
+}
+
 impl From<OnnxParityError> for RecognitionError {
     fn from(error: OnnxParityError) -> Self {
         Self::Onnx(Box::new(error))
@@ -187,6 +194,14 @@ impl From<OnnxParityError> for RecognitionError {
 }
 
 impl CanonicalFrame {
+    /// Copies one layout-bound RGB8 crop in row-major order.
+    ///
+    /// # Errors
+    /// Returns a recognition error when the ROI is outside the canonical frame.
+    pub fn crop(&self, roi: Roi) -> Result<Vec<u8>, RecognitionError> {
+        self.crop_region(roi).map_err(Into::into)
+    }
+
     /// Reads one P6 frame only after validating its canonical extraction and normalizer evidence.
     ///
     /// # Errors
@@ -238,22 +253,15 @@ impl CanonicalFrame {
         if pixels.len() != CANONICAL_BYTES || encode_sha256(pixels) != frame.frame_sha256 {
             return Err(RecognitionError::InvalidCanonicalFrame);
         }
-        Ok(Self {
-            pixels: pixels.into(),
-            source_pts_ms: frame.source_pts,
-            decode_index: frame.decode_index,
-            capture_profile_id: manifest.capture_profile_id,
-            normalizer_artifact_sha256: manifest.normalizer_artifact_sha256,
-            frame_extraction_sha256: expected_extraction_sha256.to_owned(),
-        })
-    }
-
-    /// Copies one layout-bound RGB8 crop in row-major order.
-    ///
-    /// # Errors
-    /// Returns an error when the ROI is outside the canonical frame.
-    pub fn crop(&self, roi: Roi) -> Result<Vec<u8>, RecognitionError> {
-        crop_canonical_pixels(&self.pixels, roi)
+        Self::from_validated_parts(
+            pixels.into(),
+            frame.source_pts,
+            frame.decode_index,
+            manifest.capture_profile_id,
+            manifest.normalizer_artifact_sha256,
+            expected_extraction_sha256.to_owned(),
+        )
+        .map_err(Into::into)
     }
 }
 
@@ -454,42 +462,6 @@ fn canonical_evidence_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json
     let mut bytes = serde_json::to_vec(value)?;
     bytes.push(b'\n');
     Ok(bytes)
-}
-
-impl Roi {
-    pub(in crate::recognition) fn validate(
-        self,
-        width: u32,
-        height: u32,
-    ) -> Result<(), RecognitionError> {
-        if self.width == 0
-            || self.height == 0
-            || self
-                .x
-                .checked_add(self.width)
-                .is_none_or(|right| right > width)
-            || self
-                .y
-                .checked_add(self.height)
-                .is_none_or(|bottom| bottom > height)
-        {
-            return Err(RecognitionError::InvalidCanonicalLayout);
-        }
-        Ok(())
-    }
-
-    pub(in crate::recognition) fn translated_x(
-        self,
-        origin_x: u32,
-    ) -> Result<Self, RecognitionError> {
-        Ok(Self {
-            x: self
-                .x
-                .checked_add(origin_x)
-                .ok_or(RecognitionError::InvalidCanonicalLayout)?,
-            ..self
-        })
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -2525,23 +2497,6 @@ fn horizontal_edge_pixels(pixels: &[u8], width: u32) -> u32 {
             luma(upper).abs_diff(luma(lower)) > 45
         })
         .fold(0, |count, _| count + 1)
-}
-
-pub(in crate::recognition) fn crop_canonical_pixels(
-    pixels: &[u8],
-    roi: Roi,
-) -> Result<Vec<u8>, RecognitionError> {
-    roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
-    if pixels.len() != CANONICAL_BYTES {
-        return Err(RecognitionError::InvalidCanonicalFrame);
-    }
-    let row_bytes = roi.width as usize * 3;
-    let mut crop = Vec::with_capacity(row_bytes * roi.height as usize);
-    for y in roi.y..roi.y + roi.height {
-        let start = (y as usize * CANONICAL_WIDTH as usize + roi.x as usize) * 3;
-        crop.extend_from_slice(&pixels[start..start + row_bytes]);
-    }
-    Ok(crop)
 }
 
 fn result_crop_selections(

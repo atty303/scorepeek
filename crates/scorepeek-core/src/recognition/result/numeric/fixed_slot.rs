@@ -405,9 +405,10 @@ fn normalize(values: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::CANONICAL_BYTES;
     use crate::recognition::{
-        CANONICAL_BYTES, ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops,
-        route_screen_rgb8_crops, screen::encode_sha256,
+        ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops, route_screen_rgb8_crops,
+        screen::encode_sha256,
     };
 
     #[test]

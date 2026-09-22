@@ -76,7 +76,7 @@ fn decode_qoi_gray(encoded: &[u8]) -> Result<GrayImage, RecognitionError> {
 }
 
 fn gray_crop(canonical_rgb8: &[u8], roi: Roi) -> Result<GrayImage, RecognitionError> {
-    let rgb = super::crop_canonical_pixels(canonical_rgb8, roi)?;
+    let rgb = crate::frame::crop_pixels(canonical_rgb8, roi)?;
     GrayImage::from_raw(roi.width, roi.height, rgb_to_gray(&rgb))
         .ok_or(RecognitionError::InvalidCanonicalLayout)
 }

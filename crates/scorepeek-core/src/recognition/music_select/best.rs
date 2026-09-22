@@ -110,7 +110,7 @@ impl MusicSelectBestCrops {
         let crop = |roi| -> Result<Rgb8Crop, RecognitionError> {
             Ok(Rgb8Crop {
                 roi,
-                pixels: crate::recognition::screen::crop_canonical_pixels(pixels, roi)?,
+                pixels: crate::frame::crop_pixels(pixels, roi)?,
             })
         };
         Ok(Self {

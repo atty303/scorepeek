@@ -1,3 +1,10 @@
+use super::{FrameError, Roi};
+
+pub const CANONICAL_WIDTH: u32 = 1_920;
+pub const CANONICAL_HEIGHT: u32 = 1_080;
+pub const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
+pub const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
+
 /// One frame admitted at the fixed canonical recognition boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonicalFrame {
@@ -10,6 +17,27 @@ pub struct CanonicalFrame {
 }
 
 impl CanonicalFrame {
+    pub(crate) fn from_validated_parts(
+        pixels: Box<[u8]>,
+        source_pts_ms: i64,
+        decode_index: u64,
+        capture_profile_id: String,
+        normalizer_artifact_sha256: String,
+        frame_extraction_sha256: String,
+    ) -> Result<Self, FrameError> {
+        if pixels.len() != CANONICAL_BYTES {
+            return Err(FrameError::InvalidCanonicalFrame);
+        }
+        Ok(Self {
+            pixels,
+            source_pts_ms,
+            decode_index,
+            capture_profile_id,
+            normalizer_artifact_sha256,
+            frame_extraction_sha256,
+        })
+    }
+
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -44,4 +72,26 @@ impl CanonicalFrame {
     pub fn frame_extraction_sha256(&self) -> &str {
         &self.frame_extraction_sha256
     }
+
+    /// Copies one layout-bound RGB8 crop in row-major order.
+    ///
+    /// # Errors
+    /// Returns an error when the ROI is outside the canonical frame.
+    pub fn crop_region(&self, roi: Roi) -> Result<Vec<u8>, FrameError> {
+        crop_pixels(&self.pixels, roi)
+    }
+}
+
+pub(crate) fn crop_pixels(pixels: &[u8], roi: Roi) -> Result<Vec<u8>, FrameError> {
+    roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
+    if pixels.len() != CANONICAL_BYTES {
+        return Err(FrameError::InvalidCanonicalFrame);
+    }
+    let row_bytes = roi.width as usize * 3;
+    let mut crop = Vec::with_capacity(row_bytes * roi.height as usize);
+    for y in roi.y..roi.y + roi.height {
+        let start = (y as usize * CANONICAL_WIDTH as usize + roi.x as usize) * 3;
+        crop.extend_from_slice(&pixels[start..start + row_bytes]);
+    }
+    Ok(crop)
 }
