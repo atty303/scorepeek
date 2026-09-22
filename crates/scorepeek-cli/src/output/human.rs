@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::Write as _;
 
 use scorepeek_frontend_api::{
@@ -50,10 +51,14 @@ pub fn render(result: &CommandResult) -> Result<(), String> {
                 SkinInstallResult::Unchanged => "unchanged\n".to_owned(),
             },
             SkinResult::Uninstalled => "uninstalled\n".to_owned(),
-            SkinResult::Listed { skins } => skins
-                .iter()
-                .map(|skin| format!("{}\t{}\t{}\n", skin.id, skin.release, skin.name))
-                .collect(),
+            SkinResult::Listed { skins } => {
+                let mut text = String::new();
+                for skin in skins {
+                    writeln!(&mut text, "{}\t{}\t{}", skin.id, skin.release, skin.name)
+                        .expect("writing to a String cannot fail");
+                }
+                text
+            }
         },
         CommandResult::VulkanLayer { result } => match result {
             VulkanLayerResult::Installed => "installed\n",

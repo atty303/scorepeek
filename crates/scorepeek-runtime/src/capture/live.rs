@@ -1080,6 +1080,10 @@ use field_observation::{
 #[path = "live/handoff.rs"]
 mod handoff;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "handoff is an implementation partition shared with live capture child modules"
+)]
 use handoff::*;
 
 #[cfg(test)]
@@ -1165,4 +1169,8 @@ pub(crate) use lifecycle_gate::*;
 #[path = "live/normalization_worker.rs"]
 mod normalization_worker;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the worker is an implementation partition of the live capture authority"
+)]
 use normalization_worker::*;

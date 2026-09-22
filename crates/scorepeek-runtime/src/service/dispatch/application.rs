@@ -1204,11 +1204,19 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
 #[path = "application/live_event.rs"]
 mod live_event;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "live_event is an implementation partition shared with application tests"
+)]
 use live_event::*;
 
 #[path = "application/live_session.rs"]
 mod live_session;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "live_session is an implementation partition shared with application tests"
+)]
 use live_session::*;
 
 #[cfg(test)]
@@ -1224,21 +1232,37 @@ fn write_ndjson(output: &mut impl io::Write, value: &impl Serialize) -> Result<(
 #[path = "application/capture_tools.rs"]
 mod capture_tools;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "capture_tools is an implementation partition shared with application tests"
+)]
 use capture_tools::*;
 
 #[path = "application/inventory_tools.rs"]
 mod inventory_tools;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "inventory_tools is an implementation partition shared with application tests"
+)]
 use inventory_tools::*;
 
 #[path = "application/recording_tools.rs"]
 mod recording_tools;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "recording_tools is an implementation partition of application dispatch"
+)]
 use recording_tools::*;
 
 #[path = "application/recognition_tools.rs"]
 mod recognition_tools;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "recognition_tools is an implementation partition shared with application tests"
+)]
 use recognition_tools::*;
 
 fn catalog_paths(

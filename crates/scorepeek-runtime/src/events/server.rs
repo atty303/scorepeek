@@ -814,6 +814,10 @@ impl RoutineOutput {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the test adapter mirrors one complete music-select observation contract"
+    )]
     fn reduce_music_select_observation(
         &mut self,
         session_id: Option<&String>,

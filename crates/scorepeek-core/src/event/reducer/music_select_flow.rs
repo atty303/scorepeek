@@ -1,3 +1,8 @@
+#![allow(
+    clippy::wildcard_imports,
+    reason = "this file is an implementation partition of its parent reducer authority"
+)]
+
 use super::*;
 
 impl RunEventReducer {

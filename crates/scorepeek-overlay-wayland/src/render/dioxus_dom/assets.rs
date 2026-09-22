@@ -1,3 +1,8 @@
+#![allow(
+    clippy::wildcard_imports,
+    reason = "this file is an implementation partition of the parent Dioxus DOM renderer"
+)]
+
 use super::*;
 
 pub(super) struct SkinAssetCache {

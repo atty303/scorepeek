@@ -3921,6 +3921,10 @@ fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot(
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression keeps each frame-identity case and its lifecycle assertions together"
+)]
 fn select_missing_frame_identity_holds_interval_without_adopting_values() {
     for missing in ["difficulty", "mode", "song"] {
         let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
@@ -4038,6 +4042,10 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression keeps each conflict case and its lifecycle assertions together"
+)]
 fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
     for conflict in ["difficulty", "mode", "song", "ambiguous"] {
         let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
@@ -4213,6 +4221,10 @@ fn best_suppression_does_not_discard_admitted_selection_identity() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression verifies the complete deduplicated selection lifecycle"
+)]
 fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
     output.publish(&screen_event(0, "music_select")).unwrap();
@@ -4766,6 +4778,10 @@ fn pending_marker_is_visible_before_any_song_evidence() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression verifies ordering across the complete admitted-field drain"
+)]
 fn music_select_handoff_waits_for_admitted_field_drain() {
     let shared = state();
     let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());

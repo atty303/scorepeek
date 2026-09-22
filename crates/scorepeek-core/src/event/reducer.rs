@@ -289,6 +289,10 @@ fn family_contribution_labels(
     values
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the snapshot projection enumerates a fixed set of diagnostic fields"
+)]
 fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
     let marker = fields.get("selected_difficulty").and_then(|observation| {
         let state = observation.get("state")?;
@@ -411,6 +415,10 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
 }
 
 /// A transport-neutral action produced by [`RunEventReducer`].
+#[allow(
+    clippy::large_enum_variant,
+    reason = "effects retain owned domain values in one ordered queue without extra indirection"
+)]
 #[derive(Clone, Debug)]
 pub enum RunReducerEffect {
     Event(RunEvent),
@@ -531,6 +539,10 @@ impl ReducedRunEvents {
 }
 
 /// Portable semantic state for reducing observations into ordered domain events.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these booleans are independent reducer facts rather than one state machine axis"
+)]
 #[derive(Default)]
 pub struct RunEventReducer {
     engine: ResolverEngine,
@@ -581,6 +593,10 @@ impl RunEventReducer {
         }
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "event emission shares the reducer's uniform fallible pipeline contract"
+    )]
     fn emit(&mut self, event: RunEvent) -> Result<(), RunEventReductionError> {
         match &event.kind {
             RunEventKind::SessionStarted {
@@ -627,6 +643,10 @@ impl RunEventReducer {
         self.emit(event.clone())
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "refresh effects share the reducer's uniform fallible pipeline contract"
+    )]
     fn refresh(&mut self) -> Result<(), RunEventReductionError> {
         self.effects.push(RunReducerEffect::Refresh);
         Ok(())
@@ -697,6 +717,10 @@ impl RunEventReducer {
     }
 
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the snapshot is an exhaustive projection of reducer authority"
+    )]
     pub fn snapshot(&self) -> RunReducerSnapshot {
         let current_summary = self.engine.selection_epochs.incumbent.summary();
         let challenger_summary = self.engine.selection_epochs.successor.summary();
@@ -849,48 +873,56 @@ impl RunEventReducer {
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub fn test_engine(&self) -> &ResolverEngine {
         &self.engine
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub fn test_engine_mut(&mut self) -> &mut ResolverEngine {
         &mut self.engine
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub const fn test_accepted_numeric_result(&self) -> Option<&NumericResultView> {
         self.accepted_numeric_result.as_ref()
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub fn test_accepted_numeric_result_mut(&mut self) -> Option<&mut NumericResultView> {
         self.accepted_numeric_result.as_mut()
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub const fn test_pending_numeric_result(&self) -> Option<&PendingNumericResult> {
         self.pending_numeric_result.as_ref()
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub const fn test_active_provisional_result(&self) -> Option<&ActiveProvisionalResult> {
         self.active_provisional_result.as_ref()
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub const fn test_result_select_context_detached(&self) -> bool {
         self.result_select_context_detached
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub fn test_emitted_attempt_ids(&self) -> &BTreeSet<u64> {
         &self.emitted_attempt_ids
     }
@@ -907,24 +939,28 @@ impl RunEventReducer {
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub fn test_music_select_resolver(&self) -> &MusicSelectResolver {
         &self.music_select_resolver
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub fn test_music_select_resolver_mut(&mut self) -> &mut MusicSelectResolver {
         &mut self.music_select_resolver
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub const fn test_active_music_selection(&self) -> Option<&MusicSelectionState> {
         self.active_music_selection.as_ref()
     }
 
     #[cfg(feature = "reducer-test-support")]
     #[doc(hidden)]
+    #[must_use]
     pub const fn test_music_selection_episode_active(&self) -> bool {
         self.music_selection_episode_active
     }

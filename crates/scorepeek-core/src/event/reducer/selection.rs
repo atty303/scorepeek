@@ -1,3 +1,8 @@
+#![allow(
+    clippy::wildcard_imports,
+    reason = "this file is an implementation partition of its parent reducer authority"
+)]
+
 use super::*;
 
 #[derive(Clone, Debug, Default)]
@@ -229,6 +234,7 @@ fn push_target_switch(
     }
 }
 impl SelectionEpochTracker {
+    #[must_use]
     pub fn active_difficulty_state(
         &self,
     ) -> Option<(
@@ -354,6 +360,7 @@ impl SelectionEpochTracker {
         self.observe_at(monotonic_ms, monotonic_ms, evidence, difficulty)
     }
 
+    #[must_use]
     pub fn handoff(&self) -> HypothesisAccumulator {
         if self.successor.observation_count > 0 {
             self.successor.clone()

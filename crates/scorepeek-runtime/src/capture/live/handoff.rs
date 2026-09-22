@@ -1,3 +1,8 @@
+#![allow(
+    clippy::wildcard_imports,
+    reason = "this file is an implementation partition of the parent live capture authority"
+)]
+
 use super::*;
 
 pub(super) fn run_gamescope_handoff_gate(
