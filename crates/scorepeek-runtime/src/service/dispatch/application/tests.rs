@@ -342,6 +342,21 @@ fn config_json_rejects_non_utf8_paths_without_panicking() {
     )
     .unwrap_err();
     assert_eq!(error, "config path must be UTF-8 for JSON output");
+
+    let result = run_config_command(
+        super::ConfigCommand::Path(super::FormatArgs {
+            format: super::OutputFormat::Human,
+        }),
+        &path,
+    )
+    .expect("human output must preserve displayable non-UTF-8 paths");
+    assert!(matches!(
+        result,
+        scorepeek_frontend_api::CommandResult::Config {
+            format: scorepeek_frontend_api::OutputFormat::Human,
+            result: scorepeek_frontend_api::ConfigResult::Path { .. }
+        }
+    ));
 }
 
 #[test]

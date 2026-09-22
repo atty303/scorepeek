@@ -14,6 +14,17 @@ impl Renderer {
 
     pub fn render_event(&mut self, event: FrontendEvent) {
         match event {
+            FrontendEvent::ModelDownload { state } => {
+                let text = match state {
+                    scorepeek_frontend_api::ModelDownload::Started => {
+                        "scorepeek: downloading PP-OCRv6-small model...\n"
+                    }
+                    scorepeek_frontend_api::ModelDownload::Completed => {
+                        "scorepeek: PP-OCRv6-small model download complete\n"
+                    }
+                };
+                let _ = std::io::stderr().lock().write_all(text.as_bytes());
+            }
             FrontendEvent::Output { stream, text } => match stream {
                 OutputStream::Stdout => super::json::write(&text),
                 OutputStream::Stderr => {

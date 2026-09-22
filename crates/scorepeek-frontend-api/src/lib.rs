@@ -14,5 +14,8 @@ pub use command::{
 pub use error::FrontendError;
 pub use event::{FrontendEvent, OutputStream};
 pub use protocol::{RequestId, Revision};
-pub use reply::FrontendReply;
+pub use reply::{
+    CommandResult, ConfigResult, DoctorReport, FrontendReply, InstalledSkin, ModelDownload,
+    SkinInstallResult, SkinResult, VulkanLayerResult,
+};
 pub use snapshot::{ApplicationSnapshot, RunSnapshot};

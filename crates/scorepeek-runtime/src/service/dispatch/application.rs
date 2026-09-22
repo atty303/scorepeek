@@ -206,27 +206,29 @@ pub(crate) fn exit_for_result(result: Result<(), String>) -> ExitCode {
     ExitCode::from(status)
 }
 
-fn result_exit_status(result: &Result<(), String>) -> u8 {
+fn result_exit_status<T>(result: &Result<T, String>) -> u8 {
     match result {
-        Ok(()) => 0,
+        Ok(_) => 0,
         Err(error) if error == TERMINATED_ERROR => 0,
         Err(error) if error == INTERRUPTED_ERROR => 130,
         Err(_) => 1,
     }
 }
 
-fn dispatch_public(cli: PublicCli) -> Result<(), String> {
+fn dispatch_public(
+    cli: PublicCli,
+) -> Result<Option<scorepeek_frontend_api::CommandResult>, String> {
     let PublicCli { config, command } = cli;
     match command {
-        PublicCommand::Run(args) => run_public(args, config),
-        PublicCommand::Doctor(format) => print_doctor(format.format),
+        PublicCommand::Run(args) => run_public(args, config).map(|()| None),
+        PublicCommand::Doctor(format) => collect_frontend_doctor(format.format).map(Some),
         PublicCommand::Config { command } => {
             let config_path = config_paths::resolve(config)?;
-            run_config_command(command, &config_path)
+            run_config_command(command, &config_path).map(Some)
         }
-        PublicCommand::Diagnostic { command } => run_diagnostic_command(command),
-        PublicCommand::Skin { command } => run_skin_command(command),
-        PublicCommand::VulkanLayer { command } => run_vulkan_layer_command(command),
+        PublicCommand::Diagnostic { command } => run_diagnostic_command(command).map(|()| None),
+        PublicCommand::Skin { command } => run_skin_command(command).map(Some),
+        PublicCommand::VulkanLayer { command } => run_vulkan_layer_command(command).map(Some),
     }
 }
 
@@ -338,18 +340,21 @@ pub(crate) fn dispatch_frontend(
     };
     let result = dispatch_public(cli);
     let exit_code = result_exit_status(&result);
-    if let Err(error) = result
+    if let Err(error) = &result
         && error != TERMINATED_ERROR
         && error != INTERRUPTED_ERROR
     {
         return scorepeek_frontend_api::FrontendReply::Error {
             error: scorepeek_frontend_api::FrontendError {
                 error_type: "runtime_operation_failed".to_owned(),
-                message: error,
+                message: error.clone(),
             },
         };
     }
-    scorepeek_frontend_api::FrontendReply::Completed { exit_code }
+    scorepeek_frontend_api::FrontendReply::Completed {
+        exit_code,
+        result: result.ok().flatten(),
+    }
 }
 
 const fn frontend_output_format(format: scorepeek_frontend_api::OutputFormat) -> OutputFormat {
@@ -364,10 +369,14 @@ fn run_public(args: RunArgs, config_override: Option<PathBuf>) -> Result<(), Str
         scorepeek::resources::model::acquire::ensure_small_model(override_bundle, |event| {
             match event {
                 scorepeek::resources::model::cache::ModelCacheEvent::DownloadStarted => {
-                    eprintln!("scorepeek: downloading PP-OCRv6-small model...");
+                    frontend_event(scorepeek_frontend_api::FrontendEvent::ModelDownload {
+                        state: scorepeek_frontend_api::ModelDownload::Started,
+                    });
                 }
                 scorepeek::resources::model::cache::ModelCacheEvent::DownloadCompleted => {
-                    eprintln!("scorepeek: PP-OCRv6-small model download complete");
+                    frontend_event(scorepeek_frontend_api::FrontendEvent::ModelDownload {
+                        state: scorepeek_frontend_api::ModelDownload::Completed,
+                    });
                 }
             }
         })
@@ -432,55 +441,60 @@ fn load_run_options(
     settle_startup_result(diagnostics, monitor, merge_result)
 }
 
-fn run_config_command(command: ConfigCommand, path: &Path) -> Result<(), String> {
-    match command {
-        ConfigCommand::Path(format) => match format.format {
-            OutputFormat::Human => println!("{}", path.display()),
-            OutputFormat::Json => {
-                let path = config_path_for_json(path)?;
-                println!("{}", serde_json::json!({"path": path}));
-            }
-        },
+fn run_config_command(
+    command: ConfigCommand,
+    path: &Path,
+) -> Result<scorepeek_frontend_api::CommandResult, String> {
+    let (format, result) = match command {
+        ConfigCommand::Path(format) => {
+            let rendered_path = frontend_path(path, format.format)?;
+            (
+                frontend_api_output_format(format.format),
+                scorepeek_frontend_api::ConfigResult::Path {
+                    path: rendered_path,
+                },
+            )
+        }
         ConfigCommand::Show(format) => {
             let content = config_document::read_text(path)?;
-            match format.format {
-                OutputFormat::Human => {
-                    if let Some(content) = content {
-                        print!("{content}");
-                    } else {
-                        println!("config file is not present: {}", path.display());
-                    }
-                }
-                OutputFormat::Json => {
-                    let path = config_path_for_json(path)?;
-                    println!(
-                        "{}",
-                        serde_json::json!({"path": path, "present": content.is_some(), "content": content})
-                    );
-                }
-            }
+            let rendered_path = frontend_path(path, format.format)?;
+            (
+                frontend_api_output_format(format.format),
+                scorepeek_frontend_api::ConfigResult::Show {
+                    path: rendered_path,
+                    present: content.is_some(),
+                    content,
+                },
+            )
         }
         ConfigCommand::Check(format) => {
             let present = config_document::read(path)?.is_some();
-            match format.format {
-                OutputFormat::Human => {
-                    if present {
-                        println!("config is valid: {}", path.display());
-                    } else {
-                        println!("config file is not present (optional): {}", path.display());
-                    }
-                }
-                OutputFormat::Json => {
-                    let path = config_path_for_json(path)?;
-                    println!(
-                        "{}",
-                        serde_json::json!({"path": path, "present": present, "valid": true})
-                    );
-                }
-            }
+            let rendered_path = frontend_path(path, format.format)?;
+            (
+                frontend_api_output_format(format.format),
+                scorepeek_frontend_api::ConfigResult::Check {
+                    path: rendered_path,
+                    present,
+                    valid: true,
+                },
+            )
         }
+    };
+    Ok(scorepeek_frontend_api::CommandResult::Config { format, result })
+}
+
+fn frontend_path(path: &Path, format: OutputFormat) -> Result<String, String> {
+    match format {
+        OutputFormat::Human => Ok(path.display().to_string()),
+        OutputFormat::Json => config_path_for_json(path).map(ToOwned::to_owned),
     }
-    Ok(())
+}
+
+const fn frontend_api_output_format(format: OutputFormat) -> scorepeek_frontend_api::OutputFormat {
+    match format {
+        OutputFormat::Human => scorepeek_frontend_api::OutputFormat::Human,
+        OutputFormat::Json => scorepeek_frontend_api::OutputFormat::Json,
+    }
 }
 
 fn config_path_for_json(path: &Path) -> Result<&str, String> {
@@ -505,59 +519,97 @@ fn run_diagnostic_command(command: DiagnosticCommand) -> Result<(), String> {
     }
 }
 
-fn run_skin_command(command: SkinCommand) -> Result<(), String> {
+fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::CommandResult, String> {
     let store = scorepeek_overlay_wayland::skin::StoreRoot::discover();
-    match command {
+    let (format, result) = match command {
         SkinCommand::Install { package } => {
             let outcome = store.install(&package)?;
-            match outcome {
-                scorepeek_overlay_wayland::skin::InstallOutcome::Installed => println!("installed"),
-                scorepeek_overlay_wayland::skin::InstallOutcome::Replaced { previous_release } => {
-                    println!("replaced {previous_release}");
+            let outcome = match outcome {
+                scorepeek_overlay_wayland::skin::InstallOutcome::Installed => {
+                    scorepeek_frontend_api::SkinInstallResult::Installed
                 }
-                scorepeek_overlay_wayland::skin::InstallOutcome::Unchanged => println!("unchanged"),
-            }
+                scorepeek_overlay_wayland::skin::InstallOutcome::Replaced { previous_release } => {
+                    scorepeek_frontend_api::SkinInstallResult::Replaced { previous_release }
+                }
+                scorepeek_overlay_wayland::skin::InstallOutcome::Unchanged => {
+                    scorepeek_frontend_api::SkinInstallResult::Unchanged
+                }
+            };
+            (
+                scorepeek_frontend_api::OutputFormat::Human,
+                scorepeek_frontend_api::SkinResult::Installed { outcome },
+            )
         }
         SkinCommand::Uninstall { id } => {
             store.uninstall(&id)?;
-            println!("uninstalled");
+            (
+                scorepeek_frontend_api::OutputFormat::Human,
+                scorepeek_frontend_api::SkinResult::Uninstalled,
+            )
         }
         SkinCommand::List(format) => {
             let installed = store.list()?;
-            match format.format {
-                OutputFormat::Human => {
-                    for skin in installed {
-                        println!("{}\t{}\t{}", skin.id, skin.release, skin.name);
-                    }
-                }
-                OutputFormat::Json => println!(
-                    "{}",
-                    serde_json::to_string(&installed)
-                        .map_err(|error| format!("skin list serialization failed: {error}"))?
-                ),
-            }
+            let output_format = format.format;
+            let skins = installed
+                .into_iter()
+                .map(|skin| {
+                    let path = match output_format {
+                        OutputFormat::Human => skin.path.display().to_string(),
+                        OutputFormat::Json => skin
+                            .path
+                            .to_str()
+                            .ok_or_else(|| {
+                                "skin list serialization failed: path contains invalid UTF-8 characters"
+                                    .to_owned()
+                            })?
+                            .to_owned(),
+                    };
+                    Ok(scorepeek_frontend_api::InstalledSkin {
+                        id: skin.id,
+                        release: skin.release,
+                        name: skin.name,
+                        path,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            (
+                frontend_api_output_format(output_format),
+                scorepeek_frontend_api::SkinResult::Listed { skins },
+            )
         }
-    }
-    Ok(())
+    };
+    Ok(scorepeek_frontend_api::CommandResult::Skin { format, result })
 }
 
-fn run_vulkan_layer_command(command: VulkanLayerCommand) -> Result<(), String> {
-    match command {
+fn run_vulkan_layer_command(
+    command: VulkanLayerCommand,
+) -> Result<scorepeek_frontend_api::CommandResult, String> {
+    let result = match command {
         VulkanLayerCommand::Install => {
             match vulkan_layer::install().map_err(|error| error.to_string())? {
-                vulkan_layer::InstallOutcome::Installed => println!("installed"),
-                vulkan_layer::InstallOutcome::Updated => println!("updated"),
-                vulkan_layer::InstallOutcome::Unchanged => println!("unchanged"),
+                vulkan_layer::InstallOutcome::Installed => {
+                    scorepeek_frontend_api::VulkanLayerResult::Installed
+                }
+                vulkan_layer::InstallOutcome::Updated => {
+                    scorepeek_frontend_api::VulkanLayerResult::Updated
+                }
+                vulkan_layer::InstallOutcome::Unchanged => {
+                    scorepeek_frontend_api::VulkanLayerResult::Unchanged
+                }
             }
         }
         VulkanLayerCommand::Uninstall => {
             match vulkan_layer::uninstall().map_err(|error| error.to_string())? {
-                vulkan_layer::UninstallOutcome::Uninstalled => println!("uninstalled"),
-                vulkan_layer::UninstallOutcome::NotInstalled => println!("not installed"),
+                vulkan_layer::UninstallOutcome::Uninstalled => {
+                    scorepeek_frontend_api::VulkanLayerResult::Uninstalled
+                }
+                vulkan_layer::UninstallOutcome::NotInstalled => {
+                    scorepeek_frontend_api::VulkanLayerResult::NotInstalled
+                }
             }
         }
-    }
-    Ok(())
+    };
+    Ok(scorepeek_frontend_api::CommandResult::VulkanLayer { result })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3314,6 +3366,28 @@ fn print_doctor(format: OutputFormat) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn collect_frontend_doctor(
+    format: OutputFormat,
+) -> Result<scorepeek_frontend_api::CommandResult, String> {
+    let report = collect_doctor_report()?;
+    let field = |name: &str| {
+        report
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("doctor report is missing {name}"))
+    };
+    Ok(scorepeek_frontend_api::CommandResult::Doctor {
+        format: frontend_api_output_format(format),
+        report: scorepeek_frontend_api::DoctorReport {
+            schema: report["schema"].as_str().unwrap_or_default().to_owned(),
+            target_inventory: field("target_inventory")?,
+            numeric_model: field("numeric_model")?,
+            catalog: field("catalog")?,
+            vulkan_layer: field("vulkan_layer")?,
+        },
+    })
 }
 
 fn try_recording_simulation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
