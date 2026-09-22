@@ -1,4 +1,4 @@
-//! Typed client for the runtime-owned overlay configuration authority.
+//! Typed action bridge to the runtime-owned overlay configuration authority.
 
 use std::{
     io::{BufRead as _, BufReader, Read as _, Write as _},

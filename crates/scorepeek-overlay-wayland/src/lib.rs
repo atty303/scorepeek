@@ -3,7 +3,6 @@
 extern crate self as scorepeek_overlay_wayland_handles;
 pub mod bridge;
 pub mod config;
-pub mod control;
 pub mod diagnostics;
 pub mod host;
 pub mod input;

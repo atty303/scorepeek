@@ -33,9 +33,9 @@ impl EditorConnection {
     }
     pub(crate) fn request(
         &self,
-        mut request: crate::control::Request,
-    ) -> Result<crate::control::Response, String> {
-        use crate::control::Request;
+        mut request: crate::bridge::action::Request,
+    ) -> Result<crate::bridge::action::Response, String> {
+        use crate::bridge::action::Request;
         let (backend, editor) = match &mut request {
             Request::AcquireBackend { backend, editor_id }
             | Request::KeepAliveBackend { backend, editor_id }
@@ -55,7 +55,7 @@ impl EditorConnection {
             editor.clone_from(&self.id);
         }
         let publishes = !matches!(request, Request::ReleaseBackend { .. }) || self.owns_lease.get();
-        let response = crate::control::request(&self.shared.control_socket, &request)?;
+        let response = crate::bridge::action::request(&self.shared.control_socket, &request)?;
         if matches!(request, Request::AcquireBackend { .. }) && response.ok && !response.readonly {
             self.owns_lease.set(true);
         }
@@ -95,7 +95,7 @@ impl Drop for EditorConnection {
         if !self.owns_lease.get() {
             return;
         }
-        let result = self.request(crate::control::Request::ReleaseBackend {
+        let result = self.request(crate::bridge::action::Request::ReleaseBackend {
             backend: crate::host::lifecycle::Backend::Obs,
             editor_id: self.id.clone(),
         });

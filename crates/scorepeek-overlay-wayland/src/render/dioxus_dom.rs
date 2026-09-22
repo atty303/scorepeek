@@ -862,31 +862,33 @@ fn execute_native_editor_effect(
     fallback: &[scorepeek_overlay::CanvasPresentation],
 ) -> EditorBackendReply {
     let request = match effect {
-        EditorEffect::Acquire => crate::control::Request::AcquireBackend {
+        EditorEffect::Acquire => crate::bridge::action::Request::AcquireBackend {
             backend: crate::bridge::data::Backend::Wayland,
             editor_id: editor_id.to_owned(),
         },
-        EditorEffect::KeepAlive => crate::control::Request::KeepAliveBackend {
+        EditorEffect::KeepAlive => crate::bridge::action::Request::KeepAliveBackend {
             backend: crate::bridge::data::Backend::Wayland,
             editor_id: editor_id.to_owned(),
         },
-        EditorEffect::Update { canvases } => crate::control::Request::UpdateBackendDraft {
-            backend: crate::bridge::data::Backend::Wayland,
-            editor_id: editor_id.to_owned(),
-            canvases: canvases.clone(),
-        },
-        EditorEffect::Save { canvases } => crate::control::Request::CommitBackend {
+        EditorEffect::Update { canvases } => crate::bridge::action::Request::UpdateBackendDraft {
             backend: crate::bridge::data::Backend::Wayland,
             editor_id: editor_id.to_owned(),
             canvases: canvases.clone(),
         },
-        EditorEffect::Discard | EditorEffect::Close => crate::control::Request::ReleaseBackend {
+        EditorEffect::Save { canvases } => crate::bridge::action::Request::CommitBackend {
             backend: crate::bridge::data::Backend::Wayland,
             editor_id: editor_id.to_owned(),
+            canvases: canvases.clone(),
         },
+        EditorEffect::Discard | EditorEffect::Close => {
+            crate::bridge::action::Request::ReleaseBackend {
+                backend: crate::bridge::data::Backend::Wayland,
+                editor_id: editor_id.to_owned(),
+            }
+        }
     };
     let started = Instant::now();
-    let response = crate::control::request(control_socket, &request);
+    let response = crate::bridge::action::request(control_socket, &request);
     let request_name = match effect {
         EditorEffect::Acquire => "acquire_backend",
         EditorEffect::KeepAlive => "keep_alive_backend",
@@ -1157,9 +1159,9 @@ pub(crate) fn run_with_editor_scenario(
         }
         let editing = authority.session().editing;
         if was_editing && !editing {
-            if let Ok(response) = crate::control::request(
+            if let Ok(response) = crate::bridge::action::request(
                 &config.control_socket,
-                &crate::control::Request::GetBackend {
+                &crate::bridge::action::Request::GetBackend {
                     backend: crate::bridge::data::Backend::Wayland,
                 },
             ) {

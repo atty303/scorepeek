@@ -1,6 +1,6 @@
 use crate::bundle::embedded::ASSET_VERSION;
 
-pub use crate::control::{Request, Response};
+pub use crate::bridge::action::{Request, Response};
 
 #[derive(serde::Deserialize)]
 pub(crate) struct StageControlEnvelope {

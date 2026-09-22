@@ -2,7 +2,7 @@ use super::*;
 use crate::bundle::embedded::ASSET_VERSION;
 use crate::host::lifecycle::Backend;
 use crate::websocket::session::display_state;
-use crate::{config::OverlayConfig, control::Controller};
+use crate::{bridge::action::Controller, config::OverlayConfig};
 use serde_json::{Value, json};
 use std::{
     io::{Read as _, Write as _},

@@ -3,7 +3,6 @@
 pub mod bridge;
 pub mod bundle;
 pub mod config;
-pub mod control;
 pub mod diagnostics;
 pub mod host;
 pub mod http;

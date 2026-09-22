@@ -24,7 +24,7 @@ const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const CONTROL_IO_TIMEOUT: Duration = Duration::from_millis(100);
 
-pub use scorepeek_overlay_wayland::control::{
+pub use scorepeek_overlay_wayland::bridge::action::{
     CONTROL_MESSAGE_MAX_BYTES, Request, Response, decode_message, encode_message,
 };
 
@@ -925,13 +925,13 @@ mod tests {
             Backend::Wayland,
             "wayland-editor",
             controller.path(),
-            scorepeek_overlay_wayland::control::request,
+            scorepeek_overlay_wayland::bridge::action::request,
         );
         exercise_production_client(
             Backend::Obs,
             "web-editor",
             controller.path(),
-            scorepeek_overlay_web_host::control::request,
+            scorepeek_overlay_web_host::bridge::action::request,
         );
 
         let saved = std::fs::read_to_string(&path).unwrap();

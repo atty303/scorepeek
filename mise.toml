@@ -185,7 +185,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 cargo test --locked -p scorepeek-overlay-web-client
-exec cargo test --locked -p scorepeek-overlay --lib
+cargo test --locked -p scorepeek-overlay --lib
 cargo test --locked -p scorepeek-overlay-wayland --lib
 exec cargo test --locked -p scorepeek-overlay-web-host --lib
 '''

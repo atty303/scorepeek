@@ -52,7 +52,7 @@ pub(crate) async fn handle_canvas_socket_message(
     let reply = serde_json::json!({
         "type":"control",
         "request":"display_only",
-        "response":crate::control::Response {
+        "response":crate::bridge::action::Response {
             ok:false,
             readonly:true,
             error:Some("このURLは表示専用です。編集には /overlay をOBS Browser SourceのInteractionで開いてください。".into()),
@@ -197,7 +197,7 @@ pub(crate) async fn stage_socket(
                                 .map_err(|error| error.to_string())
                                 .and_then(|envelope| serde_json::from_value(envelope.request).map_err(|error| error.to_string()))
                                 .and_then(|request| session.request(request))
-                                .unwrap_or_else(|error| crate::control::Response {
+                                .unwrap_or_else(|error| crate::bridge::action::Response {
                                     ok:false, readonly:true, error:Some(error),
                                     canvases:Vec::new(), generation:None, dirty:false,
                                 });
