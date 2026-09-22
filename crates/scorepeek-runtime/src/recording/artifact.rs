@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-use scorepeek::catalog::ScorepeekSongId;
+use scorepeek_core::catalog::ScorepeekSongId;
 use scorepeek_core::model::session::{
     CurrentScoreOcrResolution, FrameTimedScreenFieldObservation, RecognitionProcessingTiming,
     RegisteredScreenFieldObservation, TitleEvidenceObservation,
@@ -1124,7 +1124,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::sync::Arc;
 
-    use scorepeek::catalog::{Chart, ChartKey, Difficulty, PlayType};
+    use scorepeek_core::catalog::{Chart, ChartKey, Difficulty, PlayType};
     use scorepeek_core::recognition::music_select::MusicSelectScreenFieldObservations;
     use scorepeek_core::recognition::result::{
         RESULT_SONG_RESOLVER_ID, ResultSongResolution, ResultSongUnknownReason,
@@ -1144,7 +1144,7 @@ mod tests {
     ) -> scorepeek_core::model::session::RegisteredScreenFieldObservation {
         let projected = scorepeek_core::model::session::ProjectedScreenFieldObservation::project(
             domain,
-            &scorepeek::catalog::Catalog::default(),
+            &scorepeek_core::catalog::Catalog::default(),
             fields,
             None,
         );
@@ -1208,16 +1208,18 @@ mod tests {
             central_title: text("texture"),
             artist: text("artist"),
             play_type: music_select_recognition::MusicSelectPlayTypeObservation::default(),
-            selected_difficulty: music_select_difficulty(scorepeek::catalog::Difficulty::Hyper),
+            selected_difficulty: music_select_difficulty(
+                scorepeek_core::catalog::Difficulty::Hyper,
+            ),
             play_side: music_select_recognition::test_music_select_play_side(None),
             active_list_title: text("VISIBLE TITLE"),
         })
     }
 
     fn music_select_difficulty(
-        selected: scorepeek::catalog::Difficulty,
+        selected: scorepeek_core::catalog::Difficulty,
     ) -> music_select_recognition::MusicSelectDifficultyObservation {
-        use scorepeek::catalog::Difficulty;
+        use scorepeek_core::catalog::Difficulty;
         use scorepeek_core::recognition::music_select::{
             MusicSelectDifficultyMarkerEvidence, MusicSelectDifficultyObservation,
             MusicSelectDifficultyState,
@@ -1401,7 +1403,8 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("music-select");
         let domain =
-            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+            CatalogCandidateDomain::from_catalog(&scorepeek_core::catalog::Catalog::default())
+                .unwrap();
         let output = project_fields(&domain, music_select_fields());
         let mut writer =
             RecognitionArtifactWriter::create(&root, "music-001".to_owned(), "d".repeat(64))
@@ -1479,7 +1482,8 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("live");
         let domain =
-            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+            CatalogCandidateDomain::from_catalog(&scorepeek_core::catalog::Catalog::default())
+                .unwrap();
         let mut fields = result_fields();
         let ScreenFieldObservations::Result(result) = &mut fields else {
             unreachable!("fixture is result fields");
@@ -1525,7 +1529,8 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("foreground");
         let domain =
-            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+            CatalogCandidateDomain::from_catalog(&scorepeek_core::catalog::Catalog::default())
+                .unwrap();
         let mut worker = RecognitionArtifactWorker::start_inner_with_retention(
             root.clone(),
             "foreground-001".to_owned(),
@@ -1567,7 +1572,8 @@ mod tests {
             RecognitionArtifactRetention::ForegroundCompactedV1,
         );
         let domain =
-            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+            CatalogCandidateDomain::from_catalog(&scorepeek_core::catalog::Catalog::default())
+                .unwrap();
         for (sequence, time) in [(1, 0), (2, 1_000), (3, 60_000), (4, 61_000)] {
             let observation = project_fields(&domain, result_fields());
             assert_eq!(
@@ -1593,7 +1599,8 @@ mod tests {
             None,
         );
         let domain =
-            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+            CatalogCandidateDomain::from_catalog(&scorepeek_core::catalog::Catalog::default())
+                .unwrap();
         let observation = project_fields(&domain, result_fields());
 
         assert_eq!(
@@ -1613,7 +1620,8 @@ mod tests {
             sender: Some(sender),
         };
         let domain =
-            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+            CatalogCandidateDomain::from_catalog(&scorepeek_core::catalog::Catalog::default())
+                .unwrap();
         let observation = || project_fields(&domain, result_fields());
 
         assert_eq!(

@@ -2,20 +2,14 @@ extern crate self as scorepeek;
 
 #[allow(dead_code)]
 pub mod capture;
-#[allow(dead_code)]
-pub mod catalog;
+pub mod config;
 #[allow(dead_code)]
 pub mod diagnostics;
-pub use scorepeek_core::game_version;
-pub mod config;
 pub mod events;
 mod inventory;
 pub mod overlay;
-mod process_role;
-#[allow(dead_code)]
-pub use scorepeek_core::session::attempt;
-pub use scorepeek_core::session::result;
 pub mod platform;
+mod process_role;
 pub mod recording;
 pub mod replay;
 pub mod resources;
@@ -26,11 +20,6 @@ pub mod scores;
     reason = "offline canonical replay shares the binary's internal run-event reducer"
 )]
 mod service;
-pub use scorepeek_core::session::episode;
-pub use scorepeek_core::session::reducer;
-pub use scorepeek_core::session::selection;
-pub use scorepeek_core::session::timeline;
-
 pub(crate) use capture::live as capture_live;
 pub(crate) use recording::artifact as recognition_artifact;
 pub(crate) use recording::source as canonical_source;

@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::Path;
 use std::time::Duration;
 
-use scorepeek::catalog::ScorepeekSongId;
+use scorepeek_core::catalog::ScorepeekSongId;
 use scorepeek_core::diagnostics::{
     DiagnosticBinding, DiagnosticCompleteness, DiagnosticPolicy, DiagnosticReplayBinding,
     DiagnosticResource, DiagnosticRunDescriptor, DiagnosticRunStatus,

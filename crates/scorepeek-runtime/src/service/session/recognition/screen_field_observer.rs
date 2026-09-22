@@ -1,4 +1,4 @@
-use scorepeek::catalog::Catalog;
+use scorepeek_core::catalog::Catalog;
 use scorepeek_core::recognition::music_select::{
     observe_music_select_difficulty, observe_music_select_play_side, observe_music_select_play_type,
 };
@@ -922,7 +922,7 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use scorepeek::catalog::{Catalog, Difficulty};
+    use scorepeek_core::catalog::{Catalog, Difficulty};
     use scorepeek_core::recognition::music_select::{
         MusicSelectScreenFieldObservations, MusicSelectSongResolution, MusicSelectSongUnknownReason,
     };

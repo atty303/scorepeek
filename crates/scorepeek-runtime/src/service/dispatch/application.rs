@@ -34,7 +34,7 @@ use crate::{
     },
     service::session as routine_watcher,
 };
-use scorepeek::catalog::CatalogStore;
+use scorepeek_core::catalog::CatalogStore;
 use scorepeek_core::diagnostics::{
     DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRetention,
     DiagnosticRunDescriptor,
@@ -2754,7 +2754,7 @@ fn song_resolution_presentation(
 
 fn song_presentation(
     observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
-    song_id: scorepeek::catalog::ScorepeekSongId,
+    song_id: scorepeek_core::catalog::ScorepeekSongId,
 ) -> Result<scorepeek_core::event::SongPresentation, String> {
     let evidence = observation
         .candidates()
@@ -4320,13 +4320,13 @@ mod tests {
         CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
         CaptureDiagnosticStatus,
     };
-    use scorepeek::catalog::Catalog;
-    use scorepeek::catalog::{
+    use scorepeek_core::catalog::Catalog;
+    use scorepeek_core::catalog::FederationInput;
+    use scorepeek_core::catalog::{
         Chart, ChartKey, Difficulty, DisplayVariantKind, LineageId, PlayType, RevisionStrategy,
         SourceChartObservation, SourceEvidence, SourceId, SourceObservation, SourcePolicy,
         SourceSnapshot, SourceTitleObservation, TachiObservation,
     };
-    use scorepeek_core::catalog::FederationInput;
     use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention};
     use scorepeek_core::event::{RunEvent, RunEventKind};
     use scorepeek_core::model::session::RegisteredScreenFieldObservation;

@@ -29,7 +29,6 @@ use sha2::{Digest as _, Sha256};
 use crate::canonical_source::CanonicalFrameSource;
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
-use crate::game_version::GameVersionResolver;
 use crate::recognition_artifact::{
     RecognitionArtifactEnqueueOutcome, RecognitionArtifactFinishOutcome,
     RecognitionArtifactFinishStatus, RecognitionArtifactRetention, RecognitionArtifactWorker,
@@ -51,6 +50,7 @@ use scorepeek_core::diagnostics::{
     DiagnosticRunStatus,
 };
 use scorepeek_core::frame::CanonicalLayout;
+use scorepeek_core::game_version::GameVersionResolver;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 use scorepeek_core::recognition::screen::{ScreenClass, ScreenFieldObservationError};
 use scorepeek_core::recognition::title::{OnnxParityError, RegisteredResourceLoadErrorType};

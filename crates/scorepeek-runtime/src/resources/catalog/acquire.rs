@@ -778,9 +778,9 @@ mod tests {
 
     use super::super::cache::{STATE_FILE, STATE_SCHEMA, STATE_STAGING_PREFIX};
     use super::super::schedule::update_background;
-    use crate::catalog::artifact::{ARTIFACT_SCHEMA, ArtifactManifest};
-    use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
-    use crate::catalog::{Chart, ChartKey, Difficulty, PlayType};
+    use scorepeek_core::catalog::artifact::{ARTIFACT_SCHEMA, ArtifactManifest};
+    use scorepeek_core::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
+    use scorepeek_core::catalog::{Chart, ChartKey, Difficulty, PlayType};
     use std::net::TcpListener;
     use std::thread;
 
@@ -1191,7 +1191,7 @@ mod tests {
         let catalog = catalog_from_tachi(&[SyntheticTachiRecord {
             id: "anchor-1",
             title,
-            title_kind: crate::catalog::DisplayVariantKind::InGameDisplay,
+            title_kind: scorepeek_core::catalog::DisplayVariantKind::InGameDisplay,
             artist: "ARTIST A",
             version: "V1",
             charts: vec![Chart {

@@ -30,7 +30,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 #[cfg(test)]
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
+use scorepeek_core::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek_core::event::{
     BestChart, CurrentSelectionDifficulty, EvidenceContribution, MusicSelectResolverState,
     MusicSelectionState, MusicSelectionUnresolvedReason, NumericResultEventSuppressionReason,
@@ -83,7 +83,7 @@ struct ActiveProvisionalResult {
 struct NumericResultView {
     song_id: ScorepeekSongId,
     clear_type: String,
-    chart: scorepeek::catalog::Chart,
+    chart: scorepeek_core::catalog::Chart,
     current_score: u32,
     performance: ResultPerformanceResolution,
     source_sequence: u64,
@@ -323,7 +323,7 @@ const SELECTION_CHANGE_MARGIN: u16 = 120;
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct JointKey {
     song_id: ScorepeekSongId,
-    chart_key: scorepeek::catalog::ChartKey,
+    chart_key: scorepeek_core::catalog::ChartKey,
 }
 
 #[derive(Clone, Debug)]
@@ -5850,8 +5850,8 @@ mod tests {
                 }),
                 result_chart_resolution: Some(ResultChartResolution::Accepted {
                     resolver_id: "scorepeek-result-fields-catalog-constrained-v6".to_owned(),
-                    chart: scorepeek::catalog::Chart {
-                        key: scorepeek::catalog::ChartKey {
+                    chart: scorepeek_core::catalog::Chart {
+                        key: scorepeek_core::catalog::ChartKey {
                             play_type: PlayType::Single,
                             difficulty: Difficulty::Hyper,
                         },
@@ -5893,8 +5893,8 @@ mod tests {
                     catalog_song_count: 0,
                     candidates: vec![JointEvidenceCandidate {
                         song_id,
-                        chart: scorepeek::catalog::Chart {
-                            key: scorepeek::catalog::ChartKey {
+                        chart: scorepeek_core::catalog::Chart {
+                            key: scorepeek_core::catalog::ChartKey {
                                 play_type: PlayType::Single,
                                 difficulty: Difficulty::Hyper,
                             },
@@ -7007,8 +7007,8 @@ mod tests {
             serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
         let collision_song_id =
             serde_json::from_str("\"00000000-0000-0000-0000-000000000003\"").unwrap();
-        let chart = scorepeek::catalog::Chart {
-            key: scorepeek::catalog::ChartKey {
+        let chart = scorepeek_core::catalog::Chart {
+            key: scorepeek_core::catalog::ChartKey {
                 play_type: PlayType::Single,
                 difficulty: Difficulty::Hyper,
             },
@@ -8079,8 +8079,8 @@ mod tests {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let candidate = JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type: PlayType::Single,
                     difficulty: Difficulty::Hyper,
                 },
@@ -8154,8 +8154,8 @@ mod tests {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let make = |difficulty, support| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type: PlayType::Single,
                     difficulty,
                 },
@@ -8214,8 +8214,8 @@ mod tests {
 
         let candidate = |difficulty, notes| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type: PlayType::Single,
                     difficulty,
                 },
@@ -8268,8 +8268,8 @@ mod tests {
         );
         let candidate = |difficulty| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type: PlayType::Single,
                     difficulty,
                 },
@@ -8313,8 +8313,8 @@ mod tests {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000013\"").unwrap();
         let candidate = |difficulty| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type: PlayType::Single,
                     difficulty,
                 },
@@ -8473,8 +8473,8 @@ mod tests {
         ];
         let candidate = |song_id, play_type, difficulty, support| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type,
                     difficulty,
                 },
@@ -8522,8 +8522,8 @@ mod tests {
         let second = serde_json::from_str("\"00000000-0000-0000-0000-000000000022\"").unwrap();
         let candidate = |song_id, play_type, support| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type,
                     difficulty: Difficulty::Hyper,
                 },
@@ -8563,8 +8563,8 @@ mod tests {
         let expected = serde_json::from_str("\"00000000-0000-0000-0000-000000000032\"").unwrap();
         let chart = |song_id, play_type, notes, family, support| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type,
                     difficulty: Difficulty::Hyper,
                 },
@@ -8660,8 +8660,8 @@ mod tests {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000043\"").unwrap();
         let chart = |play_type| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type,
                     difficulty: Difficulty::Hyper,
                 },
@@ -8789,8 +8789,8 @@ mod tests {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000044\"").unwrap();
         let candidate = |play_type| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type,
                     difficulty: Difficulty::Hyper,
                 },
@@ -8860,8 +8860,8 @@ mod tests {
             candidates: [(PlayType::Single, 829), (PlayType::Double, 900)]
                 .map(|(play_type, notes)| JointEvidenceCandidate {
                     song_id,
-                    chart: scorepeek::catalog::Chart {
-                        key: scorepeek::catalog::ChartKey {
+                    chart: scorepeek_core::catalog::Chart {
+                        key: scorepeek_core::catalog::ChartKey {
                             play_type,
                             difficulty: Difficulty::Hyper,
                         },
@@ -8993,8 +8993,8 @@ mod tests {
                     catalog_song_count: 2,
                     candidates: vec![JointEvidenceCandidate {
                         song_id,
-                        chart: scorepeek::catalog::Chart {
-                            key: scorepeek::catalog::ChartKey {
+                        chart: scorepeek_core::catalog::Chart {
+                            key: scorepeek_core::catalog::ChartKey {
                                 play_type: PlayType::Single,
                                 difficulty: Difficulty::Hyper,
                             },
@@ -9073,8 +9073,8 @@ mod tests {
             catalog_song_count: 2,
             candidates: vec![JointEvidenceCandidate {
                 song_id,
-                chart: scorepeek::catalog::Chart {
-                    key: scorepeek::catalog::ChartKey {
+                chart: scorepeek_core::catalog::Chart {
+                    key: scorepeek_core::catalog::ChartKey {
                         play_type: PlayType::Double,
                         difficulty: Difficulty::Hyper,
                     },
@@ -10175,8 +10175,8 @@ mod tests {
                         catalog_song_count: 2,
                         candidates: vec![JointEvidenceCandidate {
                             song_id,
-                            chart: scorepeek::catalog::Chart {
-                                key: scorepeek::catalog::ChartKey {
+                            chart: scorepeek_core::catalog::Chart {
+                                key: scorepeek_core::catalog::ChartKey {
                                     play_type: PlayType::Single,
                                     difficulty: Difficulty::Hyper,
                                 },
@@ -10229,8 +10229,8 @@ mod tests {
             catalog_song_count: 100,
             candidates: vec![JointEvidenceCandidate {
                 song_id,
-                chart: scorepeek::catalog::Chart {
-                    key: scorepeek::catalog::ChartKey {
+                chart: scorepeek_core::catalog::Chart {
+                    key: scorepeek_core::catalog::ChartKey {
                         play_type: PlayType::Single,
                         difficulty: Difficulty::Hyper,
                     },
@@ -10270,8 +10270,8 @@ mod tests {
             catalog_song_count: 100,
             candidates: vec![JointEvidenceCandidate {
                 song_id,
-                chart: scorepeek::catalog::Chart {
-                    key: scorepeek::catalog::ChartKey {
+                chart: scorepeek_core::catalog::Chart {
+                    key: scorepeek_core::catalog::ChartKey {
                         play_type: PlayType::Single,
                         difficulty: Difficulty::Hyper,
                     },
@@ -10327,8 +10327,8 @@ mod tests {
         let second_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
         let candidate = |song_id, family| JointEvidenceCandidate {
             song_id,
-            chart: scorepeek::catalog::Chart {
-                key: scorepeek::catalog::ChartKey {
+            chart: scorepeek_core::catalog::Chart {
+                key: scorepeek_core::catalog::ChartKey {
                     play_type: PlayType::Single,
                     difficulty: Difficulty::Hyper,
                 },
