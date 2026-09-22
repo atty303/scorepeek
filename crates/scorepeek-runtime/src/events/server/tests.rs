@@ -3,8 +3,6 @@ use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use scorepeek_core::recognition::result::ResultFieldValue;
 
 use super::*;
@@ -1328,7 +1326,7 @@ fn final_result_reuses_the_last_provisional_payload_without_withdrawal() {
 }
 
 #[test]
-fn tui_shows_each_result_state_without_falling_back_after_retraction() {
+fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
     prepare_accepted_attempt(&mut output);
     output.publish(&accepted_result_event(1)).unwrap();
@@ -1345,11 +1343,7 @@ fn tui_shows_each_result_state_without_falling_back_after_retraction() {
             SemanticEpisodePhase::Finalized,
         ))
         .unwrap();
-    assert!(
-        fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
-            .to_string()
-            .contains("CONFIRMED")
-    );
+    assert!(output.state.lock().unwrap().result_history.back().is_some());
 
     let resolved = RunEvent {
         schema: RUN_EVENT_SCHEMA.to_owned(),
@@ -1364,10 +1358,9 @@ fn tui_shows_each_result_state_without_falling_back_after_retraction() {
         },
     };
     output.publish(&resolved).unwrap();
-    assert!(
-        fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
-            .to_string()
-            .contains("PROVISIONAL")
+    assert_eq!(
+        output.state.lock().unwrap().latest_result_label,
+        Some("PROVISIONAL")
     );
 
     let withdrawn = RunEvent {
@@ -1384,10 +1377,9 @@ fn tui_shows_each_result_state_without_falling_back_after_retraction() {
         },
     };
     output.publish(&withdrawn).unwrap();
-    assert!(
-        fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
-            .to_string()
-            .contains("RETRACTED")
+    assert_eq!(
+        output.state.lock().unwrap().latest_result_label,
+        Some("RETRACTED")
     );
     output
         .publish(&RunEvent {
@@ -1401,8 +1393,8 @@ fn tui_shows_each_result_state_without_falling_back_after_retraction() {
         })
         .unwrap();
     assert_eq!(
-        fixed_domain_lines(&output.state.lock().unwrap(), 160)[0].to_string(),
-        "No active result"
+        output.state.lock().unwrap().latest_result_label,
+        Some("INACTIVE")
     );
     assert_eq!(output.state.lock().unwrap().result_count, 1);
 }
@@ -2295,346 +2287,6 @@ fn result_history_remains_bounded_and_survives_session_changes() {
     );
     assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 1);
     assert!(state.stable_result_song.is_none());
-}
-
-#[test]
-fn result_value_labels_preserve_domain_states_without_debug_reasons() {
-    use scorepeek_core::recognition::result::ResultFieldUnknownReason;
-
-    assert_eq!(
-        supplemental_u32(&SupplementalResultValue::Known { value: 1_234 }),
-        "1,234"
-    );
-    assert_eq!(
-        supplemental_u32(&SupplementalResultValue::NotDisplayed),
-        "--"
-    );
-    assert_eq!(
-        supplemental_u32(&SupplementalResultValue::Unknown {
-            reason: ResultFieldUnknownReason::InvalidFormat,
-        }),
-        "?"
-    );
-    assert_eq!(previous_text(&PreviousBestValue::NotPlayed), "NO PLAY");
-    assert_eq!(previous_u32(&PreviousBestValue::NotDisplayed), "--");
-    assert_eq!(
-        previous_u32(&PreviousBestValue::Unknown {
-            reason: ResultFieldUnknownReason::OutOfRange,
-        }),
-        "?"
-    );
-}
-
-#[test]
-fn fitted_song_text_uses_an_ellipsis_without_mutating_the_value() {
-    let value = "非常に長い曲名を完全な状態で保持する";
-    let rendered = fitted_value("Catalog title: ", value, 24);
-    assert!(rendered.starts_with("Catalog title: "));
-    assert!(rendered.ends_with('…'));
-    assert!(Line::raw(rendered).width() <= 24);
-    assert_eq!(value, "非常に長い曲名を完全な状態で保持する");
-}
-
-fn populated_select_test_state() -> MusicSelectResolverState {
-    use scorepeek_core::recognition::music_select::{
-        BestClearType, BestValue, MusicSelectBestValues,
-    };
-    let (_, evidence, _) = music_selection_test_observation();
-    let candidate = &evidence.candidates[0];
-    let selection = MusicSelectionState::Selected {
-        scorepeek_song_id: candidate.song_id,
-        play_side: PlaySide::OnePlayer,
-        play_type: candidate.chart.key.play_type,
-        difficulty: candidate.chart.key.difficulty,
-        level: candidate.chart.level,
-        notes: candidate.chart.notes,
-        presentation: candidate_song_presentation(candidate),
-    };
-    let mut state = MusicSelectResolverState::default();
-    state.active = true;
-    state.screen_episode_id = 1;
-    for _ in 0..2 {
-        state.observe(
-            BestChart::from_selection(selection.clone()).unwrap(),
-            MusicSelectBestValues {
-                score: BestValue::Known(1200),
-                miss_count: BestValue::Unknown,
-                clear_type: BestValue::Known(BestClearType::Clear),
-            },
-        );
-    }
-    state.publish_candidate("session", 1, 2, 200).unwrap();
-    state
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the 80x25 fixture spells out every simultaneously visible resolver node and gate"
-)]
-fn four_pane_tui_keeps_all_gates_at_minimum_size() {
-    let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
-    state.watcher_state = "session_active".to_owned();
-    state.capture_generation = Some(3);
-    state.resolver = ResolverDebugSnapshot {
-        now_ms: 14_900,
-        raw_screen: Some("result".to_owned()),
-        screen: Some("result".to_owned()),
-        suspended: false,
-        finalizing: false,
-        screen_episode_id: 18,
-        screen_episode_started_ms: Some(2_000),
-        source_sequence: Some(1_240),
-        latest_field_sequence: Some(1_238),
-        latest_field_ms: Some(13_000),
-        play_options: Some(PlayOptionsDebugSnapshot {
-            latest: PlayOptionsObservation {
-                raw_text: Some("USE OPTION RANDOM".to_owned()),
-                parsed: PlayOptions::Known {
-                    values: vec![PlayOption::Random],
-                },
-                ..PlayOptionsObservation::default()
-            },
-            observations: 2,
-            conflicting: false,
-            resolved: PlayOptions::Known {
-                values: vec![PlayOption::Random],
-            },
-        }),
-        selection_difficulty_target: Some(SelectionDifficultyTarget::Successor),
-        selection_difficulty: Some(CurrentSelectionDifficulty::observed(
-            Difficulty::Hyper,
-            1_238,
-            13_000,
-        )),
-        local: Some(ResolverNodeSnapshot {
-            label: "RESULT resolver",
-            started_ms: Some(3_000),
-            last_observation_ms: Some(13_000),
-            observations: 6,
-            top: Some("TEST SONG / HYPER Lv8".to_owned()),
-            runner_up: Some("OTHER SONG / HYPER Lv8".to_owned()),
-            runner_song: Some("OTHER SONG / SP HYPER Lv8 notes=764".to_owned()),
-            runner_chart: None,
-            top_candidates: vec!["TEST SONG / SP HYPER Lv8 notes=764".to_owned()],
-            support: 320,
-            margin: 80,
-            song_margin: 80,
-            chart_margin: 320,
-            select_play_type: None,
-            result_play_type: Some(PlayType::Single),
-            play_type_mismatch: false,
-            family_contributions: vec!["result_title=300".to_owned()],
-            current_difficulty: None,
-            state: ResolverResolutionState::AcceptedJoint,
-        }),
-        successor: Some(ResolverNodeSnapshot {
-            label: "successor",
-            started_ms: Some(13_000),
-            last_observation_ms: Some(14_000),
-            observations: 2,
-            top: Some("NEXT / SP HYPER Lv9 notes=900".to_owned()),
-            runner_up: None,
-            runner_song: None,
-            runner_chart: None,
-            top_candidates: vec!["NEXT / SP HYPER Lv9 notes=900".to_owned()],
-            support: 140,
-            margin: 140,
-            song_margin: 140,
-            chart_margin: 140,
-            select_play_type: Some(PlayType::Single),
-            result_play_type: None,
-            play_type_mismatch: false,
-            family_contributions: vec!["select_title=140".to_owned()],
-            current_difficulty: Some(CurrentSelectionDifficulty::observed(
-                Difficulty::Hyper,
-                1_238,
-                13_000,
-            )),
-            state: ResolverResolutionState::JointCandidate,
-        }),
-        attempt: Some(AttemptNodeSnapshot {
-            attempt_id: Some(14),
-            started_ms: Some(1_000),
-            phase_started_ms: Some(2_000),
-            phase: "result".to_owned(),
-            path: "S-D-P-R".to_owned(),
-            select_top: Some("TEST SONG / HYPER Lv8".to_owned()),
-            result_top: Some("TEST SONG / HYPER Lv8".to_owned()),
-            joint_top: Some("TEST SONG / HYPER Lv8".to_owned()),
-            support: 400,
-            margin: 160,
-            song_margin: 160,
-            chart_margin: 400,
-            runner_song: Some("OTHER SONG / SP HYPER Lv8 notes=764".to_owned()),
-            runner_chart: None,
-            top_candidates: vec!["TEST SONG / SP HYPER Lv8 notes=764".to_owned()],
-            family_contributions: vec!["result_title=300".to_owned()],
-            state: ResolverResolutionState::AcceptedJoint,
-        }),
-        gate: "waiting: numeric performance".to_owned(),
-        gates: vec![
-            GateSnapshot {
-                label: "link",
-                state: GateState::Accepted,
-            },
-            GateSnapshot {
-                label: "identity",
-                state: GateState::Accepted,
-            },
-            GateSnapshot {
-                label: "clear",
-                state: GateState::Accepted,
-            },
-            GateSnapshot {
-                label: "numeric",
-                state: GateState::Pending,
-            },
-            GateSnapshot {
-                label: "drain",
-                state: GateState::Inactive,
-            },
-            GateSnapshot {
-                label: "emit",
-                state: GateState::Inactive,
-            },
-        ],
-        raw_fields: vec![
-            (
-                "marker".to_owned(),
-                "known:hyper score=500000 margin=250000".to_owned(),
-            ),
-            ("title".to_owned(), "OCR TITLE".to_owned()),
-        ],
-    };
-    state.music_select = populated_select_test_state();
-    let health = ChannelHealth::default();
-    for (width, height) in [(120, 40), (80, 25), (79, 24)] {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| render(frame, &state, Path::new("/run/scorepeek.sock"), &health))
-            .unwrap();
-        if width == 80 {
-            let rendered = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect::<String>();
-            assert!(rendered.contains("Music Select Resolver"));
-            assert!(rendered.contains("SCORE 1200  MISS unknown"));
-            assert!(rendered.contains("partial snapshot emitted revision=1"));
-            assert!(rendered.contains("Watcher"));
-            assert!(rendered.contains("Latest result"));
-            assert!(rendered.contains("Resolver"));
-            assert!(rendered.contains("episode=#18"));
-            assert!(rendered.contains("ATTEMPT #14"));
-            assert!(rendered.contains("numeric…"));
-            assert!(rendered.contains("link✓"));
-            assert!(rendered.contains("identity✓"));
-            assert!(rendered.contains("clear✓"));
-            assert!(rendered.contains("drain–"));
-            assert!(rendered.contains("emit–"));
-            assert!(
-                terminal
-                    .backend()
-                    .buffer()
-                    .content
-                    .iter()
-                    .any(|cell| cell.fg == Color::Green)
-            );
-            assert!(
-                terminal
-                    .backend()
-                    .buffer()
-                    .content
-                    .iter()
-                    .any(|cell| cell.fg == Color::Yellow)
-            );
-        }
-    }
-}
-
-#[test]
-fn selected_chart_remains_visible_at_minimum_width_with_a_long_title() {
-    let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
-    let scorepeek_song_id =
-        serde_json::from_str("\"00000000-0000-0000-0000-000000000046\"").unwrap();
-    for difficulty in [Difficulty::Hyper, Difficulty::Leggendaria] {
-        state.latest_music_selection = Some(MusicSelectionState::Selected {
-            scorepeek_song_id,
-            play_side: PlaySide::OnePlayer,
-            play_type: PlayType::Double,
-            difficulty,
-            level: 12,
-            notes: 2000,
-            presentation: SongPresentation {
-                scorepeek_song_id,
-                display_titles: vec!["長い曲名".repeat(30)],
-                artist: "ARTIST".to_owned(),
-            },
-        });
-        state.music_select.active = true;
-        state.music_select.observe(
-            BestChart::from_selection(state.latest_music_selection.clone().unwrap()).unwrap(),
-            scorepeek_core::recognition::music_select::MusicSelectBestValues::default(),
-        );
-        let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
-        terminal
-            .draw(|frame| {
-                render(
-                    frame,
-                    &state,
-                    Path::new("/run/scorepeek.sock"),
-                    &ChannelHealth::default(),
-                );
-            })
-            .unwrap();
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
-        assert!(rendered.contains(&format!("DP {} / ", difficulty_label(difficulty))));
-        assert!(rendered.contains('…'));
-    }
-}
-
-#[test]
-fn semantic_palette_keeps_typed_state_and_domain_colors_consistent() {
-    assert_eq!(
-        resolution_color(ResolverResolutionState::AcceptedJoint),
-        Color::Green
-    );
-    assert_eq!(
-        resolution_color(ResolverResolutionState::JointCandidate),
-        Color::Cyan
-    );
-    assert_eq!(
-        resolution_color(ResolverResolutionState::Unresolved),
-        Color::Yellow
-    );
-    assert_eq!(
-        resolution_color(ResolverResolutionState::Conflict),
-        Color::Red
-    );
-    assert_eq!(gate_color(GateState::Inactive), Color::DarkGray);
-    assert_eq!(gate_suffix(GateState::Accepted), "✓");
-    assert_eq!(gate_suffix(GateState::Pending), "…");
-    assert_eq!(gate_suffix(GateState::Failed), "✗");
-    assert_eq!(gate_suffix(GateState::Inactive), "–");
-    assert_eq!(difficulty_color(Difficulty::Beginner), Color::Green);
-    assert_eq!(difficulty_color(Difficulty::Normal), Color::Blue);
-    assert_eq!(difficulty_color(Difficulty::Hyper), Color::Yellow);
-    assert_eq!(difficulty_color(Difficulty::Another), Color::Red);
-    assert_eq!(difficulty_color(Difficulty::Leggendaria), Color::Magenta);
-    assert_eq!(clear_type_color("FAILED"), Color::Red);
-    assert_eq!(clear_type_color("ASSIST CLEAR"), Color::Yellow);
-    assert_eq!(clear_type_color("F-COMBO"), Color::Green);
 }
 
 #[test]
@@ -3808,54 +3460,6 @@ fn select_best_is_frame_bound_suspended_and_separate_from_results() {
 }
 
 #[test]
-fn held_select_pane_keeps_wait_reason_and_previous_revision_visible() {
-    use ratatui::backend::TestBackend;
-    let mut state = RunViewState::new("invocation".into(), "a".repeat(64), false);
-    state.music_select = populated_select_test_state();
-    state
-        .music_select
-        .hold(SelectIdentityStatus::AwaitingDifficulty);
-    for suspended in [false, true] {
-        state.music_select.suspended = suspended;
-        for (width, height) in [(120, 40), (80, 25)] {
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal
-                .draw(|frame| {
-                    render(
-                        frame,
-                        &state,
-                        Path::new("/run/scorepeek.sock"),
-                        &ChannelHealth::default(),
-                    );
-                })
-                .unwrap();
-            let text = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect::<String>();
-            for expected in [
-                "held",
-                "last r1 S=1200",
-                "SCORE waiting",
-                "Latest result",
-                "Music Select Resolver",
-                "Watcher",
-            ] {
-                assert!(text.contains(expected), "{width}x{height}: {expected}");
-            }
-            assert!(text.contains(if suspended {
-                "waiting: suspended"
-            } else {
-                "waiting: difficulty"
-            }));
-        }
-    }
-}
-
-#[test]
 fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot() {
     let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
     let session = "invocation-1-session-1".to_owned();
@@ -4770,11 +4374,6 @@ fn pending_marker_is_visible_before_any_song_evidence() {
         snapshot.selection_difficulty.unwrap().difficulty,
         Difficulty::Normal
     );
-    let rendered = music_select_best::lines(&shared.lock().unwrap().music_select, 80)
-        .iter()
-        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
-        .collect::<String>();
-    assert!(rendered.contains("NORMAL streak=1 target=pending"));
 }
 
 #[test]

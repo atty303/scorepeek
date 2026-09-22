@@ -37,7 +37,8 @@ flowchart LR
 The installed `scorepeek` executable is provided by the binary-only `scorepeek-cli` package. It
 classifies CLI requests into the transport-neutral `scorepeek-frontend-api` protocol and dispatches
 them to the in-process Linux `scorepeek-runtime` service. Portable catalog, recognition, temporal,
-event, and score authority lives in `scorepeek-core`.
+event, and score authority lives in `scorepeek-core`. The CLI owns terminal lifecycle and Ratatui
+rendering; the runtime publishes only typed frontend snapshots and does not depend on a TUI toolkit.
 
 The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX

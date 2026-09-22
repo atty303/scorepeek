@@ -20,6 +20,7 @@ pub struct RunSnapshot {
     pub recording_status: String,
     pub recording_memory_used_bytes: u64,
     pub recording_memory_limit_bytes: u64,
+    pub recording_memory_high_water_bytes: u64,
     pub recording_dropped_frames: u64,
     pub event_stream_status: String,
     pub connected_clients: u64,
