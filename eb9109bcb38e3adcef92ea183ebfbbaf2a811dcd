@@ -1,0 +1,11 @@
+Task: Defer the scorepeek development build from every commit to the final task completion report
+Anchor: eb9109bcb38e3adcef92ea183ebfbbaf2a811dcd
+Base: fbdf73d850ef7cf85866206644af3bff24f79a44
+Branch: codex/workspace-authority-refactor
+Commits: eb9109bcb38e3adcef92ea183ebfbbaf2a811dcd docs: defer development build to task completion
+Guidance: repository AGENTS.md; maintain-agent-guidance; develop-repository; git-task-evidence; data-handling
+Conditions: managed read-only sandbox with approved repository writes; origin fetched; complete Codex rollout log checked; no push authorized or performed
+Authority: The user request and repository AGENTS.md are the current normative sources.
+## Transcript
+- U1: agents.mdのmise build実行をcommit後ではなくtask完了報告前だけにしたい
+  - A: Confirmed the repository guidance was the nearest owner, fetched origin, preserved the initially clean tree, replaced the per-commit build rule with one build immediately before the final completion report, passed diff and commit-hook checks, committed the change as eb9109b, and completed `mise run build` successfully; no remote write was performed.
