@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use scorepeek_core::recognition::screen::{
     RecognitionError, ScreenClass, ScreenFieldObservationError,
 };
 use scorepeek_core::recognition::title::OnnxParityError;
+use sha2::{Digest as _, Sha256};
 
 use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::service::session::recognition::field_observer::{
@@ -32,6 +34,39 @@ use crate::service::session::recognition::{
 type ReplayFieldOutput =
     Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 type InnerSession = FieldObservationSession<RegisteredScreenFieldObserver>;
+
+const RUNTIME_REPLAY_SOURCES: &[&[u8]] = &[
+    include_bytes!("replay.rs"),
+    include_bytes!("capture/profile.rs"),
+    include_bytes!("diagnostics/live.rs"),
+    include_bytes!("resources/model/acquire.rs"),
+    include_bytes!("service/session/recognition/mod.rs"),
+    include_bytes!("service/session/recognition/field_observer.rs"),
+    include_bytes!("service/session/recognition/field_session.rs"),
+    include_bytes!("service/session/recognition/screen_field_observer.rs"),
+];
+
+/// Returns the implementation identity of the production replay path.
+#[must_use]
+pub fn implementation_sha256() -> String {
+    let core = scorepeek_core::replay::production_semantics_sha256();
+    let mut digest = Sha256::new();
+    digest.update(u64::try_from(core.len()).unwrap_or(u64::MAX).to_le_bytes());
+    digest.update(core.as_bytes());
+    for source in RUNTIME_REPLAY_SOURCES {
+        digest.update(
+            u64::try_from(source.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        digest.update(source);
+    }
+    let mut encoded = String::with_capacity(64);
+    for byte in digest.finalize() {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
 
 fn operation_main(operation: &'static str) -> ExitCode {
     crate::service::dispatch::development_operation_main(operation)
@@ -413,3 +448,15 @@ pub struct ReplayInspectError(RecognitionSessionError);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReplayOfferError(FieldObserverOfferError);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn implementation_digest_is_sha256() {
+        let digest = implementation_sha256();
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+}

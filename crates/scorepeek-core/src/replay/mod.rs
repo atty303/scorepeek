@@ -1,8 +1,11 @@
 //! Deterministic replay-facing product logic.
 
 pub mod conformance;
+mod implementation;
 pub mod session;
 pub mod trace;
+
+pub use implementation::production_semantics_sha256;
 
 pub use conformance::{
     CanonicalLayout, CatalogCandidateDomain, CatalogStore, Difficulty, DynamicTextObservation,
