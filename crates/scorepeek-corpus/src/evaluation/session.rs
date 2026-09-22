@@ -1,29 +1,33 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::io::{BufRead as _, BufReader, Read as _};
 use std::path::Path;
 
 use scorepeek_core::replay::ScorepeekSongId;
 use scorepeek_core::replay::ScreenClass;
-use scorepeek_core::replay::{
-    ResultTemporalReducer, TemporalFieldState, TemporalPolicy, TemporalTransitionReason,
-};
+use scorepeek_core::replay::{ResultTemporalReducer, TemporalPolicy, TemporalTransitionReason};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
 
-use crate::{CorpusError, ErrorContext, digest_bytes, encode_digest, read_bounded_regular};
+use crate::{CorpusError, ErrorContext, digest_bytes, read_bounded_regular};
+
+use super::metrics::{
+    DistributionSummary, TemporalOutcome, TemporalOutcomeSummary, TransitionSummary, count_outcome,
+    distribution, field_outcome,
+};
+#[cfg(test)]
+use super::recognition::{OBSERVATION_SCHEMA, parse_record};
+use super::recognition::{TemporalRecord, read_observations};
+pub use super::report::TemporalEvaluationSummary;
+use super::report::{
+    EpisodePolicyResult, ExcludedEpisode, ExclusionReason, RawFieldSummary, RawObservationSummary,
+    TemporalPolicySummary,
+};
 
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v4";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v6";
-const OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
-const MAX_OBSERVATIONS: usize = 250_000;
 const MAX_POLICIES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -65,107 +69,6 @@ impl TemporalEvaluationPolicy {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct TemporalEvaluationSummary {
-    schema: &'static str,
-    generation_sha256: String,
-    session_count: usize,
-    labeled_episode_count: usize,
-    analyzable_episode_count: usize,
-    excluded_episodes: Vec<ExcludedEpisode>,
-    raw_observations: RawObservationSummary,
-    policies: Vec<TemporalPolicySummary>,
-    authority: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct ExcludedEpisode {
-    episode_id: String,
-    reason: ExclusionReason,
-    available_result_observations: usize,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ExclusionReason {
-    ResultIntervalUnavailable,
-    AmbiguousResultInterval,
-    InsufficientTemporalObservations,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct RawObservationSummary {
-    observations: usize,
-    song: RawFieldSummary,
-    clear_type: RawFieldSummary,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct RawFieldSummary {
-    correct: usize,
-    incorrect: usize,
-    unknown: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct TemporalPolicySummary {
-    policy: TemporalEvaluationPolicy,
-    episode_count: usize,
-    song: TemporalOutcomeSummary,
-    clear_type: TemporalOutcomeSummary,
-    joint_stable_correct: usize,
-    transitions: TransitionSummary,
-    joint_stabilization_ms: DistributionSummary,
-    joint_stabilization_observations: DistributionSummary,
-    episodes: Vec<EpisodePolicyResult>,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct TemporalOutcomeSummary {
-    stable_correct: usize,
-    stable_incorrect: usize,
-    conflict: usize,
-    unresolved: usize,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct TransitionSummary {
-    gap_resets: usize,
-    conflicts: usize,
-    pending_replacements: usize,
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct DistributionSummary {
-    samples: usize,
-    minimum: Option<u64>,
-    p50: Option<u64>,
-    p95: Option<u64>,
-    maximum: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct EpisodePolicyResult {
-    episode_id: String,
-    observation_count: usize,
-    first_sequence: u64,
-    last_sequence: u64,
-    song: TemporalOutcome,
-    clear_type: TemporalOutcome,
-    joint_stable_correct: bool,
-    joint_stabilization_ms: Option<u64>,
-    joint_stabilization_observations: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum TemporalOutcome {
-    StableCorrect,
-    StableIncorrect,
-    Conflict,
-    Unresolved,
-}
-
 #[derive(Debug, Deserialize)]
 struct ActiveSuite {
     schema: String,
@@ -185,22 +88,22 @@ struct SuiteEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct CaptureSession {
-    schema: String,
-    canonical_frames: Vec<CanonicalFrame>,
-    artifacts: Vec<CorpusArtifact>,
+pub(super) struct CaptureSession {
+    pub(super) schema: String,
+    pub(super) canonical_frames: Vec<CanonicalFrame>,
+    pub(super) artifacts: Vec<CorpusArtifact>,
 }
 
 #[derive(Debug, Deserialize)]
-struct CanonicalFrame {
-    sequence: u64,
+pub(super) struct CanonicalFrame {
+    pub(super) sequence: u64,
 }
 
 #[derive(Debug, Deserialize)]
-struct CorpusArtifact {
-    source_path: String,
-    sha256: String,
-    bytes: u64,
+pub(super) struct CorpusArtifact {
+    pub(super) source_path: String,
+    pub(super) sha256: String,
+    pub(super) bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,16 +127,6 @@ struct RegressionEpisode {
     expected_song_id: String,
     expected_clear_type: String,
     stable_sequences: Vec<u64>,
-}
-
-#[derive(Clone, Debug)]
-struct TemporalRecord {
-    sequence: u64,
-    timestamp_ms: u64,
-    screen: ScreenClass,
-    song: Option<ScorepeekSongId>,
-    clear_type: Option<String>,
-    has_result_observation: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -592,186 +485,6 @@ fn evaluate_episode(
         joint_stabilization_ms,
         joint_stabilization_observations,
     }
-}
-
-fn field_outcome<T: Eq>(state: &TemporalFieldState<T>, expected: &T) -> TemporalOutcome {
-    match state {
-        TemporalFieldState::Stable { value, .. } if value == expected => {
-            TemporalOutcome::StableCorrect
-        }
-        TemporalFieldState::Stable { .. } => TemporalOutcome::StableIncorrect,
-        TemporalFieldState::Conflict { .. } => TemporalOutcome::Conflict,
-        TemporalFieldState::Empty | TemporalFieldState::Pending { .. } => {
-            TemporalOutcome::Unresolved
-        }
-    }
-}
-
-fn count_outcome(outcome: TemporalOutcome, summary: &mut TemporalOutcomeSummary) {
-    match outcome {
-        TemporalOutcome::StableCorrect => summary.stable_correct += 1,
-        TemporalOutcome::StableIncorrect => summary.stable_incorrect += 1,
-        TemporalOutcome::Conflict => summary.conflict += 1,
-        TemporalOutcome::Unresolved => summary.unresolved += 1,
-    }
-}
-
-fn distribution(mut values: Vec<u64>) -> DistributionSummary {
-    if values.is_empty() {
-        return DistributionSummary::default();
-    }
-    values.sort_unstable();
-    DistributionSummary {
-        samples: values.len(),
-        minimum: values.first().copied(),
-        p50: percentile(&values, 50),
-        p95: percentile(&values, 95),
-        maximum: values.last().copied(),
-    }
-}
-
-fn percentile(values: &[u64], percentile: usize) -> Option<u64> {
-    let rank = values.len().saturating_mul(percentile).saturating_add(99) / 100;
-    values.get(rank.saturating_sub(1)).copied()
-}
-
-fn read_observations(
-    store: &Path,
-    session: &CaptureSession,
-) -> Result<Vec<TemporalRecord>, CorpusError> {
-    let artifact = session
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.source_path == "analysis/observations.ndjson")
-        .ok_or_else(|| {
-            CorpusError::InvalidReplay(
-                "temporal evaluation observation artifact is unavailable".to_owned(),
-            )
-        })?;
-    if artifact.bytes == 0
-        || artifact.bytes > MAX_OBSERVATION_BYTES
-        || !valid_sha256(&artifact.sha256)
-    {
-        return invalid("temporal evaluation observation artifact binding is invalid");
-    }
-    let path = store.join("objects").join(&artifact.sha256);
-    let metadata = path.metadata()?;
-    if !metadata.is_file() || metadata.len() != artifact.bytes {
-        return invalid("temporal evaluation observation artifact size differs");
-    }
-    let mut reader = BufReader::new(File::open(path)?);
-    let mut line = Vec::new();
-    let mut records = Vec::new();
-    let mut hasher = Sha256::new();
-    while records.len() < MAX_OBSERVATIONS && read_line(&mut reader, &mut line)? {
-        hasher.update(&line);
-        let value: Value = serde_json::from_slice(&line)?;
-        records.push(parse_record(&value)?);
-    }
-    if read_line(&mut reader, &mut line)? {
-        return invalid("temporal evaluation observation count exceeds its bound");
-    }
-    if encode_digest(hasher.finalize()) != artifact.sha256 {
-        return invalid("temporal evaluation observation artifact digest differs");
-    }
-    if records.is_empty()
-        || records
-            .windows(2)
-            .any(|pair| pair[0].sequence >= pair[1].sequence)
-    {
-        return invalid("temporal evaluation observation order is invalid");
-    }
-    Ok(records)
-}
-
-fn read_line(reader: &mut BufReader<File>, line: &mut Vec<u8>) -> Result<bool, CorpusError> {
-    line.clear();
-    let read = reader
-        .take(u64::try_from(MAX_OBSERVATION_RECORD_BYTES).unwrap_or(u64::MAX) + 1)
-        .read_until(b'\n', line)?;
-    if read == 0 {
-        return Ok(false);
-    }
-    if read > MAX_OBSERVATION_RECORD_BYTES || line.last() != Some(&b'\n') {
-        return invalid("temporal evaluation observation record exceeds its bound");
-    }
-    Ok(true)
-}
-
-fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
-    if value["schema"] != OBSERVATION_SCHEMA {
-        return invalid("temporal evaluation observation schema differs");
-    }
-    let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
-        CorpusError::InvalidReplay("temporal observation sequence is invalid".to_owned())
-    })?;
-    let timestamp_ms = value["source_timestamp_ms"].as_u64().ok_or_else(|| {
-        CorpusError::InvalidReplay("temporal observation timestamp is invalid".to_owned())
-    })?;
-    let screen_name = value["screen"].as_str().ok_or_else(|| {
-        CorpusError::InvalidReplay("temporal observation screen is invalid".to_owned())
-    })?;
-    let screen = match screen_name {
-        "result" => ScreenClass::Result,
-        "music_select" => ScreenClass::MusicSelect,
-        "mode_select" => ScreenClass::ModeSelect,
-        "decide_transition" => ScreenClass::DecideTransition,
-        "play" => ScreenClass::Play,
-        "unknown" => ScreenClass::Unknown,
-        _ => return invalid("temporal observation screen is unsupported"),
-    };
-    let has_result_observation = screen == ScreenClass::Result
-        && (value.get("song_id").and_then(Value::as_str).is_some()
-            || value.pointer("/fields/clear_type").is_some());
-    let song = if has_result_observation {
-        accepted_song(value)?
-    } else {
-        None
-    };
-    let clear_type = if has_result_observation {
-        observed_clear_type(value)
-    } else {
-        None
-    };
-    Ok(TemporalRecord {
-        sequence,
-        timestamp_ms,
-        screen,
-        song,
-        clear_type,
-        has_result_observation,
-    })
-}
-
-fn accepted_song(value: &Value) -> Result<Option<ScorepeekSongId>, CorpusError> {
-    let accepted = value
-        .pointer("/decision/resolution/status")
-        .and_then(Value::as_str);
-    let song = if accepted == Some("accepted") {
-        value.pointer("/decision/resolution/selected/song_id")
-    } else if value.get("decision").is_none() {
-        value.get("song_id")
-    } else {
-        None
-    };
-    let Some(song) = song.and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    serde_json::from_value(Value::String(song.to_owned()))
-        .map(Some)
-        .map_err(|_| CorpusError::InvalidReplay("observed song ID is invalid".to_owned()))
-}
-
-fn observed_clear_type(value: &Value) -> Option<String> {
-    value
-        .pointer("/fields/clear_type")
-        .and_then(|clear| {
-            clear
-                .as_str()
-                .or_else(|| clear.get("open_text").and_then(Value::as_str))
-        })
-        .and_then(scorepeek_core::replay::resolve_clear_type)
-        .map(ToOwned::to_owned)
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, CorpusError> {
