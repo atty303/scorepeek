@@ -1862,7 +1862,7 @@ fn run_routine_live_session(
                 if background_stop.load(std::sync::atomic::Ordering::Acquire) {
                     return;
                 }
-                let _ = scorepeek::catalog::update::update_background(
+                let _ = crate::resources::catalog::schedule::update_background(
                     &background_root,
                     &background_url,
                     |event| record_catalog_update(&background_sink, &event),
@@ -3666,7 +3666,7 @@ fn collect_doctor_report() -> Result<serde_json::Value, String> {
         let active = CatalogStore::new(&store_root)
             .load_active_for_run()
             .map_err(|error| error.to_string())?;
-        let state = scorepeek::catalog::update::load_state(&store_root)
+        let state = crate::resources::catalog::cache::load_state(&store_root)
             .map_err(|error| error.to_string())?;
         Ok(serde_json::json!({
             "status": if active.is_some() { "active" } else { "unavailable" },

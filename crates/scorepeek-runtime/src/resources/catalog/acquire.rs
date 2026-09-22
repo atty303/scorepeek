@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
 use std::net::IpAddr;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
@@ -16,16 +16,15 @@ use url::Url;
 use scorepeek_core::catalog::artifact;
 use scorepeek_core::catalog::{ActiveCatalog, CatalogOrigin, CatalogStore};
 
+use super::cache::{
+    CatalogUpdateState, DOWNLOAD_STAGING_PREFIX, EXTRACTION_STAGING_PREFIX, UpdateFailure,
+    load_attempt_state, recover_client_staging, state_for_active, write_state,
+};
+use super::schedule::{UpdateMode, update_due};
+
 pub const DEFAULT_CATALOG_URL: &str = "https://atty303.github.io/scorepeek/catalog/v1/catalog.zip";
-pub const UPDATE_INTERVAL: Duration = Duration::from_hours(24);
 const CONFIG_MAX_BYTES: u64 = 64 * 1024;
-const STATE_MAX_BYTES: u64 = 16 * 1024;
-const STATE_SCHEMA: &str = "scorepeek-catalog-update-state-v1";
-const STATE_FILE: &str = "update-state.json";
 const UPDATE_LOCK_FILE: &str = "catalog-client-update.lock";
-const DOWNLOAD_STAGING_PREFIX: &str = ".catalog-download-";
-const EXTRACTION_STAGING_PREFIX: &str = ".catalog-download-extracted-";
-const STATE_STAGING_PREFIX: &str = ".catalog-update-state-";
 const MAX_VALIDATOR_BYTES: usize = 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -44,13 +43,6 @@ struct CatalogConfig {
 pub struct EffectiveUrl {
     value: Url,
     fingerprint: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpdateMode {
-    Required,
-    Background,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -94,26 +86,6 @@ pub enum UpdateErrorType {
     StateFailed,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogUpdateState {
-    schema: String,
-    pub source_url_sha256: Option<String>,
-    pub active_catalog_sha256: Option<String>,
-    pub last_success_unix_seconds: Option<u64>,
-    pub etag: Option<String>,
-    pub last_modified: Option<String>,
-    pub last_failure: Option<UpdateFailure>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateFailure {
-    pub source_url_sha256: String,
-    pub failed_unix_seconds: u64,
-    pub error_type: UpdateErrorType,
-}
-
 #[derive(Debug)]
 pub struct UpdateError {
     pub error_type: UpdateErrorType,
@@ -142,20 +114,6 @@ impl fmt::Display for UpdateError {
 }
 
 impl Error for UpdateError {}
-
-impl Default for CatalogUpdateState {
-    fn default() -> Self {
-        Self {
-            schema: STATE_SCHEMA.to_owned(),
-            source_url_sha256: None,
-            active_catalog_sha256: None,
-            last_success_unix_seconds: None,
-            etag: None,
-            last_modified: None,
-            last_failure: None,
-        }
-    }
-}
 
 impl EffectiveUrl {
     #[must_use]
@@ -201,88 +159,6 @@ pub fn default_config_path() -> PathBuf {
         },
         |root| PathBuf::from(root).join("scorepeek/config.toml"),
     )
-}
-
-/// Loads the state exposed through diagnostics and `doctor`.
-///
-/// # Errors
-/// Returns an error when a present state file is malformed or outside its size contract.
-pub fn load_state(store_root: &Path) -> Result<CatalogUpdateState, UpdateError> {
-    let mut state = load_attempt_state(store_root)?;
-    if let Some(active) = CatalogStore::new(store_root)
-        .load_active_for_run()
-        .map_err(|error| {
-            failure(
-                UpdateErrorType::ActivationFailed,
-                format!("active catalog load failed: {error}"),
-            )
-        })?
-    {
-        state.active_catalog_sha256 = Some(active.digest);
-        if let Some(origin) = active.origin {
-            state.source_url_sha256 = Some(origin.source_url_sha256);
-            state.last_success_unix_seconds = Some(origin.last_success_unix_seconds);
-            state.etag = origin.etag;
-            state.last_modified = origin.last_modified;
-        } else {
-            state.source_url_sha256 = None;
-            state.last_success_unix_seconds = None;
-            state.etag = None;
-            state.last_modified = None;
-        }
-    }
-    Ok(state)
-}
-
-fn load_attempt_state(store_root: &Path) -> Result<CatalogUpdateState, UpdateError> {
-    let path = store_root.join(STATE_FILE);
-    let metadata = match path.metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(CatalogUpdateState::default());
-        }
-        Err(error) => return Err(state_error(error)),
-    };
-    if !metadata.is_file() || metadata.len() > STATE_MAX_BYTES {
-        return Err(failure(
-            UpdateErrorType::StateFailed,
-            "catalog update state is not a bounded regular file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(STATE_MAX_BYTES + 1).read_to_end(&mut bytes))
-        .map_err(state_error)?;
-    if bytes.len() as u64 > STATE_MAX_BYTES {
-        return Err(failure(
-            UpdateErrorType::StateFailed,
-            "catalog update state exceeds its size limit while reading",
-        ));
-    }
-    let state: CatalogUpdateState = serde_json::from_slice(&bytes).map_err(|error| {
-        failure(
-            UpdateErrorType::StateFailed,
-            format!("catalog update state is invalid: {error}"),
-        )
-    })?;
-    if state.schema != STATE_SCHEMA
-        || state
-            .source_url_sha256
-            .as_ref()
-            .is_some_and(|value| !is_lower_hex(value, 64))
-        || state
-            .active_catalog_sha256
-            .as_ref()
-            .is_some_and(|value| !is_lower_hex(value, 64))
-        || !valid_validator(state.etag.as_deref())
-        || !valid_validator(state.last_modified.as_deref())
-    {
-        return Err(failure(
-            UpdateErrorType::StateFailed,
-            "catalog update state violates its schema",
-        ));
-    }
-    Ok(state)
 }
 
 /// Returns an immediately usable catalog or performs the required synchronous acquisition.
@@ -378,21 +254,8 @@ pub fn prepare(
     })
 }
 
-/// Performs one due background update without changing the caller's already loaded catalog.
-///
-/// # Errors
-/// Returns a typed update error after recording retry state; an existing active catalog is kept.
-pub fn update_background(
-    store_root: &Path,
-    effective: &EffectiveUrl,
-    mut report: impl FnMut(UpdateEvent),
-) -> Result<(), UpdateError> {
-    let _update_lock = begin_update_operation(store_root)?;
-    run_update(store_root, effective, UpdateMode::Background, &mut report)
-}
-
 #[allow(clippy::too_many_lines)]
-fn run_update(
+pub(super) fn run_update(
     store_root: &Path,
     effective: &EffectiveUrl,
     mode: UpdateMode,
@@ -532,15 +395,13 @@ fn run_update(
                     last_modified: last_modified.clone(),
                     last_success_unix_seconds: success_time,
                 };
-                let state = CatalogUpdateState {
-                    schema: STATE_SCHEMA.to_owned(),
-                    source_url_sha256: Some(effective.fingerprint().to_owned()),
-                    active_catalog_sha256: Some(expected_digest.clone()),
-                    last_success_unix_seconds: Some(success_time),
+                let state = CatalogUpdateState::activated(
+                    effective.fingerprint().to_owned(),
+                    expected_digest.clone(),
+                    success_time,
                     etag,
                     last_modified,
-                    last_failure: None,
-                };
+                );
                 let digest = CatalogStore::new(store_root)
                     .install_verified_snapshot_from(
                         &extracted.catalog_path,
@@ -722,23 +583,6 @@ fn active_matches_url(active: &ActiveCatalog, effective: &EffectiveUrl) -> bool 
         .is_some_and(|origin| origin.source_url_sha256 == effective.fingerprint())
 }
 
-fn state_for_active(store_root: &Path, active: &ActiveCatalog) -> CatalogUpdateState {
-    let mut state = load_attempt_state(store_root).unwrap_or_default();
-    state.active_catalog_sha256 = Some(active.digest.clone());
-    if let Some(origin) = &active.origin {
-        state.source_url_sha256 = Some(origin.source_url_sha256.clone());
-        state.last_success_unix_seconds = Some(origin.last_success_unix_seconds);
-        state.etag.clone_from(&origin.etag);
-        state.last_modified.clone_from(&origin.last_modified);
-    } else {
-        state.source_url_sha256 = None;
-        state.last_success_unix_seconds = None;
-        state.etag = None;
-        state.last_modified = None;
-    }
-    state
-}
-
 fn response_header(
     response: &ureq::http::Response<ureq::Body>,
     name: &str,
@@ -852,21 +696,7 @@ fn is_loopback_host(host: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-fn update_due(state: &CatalogUpdateState, effective: &EffectiveUrl) -> bool {
-    if state.last_failure.as_ref().is_some_and(|failure| {
-        failure.source_url_sha256 == effective.fingerprint()
-            && state
-                .last_success_unix_seconds
-                .is_none_or(|success| failure.failed_unix_seconds >= success)
-    }) {
-        return true;
-    }
-    state
-        .last_success_unix_seconds
-        .is_none_or(|success| now_seconds().saturating_sub(success) >= UPDATE_INTERVAL.as_secs())
-}
-
-fn begin_update_operation(store_root: &Path) -> Result<File, UpdateError> {
+pub(super) fn begin_update_operation(store_root: &Path) -> Result<File, UpdateError> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -883,84 +713,6 @@ fn begin_update_operation(store_root: &Path) -> Result<File, UpdateError> {
     lock.lock().map_err(state_error)?;
     recover_client_staging(store_root)?;
     Ok(lock)
-}
-
-fn recover_client_staging(store_root: &Path) -> Result<(), UpdateError> {
-    let mut removed = false;
-    for entry in fs::read_dir(store_root).map_err(state_error)? {
-        let entry = entry.map_err(state_error)?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        let metadata = entry.path().symlink_metadata().map_err(state_error)?;
-        if name.starts_with(EXTRACTION_STAGING_PREFIX) {
-            if !metadata.is_dir() {
-                return Err(failure(
-                    UpdateErrorType::StateFailed,
-                    "catalog extraction staging entry is not a directory",
-                ));
-            }
-            fs::remove_dir_all(entry.path()).map_err(state_error)?;
-            removed = true;
-        } else if name.starts_with(DOWNLOAD_STAGING_PREFIX)
-            || name.starts_with(STATE_STAGING_PREFIX)
-        {
-            if !metadata.is_file() {
-                return Err(failure(
-                    UpdateErrorType::StateFailed,
-                    "catalog file staging entry is not a file",
-                ));
-            }
-            fs::remove_file(entry.path()).map_err(state_error)?;
-            removed = true;
-        }
-    }
-    if removed {
-        File::open(store_root)
-            .and_then(|directory| directory.sync_all())
-            .map_err(state_error)?;
-    }
-    Ok(())
-}
-
-fn write_state(store_root: &Path, state: &CatalogUpdateState) -> Result<(), UpdateError> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(store_root)
-        .map_err(state_error)?;
-    let bytes = serde_json::to_vec(state).map_err(|error| {
-        failure(
-            UpdateErrorType::StateFailed,
-            format!("catalog update state encoding failed: {error}"),
-        )
-    })?;
-    if bytes.len() as u64 > STATE_MAX_BYTES {
-        return Err(failure(
-            UpdateErrorType::StateFailed,
-            "catalog update state exceeds its size limit",
-        ));
-    }
-    let mut temporary = Builder::new()
-        .prefix(STATE_STAGING_PREFIX)
-        .tempfile_in(store_root)
-        .map_err(state_error)?;
-    temporary
-        .as_file_mut()
-        .write_all(&bytes)
-        .map_err(state_error)?;
-    temporary
-        .as_file_mut()
-        .write_all(b"\n")
-        .map_err(state_error)?;
-    temporary.as_file().sync_all().map_err(state_error)?;
-    temporary
-        .persist(store_root.join(STATE_FILE))
-        .map_err(|error| state_error(error.error))?;
-    File::open(store_root)
-        .and_then(|directory| directory.sync_all())
-        .map_err(state_error)
 }
 
 fn event(
@@ -992,7 +744,7 @@ const fn stage_for_error(error: UpdateErrorType) -> UpdateStage {
     }
 }
 
-fn failure(error_type: UpdateErrorType, detail: impl Into<String>) -> UpdateError {
+pub(super) fn failure(error_type: UpdateErrorType, detail: impl Into<String>) -> UpdateError {
     UpdateError {
         error_type,
         detail: detail.into(),
@@ -1000,7 +752,7 @@ fn failure(error_type: UpdateErrorType, detail: impl Into<String>) -> UpdateErro
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn state_error(error: io::Error) -> UpdateError {
+pub(super) fn state_error(error: io::Error) -> UpdateError {
     failure(
         UpdateErrorType::StateFailed,
         format!("catalog update state I/O failed: {error}"),
@@ -1015,24 +767,11 @@ fn transport_error(error: io::Error) -> UpdateError {
     )
 }
 
-fn now_seconds() -> u64 {
+pub(super) fn now_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-fn valid_validator(value: Option<&str>) -> bool {
-    value.is_none_or(|value| {
-        value.len() <= MAX_VALIDATOR_BYTES && !value.chars().any(char::is_control)
-    })
-}
-
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1047,6 +786,10 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+
+    use super::super::cache::{STATE_FILE, STATE_SCHEMA, STATE_STAGING_PREFIX};
+    use super::super::schedule::update_background;
     use crate::catalog::artifact::{ARTIFACT_SCHEMA, ArtifactManifest};
     use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
     use crate::catalog::{Chart, ChartKey, Difficulty, PlayType};
