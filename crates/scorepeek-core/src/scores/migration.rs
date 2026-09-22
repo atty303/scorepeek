@@ -3,8 +3,9 @@
 use rusqlite::{Transaction, params};
 use serde_json::Value;
 
+use super::error::Error;
+use super::event::{ResultData, STORED_RESULT_SCHEMA};
 use super::facts::PlaySide;
-use super::store::{Error, ResultData, STORED_RESULT_SCHEMA};
 
 pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
