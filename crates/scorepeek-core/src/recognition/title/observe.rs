@@ -1,81 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization as _;
 
-use crate::catalog::{
-    Catalog, ChartKey, Difficulty, DisplayVariant, DisplayVariantKind, InfinitasStatus, PlayType,
-    ScorepeekSongId, SourceEvidence,
-};
+use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
 
 pub const DIAGNOSTIC_TITLE_COMPARISON_KEY_ID: &str =
     "scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2";
 pub const DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE: f64 = 0.95;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ProvisionalTitleCandidate {
-    pub song_id: ScorepeekSongId,
-    pub variants: Vec<DisplayVariant>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ProvisionalTitleCandidateSet {
-    pub comparison_key_id: &'static str,
-    pub domain: ProvisionalTitleCandidateDomain,
-    pub source_evidence: Vec<SourceEvidence>,
-    pub candidates: Vec<ProvisionalTitleCandidate>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub struct ProvisionalTitleCandidateDomain {
-    pub play_type: PlayType,
-    pub difficulty: Difficulty,
-    pub infinitas_status: InfinitasStatus,
-}
-
-/// Exports the exact non-search title decision domain for private provisional labeling.
-///
-/// The caller must bind this value to the active catalog digest when it publishes an artifact.
-#[must_use]
-pub fn provisional_title_candidates(catalog: &Catalog) -> ProvisionalTitleCandidateSet {
-    let domain = ProvisionalTitleCandidateDomain {
-        play_type: PlayType::Single,
-        difficulty: Difficulty::Hyper,
-        infinitas_status: InfinitasStatus::ConfirmedPresent,
-    };
-    let chart_key = ChartKey {
-        play_type: domain.play_type,
-        difficulty: domain.difficulty,
-    };
-    let candidates = catalog
-        .songs()
-        .iter()
-        .filter(|(_, song)| {
-            song.infinitas_status() == domain.infinitas_status
-                && song.charts().contains_key(&chart_key)
-        })
-        .filter_map(|(song_id, song)| {
-            let variants: Vec<_> = song
-                .title_variants()
-                .iter()
-                .filter(|variant| variant.kind != DisplayVariantKind::SearchTerm)
-                .cloned()
-                .collect();
-            (!variants.is_empty()).then_some(ProvisionalTitleCandidate {
-                song_id: *song_id,
-                variants,
-            })
-        })
-        .collect();
-    ProvisionalTitleCandidateSet {
-        comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
-        domain,
-        source_evidence: catalog.source_evidence().values().cloned().collect(),
-        candidates,
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -202,73 +136,14 @@ pub(in crate::recognition) fn folded_comparison_key(value: &str) -> String {
         .collect()
 }
 
-pub(super) fn ctc_candidate_sequences<'a, T: Copy + Ord>(
-    candidates: impl IntoIterator<Item = (T, DisplayVariantKind, &'a str)>,
-) -> BTreeMap<T, BTreeSet<String>> {
-    let variants: Vec<_> = candidates
-        .into_iter()
-        .filter(|(_, kind, _)| *kind != DisplayVariantKind::SearchTerm)
-        .map(|(id, _, value)| {
-            (
-                id,
-                value.to_owned(),
-                exact_comparison_key(value),
-                folded_comparison_key(value),
-            )
-        })
-        .collect();
-    let mut folded_songs = BTreeMap::<String, BTreeSet<T>>::new();
-    for (id, _, _, folded) in &variants {
-        if !folded.is_empty() {
-            folded_songs.entry(folded.clone()).or_default().insert(*id);
-        }
-    }
-
-    let mut sequences = BTreeMap::<T, BTreeSet<String>>::new();
-    for (id, raw, exact, folded) in variants {
-        let song_sequences = sequences.entry(id).or_default();
-        song_sequences.insert(raw);
-        if !exact.is_empty() {
-            song_sequences.insert(exact);
-        }
-        if folded_songs
-            .get(&folded)
-            .is_some_and(|songs| songs.len() == 1)
-        {
-            song_sequences.insert(folded);
-        }
-    }
-    sequences
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::{
         CandidateMatch, DiagnosticTitleCandidate, DiagnosticTitleError,
-        DiagnosticTitleUnknownReason, ctc_candidate_sequences, diagnostic_title_candidate,
-        exact_comparison_key, folded_comparison_key, provisional_title_candidates,
-        unique_candidate,
+        DiagnosticTitleUnknownReason, diagnostic_title_candidate, exact_comparison_key,
+        folded_comparison_key, unique_candidate,
     };
-    use crate::catalog::{Catalog, Difficulty, DisplayVariantKind, InfinitasStatus, PlayType};
-
-    #[test]
-    fn provisional_candidate_domain_is_explicit_even_when_empty() {
-        assert_eq!(unicode_normalization::UNICODE_VERSION, (17, 0, 0));
-        let candidates = provisional_title_candidates(&Catalog::default());
-        assert_eq!(
-            candidates.comparison_key_id,
-            "scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2"
-        );
-        assert_eq!(candidates.domain.play_type, PlayType::Single);
-        assert_eq!(candidates.domain.difficulty, Difficulty::Hyper);
-        assert_eq!(
-            candidates.domain.infinitas_status,
-            InfinitasStatus::ConfirmedPresent
-        );
-        assert!(candidates.candidates.is_empty());
-    }
+    use crate::catalog::{Catalog, DisplayVariantKind};
 
     #[test]
     fn comparison_keys_preserve_exact_tier_and_bound_ascii_width_fallback() {
@@ -298,26 +173,6 @@ mod tests {
             folded_comparison_key("Absolute Evil")
         );
         assert_ne!(folded_comparison_key("A-B"), folded_comparison_key("AB"));
-    }
-
-    #[test]
-    fn ctc_sequences_add_only_song_unique_comparison_aliases() {
-        let sequences = ctc_candidate_sequences([
-            (1, DisplayVariantKind::InGameDisplay, "ＰＡＳＴＥＬＩＳＭ"),
-            (2, DisplayVariantKind::InGameDisplay, "A B"),
-            (3, DisplayVariantKind::InGameDisplay, "ＡＢ"),
-            (4, DisplayVariantKind::SearchTerm, "PASTELISM"),
-        ]);
-        assert_eq!(
-            sequences[&1],
-            BTreeSet::from(["PASTELISM".to_owned(), "ＰＡＳＴＥＬＩＳＭ".to_owned(),])
-        );
-        assert_eq!(
-            sequences[&2],
-            BTreeSet::from(["A B".to_owned(), "AB".to_owned()])
-        );
-        assert_eq!(sequences[&3], BTreeSet::from(["ＡＢ".to_owned()]));
-        assert!(!sequences.contains_key(&4));
     }
 
     #[test]

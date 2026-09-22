@@ -5,9 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 autobins = false
+autoexamples = false
 
 [dependencies]
 scorepeek-core = { path = "../scorepeek-core" }
+scorepeek-resources = { path = "../scorepeek-resources" }
+scorepeek-scores = { path = "../scorepeek-scores" }
 scorepeek-frontend-api = { path = "../scorepeek-frontend-api" }
 scorepeek-overlay-wayland = { path = "../scorepeek-overlay-wayland" }
 scorepeek-overlay-web-host = { path = "../scorepeek-overlay-web-host" }
@@ -37,6 +40,3 @@ workspace = true
 
 [build-dependencies]
 zip.workspace = true
-
-[dev-dependencies]
-scorepeek-core = { path = "../scorepeek-core", features = ["reducer-test-support"] }

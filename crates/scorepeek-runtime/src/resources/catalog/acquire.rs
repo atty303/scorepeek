@@ -13,8 +13,8 @@ use sha2::{Digest as _, Sha256};
 use tempfile::Builder;
 use url::Url;
 
-use scorepeek_core::catalog::artifact;
-use scorepeek_core::catalog::{ActiveCatalog, CatalogOrigin, CatalogStore};
+use scorepeek_resources::artifact;
+use scorepeek_resources::{ActiveCatalog, CatalogOrigin, CatalogStore};
 
 use super::cache::{
     CatalogUpdateState, DOWNLOAD_STAGING_PREFIX, EXTRACTION_STAGING_PREFIX, UpdateFailure,
@@ -22,7 +22,7 @@ use super::cache::{
 };
 use super::schedule::{UpdateMode, update_due};
 
-pub const DEFAULT_CATALOG_URL: &str = "https://atty303.github.io/scorepeek/catalog/v1/catalog.zip";
+pub const DEFAULT_CATALOG_URL: &str = include_str!("../../../../../registration/catalog-url.txt");
 const CONFIG_MAX_BYTES: u64 = 64 * 1024;
 const UPDATE_LOCK_FILE: &str = "catalog-client-update.lock";
 const MAX_VALIDATOR_BYTES: usize = 1024;
@@ -778,9 +778,9 @@ mod tests {
 
     use super::super::cache::{STATE_FILE, STATE_SCHEMA, STATE_STAGING_PREFIX};
     use super::super::schedule::update_background;
-    use scorepeek_core::catalog::artifact::{ARTIFACT_SCHEMA, ArtifactManifest};
     use scorepeek_core::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
     use scorepeek_core::catalog::{Chart, ChartKey, Difficulty, PlayType};
+    use scorepeek_resources::artifact::{ARTIFACT_SCHEMA, ArtifactManifest};
     use std::net::TcpListener;
     use std::thread;
 

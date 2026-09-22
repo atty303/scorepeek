@@ -11,7 +11,6 @@ pub mod overlay;
 pub mod platform;
 mod process_role;
 pub mod recording;
-pub mod replay;
 pub mod resources;
 pub mod scores;
 #[allow(

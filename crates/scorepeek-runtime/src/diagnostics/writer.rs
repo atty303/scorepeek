@@ -5,18 +5,18 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
-use scorepeek_core::diagnostics::{
+use crate::diagnostics::contract::{
     ARTIFACT_SCHEMA, CAPTURE_MANIFEST_SCHEMA, CAPTURE_START_SCHEMA, DEFAULT_AGGREGATE_BYTES,
     DiagnosticBinding, DiagnosticCompleteness, DiagnosticErrorType, DiagnosticFact,
     DiagnosticPolicy, DiagnosticResource, DiagnosticRetention, DiagnosticRunDescriptor,
     DiagnosticRunStatus, FACT_SCHEMA, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
 };
 #[cfg(test)]
-use scorepeek_core::diagnostics::{
+use crate::diagnostics::contract::{
     DiagnosticContextChange, DiagnosticDetail, DiagnosticOperation, DiagnosticOperationStatus,
     DiagnosticScreen,
 };
+use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 

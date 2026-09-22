@@ -8,7 +8,7 @@ use std::path::Path;
 pub fn verify(
     artifact: &Path,
     output: &Path,
-) -> Result<scorepeek_core::catalog::artifact::ArtifactManifest, String> {
-    scorepeek_core::catalog::artifact::verify_publisher(artifact, output)
+) -> Result<scorepeek_resources::artifact::ArtifactManifest, String> {
+    scorepeek_resources::artifact::verify_publisher(artifact, output)
         .map_err(|error| error.to_string())
 }

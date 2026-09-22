@@ -1,9 +1,6 @@
 //! Registered text-model bundle manifests, identities, shapes, and file validation.
 
 use std::fmt::Write as _;
-use std::fs::File;
-use std::io::Read as _;
-use std::path::Path;
 
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
@@ -15,7 +12,6 @@ const INPUT_HEIGHT: usize = 48;
 
 #[derive(Debug)]
 pub enum ManifestError {
-    Io(std::io::Error),
     Json(serde_json::Error),
     InvalidArtifact,
 }
@@ -23,7 +19,6 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "ONNX parity I/O failed: {error}"),
             Self::Json(error) => write!(formatter, "ONNX parity JSON failed: {error}"),
             Self::InvalidArtifact => formatter.write_str("ONNX parity artifact is invalid"),
         }
@@ -31,12 +26,6 @@ impl std::fmt::Display for ManifestError {
 }
 
 impl std::error::Error for ManifestError {}
-
-impl From<std::io::Error> for ManifestError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error)
-    }
-}
 
 impl From<serde_json::Error> for ManifestError {
     fn from(error: serde_json::Error) -> Self {
@@ -111,9 +100,11 @@ pub fn registered_live_model_files() -> Result<Vec<RegisteredLiveModelFile>, Man
 ///
 /// # Errors
 /// Returns an error for missing, changed, non-regular, or malformed bundle files.
-pub fn verify_registered_live_model_bundle(bundle: &Path) -> Result<(), ManifestError> {
+pub fn verify_registered_live_model_bundle_bytes(
+    files: &[(&str, &[u8])],
+) -> Result<(), ManifestError> {
     DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?
-        .verified_model_bytes(bundle)
+        .verified_model_bytes(files)
         .map(|_| ())
 }
 
@@ -312,10 +303,6 @@ impl DynamicBundleManifest {
         Ok(manifest)
     }
 
-    pub(crate) fn model_id(&self) -> &str {
-        &self.model_id
-    }
-
     pub(crate) const fn output_classes(&self) -> usize {
         self.native_contract.output_classes
     }
@@ -324,23 +311,22 @@ impl DynamicBundleManifest {
         self.files.iter().find(|file| file.filename == filename)
     }
 
-    fn verified_file(&self, bundle: &Path, filename: &str) -> Result<Vec<u8>, ManifestError> {
-        let file = self
-            .files
-            .iter()
-            .find(|file| file.filename == filename)
-            .ok_or(ManifestError::InvalidArtifact)?;
-        let bytes = read_exact_regular(&bundle.join(filename), file.bytes)?;
-        if sha256(&bytes) != file.sha256 {
+    pub(crate) fn verified_model_bytes<'a>(
+        &self,
+        files: &'a [(&str, &[u8])],
+    ) -> Result<&'a [u8], ManifestError> {
+        if files.len() != self.files.len() {
             return Err(ManifestError::InvalidArtifact);
         }
-        Ok(bytes)
-    }
-
-    pub(crate) fn verified_model_bytes(&self, bundle: &Path) -> Result<Vec<u8>, ManifestError> {
         let mut model = None;
         for file in &self.files {
-            let bytes = self.verified_file(bundle, &file.filename)?;
+            let bytes = files
+                .iter()
+                .find_map(|(name, bytes)| (*name == file.filename).then_some(*bytes))
+                .ok_or(ManifestError::InvalidArtifact)?;
+            if bytes.len() as u64 != file.bytes || sha256(bytes) != file.sha256 {
+                return Err(ManifestError::InvalidArtifact);
+            }
             if file.filename == "inference.onnx" {
                 model = Some(bytes);
             }
@@ -353,20 +339,6 @@ impl DynamicBundleFile {
     pub(crate) fn sha256(&self) -> &str {
         &self.sha256
     }
-}
-
-fn read_exact_regular(path: &Path, exact: u64) -> Result<Vec<u8>, ManifestError> {
-    let metadata = path.metadata()?;
-    if !metadata.is_file() || metadata.len() != exact {
-        return Err(ManifestError::InvalidArtifact);
-    }
-    let capacity = usize::try_from(exact).map_err(|_| ManifestError::InvalidArtifact)?;
-    let mut bytes = Vec::with_capacity(capacity);
-    File::open(path)?.take(exact + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != exact {
-        return Err(ManifestError::InvalidArtifact);
-    }
-    Ok(bytes)
 }
 
 fn sha256(bytes: &[u8]) -> String {

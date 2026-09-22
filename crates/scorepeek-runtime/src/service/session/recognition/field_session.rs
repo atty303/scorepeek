@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus};
+use crate::diagnostics::contract::{
+    DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
+};
 use scorepeek_core::recognition::result::numeric::RegisteredNumericRuntime;
 use scorepeek_core::recognition::screen::ScreenFieldObservationError;
 
@@ -14,8 +16,8 @@ use super::field_observer::{
 };
 use super::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
-    SharedRegisteredScreenFieldResources,
 };
+use super::text_observer_pool::{RecognitionExecutionMode, recommended_text_worker_count};
 use super::{
     FieldInputPolicy, PreparedRecognitionFrame, RecognitionFrameResult, RecognitionObservation,
     RecognitionSession, RecognitionSessionError,
@@ -23,7 +25,6 @@ use super::{
 use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
-use scorepeek_core::model::session::{RecognitionExecutionMode, recommended_text_worker_count};
 
 #[derive(Debug)]
 pub enum FieldObservationStartError<E> {
@@ -104,7 +105,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        summary: scorepeek_core::diagnostics::RecognitionSamplingSummary,
+        summary: crate::diagnostics::contract::RecognitionSamplingSummary,
     ) {
         self.recognition
             .record_sampling_summary(sequence, monotonic_ms, summary);
@@ -191,34 +192,6 @@ impl<O: FieldObserver> FieldObservationSession<O> {
                     });
                 }
             };
-        Ok(Self {
-            recognition,
-            field_observer,
-            owner: Arc::new(()),
-            outstanding: Vec::new(),
-        })
-    }
-
-    fn start_unmanaged_with_capacity<E>(
-        root: &Path,
-        descriptor: DiagnosticRunDescriptor,
-        policy: DiagnosticPolicy,
-        capacity: usize,
-        loader: impl FnOnce(&super::field_observer::FieldObserverSessionBinding) -> Result<O, E>,
-    ) -> Result<Self, FieldObservationStartError<E>> {
-        let field_observer =
-            FieldObserverWorker::start_unmanaged_with_capacity(&descriptor, loader, capacity)
-                .map_err(FieldObservationStartError::FieldObserver)?;
-        let recognition = match RecognitionSession::start(root, descriptor, policy) {
-            Ok(recognition) => recognition,
-            Err(error) => {
-                return Err(FieldObservationStartError::Recognition {
-                    error,
-                    field_observer_finish: field_observer
-                        .finish(super::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT),
-                });
-            }
-        };
         Ok(Self {
             recognition,
             field_observer,
@@ -373,27 +346,6 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         }
     }
 
-    /// Offline failure teardown retains the session until its admitted field worker has exited.
-    #[must_use]
-    pub fn finish_offline(
-        mut self,
-        status: DiagnosticRunStatus,
-        monotonic_end_ms: u64,
-    ) -> FieldObservationFinishOutcome {
-        let field_observer = self.field_observer.finish_joining();
-        for (_, sequence) in self.outstanding {
-            self.recognition
-                .record_abandoned_field_observation(sequence);
-        }
-        self.recognition
-            .record_field_observer_finish(field_observer);
-        let diagnostic = self.recognition.finish(status, monotonic_end_ms);
-        FieldObservationFinishOutcome {
-            field_observer,
-            diagnostic,
-        }
-    }
-
     /// Finishes after capture teardown while extending the shared monotonic run bound through the
     /// field-worker shutdown performed by this call.
     #[must_use]
@@ -526,24 +478,6 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
             },
         )
     }
-
-    /// Starts one offline session using the corpus-wide registered text pool.
-    ///
-    /// # Errors
-    /// Returns a typed descriptor, numeric runtime, shared binding, worker, or recognition error.
-    pub fn start_registered_shared(
-        root: &Path,
-        descriptor: DiagnosticRunDescriptor,
-        policy: DiagnosticPolicy,
-        shared: Arc<SharedRegisteredScreenFieldResources>,
-    ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
-        let capacity = shared.text_workers().saturating_mul(2);
-        Self::start_unmanaged_with_capacity(root, descriptor, policy, capacity, move |binding| {
-            let numeric_runtime = RegisteredNumericRuntime::load_embedded()
-                .map_err(RegisteredScreenFieldObserverLoadError::NumericModel)?;
-            shared.observer(binding, numeric_runtime)
-        })
-    }
 }
 
 impl<O: FieldObserver> FieldObservationSession<O> {
@@ -591,7 +525,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
     pub fn record_frame_processing_timing(
         &mut self,
         mut timing: super::FrameProcessingTiming,
-        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        field_status: crate::diagnostics::contract::FrameFieldStatus,
         field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         timing.finish_wall();
@@ -674,11 +608,11 @@ mod tests {
     use scorepeek_core::recognition::title::DynamicTextObservation;
 
     use super::*;
+    use crate::diagnostics::contract::{
+        DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
+    };
     use crate::service::session::recognition::field_observer::{
         FieldObserverFinishStatus, FieldObserverInput,
-    };
-    use scorepeek_core::diagnostics::{
-        DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
     };
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {

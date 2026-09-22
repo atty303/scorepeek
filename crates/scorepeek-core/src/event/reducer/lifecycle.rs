@@ -11,6 +11,12 @@ impl RunEventReducer {
         event: &RunEvent,
     ) -> Result<(), RunEventReductionError> {
         match &event.kind {
+            RunEventKind::CanonicalSessionStarted { session_id } => {
+                self.reset_session();
+                self.publish_one(event)?;
+                self.publish_result_state(session_id.clone(), 0, 0, ResultState::Inactive)?;
+                Ok(())
+            }
             RunEventKind::SessionStarted {
                 session_id,
                 capture_generation,
@@ -42,8 +48,12 @@ impl RunEventReducer {
             } => {
                 self.publish_one(event)?;
                 if screen == "result"
-                    && let (Some(episode_id), Some(side)) =
-                        (*semantic_episode_id, result_presence.panel_side.known())
+                    && let (Some(episode_id), Some(side)) = (
+                        *semantic_episode_id,
+                        result_presence
+                            .as_ref()
+                            .and_then(|evidence| evidence.panel_side.known()),
+                    )
                 {
                     self.observe_result_panel_side(
                         session_id.as_ref(),
@@ -64,7 +74,8 @@ impl RunEventReducer {
                 monotonic_end_ms,
                 ..
             } => self.publish_screen_tick(*sequence, *monotonic_end_ms),
-            RunEventKind::SessionFinished { .. } => self.publish_session_finished(event),
+            RunEventKind::SessionFinished { .. }
+            | RunEventKind::CanonicalSessionFinished { .. } => self.publish_session_finished(event),
             RunEventKind::WatcherStarted { .. }
             | RunEventKind::GameVersionChanged { .. }
             | RunEventKind::RecordingHealthChanged { .. }
@@ -600,13 +611,14 @@ impl RunEventReducer {
         &mut self,
         event: &RunEvent,
     ) -> Result<(), RunEventReductionError> {
-        let RunEventKind::SessionFinished {
-            session_id,
-            capture_generation,
-            ..
-        } = &event.kind
-        else {
-            unreachable!("session-finished dispatcher preserves event kind");
+        let (session_id, capture_generation) = match &event.kind {
+            RunEventKind::SessionFinished {
+                session_id,
+                capture_generation,
+                ..
+            } => (session_id, *capture_generation),
+            RunEventKind::CanonicalSessionFinished { session_id } => (session_id, 0),
+            _ => unreachable!("session-finished dispatcher preserves event kind"),
         };
         if self.music_selection_episode_active {
             let source_sequence = self
@@ -615,7 +627,7 @@ impl RunEventReducer {
                 .unwrap_or_default();
             self.publish_music_selection(
                 Some(session_id),
-                Some(*capture_generation),
+                Some(capture_generation),
                 source_sequence,
                 MusicSelectionState::Unresolved {
                     reason: MusicSelectionUnresolvedReason::EpisodeEnded,
@@ -629,7 +641,7 @@ impl RunEventReducer {
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(
                 Some(session_id.clone()),
-                Some(*capture_generation),
+                Some(capture_generation),
                 None,
                 state,
             )?;

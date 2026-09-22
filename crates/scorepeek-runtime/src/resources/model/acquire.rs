@@ -6,10 +6,9 @@ use std::time::Duration;
 
 use sha2::{Digest as _, Sha256};
 
-use scorepeek_core::model::manifest::{
-    RegisteredLiveModelFile, registered_live_model_files, verify_registered_live_model_bundle,
-};
+use scorepeek_core::model::manifest::{RegisteredLiveModelFile, registered_live_model_files};
 use scorepeek_core::model::registry::LIVE_MODEL_BUNDLE_MANIFEST_SHA256;
+use scorepeek_resources::model::verify_registered_live_model_bundle;
 
 use super::cache::{
     ModelCacheError, ModelCacheEvent, default_model_store, ensure_model_with,

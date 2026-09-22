@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 
+use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticResource};
 use scorepeek::capture::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureGeneration,
@@ -8,9 +9,8 @@ use scorepeek::capture::{
     GamescopeProfileBindingAuthoringInput, RationalCoordinate, UncalibratedMemoryType,
     UncalibratedVideoContract,
 };
-use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
 use scorepeek_core::frame::CanonicalLayout;
-use scorepeek_core::recognition::title::{
+use scorepeek_resources::recognition::{
     RegisteredResourceLoadError, RegisteredResourceLoadErrorType,
 };
 

@@ -5,120 +5,34 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 autobins = false
-
-[[bin]]
-name = "corpus_replay"
-path = "src/bin/corpus_replay.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "corpus_ingest"
-path = "src/bin/corpus_ingest.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "corpus_evaluate"
-path = "src/bin/corpus_evaluate.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_list_observation_inspect"
-path = "src/bin/music_list_observation_inspect.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_list_observation_verify"
-path = "src/bin/music_list_observation_verify.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_list_motion_measure"
-path = "src/bin/music_list_motion_measure.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_list_motion_verify"
-path = "src/bin/music_list_motion_verify.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_list_motion_review_plan"
-path = "src/bin/music_list_motion_review_plan.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_list_motion_review_apply"
-path = "src/bin/music_list_motion_review_apply.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_select_motion_review_plan"
-path = "src/bin/music_select_motion_review_plan.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_select_motion_review_apply"
-path = "src/bin/music_select_motion_review_apply.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_select_dwell_evaluate"
-path = "src/bin/music_select_dwell_evaluate.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "music_select_correctness_evaluate"
-path = "src/bin/music_select_correctness_evaluate.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "synthetic_render"
-path = "src/bin/synthetic_render.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "diagnostic_verify"
-path = "src/bin/diagnostic_verify.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "review_show"
-path = "src/bin/review_show.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "review_apply"
-path = "src/bin/review_apply.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "numeric_dataset_author"
-path = "src/bin/numeric_dataset_author.rs"
-required-features = ["runtime-replay"]
-
-[[bin]]
-name = "numeric_sentinel_author"
-path = "src/bin/numeric_sentinel_author.rs"
-required-features = ["runtime-replay"]
-
+autoexamples = false
 
 [features]
 default = []
-runtime-replay = ["dep:scorepeek-runtime"]
+operations = []
+
+[[bin]]
+name = "corpus_operations"
+path = "src/bin/corpus_operations.rs"
+required-features = ["operations"]
+test = false
+bench = false
+
+[[test]]
+name = "full_replay"
+path = "tests/full_replay.rs"
+test = false
+harness = false
 
 [dependencies]
 clap.workspace = true
-futures-util.workspace = true
-object_store.workspace = true
-qoi.workspace = true
 scorepeek-core = { path = "../scorepeek-core" }
-scorepeek-runtime = { path = "../scorepeek-runtime", optional = true }
+scorepeek-resources = { path = "../scorepeek-resources" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
-url.workspace = true
+ureq.workspace = true
 
 [lints]
 workspace = true

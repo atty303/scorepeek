@@ -22,6 +22,7 @@ scorepeek-runtime = { path = "../scorepeek-runtime" }
 
 [dev-dependencies]
 scorepeek-overlay-wayland = { path = "../scorepeek-overlay-wayland" }
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

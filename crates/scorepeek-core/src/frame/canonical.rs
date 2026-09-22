@@ -17,27 +17,6 @@ pub struct CanonicalFrame {
 }
 
 impl CanonicalFrame {
-    pub(crate) fn from_validated_parts(
-        pixels: Box<[u8]>,
-        source_pts_ms: i64,
-        decode_index: u64,
-        capture_profile_id: String,
-        normalizer_artifact_sha256: String,
-        frame_extraction_sha256: String,
-    ) -> Result<Self, FrameError> {
-        if pixels.len() != CANONICAL_BYTES {
-            return Err(FrameError::InvalidCanonicalFrame);
-        }
-        Ok(Self {
-            pixels,
-            source_pts_ms,
-            decode_index,
-            capture_profile_id,
-            normalizer_artifact_sha256,
-            frame_extraction_sha256,
-        })
-    }
-
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels

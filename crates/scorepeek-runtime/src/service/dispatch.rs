@@ -3,9 +3,7 @@ use scorepeek_frontend_api::{FrontendCommand, FrontendError, FrontendEvent, Fron
 #[path = "dispatch/application.rs"]
 mod application;
 
-pub(crate) use application::{
-    development_operation_main, dispatch_frontend, exit_for_result, frontend_event,
-};
+pub(crate) use application::{dispatch_frontend, exit_for_result, frontend_event};
 
 pub(super) fn dispatch(
     command: FrontendCommand,

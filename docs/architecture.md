@@ -37,13 +37,17 @@ flowchart LR
 The installed `scorepeek` executable is provided by the binary-only `scorepeek-cli` package. It
 classifies CLI requests into the transport-neutral `scorepeek-frontend-api` protocol and dispatches
 them to the in-process Linux `scorepeek-runtime` service. Portable catalog, recognition, temporal,
-event, and score authority lives in `scorepeek-core`. The CLI owns terminal lifecycle and Ratatui
+and event authority lives in `scorepeek-core`; SQLite score persistence and queries live in
+`scorepeek-scores`. The CLI owns terminal lifecycle and Ratatui
 rendering; the runtime publishes only typed frontend snapshots and does not depend on a TUI toolkit.
 
 The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX
-embedded in the binary, and one explicitly selected capture backend before admitting recognition work. Python is restricted
-to reproducible offline OCR preparation, training, and export tooling.
+embedded in the binary, and one explicitly selected capture backend before admitting recognition
+work. The live text observer worker pool and parallel catalog scoring scheduler belong to
+runtime; core supplies OCR field, pure catalog scoring, and domain projection types. Corpus
+replay uses sequential catalog scoring with the same core scoring rules. Python is restricted to
+reproducible offline OCR preparation, training, and export tooling.
 
 Catalog generation is not part of the distributed CLI. The separate
 `scorepeek-catalog-publisher` workspace crate owns live-source acquisition,
@@ -58,7 +62,8 @@ and starts a background update when the last successful check is at least 24
 hours old or the previous check failed. A completed background activation is
 used only by the next invocation. `SCOREPEEK_CATALOG_URL` overrides
 `catalog.url` in `$XDG_CONFIG_HOME/scorepeek/config.toml`, which overrides the
-built-in `/catalog/v1/catalog.zip` Pages URL. HTTPS, loopback HTTP for tests,
+built-in `/catalog/v1/catalog.zip` Pages URL registered in
+`registration/catalog-url.txt`. HTTPS, loopback HTTP for tests,
 and `file://` are accepted. Changing the effective URL requires successful
 activation from the new URL and never falls back to the previous URL's active
 catalog.
@@ -71,7 +76,7 @@ Python and uv tools and the offline tasks. From the repository root, run
 runs. Other Python tasks use the same `//tools/ocr:` prefix, such as
 `mise run //tools/ocr:title-model:prepare`. Tasks run in `tools/ocr/`, so relative
 CLI paths are resolved there. Use absolute paths for private inputs and outputs.
-The root `mise run test` and CI include the offline tests. Shared model manifests
+The root `mise run test` and CI exclude the offline OCR tests. Shared model manifests
 remain in `models/manifests/`, and Rust recognition and verification tasks remain
 in the root configuration.
 
@@ -119,7 +124,8 @@ For every admitted generation, runtime creates a canonical capture-profile
 document from backend, selector, and actual source contract, plus a separate
 normalizer document from source dimensions, explicit per-edge crop, the fixed
 half-pixel linear sampler, and the canonical contract. Both documents and
-digests enter structured diagnostics and optional recording manifests. Public
+digests enter structured diagnostics. Canonical recording manifests carry only
+the canonical input and its integrity, completion, and game-version facts. Public
 events retain digests only. Invalid crop, format, memory, ambiguity, or source
 contract fails closed; no backend or source fallback exists.
 
@@ -171,7 +177,7 @@ history. Its nullable session version becomes non-null only after identification
 to the SQLite score history. Reconnection restores current state, not every missed event. The wire
 contract and RESULT lifecycle are defined in [Event API v4](event-api.md).
 
-The in-process `scorepeek-core::scores` consumer persists provisional, retracted,
+The in-process `scorepeek-scores` consumer persists provisional, retracted,
 and confirmed RESULT transitions plus current MUSIC SELECT supplements in
 SQLite. Persistence is independent of socket clients and optional recording.
 Overlays query committed SQLite state for score/history presentation; they do
@@ -202,8 +208,8 @@ already-retained skin tree. OBS expresses the same
 active/inactive meaning by including or removing the canvas iframe from composition. Skin runtime
 schedules drive Wasm/DOM updates independently of either backend's presentation mechanism.
 
-Browser integration, fake Wayland, and the checked-in nested compositor
-scenario are the routine overlay completion gates. Real OBS or a live
+Browser integration and fake Wayland are the routine overlay completion gates.
+The checked-in nested compositor scenario is an opt-in host-dependent gate. Real OBS or a live
 compositor is used when an adapter-specific failure needs investigation, not as
 a standing gate for every editor or skin change. The reproducible procedures
 are in [overlay visual debugging](overlay-visual-debugging.md).
@@ -213,17 +219,19 @@ are in [overlay visual debugging](overlay-visual-debugging.md).
 Every `run` writes one invocation-level structured diagnostic stream without changing recognition
 or event authority. `--record` adds selectively retained canonical video but always elides TITLE
 pixels; `--record-all` retains every canonical 10 Hz due tick, including TITLE. Both modes publish a
-v4 canonical manifest with the final session version state and neither changes recognition or event authority. The separate live socket, 128 MiB ring,
+v5 canonical manifest with the final session version state and neither changes recognition or event authority. The separate live socket, 128 MiB ring,
 disk degradation, and ten-generation policy are defined in [runtime diagnostics](diagnostics.md).
 
-The private corpus imports complete operator-reviewed sessions, retains
-metadata locally, optionally stores canonical Matroska segments in a configured
-S3-compatible object store, and replays through the production recognition and
-temporal path. Real frames, complete labels, generated catalogs, text-model bytes,
+The private corpus imports a complete canonical recording directory read-only,
+copies its verified segments into a local generation, and activates a regression
+session only after a separate review apply operation. Its replay reads canonical
+input, supplies canonical session start and finish boundaries plus the recorded
+game-version state, and uses the core coordinator without a runtime crate or
+diagnostic stream. Result and Music Select field replay selects the current
+source-registered catalog and OCR model into an isolated temporary store.
+Real frames, complete labels, generated catalogs, text-model bytes,
 player data, and credentials stay outside Git. The registered v3 numeric ONNX is the explicitly
-approved repository artifact. See
-[private corpus](private-corpus.md) and
-[recording simulation](recording-simulation.md).
+approved repository artifact. See [private corpus](private-corpus.md).
 
 ## Ownership
 
@@ -231,16 +239,16 @@ approved repository artifact. See
 | --- | --- |
 | External source bytes and catalog generation | `scorepeek-catalog-publisher` in GitHub Actions |
 | Pages packaging, validation, and no-op selection | `scorepeek-catalog-publisher` and `.github/workflows/catalog-pages.yml` |
-| Client ZIP verification, content store, and activation | `scorepeek-core::catalog` plus `scorepeek-runtime::resources::catalog` |
+| Client ZIP verification, content store, and activation | `scorepeek-resources` plus `scorepeek-runtime::resources::catalog` |
 | PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
 | Runtime source identity, edge crop, and canonical normalization | Versioned capture profile and normalizer documents |
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek-core/src` |
 | OCR preprocessing, models, and thresholds | Registered text bundle and embedded numeric model artifacts |
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
 | Public live compatibility | Event API v4 typed projection |
-| Durable local score state | `scorepeek-core::scores` SQLite consumer |
+| Durable local score state | `scorepeek-scores` SQLite consumer |
 | Canvas/editor state and skin execution | Overlay crates and skin SDK |
-| Private replay evidence | Diagnostic store and external private corpus |
+| Private replay evidence | Canonical recording and external private corpus |
 
 Git history owns superseded designs, experiments, rejected alternatives, and
 point-in-time verification results. They are not additional runtime or design

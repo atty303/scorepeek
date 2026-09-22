@@ -2,7 +2,7 @@
 
 use super::absolute_path;
 use clap::Args;
-use scorepeek_core::catalog::artifact;
+use scorepeek_resources::artifact;
 use std::path::PathBuf;
 
 #[derive(Args)]

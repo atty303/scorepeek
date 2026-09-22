@@ -304,7 +304,7 @@ impl HypothesisAccumulator {
         });
     }
 
-    #[cfg(feature = "reducer-test-support")]
+    #[cfg(test)]
     pub fn observe(
         &mut self,
         monotonic_ms: u64,

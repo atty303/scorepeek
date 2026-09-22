@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use scorepeek_core::diagnostics::{
+use crate::diagnostics::contract::{
     DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
 use scorepeek_core::frame::CanonicalLayout;
@@ -22,9 +22,12 @@ use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 
+mod candidate_execution;
 pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
+mod text_observer_pool;
+pub(crate) use text_observer_pool::RecognitionExecutionMode;
 
 fn duration_us(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
@@ -532,7 +535,7 @@ impl RecognitionSession {
     pub fn record_frame_processing_timing(
         &mut self,
         timing: FrameProcessingTiming,
-        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        field_status: crate::diagnostics::contract::FrameFieldStatus,
         field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         self.bridge
@@ -602,7 +605,7 @@ impl RecognitionSession {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        summary: scorepeek_core::diagnostics::RecognitionSamplingSummary,
+        summary: crate::diagnostics::contract::RecognitionSamplingSummary,
     ) {
         let _ = self
             .bridge
@@ -759,7 +762,7 @@ mod tests {
     use scorepeek_core::recognition::screen::ScreenClass;
 
     use super::*;
-    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
+    use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticResource};
 
     #[test]
     fn title_confirmation_starts_at_the_tenth_consecutive_candidate() {
@@ -1021,7 +1024,7 @@ mod tests {
             session
                 .finish(DiagnosticRunStatus::Success, 16)
                 .completeness,
-            Some(scorepeek_core::diagnostics::DiagnosticCompleteness::Complete)
+            Some(crate::diagnostics::contract::DiagnosticCompleteness::Complete)
         );
     }
 

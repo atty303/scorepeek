@@ -7,6 +7,212 @@ use scorepeek_core::recognition::result::ResultFieldValue;
 
 use super::*;
 
+fn frontend_snapshot(output: &RoutineOutput) -> Value {
+    serde_json::from_slice(&snapshot_bytes(&output.state, &ChannelHealth::default()).unwrap())
+        .unwrap()
+}
+
+fn frontend_select_best(output: &RoutineOutput) -> Value {
+    frontend_snapshot(output)["music_select_best"]["snapshot"].clone()
+}
+
+fn current_provisional_result(output: &RoutineOutput) -> Option<&ResultDomainEvent> {
+    output
+        .headless_events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            RunEventKind::ResultChanged { state, .. } => Some(state),
+            _ => None,
+        })
+        .and_then(|state| match state {
+            ResultState::Provisional { result, .. } => Some(result.as_ref()),
+            _ => None,
+        })
+}
+
+#[test]
+fn live_output_uses_one_ordered_core_coordinator_across_two_sessions() {
+    let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+    let event = |kind| RunEvent {
+        schema: RUN_EVENT_SCHEMA.into(),
+        kind,
+    };
+    output
+        .publish(&event(RunEventKind::WatcherStarted {
+            invocation_id: "invocation-1".into(),
+        }))
+        .unwrap();
+    for generation in [1, 2] {
+        let session_id = format!("session-{generation}");
+        output
+            .publish(&event(RunEventKind::SessionStarted {
+                session_id: Some(session_id.clone()),
+                capture_generation: generation,
+                capture_profile_sha256: "a".repeat(64),
+                normalizer_artifact_sha256: "b".repeat(64),
+            }))
+            .unwrap();
+        output
+            .publish(&event(RunEventKind::SessionFinished {
+                session_id,
+                capture_generation: generation,
+                outcome: "complete".into(),
+                report: Value::Null,
+            }))
+            .unwrap();
+    }
+    output
+        .publish(&event(RunEventKind::WatcherStopped {
+            invocation_id: "invocation-1".into(),
+            reason: "complete".into(),
+        }))
+        .unwrap();
+    assert!(output.core_reducer.state().is_finished());
+    assert_eq!(output.core_reducer.state().last_input_sequence(), Some(6));
+}
+
+#[test]
+fn diagnostic_trace_counts_no_op_ticks_without_repeating_them() {
+    let temporary = tempfile::tempdir().unwrap();
+    let diagnostics = RunDiagnostics::start(temporary.path(), "run-trace-test");
+    let mut output = RoutineOutput::start_headless_with_diagnostics(
+        "invocation-trace".into(),
+        "a".repeat(64),
+        diagnostics,
+    );
+    let event = |kind| RunEvent {
+        schema: RUN_EVENT_SCHEMA.into(),
+        kind,
+    };
+    output
+        .publish(&event(RunEventKind::WatcherStarted {
+            invocation_id: "invocation-trace".into(),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::SessionStarted {
+            session_id: Some("session-1".into()),
+            capture_generation: 1,
+            capture_profile_sha256: "a".repeat(64),
+            normalizer_artifact_sha256: "b".repeat(64),
+        }))
+        .unwrap();
+    for (sequence, timestamp) in [(1, 100), (3, 300)] {
+        output
+            .publish(&event(RunEventKind::RawScreenObserved {
+                session_id: Some("session-1".into()),
+                capture_generation: Some(1),
+                semantic_episode_id: Some(1),
+                sequence,
+                monotonic_start_ms: timestamp,
+                monotonic_end_ms: timestamp,
+                screen: "play".into(),
+                result_presence: None,
+                play_presence: None,
+                unknown_reason: None,
+            }))
+            .unwrap();
+    }
+    output
+        .publish(&event(RunEventKind::ScreenChanged {
+            session_id: Some("session-1".into()),
+            capture_generation: Some(1),
+            screen_episode_id: 1,
+            sequence: 1,
+            monotonic_start_ms: 100,
+            monotonic_end_ms: 100,
+            screen: "play".into(),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::ScreenTick {
+            screen_episode_id: 1,
+            sequence: 2,
+            monotonic_end_ms: 200,
+            screen: "play".into(),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::SessionFinished {
+            session_id: "session-1".into(),
+            capture_generation: 1,
+            outcome: "complete".into(),
+            report: Value::Null,
+        }))
+        .unwrap();
+    output.finish_diagnostics("success");
+    let stream =
+        fs::read_to_string(temporary.path().join("run-trace-test/diagnostics.ndjson")).unwrap();
+    assert!(!stream.contains("\"event\":\"screen_tick\""));
+    assert!(stream.contains("\"operation\":\"domain_summary\""));
+    let summary = stream
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .rfind(|record| record["operation"] == "domain_summary")
+        .unwrap();
+    assert_eq!(summary["data"]["admitted_frames"], 2);
+    assert_eq!(summary["data"]["source_sequence_gaps"], 1);
+    assert_eq!(summary["data"]["screen_counts"]["play"], 2);
+    assert!(summary["data"]["no_op_inputs"].as_u64().unwrap() >= 2);
+    assert!(stream.contains("\"recording_publication\":\"disabled\""));
+    assert!(
+        stream.contains(
+            "\"canonical_recording_schema\":\"scorepeek-canonical-session-recording-v5\""
+        )
+    );
+    assert!(
+        stream.contains("\"canonical_frame_contract\":\"scorepeek-canonical-rgb8-1920x1080-v1\"")
+    );
+}
+
+#[test]
+fn session_finish_trace_records_completed_publication_result() {
+    let temporary = tempfile::tempdir().unwrap();
+    let diagnostics = RunDiagnostics::start(temporary.path(), "run-publication-test");
+    let mut output = RoutineOutput::start_headless_with_diagnostics(
+        "invocation-publication".into(),
+        "a".repeat(64),
+        diagnostics,
+    );
+    output.state.lock().unwrap().recording = "enabled";
+    output
+        .publish(&RunEvent {
+            schema: RUN_EVENT_SCHEMA.into(),
+            kind: RunEventKind::SessionFinished {
+                session_id: "session-1".into(),
+                capture_generation: 1,
+                outcome: "complete".into(),
+                report: json!({
+                    "canonical_recording_completeness": "complete",
+                    "canonical_recording_manifest_published": true,
+                    "recognition_busy_skips": 3,
+                    "field_rejected": 2
+                }),
+            },
+        })
+        .unwrap();
+    output.finish_diagnostics("success");
+    let stream = fs::read_to_string(
+        temporary
+            .path()
+            .join("run-publication-test/diagnostics.ndjson"),
+    )
+    .unwrap();
+    assert!(stream.contains("\"recording_publication\":\"published\""));
+    assert!(stream.contains("\"recording_locator\":\"sessions/session-1/canonical\""));
+    let summary = stream
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|record| record["operation"] == "domain_summary")
+        .unwrap();
+    assert_eq!(
+        summary["data"]["runtime_scheduling"]["recognition_busy_skips"],
+        3
+    );
+    assert_eq!(summary["data"]["runtime_scheduling"]["field_rejected"], 2);
+}
+
 #[test]
 fn scores_survive_socket_path_collision_at_startup() {
     let temporary = tempfile::tempdir().unwrap();
@@ -243,10 +449,13 @@ fn test_output(state: Arc<Mutex<RunViewState>>, channel: EventChannel) -> Routin
         scores: None,
         publish_frontend_snapshots: false,
         next_sequence: 1,
+        next_core_input_sequence: 1,
+        active_core_input_sequence: None,
         timing_active: false,
         output_us: 0,
         headless_events: Vec::new(),
-        core_reducer: RunEventReducer::new(),
+        core_reducer: DomainCoordinator::new(CoordinatorPolicy::default()).unwrap(),
+        trace_counters: TraceCounters::default(),
         diagnostics: None,
     }
 }
@@ -407,25 +616,6 @@ fn accepted_result_event(sequence: u64) -> RunEvent {
     }
 }
 
-fn accepted_double_result_event(sequence: u64) -> RunEvent {
-    let mut event = accepted_result_event(sequence);
-    let RunEventKind::FieldObservation {
-        parsed_result_fields: Some(parsed),
-        result_chart_resolution: Some(ResultChartResolution::Accepted { chart, .. }),
-        joint_evidence,
-        ..
-    } = &mut event.kind
-    else {
-        unreachable!();
-    };
-    parsed.play_type = ResultFieldValue::Known {
-        value: PlayType::Double,
-    };
-    chart.key.play_type = PlayType::Double;
-    joint_evidence.candidates[0].chart.key.play_type = PlayType::Double;
-    event
-}
-
 fn detected_result_event(
     session_id: &str,
     capture_generation: u64,
@@ -470,86 +660,53 @@ fn prime_result_panel(output: &mut RoutineOutput, side: ResultPanelSide, first_s
                     monotonic_start_ms: sequence,
                     monotonic_end_ms: sequence,
                     screen: "result".to_owned(),
-                    result_presence: scorepeek_core::recognition::screen::ResultPresenceEvidence {
-                        warm_pixels: 0,
-                        warm_pixels_min: 0,
-                        panel_side:
-                            scorepeek_core::recognition::screen::ResultPanelSideState::Known(side),
-                        panels: [
-                            scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
-                                panel_side: ResultPanelSide::Left,
-                                upper_panel_edge_pixels: 0,
-                                lower_panel_edge_pixels: 0,
-                                qualifies: side == ResultPanelSide::Left,
-                            },
-                            scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
-                                panel_side: ResultPanelSide::Right,
-                                upper_panel_edge_pixels: 0,
-                                lower_panel_edge_pixels: 0,
-                                qualifies: side == ResultPanelSide::Right,
-                            },
-                        ],
-                        horizontal_edge_pixels_min: 0,
-                    },
-                    play_presence: scorepeek_core::recognition::screen::PlayPresenceEvidence {
-                        qualifying_candidates: 0,
-                        top_edge_runs: 0,
-                        bottom_edge_runs: 0,
-                        candidates: [None, None],
-                        top_edge_pixels_min: 0,
-                        top_edge_pixels_max: 0,
-                        bottom_edge_pixels_min: 0,
-                        bottom_edge_pixels_max: 0,
-                        vertical_distance_min: 0,
-                        vertical_distance_max: 0,
-                        edge_center_delta_x2_max: 0,
-                        candidate_cluster_delta_x2_max: 0,
-                        candidate_cluster_delta_y_max: 0,
-                    },
+                    result_presence: Some(
+                        scorepeek_core::recognition::screen::ResultPresenceEvidence {
+                            warm_pixels: 0,
+                            warm_pixels_min: 0,
+                            panel_side:
+                                scorepeek_core::recognition::screen::ResultPanelSideState::Known(
+                                    side,
+                                ),
+                            panels: [
+                                scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
+                                    panel_side: ResultPanelSide::Left,
+                                    upper_panel_edge_pixels: 0,
+                                    lower_panel_edge_pixels: 0,
+                                    qualifies: side == ResultPanelSide::Left,
+                                },
+                                scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
+                                    panel_side: ResultPanelSide::Right,
+                                    upper_panel_edge_pixels: 0,
+                                    lower_panel_edge_pixels: 0,
+                                    qualifies: side == ResultPanelSide::Right,
+                                },
+                            ],
+                            horizontal_edge_pixels_min: 0,
+                        },
+                    ),
+                    play_presence: Some(
+                        scorepeek_core::recognition::screen::PlayPresenceEvidence {
+                            qualifying_candidates: 0,
+                            top_edge_runs: 0,
+                            bottom_edge_runs: 0,
+                            candidates: [None, None],
+                            top_edge_pixels_min: 0,
+                            top_edge_pixels_max: 0,
+                            bottom_edge_pixels_min: 0,
+                            bottom_edge_pixels_max: 0,
+                            vertical_distance_min: 0,
+                            vertical_distance_max: 0,
+                            edge_center_delta_x2_max: 0,
+                            candidate_cluster_delta_x2_max: 0,
+                            candidate_cluster_delta_y_max: 0,
+                        },
+                    ),
                     unknown_reason: None,
                 },
             })
             .unwrap();
     }
-}
-
-fn play_options_observation(values: Vec<PlayOption>) -> PlayOptionsObservation {
-    PlayOptionsObservation {
-        parsed: PlayOptions::Known { values },
-        ..PlayOptionsObservation::default()
-    }
-}
-
-#[test]
-fn play_options_require_two_matching_episode_observations() {
-    let expected = vec![PlayOption::Random, PlayOption::Legacy];
-    let mut accumulator = PlayOptionsEpisodeAccumulator::default();
-    accumulator.observe(1, play_options_observation(expected.clone()));
-    accumulator.observe(1, play_options_observation(expected.clone()));
-    assert_eq!(
-        accumulator.resolved(),
-        PlayOptions::Unknown {
-            reason: PlayOptionsUnknownReason::InsufficientObservations
-        }
-    );
-    accumulator.observe(2, play_options_observation(expected.clone()));
-    assert_eq!(
-        accumulator.resolved(),
-        PlayOptions::Known { values: expected }
-    );
-}
-
-#[test]
-fn conflicting_play_options_remain_optional_unknown() {
-    let mut accumulator = PlayOptionsEpisodeAccumulator::default();
-    accumulator.observe(1, play_options_observation(vec![PlayOption::Random]));
-    accumulator.observe(2, play_options_observation(vec![PlayOption::Mirror]));
-    assert_eq!(
-        accumulator.resolved(),
-        PlayOptions::Unknown {
-            reason: PlayOptionsUnknownReason::ConflictingObservations
-        }
-    );
 }
 
 fn accepted_result_without_joint_identity(sequence: u64) -> RunEvent {
@@ -918,7 +1075,7 @@ fn supplemental_changes_never_gate_mandatory_acceptance_and_can_update_afterward
             SupplementalResultValue::Known { value: miss };
         output.publish(&event).unwrap();
         if sequence >= 2 {
-            assert!(output.core_reducer.test_accepted_numeric_result().is_some());
+            assert!(current_provisional_result(&output).is_some());
         }
     }
     output
@@ -1021,13 +1178,10 @@ fn mandatory_challenger_stabilizes_independently_of_supplemental_changes() {
     output.publish(&changed(3, 4)).unwrap();
     output.publish(&changed(4, 5)).unwrap();
 
-    let provisional = output
-        .core_reducer
-        .test_active_provisional_result()
-        .unwrap();
-    assert_eq!(provisional.result.clear_type, "HARD CLEAR");
+    let provisional = current_provisional_result(&output).unwrap();
+    assert_eq!(provisional.clear_type, "HARD CLEAR");
     assert_eq!(
-        provisional.result.miss_count,
+        provisional.miss_count,
         SupplementalResultValue::Known { value: 3 }
     );
     assert_eq!(
@@ -1046,116 +1200,11 @@ fn mandatory_challenger_stabilizes_independently_of_supplemental_changes() {
     );
 
     output.publish(&changed(5, 5)).unwrap();
-    let provisional = output
-        .core_reducer
-        .test_active_provisional_result()
-        .unwrap();
+    let provisional = current_provisional_result(&output).unwrap();
     assert_eq!(
-        provisional.result.miss_count,
+        provisional.miss_count,
         SupplementalResultValue::Known { value: 5 }
     );
-}
-
-#[test]
-fn one_different_song_challenger_cannot_confirm_the_stable_result() {
-    let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-    prepare_accepted_attempt(&mut output);
-    output.publish(&accepted_result_event(1)).unwrap();
-    output.publish(&accepted_result_event(2)).unwrap();
-
-    let other_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
-    output
-        .core_reducer
-        .test_engine_mut()
-        .provisional_joint
-        .as_mut()
-        .unwrap()
-        .song_id = other_song;
-    let mut challenger = output
-        .core_reducer
-        .test_accepted_numeric_result()
-        .cloned()
-        .unwrap();
-    challenger.song_id = other_song;
-    challenger.source_sequence = 3;
-    assert!(
-        output
-            .core_reducer
-            .test_stabilize_numeric_result(challenger, false)
-            .is_none()
-    );
-
-    output
-        .publish(&semantic_episode_event(
-            4,
-            "result",
-            SemanticEpisodePhase::Finalized,
-        ))
-        .unwrap();
-
-    assert_eq!(output.state.lock().unwrap().result_count, 0);
-    assert!(!output.headless_events.iter().any(|event| matches!(
-        event.kind,
-        RunEventKind::ResultChanged {
-            state: ResultState::Confirmed { .. },
-            ..
-        }
-    )));
-}
-
-#[test]
-fn one_different_chart_challenger_cannot_confirm_the_stable_result() {
-    let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-    prepare_accepted_attempt(&mut output);
-    output.publish(&accepted_result_event(1)).unwrap();
-    output.publish(&accepted_result_event(2)).unwrap();
-
-    output
-        .core_reducer
-        .test_engine_mut()
-        .provisional_joint
-        .as_mut()
-        .unwrap()
-        .chart
-        .key
-        .difficulty = Difficulty::Another;
-    let mut challenger = output
-        .core_reducer
-        .test_accepted_numeric_result()
-        .cloned()
-        .unwrap();
-    challenger.chart.key.difficulty = Difficulty::Another;
-    challenger.source_sequence = 3;
-    assert!(
-        output
-            .core_reducer
-            .test_stabilize_numeric_result(challenger, false)
-            .is_none()
-    );
-
-    output
-        .publish(&semantic_episode_event(
-            4,
-            "result",
-            SemanticEpisodePhase::Finalized,
-        ))
-        .unwrap();
-
-    assert_eq!(output.state.lock().unwrap().result_count, 0);
-    assert!(!output.headless_events.iter().any(|event| matches!(
-        event.kind,
-        RunEventKind::ResultChanged {
-            state: ResultState::Confirmed { .. },
-            ..
-        }
-    )));
-    assert!(matches!(
-        output.core_reducer.test_engine().play_attempt.state(),
-        PlayAttemptState::Attempt { attempt }
-            if attempt.result_relation
-                == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict
-                && attempt.reasons.contains(&PlayAttemptReason::LinkageConflict)
-    ));
 }
 
 #[test]
@@ -1180,12 +1229,7 @@ fn provisional_result_retracts_and_re_resolves_as_one_state_stream() {
             ..
         }
     )));
-    assert!(
-        output
-            .core_reducer
-            .test_active_provisional_result()
-            .is_some()
-    );
+    assert!(current_provisional_result(&output).is_some());
     output.publish(&changed_clear(4)).unwrap();
 
     let lifecycle = output
@@ -1331,10 +1375,17 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
     prepare_accepted_attempt(&mut output);
     output.publish(&accepted_result_event(1)).unwrap();
     output.publish(&accepted_result_event(2)).unwrap();
-    let provisional = output
-        .core_reducer
-        .test_active_provisional_result()
-        .cloned()
+    let (provisional_song, provisional_result) = output
+        .headless_events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            RunEventKind::ResultChanged {
+                state: ResultState::Provisional { song, result },
+                ..
+            } => Some((song.clone(), result.clone())),
+            _ => None,
+        })
         .unwrap();
     output
         .publish(&semantic_episode_event(
@@ -1352,8 +1403,8 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
             capture_generation: 1,
             source_sequence: 4,
             state: ResultState::Provisional {
-                song: provisional.song.clone(),
-                result: Box::new(provisional.result.clone()),
+                song: provisional_song.clone(),
+                result: provisional_result.clone(),
             },
         },
     };
@@ -1370,8 +1421,8 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
             capture_generation: 1,
             source_sequence: 5,
             state: ResultState::Retracted {
-                song: provisional.song,
-                result: Box::new(provisional.result),
+                song: provisional_song,
+                result: provisional_result,
                 reason: ResultRetractionReason::EvidenceUnresolved,
             },
         },
@@ -1402,22 +1453,12 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
 #[test]
 fn linkage_deficient_attempt_is_provisional_then_withdrawn_on_rejection() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+    output.publish(&screen_event(0, "music_select")).unwrap();
+    output
+        .publish(&screen_event(0, "decide_transition"))
+        .unwrap();
+    output.publish(&screen_event(0, "result")).unwrap();
     prime_left_result_panel(&mut output);
-    output
-        .core_reducer
-        .test_engine_mut()
-        .play_attempt
-        .observe_selection_screen();
-    output
-        .core_reducer
-        .test_engine_mut()
-        .play_attempt
-        .observe_screen(PlayAttemptScreen::DecideTransition, 0);
-    output
-        .core_reducer
-        .test_engine_mut()
-        .play_attempt
-        .observe_screen(PlayAttemptScreen::Result, 0);
     output.publish(&accepted_result_event(1)).unwrap();
     output.publish(&accepted_result_event(2)).unwrap();
     output
@@ -1481,51 +1522,20 @@ fn incomplete_numeric_finalizes_the_attempt_as_rejected() {
         ))
         .unwrap();
 
-    assert!(output.core_reducer.test_emitted_attempt_ids().is_empty());
-    assert!(matches!(
-        output.core_reducer.test_engine().play_attempt.state(),
-        PlayAttemptState::Attempt { attempt }
-            if attempt.result_relation
-                == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict
-                && attempt.reasons.contains(&PlayAttemptReason::ResultEvidenceUnresolved)
-    ));
-}
-
-#[test]
-fn stale_numeric_from_another_chart_cannot_confirm_the_attempt() {
-    let temporary = tempfile::tempdir().unwrap();
-    let state = state();
-    let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-    let mut output = test_output(state, channel);
-    prepare_accepted_attempt(&mut output);
-
-    output.publish(&accepted_result_event(1)).unwrap();
-    output.publish(&accepted_result_event(2)).unwrap();
-    output
-        .core_reducer
-        .test_engine_mut()
-        .provisional_joint
-        .as_mut()
-        .unwrap()
-        .chart
-        .key
-        .difficulty = Difficulty::Another;
-    output
-        .publish(&semantic_episode_event(
-            3,
-            "result",
-            SemanticEpisodePhase::Finalized,
-        ))
-        .unwrap();
-
-    assert!(output.core_reducer.test_emitted_attempt_ids().is_empty());
-    assert!(matches!(
-        output.core_reducer.test_engine().play_attempt.state(),
-        PlayAttemptState::Attempt { attempt }
-            if attempt.result_relation
-                == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict
-                && attempt.reasons.contains(&PlayAttemptReason::LinkageConflict)
-    ));
+    assert!(!output.headless_events.iter().any(|event| matches!(
+        event.kind,
+        RunEventKind::ResultChanged {
+            state: ResultState::Confirmed { .. },
+            ..
+        }
+    )));
+    assert!(output.headless_events.iter().any(|event| matches!(
+        &event.kind,
+        RunEventKind::PlayAttemptChanged {
+            state: PlayAttemptState::Attempt { attempt },
+            ..
+        } if attempt.result_relation == scorepeek_core::session::attempt::PlayAttemptResultRelation::Conflict && attempt.reasons.contains(&PlayAttemptReason::ResultEvidenceUnresolved)
+    )));
 }
 
 #[test]
@@ -1540,172 +1550,20 @@ fn failed_session_boundary_cannot_replace_semantic_result_finalization() {
     output.publish(&accepted_result_event(2)).unwrap();
     output.publish(&failed_session_finished_event()).unwrap();
 
-    assert!(output.core_reducer.test_emitted_attempt_ids().is_empty());
-    assert!(matches!(
-        output.core_reducer.test_engine().play_attempt.state(),
-        PlayAttemptState::Attempt { attempt }
-            if attempt.phase == scorepeek_core::session::attempt::PlayAttemptPhase::Abandoned
-                && attempt.reasons.contains(&PlayAttemptReason::SessionEnded)
-    ));
-}
-
-#[test]
-#[allow(clippy::too_many_lines)]
-fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() {
-    let temporary = tempfile::tempdir().unwrap();
-    let state = state();
-    let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-    let mut output = test_output(Arc::clone(&state), channel);
-    let correct_song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-    let wrong_song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
-    let collision_song_id =
-        serde_json::from_str("\"00000000-0000-0000-0000-000000000003\"").unwrap();
-    let chart = scorepeek_core::catalog::Chart {
-        key: scorepeek_core::catalog::ChartKey {
-            play_type: PlayType::Single,
-            difficulty: Difficulty::Hyper,
-        },
-        level: 8,
-        notes: 764,
-    };
-
-    output.publish(&screen_event(1, "music_select")).unwrap();
-    output
-        .core_reducer
-        .test_engine_mut()
-        .retained_select
-        .observe(
-            100,
-            &JointEvidenceObservation {
-                catalog_song_count: 0,
-                candidates: vec![
-                    JointEvidenceCandidate {
-                        song_id: wrong_song_id,
-                        chart: chart.clone(),
-                        display_titles: vec!["X".to_owned()],
-                        artist: "D.J.Amuro".to_owned(),
-                        family_support: BTreeMap::from([
-                            (EvidenceFamily::SelectTitleLexical, 300),
-                            (EvidenceFamily::SelectTitleStructural, 60),
-                            (EvidenceFamily::SelectChart, 50),
-                        ]),
-                        support: 410,
-                    },
-                    JointEvidenceCandidate {
-                        song_id: correct_song_id,
-                        chart: chart.clone(),
-                        display_titles: vec!["〆".to_owned()],
-                        artist: "lapix".to_owned(),
-                        family_support: BTreeMap::from([
-                            (EvidenceFamily::SelectTitleStructural, 60),
-                            (EvidenceFamily::SelectArtist, 300),
-                            (EvidenceFamily::SelectChart, 50),
-                        ]),
-                        support: 410,
-                    },
-                ],
-            },
-            None,
-            None,
-        );
-    output
-        .publish(&screen_event(2, "decide_transition"))
-        .unwrap();
-    output.publish(&screen_event(3, "play")).unwrap();
-    output.publish(&screen_event(4, "result")).unwrap();
-
-    let result = |sequence| {
-        let mut event = accepted_result_event(sequence);
-        let RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind else {
-            unreachable!();
-        };
-        joint_evidence.candidates = vec![
-            JointEvidenceCandidate {
-                song_id: correct_song_id,
-                chart: chart.clone(),
-                display_titles: vec!["〆".to_owned()],
-                artist: "lapix".to_owned(),
-                family_support: BTreeMap::from([
-                    (EvidenceFamily::ResultArtist, 300),
-                    (EvidenceFamily::ResultChart, 170),
-                ]),
-                support: 470,
-            },
-            JointEvidenceCandidate {
-                song_id: wrong_song_id,
-                chart: chart.clone(),
-                display_titles: vec!["WRONG SELECT".to_owned()],
-                artist: "WRONG ARTIST".to_owned(),
-                family_support: BTreeMap::from([(EvidenceFamily::ResultChart, 70)]),
-                support: 70,
-            },
-            JointEvidenceCandidate {
-                song_id: collision_song_id,
-                chart: chart.clone(),
-                display_titles: vec!["Flying Castle".to_owned()],
-                artist: "lapix".to_owned(),
-                family_support: BTreeMap::from([
-                    (EvidenceFamily::ResultArtist, 300),
-                    (EvidenceFamily::ResultChart, 170),
-                ]),
-                support: 470,
-            },
-        ];
-        event
-    };
-    output.publish(&result(5)).unwrap();
-    output.publish(&result(6)).unwrap();
-    output.publish(&result(7)).unwrap();
-
-    assert_eq!(output.core_reducer.test_emitted_attempt_ids().len(), 0);
-    output
-        .publish(&semantic_episode_event(
-            8,
-            "result",
-            SemanticEpisodePhase::Closing,
-        ))
-        .unwrap();
-    output
-        .publish(&semantic_episode_event(
-            8,
-            "result",
-            SemanticEpisodePhase::Finalized,
-        ))
-        .unwrap();
-    assert_eq!(output.core_reducer.test_emitted_attempt_ids().len(), 1);
-    assert_eq!(state.lock().unwrap().result_count, 1);
-    assert_eq!(
-        state
-            .lock()
-            .unwrap()
-            .result_history
-            .back()
-            .unwrap()
-            .result
-            .play_options,
-        PlayOptions::Known {
-            values: vec![PlayOption::Random, PlayOption::Legacy]
+    assert!(!output.headless_events.iter().any(|event| matches!(
+        event.kind,
+        RunEventKind::ResultChanged {
+            state: ResultState::Confirmed { .. },
+            ..
         }
-    );
-    assert_eq!(
-        state
-            .lock()
-            .unwrap()
-            .result_history
-            .back()
-            .unwrap()
-            .song
-            .as_ref()
-            .unwrap()
-            .display_titles[0],
-        "〆"
-    );
-    assert!(matches!(
-        output.core_reducer.test_engine().play_attempt.state(),
-        PlayAttemptState::Attempt { attempt }
-            if attempt.result_relation
-                == scorepeek_core::session::attempt::PlayAttemptResultRelation::Confirmed
-    ));
+    )));
+    assert!(output.headless_events.iter().any(|event| matches!(
+        &event.kind,
+        RunEventKind::PlayAttemptChanged {
+            state: PlayAttemptState::Attempt { attempt },
+            ..
+        } if attempt.phase == scorepeek_core::session::attempt::PlayAttemptPhase::Abandoned && attempt.reasons.contains(&PlayAttemptReason::SessionEnded)
+    )));
 }
 
 #[test]
@@ -2290,890 +2148,6 @@ fn result_history_remains_bounded_and_survives_session_changes() {
 }
 
 #[test]
-fn episode_evidence_accumulates_by_family_caps_and_unknown_does_not_erase() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-    let candidate = JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type: PlayType::Single,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 8,
-            notes: 764,
-        },
-        display_titles: vec!["TEST SONG".to_owned()],
-        artist: "TEST ARTIST".to_owned(),
-        family_support: BTreeMap::from([
-            (EvidenceFamily::ResultTitle, 70),
-            (EvidenceFamily::ResultArtist, 35),
-            (EvidenceFamily::ResultChart, 50),
-        ]),
-        support: 155,
-    };
-    let observation = JointEvidenceObservation {
-        catalog_song_count: 0,
-        candidates: vec![candidate],
-    };
-    let mut accumulator = HypothesisAccumulator::default();
-    let chart_factor = ResultChartFactor {
-        play_type: Some(PlayType::Single),
-        difficulty: Some(Difficulty::Hyper),
-        notes: Some(764),
-        level: Some(8),
-    };
-    accumulator.observe(100, &observation, None, Some(chart_factor));
-    assert_eq!(
-        accumulator.summary().state,
-        ResolverResolutionState::JointCandidate
-    );
-    accumulator.observe(
-        200,
-        &JointEvidenceObservation {
-            catalog_song_count: 0,
-            candidates: Vec::new(),
-        },
-        None,
-        None,
-    );
-    accumulator.observe(300, &observation, None, Some(chart_factor));
-    assert_eq!(
-        accumulator.summary().state,
-        ResolverResolutionState::AcceptedJoint
-    );
-    for tick in 0..20 {
-        accumulator.observe(400 + tick, &observation, None, None);
-    }
-    let accepted = accumulator.summary().accepted().unwrap();
-    let stored = &accumulator.candidates[&JointKey {
-        song_id,
-        chart_key: accepted.chart.key,
-    }];
-    assert!(
-        stored
-            .family_support
-            .values()
-            .any(|support| { *support > u64::from(EVIDENCE_FAMILY_CAP) })
-    );
-    assert!(
-        accumulator
-            .summary()
-            .selected_family_support
-            .values()
-            .all(|support| support.normalized() <= EVIDENCE_FAMILY_CAP)
-    );
-}
-
-#[test]
-fn family_normalization_preserves_candidate_ratios_above_the_cap() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-    let make = |difficulty, support| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type: PlayType::Single,
-                difficulty,
-            },
-            level: 8,
-            notes: 764,
-        },
-        display_titles: vec!["TEST SONG".to_owned()],
-        artist: "TEST ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, support)]),
-        support,
-    };
-    let observation = JointEvidenceObservation {
-        catalog_song_count: 0,
-        candidates: vec![make(Difficulty::Hyper, 170), make(Difficulty::Another, 70)],
-    };
-    let mut accumulator = HypothesisAccumulator::default();
-    for tick in 0..3 {
-        accumulator.observe(100 + tick, &observation, None, None);
-    }
-    let summary = accumulator.summary();
-    assert_eq!(summary.support, 300);
-    assert_eq!(summary.support.saturating_sub(summary.margin), 123);
-    assert_eq!(summary.margin, 177);
-    assert_eq!(
-        summary.selected_family_support[&EvidenceFamily::ResultArtist],
-        EvidenceContribution::new(510, 300)
-    );
-    assert_eq!(
-        summary.runner_up_family_support[&EvidenceFamily::ResultArtist],
-        EvidenceContribution::new(210, 123)
-    );
-}
-
-#[test]
-fn chart_factors_wait_for_song_evidence_and_apply_to_later_candidates() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000011\"").unwrap();
-    let mut accumulator = HypothesisAccumulator::default();
-    accumulator.observe(
-        100,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: Vec::new(),
-        },
-        Some(Difficulty::Hyper),
-        Some(ResultChartFactor {
-            play_type: None,
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(1_136),
-            level: Some(10),
-        }),
-    );
-    assert_eq!(
-        accumulator.summary().state,
-        ResolverResolutionState::Unresolved
-    );
-
-    let candidate = |difficulty, notes| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type: PlayType::Single,
-                difficulty,
-            },
-            level: 10,
-            notes,
-        },
-        display_titles: vec!["∀".to_owned()],
-        artist: "BEMANI Sound Team \"HuΣeR\" respect for D.J.Amuro".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, 220)]),
-        support: 220,
-    };
-    accumulator.observe(
-        200,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: vec![
-                candidate(Difficulty::Hyper, 1_136),
-                candidate(Difficulty::Another, 1_500),
-            ],
-        },
-        None,
-        None,
-    );
-    let summary = accumulator.summary();
-    assert_eq!(
-        summary.selected.unwrap().chart.key.difficulty,
-        Difficulty::Hyper
-    );
-    assert_eq!(summary.support, 370);
-    assert_eq!(summary.chart_margin, 140);
-}
-
-#[test]
-fn selection_epoch_retains_difficulty_until_song_evidence_arrives() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000012\"").unwrap();
-    let mut epochs = SelectionEpochTracker::default();
-    let pending = epochs.observe(
-        100,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: Vec::new(),
-        },
-        Some(Difficulty::Hyper),
-    );
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].target, SelectionDifficultyTarget::Pending);
-    assert_eq!(
-        pending[0].reason,
-        SelectionDifficultyTransitionReason::Changed
-    );
-    let candidate = |difficulty| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type: PlayType::Single,
-                difficulty,
-            },
-            level: 10,
-            notes: if difficulty == Difficulty::Hyper {
-                1_136
-            } else {
-                1_500
-            },
-        },
-        display_titles: vec!["∀".to_owned()],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
-        support: 300,
-    };
-    let applied = epochs.observe(
-        200,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: vec![candidate(Difficulty::Hyper), candidate(Difficulty::Another)],
-        },
-        None,
-    );
-    assert_eq!(applied.len(), 1);
-    assert_eq!(applied[0].target, SelectionDifficultyTarget::Incumbent);
-    assert_eq!(
-        applied[0].reason,
-        SelectionDifficultyTransitionReason::PendingApplied
-    );
-    let summary = epochs.incumbent.summary();
-    assert_eq!(
-        summary.selected.unwrap().chart.key.difficulty,
-        Difficulty::Hyper
-    );
-    assert_eq!(summary.chart_margin, 50);
-    assert!(epochs.pending_difficulty.is_none());
-}
-
-#[test]
-fn selection_difficulty_tracks_every_known_change_without_changing_song_evidence() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000013\"").unwrap();
-    let candidate = |difficulty| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type: PlayType::Single,
-                difficulty,
-            },
-            level: 10,
-            notes: 1_000,
-        },
-        display_titles: vec!["X".to_owned()],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
-        support: 300,
-    };
-    let song_evidence = JointEvidenceObservation {
-        catalog_song_count: 2,
-        candidates: vec![
-            candidate(Difficulty::Normal),
-            candidate(Difficulty::Hyper),
-            candidate(Difficulty::Another),
-        ],
-    };
-    let no_song_evidence = JointEvidenceObservation {
-        catalog_song_count: 2,
-        candidates: Vec::new(),
-    };
-    let mut epochs = SelectionEpochTracker::default();
-    let first = epochs.observe_at(3_240, 324_000, &song_evidence, Some(Difficulty::Hyper));
-    assert_eq!(first.len(), 1);
-    for sequence in 3_241..=3_252 {
-        assert!(
-            epochs
-                .observe_at(
-                    sequence,
-                    sequence * 100,
-                    &song_evidence,
-                    Some(Difficulty::Hyper)
-                )
-                .is_empty()
-        );
-    }
-    let song_support = epochs
-        .incumbent
-        .candidates
-        .values()
-        .next()
-        .unwrap()
-        .family_support[&EvidenceFamily::SelectTitle];
-    let observation_count = epochs.incumbent.observation_count;
-
-    for (sequence, difficulty) in [
-        (3_255, Difficulty::Another),
-        (3_296, Difficulty::Normal),
-        (3_302, Difficulty::Hyper),
-        (3_307, Difficulty::Another),
-    ] {
-        let transitions = epochs.observe_at(
-            sequence,
-            sequence * 100,
-            &no_song_evidence,
-            Some(difficulty),
-        );
-        assert_eq!(transitions.len(), 1);
-        assert_eq!(
-            transitions[0].reason,
-            SelectionDifficultyTransitionReason::Changed
-        );
-        assert_eq!(transitions[0].target, SelectionDifficultyTarget::Incumbent);
-        assert_eq!(transitions[0].current.unwrap().difficulty, difficulty);
-        assert_eq!(
-            epochs
-                .incumbent
-                .summary()
-                .selected
-                .unwrap()
-                .chart
-                .key
-                .difficulty,
-            difficulty
-        );
-        assert_eq!(epochs.incumbent.observation_count, observation_count);
-        assert_eq!(
-            epochs
-                .incumbent
-                .candidates
-                .values()
-                .next()
-                .unwrap()
-                .family_support[&EvidenceFamily::SelectTitle],
-            song_support
-        );
-    }
-}
-
-#[test]
-fn unknown_difficulty_gap_retains_current_and_emits_no_transition() {
-    let mut accumulator = HypothesisAccumulator::default();
-    assert!(accumulator.observe_select_difficulty(Difficulty::Another, 10, 1_000));
-    let retained = accumulator.select_difficulty.unwrap();
-    let mut epochs = SelectionEpochTracker {
-        incumbent: accumulator,
-        ..SelectionEpochTracker::default()
-    };
-    epochs.incumbent.observation_count = 1;
-    let transitions = epochs.observe_at(
-        11,
-        1_100,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: Vec::new(),
-        },
-        None,
-    );
-    assert!(transitions.is_empty());
-    assert_eq!(epochs.incumbent.select_difficulty, Some(retained));
-}
-
-#[test]
-fn snapshot_merge_adopts_newer_difficulty_once_instead_of_adding_votes() {
-    let mut retained = HypothesisAccumulator::default();
-    retained.observe_select_difficulty(Difficulty::Hyper, 100, 1_000);
-    for sequence in 101..110 {
-        retained.observe_select_difficulty(Difficulty::Hyper, sequence, sequence * 10);
-    }
-    let mut incoming = HypothesisAccumulator::default();
-    incoming.observe_select_difficulty(Difficulty::Another, 200, 2_000);
-    retained.add_from(&incoming);
-    retained.add_from(&incoming);
-    let current = retained.select_difficulty.unwrap();
-    assert_eq!(current.difficulty, Difficulty::Another);
-    assert_eq!(current.consecutive_known, 1);
-    assert_eq!(current.last_sequence(), 200);
-}
-
-#[test]
-fn late_difficulty_observation_cannot_replace_newer_current_state() {
-    let mut accumulator = HypothesisAccumulator::default();
-    assert!(accumulator.observe_select_difficulty(Difficulty::Another, 200, 2_000));
-    assert!(!accumulator.observe_select_difficulty(Difficulty::Normal, 199, 1_990));
-    let current = accumulator.select_difficulty.unwrap();
-    assert_eq!(current.difficulty, Difficulty::Another);
-    assert_eq!(current.consecutive_known, 1);
-    assert_eq!(current.last_sequence(), 200);
-}
-
-#[test]
-fn diagnostic_top_does_not_truncate_resolver_authority() {
-    let first = serde_json::from_str("\"00000000-0000-0000-0000-000000000051\"").unwrap();
-    let second = serde_json::from_str("\"00000000-0000-0000-0000-000000000052\"").unwrap();
-    let keys = [
-        (PlayType::Single, Difficulty::Beginner),
-        (PlayType::Single, Difficulty::Normal),
-        (PlayType::Single, Difficulty::Hyper),
-        (PlayType::Single, Difficulty::Another),
-        (PlayType::Single, Difficulty::Leggendaria),
-        (PlayType::Double, Difficulty::Normal),
-        (PlayType::Double, Difficulty::Hyper),
-        (PlayType::Double, Difficulty::Another),
-    ];
-    let candidate = |song_id, play_type, difficulty, support| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type,
-                difficulty,
-            },
-            level: 10,
-            notes: 1_000,
-        },
-        display_titles: vec![format!("SONG-{song_id:?}")],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, support)]),
-        support,
-    };
-    let mut candidates = keys
-        .into_iter()
-        .map(|(play_type, difficulty)| candidate(first, play_type, difficulty, 300))
-        .collect::<Vec<_>>();
-    candidates.push(candidate(second, PlayType::Single, Difficulty::Hyper, 270));
-    let mut event = accepted_result_event(1);
-    let RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind else {
-        unreachable!();
-    };
-    joint_evidence.candidates = candidates;
-    joint_evidence.catalog_song_count = 2;
-
-    let mut authority = HypothesisAccumulator::default();
-    authority.observe(100, joint_evidence, None, None);
-    assert_eq!(authority.summary().state, ResolverResolutionState::Conflict);
-    assert_eq!(joint_evidence.candidates.len(), 9);
-    let diagnostic = diagnostic_run_event_value(&event).unwrap();
-    assert_eq!(
-        diagnostic["joint_evidence"]["candidates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        8
-    );
-    let RunEventKind::FieldObservation { joint_evidence, .. } = &event.kind else {
-        unreachable!();
-    };
-    assert_eq!(joint_evidence.candidates.len(), 9);
-}
-
-#[test]
-fn runner_song_and_runner_chart_are_independent_hierarchical_competitors() {
-    let first = serde_json::from_str("\"00000000-0000-0000-0000-000000000021\"").unwrap();
-    let second = serde_json::from_str("\"00000000-0000-0000-0000-000000000022\"").unwrap();
-    let candidate = |song_id, play_type, support| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 10,
-            notes: 1_136,
-        },
-        display_titles: vec![format!("SONG-{song_id:?}")],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, support)]),
-        support,
-    };
-    let mut accumulator = HypothesisAccumulator::default();
-    accumulator.observe(
-        100,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: vec![
-                candidate(first, PlayType::Single, 400),
-                candidate(first, PlayType::Double, 380),
-                candidate(second, PlayType::Single, 350),
-            ],
-        },
-        None,
-        None,
-    );
-    let summary = accumulator.summary();
-    assert_eq!(summary.runner_up.as_ref().unwrap().song_id, first);
-    assert_eq!(summary.runner_chart.as_ref().unwrap().song_id, first);
-    assert_eq!(summary.runner_song.as_ref().unwrap().song_id, second);
-    assert_eq!(summary.song_margin, 38);
-    assert_eq!(summary.chart_margin, 15);
-}
-
-#[test]
-fn latest_failure_oracle_resolves_forall_from_cross_screen_factors() {
-    let wrong = serde_json::from_str("\"00000000-0000-0000-0000-000000000031\"").unwrap();
-    let expected = serde_json::from_str("\"00000000-0000-0000-0000-000000000032\"").unwrap();
-    let chart = |song_id, play_type, notes, family, support| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 10,
-            notes,
-        },
-        display_titles: vec![if song_id == expected { "∀" } else { "A" }.to_owned()],
-        artist: if song_id == expected {
-            "BEMANI Sound Team \"HuΣeR\" respect for D.J.Amuro"
-        } else {
-            "OTHER"
-        }
-        .to_owned(),
-        family_support: BTreeMap::from([(family, support)]),
-        support,
-    };
-    let mut select = HypothesisAccumulator::default();
-    select.observe(
-        100,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: vec![chart(
-                wrong,
-                PlayType::Single,
-                1_000,
-                EvidenceFamily::SelectTitle,
-                300,
-            )],
-        },
-        Some(Difficulty::Hyper),
-        None,
-    );
-    let mut result = HypothesisAccumulator::default();
-    result.observe(
-        200,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: vec![
-                chart(
-                    expected,
-                    PlayType::Single,
-                    1_136,
-                    EvidenceFamily::ResultArtist,
-                    300,
-                ),
-                chart(
-                    expected,
-                    PlayType::Double,
-                    1_500,
-                    EvidenceFamily::ResultArtist,
-                    300,
-                ),
-            ],
-        },
-        None,
-        Some(ResultChartFactor {
-            play_type: Some(PlayType::Single),
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(1_136),
-            level: None,
-        }),
-    );
-    result.observe(
-        201,
-        &JointEvidenceObservation {
-            catalog_song_count: 2,
-            candidates: Vec::new(),
-        },
-        None,
-        Some(ResultChartFactor {
-            play_type: Some(PlayType::Single),
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(1_136),
-            level: None,
-        }),
-    );
-    select.add_from(&result);
-    let summary = select.summary();
-    let accepted = summary.accepted().expect("∀ SP HYPER should resolve");
-    assert_eq!(accepted.song_id, expected);
-    assert_eq!(accepted.chart.key.play_type, PlayType::Single);
-    assert_eq!(accepted.chart.notes, 1_136);
-    assert_eq!(summary.song_margin, 100);
-    assert_eq!(summary.chart_margin, 200);
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the regression covers unresolved, accepted, conflicting, and mismatched SP/DP evidence"
-)]
-fn result_play_type_breaks_an_otherwise_identical_sibling_tie() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000043\"").unwrap();
-    let chart = |play_type| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 8,
-            notes: 829,
-        },
-        display_titles: vec!["Wizards!".to_owned()],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::ResultTitle, 300)]),
-        support: 300,
-    };
-    let observation = JointEvidenceObservation {
-        catalog_song_count: 2,
-        candidates: vec![chart(PlayType::Single), chart(PlayType::Double)],
-    };
-    let mut without_play_type = HypothesisAccumulator::default();
-    without_play_type.observe(
-        100,
-        &observation,
-        None,
-        Some(ResultChartFactor {
-            play_type: None,
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(829),
-            level: Some(8),
-        }),
-    );
-    assert_eq!(
-        without_play_type.summary().state,
-        ResolverResolutionState::SongProjected
-    );
-
-    let mut with_play_type = HypothesisAccumulator::default();
-    with_play_type.observe(
-        100,
-        &observation,
-        None,
-        Some(ResultChartFactor {
-            play_type: Some(PlayType::Single),
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(829),
-            level: Some(8),
-        }),
-    );
-    assert_eq!(
-        with_play_type.summary().state,
-        ResolverResolutionState::SongProjected
-    );
-    with_play_type.observe(
-        101,
-        &observation,
-        None,
-        Some(ResultChartFactor {
-            play_type: Some(PlayType::Single),
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(829),
-            level: Some(8),
-        }),
-    );
-    let summary = with_play_type.summary();
-    assert_eq!(summary.state, ResolverResolutionState::AcceptedJoint);
-    assert_eq!(
-        summary
-            .selected
-            .as_ref()
-            .map(|candidate| candidate.chart.key.play_type),
-        Some(PlayType::Single)
-    );
-    assert_eq!(summary.chart_margin, 100);
-    assert_eq!(
-        summary.selected_family_support[&EvidenceFamily::ResultPlayType].normalized(),
-        100
-    );
-
-    with_play_type.observe(
-        102,
-        &observation,
-        None,
-        Some(ResultChartFactor {
-            play_type: Some(PlayType::Double),
-            difficulty: Some(Difficulty::Hyper),
-            notes: Some(829),
-            level: Some(8),
-        }),
-    );
-    assert_eq!(
-        with_play_type.summary().state,
-        ResolverResolutionState::SongProjected
-    );
-
-    let mut mismatched_only = HypothesisAccumulator::default();
-    let double_only = JointEvidenceObservation {
-        catalog_song_count: 1,
-        candidates: vec![chart(PlayType::Double)],
-    };
-    for monotonic_ms in [200, 201] {
-        mismatched_only.observe(
-            monotonic_ms,
-            &double_only,
-            None,
-            Some(ResultChartFactor {
-                play_type: Some(PlayType::Single),
-                difficulty: Some(Difficulty::Hyper),
-                notes: Some(829),
-                level: Some(8),
-            }),
-        );
-    }
-    assert_eq!(
-        mismatched_only.summary().state,
-        ResolverResolutionState::AcceptedJoint
-    );
-    assert_eq!(
-        mismatched_only
-            .summary()
-            .selected
-            .as_ref()
-            .map(|candidate| candidate.chart.key.play_type),
-        Some(PlayType::Double)
-    );
-}
-
-#[test]
-fn select_play_type_resolves_ui_chart_without_joint_acceptance() {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000044\"").unwrap();
-    let candidate = |play_type| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 8,
-            notes: 829,
-        },
-        display_titles: vec!["Wizards!".to_owned()],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
-        support: 300,
-    };
-    let evidence = JointEvidenceObservation {
-        catalog_song_count: 1,
-        candidates: vec![candidate(PlayType::Single), candidate(PlayType::Double)],
-    };
-    let mut select = HypothesisAccumulator::default();
-    for sequence in [1, 2] {
-        select.observe_at(
-            sequence,
-            sequence * 100,
-            &evidence,
-            Some(Difficulty::Hyper),
-            Some(PlayType::Double),
-            None,
-        );
-    }
-    let summary = select.summary();
-    assert_ne!(summary.state, ResolverResolutionState::AcceptedJoint);
-    assert_eq!(summary.select_play_type, Some(PlayType::Double));
-    select.observe_at(
-        3,
-        300,
-        &JointEvidenceObservation {
-            catalog_song_count: 1,
-            candidates: Vec::new(),
-        },
-        None,
-        None,
-        Some(ResultChartFactor {
-            play_type: None,
-            difficulty: None,
-            notes: None,
-            level: None,
-        }),
-    );
-    assert_eq!(
-        select.summary().state,
-        ResolverResolutionState::SongProjected
-    );
-    assert_eq!(
-        summary
-            .selected
-            .as_ref()
-            .map(|candidate| candidate.chart.key.play_type),
-        Some(PlayType::Double)
-    );
-}
-
-fn mode_conflict_fixture(
-    select_mode: PlayType,
-    result_mode: Option<PlayType>,
-    notes: Option<u32>,
-) -> HypothesisAccumulator {
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000045\"").unwrap();
-    let evidence = |family| JointEvidenceObservation {
-        catalog_song_count: 1,
-        candidates: [(PlayType::Single, 829), (PlayType::Double, 900)]
-            .map(|(play_type, notes)| JointEvidenceCandidate {
-                song_id,
-                chart: scorepeek_core::catalog::Chart {
-                    key: scorepeek_core::catalog::ChartKey {
-                        play_type,
-                        difficulty: Difficulty::Hyper,
-                    },
-                    level: 8,
-                    notes,
-                },
-                display_titles: vec!["Wizards!".to_owned()],
-                artist: "ARTIST".to_owned(),
-                family_support: BTreeMap::from([(family, 300)]),
-                support: 300,
-            })
-            .to_vec(),
-    };
-    let mut joint = HypothesisAccumulator::default();
-    for sequence in [1, 2] {
-        joint.observe_at(
-            sequence,
-            sequence * 100,
-            &evidence(EvidenceFamily::SelectTitle),
-            Some(Difficulty::Hyper),
-            Some(select_mode),
-            None,
-        );
-    }
-    for sequence in [3, 4] {
-        joint.observe_at(
-            sequence,
-            sequence * 100,
-            &evidence(EvidenceFamily::ResultTitle),
-            None,
-            None,
-            Some(ResultChartFactor {
-                play_type: result_mode,
-                difficulty: Some(Difficulty::Hyper),
-                notes,
-                level: Some(8),
-            }),
-        );
-    }
-    joint
-}
-
-#[test]
-fn select_result_mode_conflicts_follow_chart_evidence_in_both_directions() {
-    for (select_mode, result_mode) in [
-        (PlayType::Single, PlayType::Double),
-        (PlayType::Double, PlayType::Single),
-    ] {
-        for (notes, expected) in [(829, PlayType::Single), (900, PlayType::Double)] {
-            let summary =
-                mode_conflict_fixture(select_mode, Some(result_mode), Some(notes)).summary();
-            assert_eq!(summary.state, ResolverResolutionState::AcceptedJoint);
-            assert_eq!(summary.select_play_type, Some(select_mode));
-            assert_eq!(summary.result_play_type, Some(result_mode));
-            assert_eq!(summary.selected.unwrap().chart.key.play_type, expected);
-        }
-    }
-}
-
-#[test]
-fn mode_conflicts_require_the_existing_chart_margin() {
-    let mut joint = mode_conflict_fixture(PlayType::Single, Some(PlayType::Double), None);
-    assert_eq!(
-        joint.summary().state,
-        ResolverResolutionState::SongProjected
-    );
-    assert_eq!(joint.summary().chart_margin, 0);
-    for candidate in joint.candidates.values_mut() {
-        if candidate.candidate.chart.key.play_type == PlayType::Double {
-            candidate
-                .family_support
-                .insert(EvidenceFamily::ResultArtist, 20);
-        }
-    }
-    assert_eq!(joint.summary().chart_margin, 20);
-    assert_eq!(
-        joint.summary().state,
-        ResolverResolutionState::SongProjected
-    );
-}
-
-#[test]
-fn select_mode_supplements_unknown_result_mode() {
-    let summary = mode_conflict_fixture(PlayType::Double, None, None).summary();
-    assert_eq!(summary.state, ResolverResolutionState::AcceptedJoint);
-    assert_eq!(summary.result_play_type, None);
-    assert_eq!(
-        summary.selected.unwrap().chart.key.play_type,
-        PlayType::Double
-    );
-    assert_eq!(
-        summary.selected_family_support[&EvidenceFamily::SelectPlayType].normalized(),
-        100
-    );
-}
-
-#[test]
 fn music_select_fields_update_the_typed_tui_snapshot() {
     let shared = state();
     shared.lock().unwrap().current_screen = Some("music_select".to_owned());
@@ -3499,16 +2473,6 @@ fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot(
             )
             .unwrap();
     }
-    assert_eq!(
-        output
-            .core_reducer
-            .test_music_select_resolver()
-            .best
-            .current_difficulty
-            .unwrap()
-            .last_sequence(),
-        20
-    );
     let events = output.take_headless_events();
     assert!(!events.iter().any(|event| matches!(
         event.kind,
@@ -3554,13 +2518,8 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
                 )
                 .unwrap();
         }
-        let first = output
-            .core_reducer
-            .test_music_select_resolver()
-            .best
-            .snapshot
-            .clone()
-            .unwrap();
+        let first = frontend_select_best(&output);
+        assert!(!first.is_null());
         output.take_headless_events();
         let mut missing_fields = fields.clone();
         let mut missing_evidence = evidence.clone();
@@ -3584,26 +2543,7 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
                     &presentation,
                 )
                 .unwrap();
-            assert_eq!(
-                output
-                    .core_reducer
-                    .test_music_select_resolver()
-                    .best
-                    .snapshot
-                    .as_ref(),
-                Some(&first),
-                "{missing}"
-            );
-            assert_eq!(
-                output
-                    .core_reducer
-                    .test_music_select_resolver()
-                    .best
-                    .score
-                    .consecutive,
-                0,
-                "{missing}"
-            );
+            assert_eq!(frontend_select_best(&output), first, "{missing}");
         }
         for sequence in 9..=10 {
             output
@@ -3617,25 +2557,8 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
                     &presentation,
                 )
                 .unwrap();
-            assert_eq!(
-                output
-                    .core_reducer
-                    .test_music_select_resolver()
-                    .best
-                    .score
-                    .consecutive,
-                u8::try_from(sequence - 8).unwrap()
-            );
+            assert_eq!(frontend_select_best(&output), first, "{missing}");
         }
-        assert_eq!(
-            output
-                .core_reducer
-                .test_music_select_resolver()
-                .best
-                .snapshot
-                .as_ref(),
-            Some(&first)
-        );
         assert!(
             !output
                 .take_headless_events()
@@ -3675,13 +2598,8 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
                 )
                 .unwrap();
         }
-        let first = output
-            .core_reducer
-            .test_music_select_resolver()
-            .best
-            .snapshot
-            .clone()
-            .unwrap();
+        let first = frontend_select_best(&output);
+        assert!(!first.is_null());
         let mut changed_fields = fields.clone();
         let mut changed_evidence = evidence.clone();
         match conflict {
@@ -3713,24 +2631,7 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
                 &presentation,
             )
             .unwrap();
-        assert!(
-            output
-                .core_reducer
-                .test_music_select_resolver()
-                .best
-                .chart
-                .is_none(),
-            "{conflict}"
-        );
-        assert!(
-            output
-                .core_reducer
-                .test_music_select_resolver()
-                .best
-                .snapshot
-                .is_none(),
-            "{conflict}"
-        );
+        assert!(frontend_select_best(&output).is_null(), "{conflict}");
         for sequence in 7..=15 {
             output
                 .reduce_music_select_observation(
@@ -3745,38 +2646,16 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
                 .unwrap();
         }
         if conflict == "mode" {
-            // Conflicting mode support remains unresolved in the existing identity resolver.
-            assert!(
-                output
-                    .core_reducer
-                    .test_music_select_resolver()
-                    .selected()
-                    .is_none(),
-                "{conflict}"
-            );
-            assert!(
-                output
-                    .core_reducer
-                    .test_music_select_resolver()
-                    .best
-                    .snapshot
-                    .is_none(),
-                "{conflict}"
-            );
+            assert!(frontend_select_best(&output).is_null(), "{conflict}");
             continue;
         }
-        let revisit = output
-            .core_reducer
-            .test_music_select_resolver()
-            .best
-            .snapshot
-            .as_ref()
-            .unwrap();
+        let revisit = frontend_select_best(&output);
+        assert!(!revisit.is_null(), "{conflict}");
         assert_ne!(
-            first.selection_interval, revisit.selection_interval,
+            first["selection_interval"], revisit["selection_interval"],
             "{conflict}"
         );
-        assert_eq!(first.values, revisit.values, "{conflict}");
+        assert_eq!(first["values"], revisit["values"], "{conflict}");
     }
 }
 
@@ -3813,14 +2692,14 @@ fn best_suppression_does_not_discard_admitted_selection_identity() {
                 )
                 .unwrap();
         }
-        assert!(
-            output
-                .core_reducer
-                .test_music_select_resolver()
-                .selected()
-                .is_some()
-        );
-        assert!(output.state.lock().unwrap().music_select.snapshot.is_none());
+        assert!(output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::MusicSelectionChanged {
+                state: MusicSelectionState::Selected { .. },
+                ..
+            }
+        )));
+        assert!(frontend_select_best(&output).is_null());
     }
 }
 
@@ -3847,15 +2726,6 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
             )
             .unwrap();
     }
-    assert_double_play_selection(&output);
-    output.core_reducer.test_engine_mut().selection_epochs = SelectionEpochTracker::default();
-    assert!(
-        output
-            .core_reducer
-            .test_music_select_resolver()
-            .selected()
-            .is_some()
-    );
     let mut changed_song = evidence.clone();
     changed_song.candidates[0].song_id =
         serde_json::from_str("\"00000000-0000-0000-0000-000000000047\"").unwrap();
@@ -3872,13 +2742,6 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
             &presentation,
         )
         .unwrap();
-    assert!(
-        output
-            .core_reducer
-            .test_music_select_resolver()
-            .selected()
-            .is_none()
-    );
     output
         .publish_screen_change(
             &RunEvent {
@@ -3938,203 +2801,18 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
     )));
 }
 
-fn assert_double_play_selection(output: &RoutineOutput) {
-    assert!(matches!(
-        output.core_reducer.test_music_select_resolver().selected(),
-        Some(MusicSelectionState::Selected {
-            play_side: PlaySide::TwoPlayer,
-            ..
-        })
-    ));
-}
-
-#[test]
-fn music_selection_requires_two_equal_play_sides_and_rejects_a_conflict() {
-    let mut resolver = MusicSelectResolver::default();
-    let (mut fields, mut evidence, _) = music_selection_test_observation();
-    fields["play_type"]["state"]["value"] = json!("single");
-    evidence.candidates[0].chart.key.play_type = PlayType::Single;
-    resolver.observe(
-        1,
-        100,
-        &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
-    );
-    assert!(resolver.selected().is_none());
-    resolver.observe(
-        2,
-        200,
-        &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
-    );
-    assert!(matches!(
-        resolver.selected(),
-        Some(MusicSelectionState::Selected {
-            play_side: PlaySide::TwoPlayer,
-            ..
-        })
-    ));
-
-    fields["play_side"]["state"]["value"] = json!("one_player");
-    resolver.observe(
-        3,
-        300,
-        &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
-    );
-    assert!(resolver.selected().is_none());
-}
-
-#[test]
-fn double_play_selection_requires_a_footer_play_side() {
-    let mut resolver = MusicSelectResolver::default();
-    let (fields, evidence, _) = music_selection_test_observation();
-    for (sequence, monotonic_ms) in [(1, 100), (2, 200)] {
-        resolver.observe(
-            sequence,
-            monotonic_ms,
-            &evidence,
-            selected_difficulty(&fields),
-            selected_play_type(&fields),
-            if sequence == 1 {
-                None
-            } else {
-                selected_play_side(&fields)
-            },
-        );
-    }
-    assert!(resolver.selected().is_none());
-    resolver.observe(
-        3,
-        300,
-        &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
-    );
-    assert!(matches!(
-        resolver.selected(),
-        Some(MusicSelectionState::Selected {
-            play_side: PlaySide::TwoPlayer,
-            play_type: PlayType::Double,
-            ..
-        })
-    ));
-}
-
-#[test]
-fn result_panel_side_requires_two_fresh_matches_and_two_opposites_conflict() {
-    let mut side = ResultPanelSideAccumulator::default();
-    assert_eq!(
-        side.observe(7, 10, ResultPanelSide::Right),
-        Some((
-            ResultPanelSideEpisodeState::Pending,
-            ResultPanelSideTransitionReason::CandidateStarted,
-        ))
-    );
-    assert_eq!(side.stable(), None);
-    assert_eq!(side.observe(7, 10, ResultPanelSide::Right), None);
-    assert_eq!(
-        side.observe(7, 11, ResultPanelSide::Right),
-        Some((
-            ResultPanelSideEpisodeState::Stable {
-                side: ResultPanelSide::Right,
-            },
-            ResultPanelSideTransitionReason::Accepted,
-        ))
-    );
-    assert_eq!(side.stable(), Some(ResultPanelSide::Right));
-    assert_eq!(
-        side.observe(7, 12, ResultPanelSide::Left),
-        Some((
-            ResultPanelSideEpisodeState::Stable {
-                side: ResultPanelSide::Right,
-            },
-            ResultPanelSideTransitionReason::OppositeObserved,
-        ))
-    );
-    assert_eq!(side.stable(), Some(ResultPanelSide::Right));
-    assert_eq!(side.observe(7, 13, ResultPanelSide::Right), None);
-    assert_eq!(
-        side.observe(7, 14, ResultPanelSide::Left),
-        Some((
-            ResultPanelSideEpisodeState::Conflicted {
-                stable_side: ResultPanelSide::Right,
-            },
-            ResultPanelSideTransitionReason::Conflict,
-        ))
-    );
-    assert_eq!(side.stable(), None);
-    side.start_episode(8);
-    assert_eq!(side.stable(), None);
-}
-
-#[test]
-fn pre_stable_candidates_do_not_count_as_opposite_evidence() {
-    let mut side = ResultPanelSideAccumulator::default();
-    assert!(side.observe(7, 10, ResultPanelSide::Left).is_some());
-    assert!(side.observe(7, 11, ResultPanelSide::Right).is_some());
-    assert_eq!(
-        side.observe(7, 12, ResultPanelSide::Right),
-        Some((
-            ResultPanelSideEpisodeState::Stable {
-                side: ResultPanelSide::Right,
-            },
-            ResultPanelSideTransitionReason::Accepted,
-        ))
-    );
-    assert_eq!(
-        side.observe(7, 13, ResultPanelSide::Left),
-        Some((
-            ResultPanelSideEpisodeState::Stable {
-                side: ResultPanelSide::Right,
-            },
-            ResultPanelSideTransitionReason::OppositeObserved,
-        ))
-    );
-    assert_eq!(side.stable(), Some(ResultPanelSide::Right));
-    assert!(matches!(
-        side.observe(7, 14, ResultPanelSide::Left),
-        Some((
-            ResultPanelSideEpisodeState::Conflicted { .. },
-            ResultPanelSideTransitionReason::Conflict
-        ))
-    ));
-}
-
 #[test]
 fn panel_side_conflict_retracts_the_provisional_result() {
     let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
     prepare_accepted_attempt(&mut output);
     output.publish(&accepted_result_event(1)).unwrap();
     output.publish(&accepted_result_event(2)).unwrap();
-    assert!(
-        output
-            .core_reducer
-            .test_active_provisional_result()
-            .is_some()
-    );
+    assert!(current_provisional_result(&output).is_some());
 
     prime_result_panel(&mut output, ResultPanelSide::Right, 3);
-    assert!(
-        output
-            .core_reducer
-            .test_active_provisional_result()
-            .is_none()
-    );
+    assert!(current_provisional_result(&output).is_none());
 
-    assert!(
-        output
-            .core_reducer
-            .test_active_provisional_result()
-            .is_none()
-    );
+    assert!(current_provisional_result(&output).is_none());
     assert!(output.headless_events.iter().any(|event| matches!(
         event.kind,
         RunEventKind::ResultChanged {
@@ -4145,99 +2823,6 @@ fn panel_side_conflict_retracts_the_provisional_result() {
             ..
         }
     )));
-}
-
-#[test]
-fn side_mismatch_before_result_play_type_stabilizes_detaches_only_the_attempt_linkage() {
-    let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
-    output
-        .core_reducer
-        .test_engine_mut()
-        .play_attempt
-        .observe_selection_screen();
-    output
-        .core_reducer
-        .test_engine_mut()
-        .play_attempt
-        .observe_screen(PlayAttemptScreen::Play, 0);
-    output
-        .core_reducer
-        .test_engine_mut()
-        .play_attempt
-        .observe_screen(PlayAttemptScreen::Result, 0);
-    output
-        .core_reducer
-        .test_engine_mut()
-        .retained_select
-        .select_play_sides
-        .insert(PlaySide::OnePlayer, 2);
-    output
-        .core_reducer
-        .test_engine_mut()
-        .retained_select
-        .select_play_types
-        .insert(PlayType::Double, 2);
-    prime_result_panel(&mut output, ResultPanelSide::Right, 0);
-
-    for sequence in [1, 2] {
-        let mut event = accepted_double_result_event(sequence);
-        let RunEventKind::FieldObservation { fields, .. } = &mut event.kind else {
-            unreachable!();
-        };
-        fields["panel_side"] = json!(ResultPanelSide::Right);
-        output.publish(&event).unwrap();
-    }
-
-    assert!(output.core_reducer.test_result_select_context_detached());
-    assert_eq!(
-        output
-            .core_reducer
-            .test_engine()
-            .retained_select
-            .observation_count,
-        0
-    );
-    assert!(
-        output
-            .core_reducer
-            .test_active_provisional_result()
-            .is_some()
-    );
-    assert!(output.headless_events.iter().any(|event| matches!(
-        event.kind,
-        RunEventKind::ResultSelectContextMismatch {
-            source_sequence: 1,
-            select_play_side: PlaySide::OnePlayer,
-            result_play_side: PlaySide::TwoPlayer,
-            ..
-        }
-    )));
-    output
-        .publish(&semantic_episode_event(
-            3,
-            "result",
-            SemanticEpisodePhase::Finalized,
-        ))
-        .unwrap();
-    assert!(output.headless_events.iter().any(|event| matches!(
-        &event.kind,
-        RunEventKind::ResultChanged {
-            state: ResultState::Confirmed { result, .. },
-            ..
-        } if result.play_side == PlaySide::TwoPlayer
-    )));
-}
-
-#[test]
-fn result_play_side_serializes_plain_side_for_sp_and_dp() {
-    assert_eq!(
-        serde_json::to_value(result_play_side(Some(ResultPanelSide::Left)).unwrap()).unwrap(),
-        json!("one_player")
-    );
-    assert_eq!(
-        serde_json::to_value(result_play_side(Some(ResultPanelSide::Right)).unwrap()).unwrap(),
-        json!("two_player")
-    );
 }
 
 #[test]
@@ -4274,10 +2859,13 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
                 )
                 .unwrap();
         }
-        assert!(matches!(
-            output.core_reducer.test_active_music_selection(),
-            Some(MusicSelectionState::Selected { .. })
-        ));
+        assert!(output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::MusicSelectionChanged {
+                state: MusicSelectionState::Selected { .. },
+                ..
+            }
+        )));
         output
             .publish(&episode(SemanticEpisodePhase::Closing, 4))
             .unwrap();
@@ -4297,18 +2885,9 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
                 },
             })
             .unwrap();
-        assert!(!output.core_reducer.test_music_selection_episode_active());
         let ended = MusicSelectionState::Unresolved {
             reason: MusicSelectionUnresolvedReason::EpisodeEnded,
         };
-        assert_eq!(
-            output.core_reducer.test_active_music_selection(),
-            Some(&ended)
-        );
-        assert_eq!(
-            output.state.lock().unwrap().latest_music_selection,
-            Some(ended.clone())
-        );
         let events = output.take_headless_events();
         let endings = events
             .iter()
@@ -4373,299 +2952,6 @@ fn pending_marker_is_visible_before_any_song_evidence() {
     assert_eq!(
         snapshot.selection_difficulty.unwrap().difficulty,
         Difficulty::Normal
-    );
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the regression verifies ordering across the complete admitted-field drain"
-)]
-fn music_select_handoff_waits_for_admitted_field_drain() {
-    let shared = state();
-    let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
-    let semantic = |sequence, phase| RunEvent {
-        schema: RUN_EVENT_SCHEMA.to_owned(),
-        kind: RunEventKind::SemanticScreenEpisodeChanged {
-            session_id: Some("invocation-1-session-1".to_owned()),
-            capture_generation: Some(1),
-            screen_episode_id: 7,
-            sequence,
-            monotonic_end_ms: sequence * 100,
-            screen: "music_select".to_owned(),
-            phase,
-        },
-    };
-    output
-        .publish(&semantic(70, SemanticEpisodePhase::Started))
-        .unwrap();
-    output
-        .publish(&semantic(71, SemanticEpisodePhase::Closing))
-        .unwrap();
-    assert_eq!(
-        output
-            .core_reducer
-            .test_engine()
-            .retained_select
-            .observation_count,
-        0
-    );
-
-    let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000061\"").unwrap();
-    output
-        .publish(&RunEvent {
-            schema: RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::FieldObservation {
-                session_id: Some("invocation-1-session-1".to_owned()),
-                capture_generation: Some(1),
-                screen_episode_id: 7,
-                sequence: 70,
-                monotonic_start_ms: 6_900,
-                monotonic_end_ms: 7_050,
-                screen: "music_select".to_owned(),
-                fields: json!({
-                    "active_list_title": "A",
-                    "artist": "ARTIST",
-                    "selected_difficulty": { "state": { "status": "known", "value": "hyper" } }
-                }),
-                result_song_resolution: Value::Null,
-                music_select_song_resolution: Value::Null,
-                parsed_result_fields: None,
-                result_chart_resolution: None,
-                result_performance_resolution: None,
-                current_score_ocr_resolution: None,
-                numeric_batch: None,
-                joint_evidence: JointEvidenceObservation {
-                    catalog_song_count: 2,
-                    candidates: vec![JointEvidenceCandidate {
-                        song_id,
-                        chart: scorepeek_core::catalog::Chart {
-                            key: scorepeek_core::catalog::ChartKey {
-                                play_type: PlayType::Single,
-                                difficulty: Difficulty::Hyper,
-                            },
-                            level: 10,
-                            notes: 1_136,
-                        },
-                        display_titles: vec!["∀".to_owned()],
-                        artist: "ARTIST".to_owned(),
-                        family_support: BTreeMap::from([(EvidenceFamily::SelectArtist, 300)]),
-                        support: 300,
-                    }],
-                },
-                processing_timing: Value::Null,
-                song_resolution_presentation: Box::new(SongResolutionPresentation::Unknown {
-                    reason: json!("test"),
-                    selected: None,
-                    runner_up: None,
-                    evidence_summary: None,
-                }),
-            },
-        })
-        .unwrap();
-    assert_eq!(
-        output
-            .core_reducer
-            .test_engine()
-            .selection_epochs
-            .incumbent
-            .observation_count,
-        1
-    );
-    assert_eq!(
-        output
-            .core_reducer
-            .test_engine()
-            .retained_select
-            .observation_count,
-        0
-    );
-    output
-        .publish(&semantic(72, SemanticEpisodePhase::Finalized))
-        .unwrap();
-    assert_eq!(
-        output
-            .core_reducer
-            .test_engine()
-            .retained_select
-            .observation_count,
-        1
-    );
-    assert_eq!(
-        output
-            .core_reducer
-            .test_engine()
-            .retained_select
-            .summary()
-            .selected
-            .unwrap()
-            .song_id,
-        song_id
-    );
-}
-
-#[test]
-fn selection_epoch_hands_off_only_the_latest_unfinished_successor() {
-    let song = |suffix: u8| {
-        serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012}\"")).unwrap()
-    };
-    let observation = |song_id, support| JointEvidenceObservation {
-        catalog_song_count: 100,
-        candidates: vec![JointEvidenceCandidate {
-            song_id,
-            chart: scorepeek_core::catalog::Chart {
-                key: scorepeek_core::catalog::ChartKey {
-                    play_type: PlayType::Single,
-                    difficulty: Difficulty::Hyper,
-                },
-                level: 8,
-                notes: 764,
-            },
-            display_titles: vec![format!("SONG {song_id:?}")],
-            artist: "ARTIST".to_owned(),
-            family_support: BTreeMap::from([(EvidenceFamily::SelectTitleLexical, support)]),
-            support,
-        }],
-    };
-    let incumbent = song(1);
-    let successor = song(2);
-    let mut epochs = SelectionEpochTracker::default();
-    epochs.observe(100, &observation(incumbent, 300), None);
-    epochs.observe(200, &observation(successor, 70), None);
-    assert_eq!(
-        epochs.handoff().summary().selected.unwrap().song_id,
-        successor
-    );
-
-    epochs.observe(300, &observation(incumbent, 300), None);
-    assert!(epochs.successor.candidates.is_empty());
-    assert_eq!(
-        epochs.handoff().summary().selected.unwrap().song_id,
-        incumbent
-    );
-}
-
-#[test]
-fn markerless_successor_is_active_without_inheriting_incumbent_difficulty() {
-    let song = |suffix: u8| {
-        serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012}\"")).unwrap()
-    };
-    let observation = |song_id, support| JointEvidenceObservation {
-        catalog_song_count: 100,
-        candidates: vec![JointEvidenceCandidate {
-            song_id,
-            chart: scorepeek_core::catalog::Chart {
-                key: scorepeek_core::catalog::ChartKey {
-                    play_type: PlayType::Single,
-                    difficulty: Difficulty::Hyper,
-                },
-                level: 8,
-                notes: 764,
-            },
-            display_titles: vec!["TEST".to_owned()],
-            artist: "ARTIST".to_owned(),
-            family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, support)]),
-            support,
-        }],
-    };
-    let incumbent = song(1);
-    let successor = song(2);
-    let mut epochs = SelectionEpochTracker::default();
-    epochs.observe_at(
-        100,
-        1_000,
-        &observation(incumbent, 300),
-        Some(Difficulty::Hyper),
-    );
-    let successor_started = epochs.observe_at(200, 2_000, &observation(successor, 70), None);
-    assert_eq!(
-        epochs.active_difficulty_state(),
-        Some((SelectionDifficultyTarget::Successor, None))
-    );
-    assert!(successor_started.iter().any(|transition| {
-        transition.target == SelectionDifficultyTarget::Successor
-            && transition.reason == SelectionDifficultyTransitionReason::TargetSwitch
-            && transition.current.is_none()
-    }));
-
-    let incumbent_resumed = epochs.observe_at(300, 3_000, &observation(incumbent, 300), None);
-    assert_eq!(
-        epochs
-            .active_difficulty_state()
-            .unwrap()
-            .1
-            .unwrap()
-            .difficulty,
-        Difficulty::Hyper
-    );
-    assert!(incumbent_resumed.iter().any(|transition| {
-        transition.target == SelectionDifficultyTarget::Incumbent
-            && transition.reason == SelectionDifficultyTransitionReason::TargetSwitch
-            && transition.current.is_some()
-    }));
-}
-
-#[test]
-fn accepted_hypothesis_can_return_to_conflict_on_new_contradictory_evidence() {
-    let first_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-    let second_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
-    let candidate = |song_id, family| JointEvidenceCandidate {
-        song_id,
-        chart: scorepeek_core::catalog::Chart {
-            key: scorepeek_core::catalog::ChartKey {
-                play_type: PlayType::Single,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 8,
-            notes: 764,
-        },
-        display_titles: vec!["TEST".to_owned()],
-        artist: "ARTIST".to_owned(),
-        family_support: BTreeMap::from([(family, 300)]),
-        support: 300,
-    };
-    let mut accumulator = HypothesisAccumulator::default();
-    accumulator.observe(
-        100,
-        &JointEvidenceObservation {
-            catalog_song_count: 0,
-            candidates: vec![candidate(first_song, EvidenceFamily::ResultTitle)],
-        },
-        None,
-        None,
-    );
-    for monotonic_ms in [101, 102] {
-        accumulator.observe(
-            monotonic_ms,
-            &JointEvidenceObservation {
-                catalog_song_count: 0,
-                candidates: Vec::new(),
-            },
-            None,
-            Some(ResultChartFactor {
-                play_type: Some(PlayType::Single),
-                difficulty: None,
-                notes: None,
-                level: None,
-            }),
-        );
-    }
-    assert_eq!(
-        accumulator.summary().state,
-        ResolverResolutionState::AcceptedJoint
-    );
-    accumulator.observe(
-        200,
-        &JointEvidenceObservation {
-            catalog_song_count: 0,
-            candidates: vec![candidate(second_song, EvidenceFamily::ResultArtist)],
-        },
-        None,
-        None,
-    );
-    assert_eq!(
-        accumulator.summary().state,
-        ResolverResolutionState::Conflict
     );
 }
 

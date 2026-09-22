@@ -10,29 +10,33 @@ use scorepeek_core::recognition::screen::{
     ScreenFieldObservationError, ScreenFieldObservations, observe_result_fields_with_numeric,
 };
 use scorepeek_core::recognition::shared::{CatalogCandidateDomain, CatalogCandidateDomainError};
-use scorepeek_core::recognition::title::{
-    OnnxParityError, RegisteredRecognitionResources, RegisteredResourceLoadError,
-};
+use scorepeek_core::recognition::title::OnnxParityError;
 use scorepeek_core::recognition::{
     music_select as music_select_recognition, result as result_recognition,
     screen as screen_recognition, title as title_recognition,
+};
+use scorepeek_resources::recognition::{
+    RegisteredRecognitionResources, RegisteredResourceLoadError,
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
-use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+use super::candidate_execution::LiveCandidateExecution;
 use super::field_observer::{FieldObserver, FieldObserverAdmission, FieldObserverInput};
+use super::text_observer_pool::{
+    PendingTextRecognition, RecognitionExecutionMode, RegisteredTextRecognitionSession,
+    TextRecognitionResult,
+};
 use scorepeek_core::model::session::{
-    PendingTextRecognition, ProjectedScreenFieldObservation, RecognitionExecutionMode,
-    RecognitionProcessingTiming, RegisteredScreenFieldObservation,
-    RegisteredTextRecognitionSession, TextRecognitionResult, TitleEvidenceObservation,
+    ProjectedScreenFieldObservation, RecognitionProcessingTiming, RegisteredScreenFieldObservation,
+    TitleEvidenceObservation,
 };
 
 const TITLE_EVIDENCE_RUNTIME_MANIFEST: &[u8] =
@@ -57,15 +61,6 @@ struct ProjectionCacheEntry {
     fields: ScreenFieldObservations,
     title_evidence: Option<TitleEvidenceObservation>,
     observation: ProjectedScreenFieldObservation,
-}
-
-/// Run-independent registered OCR resources shared by offline replay sessions.
-pub struct SharedRegisteredScreenFieldResources {
-    catalog_sha256: String,
-    model_sha256: String,
-    runtime_sha256: String,
-    catalog: Catalog,
-    text_pool: Arc<RegisteredTextRecognitionSession>,
 }
 
 #[derive(Debug)]
@@ -140,24 +135,6 @@ impl RegisteredScreenFieldObserver {
         })
     }
 
-    fn from_shared(
-        shared: &SharedRegisteredScreenFieldResources,
-        numeric_runtime: RegisteredNumericRuntime,
-    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
-        verify_title_evidence_manifest()?;
-        let catalog = shared.catalog.clone();
-        let candidate_domain = CatalogCandidateDomain::from_catalog(&catalog)?;
-        Ok(Self {
-            catalog,
-            text_pool: Arc::clone(&shared.text_pool),
-            numeric_worker: Arc::new(RegisteredNumericObserverWorker::start(numeric_runtime)?),
-            candidate_domain,
-            prefetched_text: Arc::new(Mutex::new(BTreeMap::new())),
-            prefetched_numeric: Arc::new(Mutex::new(BTreeMap::new())),
-            projection_cache: VecDeque::new(),
-        })
-    }
-
     pub(crate) fn prefetch_fields(
         &self,
         input: &FieldObserverInput,
@@ -193,7 +170,7 @@ impl RegisteredScreenFieldObserver {
             self.projection_cache.push_front(entry);
             return observation;
         }
-        let observation = ProjectedScreenFieldObservation::project(
+        let observation = ProjectedScreenFieldObservation::project_with::<LiveCandidateExecution>(
             &self.candidate_domain,
             &self.catalog,
             fields.clone(),
@@ -415,99 +392,6 @@ fn submit_text_fields(
         ));
     }
     Ok(())
-}
-
-impl SharedRegisteredScreenFieldResources {
-    /// Loads the immutable catalog/model binding once and creates one global offline text pool.
-    ///
-    /// # Errors
-    /// Returns the registered resource or text runtime failure before session replay starts.
-    pub fn load(
-        descriptor: &scorepeek_core::diagnostics::DiagnosticRunDescriptor,
-        catalog_root: &Path,
-        bundle_root: &Path,
-        text_workers: usize,
-    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
-        verify_title_evidence_manifest()?;
-        let resources = RegisteredRecognitionResources::load(
-            catalog_root,
-            bundle_root,
-            &descriptor.binding.catalog_sha256,
-            &descriptor.binding.model_sha256,
-            &descriptor.binding.runtime_sha256,
-        )?;
-        let (catalog, title_runtime) = resources.into_catalog_and_title_runtime();
-        let text_pool = RegisteredTextRecognitionSession::start_with_worker_count(
-            title_runtime,
-            RecognitionExecutionMode::Offline,
-            text_workers,
-        )?;
-        Ok(Self {
-            catalog_sha256: descriptor.binding.catalog_sha256.clone(),
-            model_sha256: descriptor.binding.model_sha256.clone(),
-            runtime_sha256: descriptor.binding.runtime_sha256.clone(),
-            catalog,
-            text_pool: Arc::new(text_pool),
-        })
-    }
-
-    /// Loads another immutable catalog while reusing an existing registered text pool.
-    ///
-    /// Offline corpus replay uses this when one suite contains sessions captured against
-    /// different catalog generations. Text inference is catalog-independent, while candidate
-    /// projection remains bound to the catalog recorded by each session.
-    ///
-    /// # Errors
-    /// Returns the registered resource error when the descriptor binding or catalog generation
-    /// cannot be loaded.
-    pub fn load_sharing_text_pool(
-        descriptor: &scorepeek_core::diagnostics::DiagnosticRunDescriptor,
-        catalog_root: &Path,
-        bundle_root: &Path,
-        shared: &Self,
-    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
-        if descriptor.binding.model_sha256 != shared.model_sha256 {
-            return Err(RegisteredResourceLoadError::ModelBindingMismatch.into());
-        }
-        if descriptor.binding.runtime_sha256 != shared.runtime_sha256 {
-            return Err(RegisteredResourceLoadError::RuntimeBindingMismatch.into());
-        }
-        verify_title_evidence_manifest()?;
-        let resources = RegisteredRecognitionResources::load(
-            catalog_root,
-            bundle_root,
-            &descriptor.binding.catalog_sha256,
-            &descriptor.binding.model_sha256,
-            &descriptor.binding.runtime_sha256,
-        )?;
-        let (catalog, _unused_title_runtime) = resources.into_catalog_and_title_runtime();
-        Ok(Self {
-            catalog_sha256: descriptor.binding.catalog_sha256.clone(),
-            model_sha256: descriptor.binding.model_sha256.clone(),
-            runtime_sha256: descriptor.binding.runtime_sha256.clone(),
-            catalog,
-            text_pool: Arc::clone(&shared.text_pool),
-        })
-    }
-
-    #[must_use]
-    pub fn text_workers(&self) -> usize {
-        self.text_pool.worker_count()
-    }
-
-    pub(crate) fn observer(
-        &self,
-        binding: &super::field_observer::FieldObserverSessionBinding,
-        numeric_runtime: RegisteredNumericRuntime,
-    ) -> Result<RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError> {
-        if binding.catalog_sha256() != self.catalog_sha256
-            || binding.model_sha256() != self.model_sha256
-            || binding.runtime_sha256() != self.runtime_sha256
-        {
-            return Err(RegisteredResourceLoadError::CatalogBindingMismatch.into());
-        }
-        RegisteredScreenFieldObserver::from_shared(self, numeric_runtime)
-    }
 }
 
 fn verify_title_evidence_manifest() -> Result<(), OnnxParityError> {

@@ -4,18 +4,22 @@ Every `scorepeek run` invocation creates one ordered diagnostic stream whether o
 recording is enabled. The invocation ID is the run ID; capture lifetimes use
 `<run-id>-session-<generation>` IDs.
 
-Each `raw_screen_observed` record carries the complete RESULT and PLAY predicate evidence measured
-for that canonical frame. RESULT evidence contains warm-header pixels and threshold, the panel-side
-state, both panels' upper/lower horizontal-edge pixel counts and qualification flags, and the shared
-edge threshold. PLAY evidence contains the qualifying top/bottom BPM-edge run counts, up to two
-distinct edge-pair candidates with their positions and lengths, and every acceptance threshold. The
-reducer derives its RESULT panel-side observation from that evidence rather than storing a second
-value that could disagree. These bounded numeric attributes contain neither pixels nor OCR text and
-are available even when the final screen class is `unknown`.
+The stream records lifecycle, capture scheduling and failures, domain transitions, and
+public event delivery in order. It omits individual raw screen, screen tick, and field
+observation records. Their canonical sequence and pixels live in the separate recording.
+The runtime emits `domain_summary` after every 256 core inputs and at session or watcher
+finish. The summary includes cumulative input, no-op, transition, and output counts,
+admitted frame and completed field counts, source sequence gaps, bounded screen and output-kind counts,
+and a small state snapshot; it does not repeat canonical pixels or tick metadata. Session
+start and finish records carry the relative canonical locator when recording is enabled.
+Session finish reports publication from the completed capture report;
+`recording_summary` reports retained frames, elided ticks, bytes, and publication
+status from the completed manifest. `runtime_run_summary` includes terminal recording
+and diagnostic health.
 
 The durable stream is
 `$XDG_STATE_HOME/scorepeek/diagnostics/<run-id>/diagnostics.ndjson`. It contains lifecycle,
-recognition observations, overlay child diagnostics, and exact public event payloads with their
+domain transitions, overlay child diagnostics, and exact public event payloads with their
 `events.sock` enqueue outcome. Records use a diagnostic-local sequence, are limited to 1 MiB,
 flush immediately without forcing filesystem durability. Persistence failure
 degrades diagnostics only: the run continues, the in-memory ring remains available, and disk
@@ -57,14 +61,14 @@ and reports `replay_available_us`, and the CLI warns on stderr while continuing 
 suffix. A client that falls behind is disconnected and the observer exits nonzero instead of
 resynchronizing.
 
-Offline production-path consumers may create an isolated runtime root and use the same
-`diagnostics.sock` request, header, ordering, gap, and terminal-completion contract. They complete
-the live-only handshake before producing required records and consume the stream while the
-producer is active. Isolated streams report their smaller 8 MiB ring in
-`diagnostic_run_started`; the ordinary `scorepeek run` ring remains 128 MiB. Corpus replay uses
-this isolated stream without creating a persistent `diagnostics.ndjson`, so concurrent replay
-sessions cannot accumulate a second copy of their diagnostic payloads on disk. Neither ring is an
-unbounded event collector.
+Private corpus replay reads the separate canonical recording contract directly. It does not
+launch a runtime replay process or consume `diagnostics.sock`. The ordinary `scorepeek run` ring
+remains 128 MiB and is bounded independently of canonical segment storage.
+
+The runtime trace omits individual no-op core steps. A terminal summary also carries
+the completed capture report's busy, rejected, failed and dropped worker counters.
+The `session_finished` record reports recording publication as `disabled`, `published`,
+`partial`, or `failed`.
 
 ```text
 scorepeek diagnostic observe
@@ -85,7 +89,8 @@ directories are retained; the next start removes the oldest completed invocation
 `--record` adds selectively retained canonical video below
 `sessions/<capture-session-id>/canonical/`, but TITLE pixels are always elided; `--record-all`
 retains every canonical 10 Hz due tick, including TITLE, for calibration captures. Both publish a
-`scorepeek-canonical-session-recording-v4` manifest whose required `game_version` is
-`identified(version)`, `not_observed`, `ambiguous`, or `observer_failed`. Runtime
-artifacts carry binding identities but no content digests. Corpus import computes video digests as
-it reads the bytes for validation and transfer.
+`scorepeek-canonical-session-recording-v5` manifest with a session-local ID, fixed RGB8 shape,
+tick-index and segment digests, completion state, and required `game_version` of
+`identified(version)`, `not_observed`, `ambiguous`, or `observer_failed`. The canonical manifest
+contains no capture profile, runtime binary or FFmpeg identity. The corpus canonical reader
+verifies the recording directory and decodes every retained segment.

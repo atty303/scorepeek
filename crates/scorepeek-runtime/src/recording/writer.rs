@@ -17,6 +17,11 @@ use std::sync::mpsc::{self, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use scorepeek_core::canonical_recording::{
+    CanonicalRecordingManifest, CanonicalShape, CanonicalTick, ElisionReason, IncompleteReason,
+    RECORDING_SCHEMA, SegmentArtifact, TICK_INDEX_NAME, TickDisposition, TickIndexArtifact,
+};
+use scorepeek_core::frame::CANONICAL_FRAME_CONTRACT_ID;
 use scorepeek_core::game_version::GameVersionState;
 use scorepeek_core::recognition::screen::ScreenClass;
 use serde::Serialize;
@@ -115,26 +120,13 @@ pub struct RecordingHealthSnapshot {
     pub dropped_frames: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CanonicalRecordingCompleteness {
-    Complete,
-    Partial,
-}
+pub use scorepeek_core::canonical_recording::Completion as CanonicalRecordingCompleteness;
 
 #[derive(Debug)]
 pub struct CanonicalRecordingOutcome {
     pub manifest_published: bool,
     pub completeness: CanonicalRecordingCompleteness,
     pub final_health: RecordingHealthSnapshot,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct RecordingCaptureIdentity {
-    pub capture_profile_sha256: String,
-    pub capture_profile_document: String,
-    pub normalizer_sha256: String,
-    pub normalizer_document: String,
 }
 
 #[derive(Clone)]
@@ -180,7 +172,6 @@ impl CanonicalRecordingWorker {
         directory_name: &str,
         memory_limit: RecordingMemoryLimit,
         retention: RecordingRetention,
-        capture_identity: Option<RecordingCaptureIdentity>,
     ) -> Result<Self, String> {
         let ffmpeg = inspect_ffmpeg()?;
         let directory = root.join(directory_name);
@@ -202,6 +193,11 @@ impl CanonicalRecordingWorker {
         let metadata_memory = MemoryReservation::try_new(Arc::clone(&memory), 64 * 1024)?;
         let worker_memory = Arc::clone(&memory);
         let worker_directory = directory.clone();
+        let session_id = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("session")
+            .to_owned();
         let worker = thread::Builder::new()
             .name("scorepeek-canonical-recorder".to_owned())
             .spawn(move || {
@@ -213,7 +209,7 @@ impl CanonicalRecordingWorker {
                     Some(tick_index),
                     metadata_memory,
                     retention,
-                    capture_identity,
+                    session_id,
                 )
                 .run(&receiver)
             })
@@ -317,40 +313,8 @@ fn health_snapshot(
     }
 }
 
-#[derive(Serialize)]
-struct TickRecord {
-    sequence: u64,
-    source_sequence: u64,
-    monotonic_ms: u64,
-    screen: ScreenClass,
-    semantic_episode_id: Option<u64>,
-    disposition: &'static str,
-}
-
-#[derive(Serialize)]
-struct SegmentRecord {
-    path: String,
-    first_sequence: u64,
-    last_sequence: u64,
-    frames: usize,
-    bytes: u64,
-}
-
-#[derive(Serialize)]
-struct Manifest<'a> {
-    schema: &'static str,
-    completeness: CanonicalRecordingCompleteness,
-    ffmpeg_sha256: String,
-    ffmpeg_version: &'a str,
-    tick_count: usize,
-    segments: &'a [SegmentRecord],
-    dropped_frames: u64,
-    completeness_reasons: Vec<&'static str>,
-    memory_limit_bytes: u64,
-    memory_high_water_bytes: u64,
-    capture_identity: Option<&'a RecordingCaptureIdentity>,
-    game_version: &'a GameVersionState,
-}
+type TickRecord = CanonicalTick;
+type SegmentRecord = SegmentArtifact;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -365,6 +329,7 @@ struct Recorder {
     ticks: Vec<TickRecord>,
     tick_index: Option<TickIndexWriter>,
     tick_count: usize,
+    tick_index_artifact: Option<TickIndexArtifact>,
     tick_index_failure: bool,
     segments: Vec<SegmentRecord>,
     segment_memory: Vec<MemoryReservation>,
@@ -383,7 +348,7 @@ struct Recorder {
     memory: Arc<RecordingMemoryAccount>,
     _metadata_memory: MemoryReservation,
     retention: RecordingRetention,
-    capture_identity: Option<RecordingCaptureIdentity>,
+    session_id: String,
     game_version: GameVersionState,
 }
 
@@ -394,13 +359,13 @@ struct PendingFrame {
 
 struct ToolIdentity {
     path: PathBuf,
-    sha256: String,
-    version: String,
 }
 
 struct TickIndexWriter {
     file: File,
     count: usize,
+    bytes: u64,
+    hasher: Sha256,
 }
 
 impl TickIndexWriter {
@@ -411,7 +376,12 @@ impl TickIndexWriter {
             .mode(0o600)
             .open(path)
             .map_err(|error| format!("canonical tick index create failed: {error}"))?;
-        Ok(Self { file, count: 0 })
+        Ok(Self {
+            file,
+            count: 0,
+            bytes: 0,
+            hasher: Sha256::new(),
+        })
     }
 
     fn write(&mut self, tick: &TickRecord) -> Result<(), String> {
@@ -421,15 +391,22 @@ impl TickIndexWriter {
         self.file
             .write_all(&bytes)
             .map_err(|error| format!("canonical tick index write failed: {error}"))?;
+        self.hasher.update(&bytes);
+        self.bytes = self.bytes.saturating_add(bytes.len() as u64);
         self.count = self.count.saturating_add(1);
         Ok(())
     }
 
-    fn finish(self) -> Result<usize, String> {
+    fn finish(self) -> Result<TickIndexArtifact, String> {
         self.file
             .sync_all()
             .map_err(|error| format!("canonical tick index sync failed: {error}"))?;
-        Ok(self.count)
+        Ok(TickIndexArtifact {
+            path: TICK_INDEX_NAME.into(),
+            sha256: hex_digest(self.hasher.finalize().as_slice()),
+            bytes: self.bytes,
+            count: self.count as u64,
+        })
     }
 }
 
@@ -446,7 +423,7 @@ impl Recorder {
         tick_index: Option<TickIndexWriter>,
         metadata_memory: MemoryReservation,
         retention: RecordingRetention,
-        capture_identity: Option<RecordingCaptureIdentity>,
+        session_id: String,
     ) -> Self {
         Self {
             directory,
@@ -457,6 +434,7 @@ impl Recorder {
             ticks: Vec::new(),
             tick_index,
             tick_count: 0,
+            tick_index_artifact: None,
             tick_index_failure: false,
             segments: Vec::new(),
             segment_memory: Vec::new(),
@@ -475,7 +453,7 @@ impl Recorder {
             memory,
             _metadata_memory: metadata_memory,
             retention,
-            capture_identity,
+            session_id,
             game_version: GameVersionState::NotObserved,
         }
     }
@@ -556,26 +534,29 @@ impl Recorder {
 
     fn finalize_tick(&mut self, pending: PendingFrame) {
         let PendingFrame { frame, retained } = pending;
-        if retained {
-            self.retain(&frame);
-        }
+        let attempted = retained;
+        let retained = retained && self.retain(&frame);
         let tick = TickRecord {
             sequence: frame.sequence,
             source_sequence: frame.source_sequence,
-            monotonic_ms: frame.monotonic_ms,
+            source_timestamp_ms: frame.monotonic_ms,
             screen: frame.screen,
             semantic_episode_id: frame.semantic_episode_id,
             disposition: if retained {
-                "retained"
+                TickDisposition::Retained
+            } else if attempted {
+                TickDisposition::Elided(ElisionReason::RecordingFailure)
             } else if frame.title_pixels {
-                "title"
+                TickDisposition::Elided(ElisionReason::Title)
             } else {
                 match frame.screen {
-                    ScreenClass::Play => "play_interior",
-                    ScreenClass::ModeSelect => "mode_select_interior",
-                    ScreenClass::Unknown => "unknown_interior",
-                    ScreenClass::Title => "title",
-                    _ => "retained",
+                    ScreenClass::Play => TickDisposition::Elided(ElisionReason::PlayInterior),
+                    ScreenClass::ModeSelect => {
+                        TickDisposition::Elided(ElisionReason::ModeSelectInterior)
+                    }
+                    ScreenClass::Unknown => TickDisposition::Elided(ElisionReason::UnknownInterior),
+                    ScreenClass::Title => TickDisposition::Elided(ElisionReason::Title),
+                    _ => TickDisposition::Elided(ElisionReason::RecordingFailure),
                 }
             },
         };
@@ -602,20 +583,20 @@ impl Recorder {
         }
     }
 
-    fn retain(&mut self, frame: &RecordedFrame) {
+    fn retain(&mut self, frame: &RecordedFrame) -> bool {
         if self
             .last_retained_sequence
             .is_some_and(|sequence| frame.sequence <= sequence)
         {
-            return;
+            return false;
         }
         if self.dry_run {
             self.last_retained_sequence = Some(frame.sequence);
-            return;
+            return true;
         }
         if self.encoder_failure {
             self.external_dropped.fetch_add(1, Ordering::Relaxed);
-            return;
+            return false;
         }
         if self
             .encoder
@@ -626,7 +607,7 @@ impl Recorder {
         }
         if self.encoder_failure {
             self.external_dropped.fetch_add(1, Ordering::Relaxed);
-            return;
+            return false;
         }
         if self.encoder.is_none() {
             if let Ok(encoder) = SegmentEncoder::start(
@@ -642,7 +623,7 @@ impl Recorder {
                 self.encoder_failure = true;
                 self.memory.mark_degraded();
                 self.external_dropped.fetch_add(1, Ordering::Relaxed);
-                return;
+                return false;
             }
         }
         let write_error = self
@@ -661,9 +642,10 @@ impl Recorder {
             self.shutdown_timeout |= error.contains("timed out");
             self.external_dropped
                 .fetch_add(lost_frames, Ordering::Relaxed);
-            return;
+            return false;
         }
         self.last_retained_sequence = Some(frame.sequence);
+        true
     }
 
     fn close_segment(&mut self) {
@@ -701,8 +683,9 @@ impl Recorder {
         let Some(writer) = self.tick_index.take() else {
             return;
         };
-        if let Ok(count) = writer.finish() {
-            self.tick_count = count;
+        if let Ok(artifact) = writer.finish() {
+            self.tick_count = usize::try_from(artifact.count).unwrap_or(usize::MAX);
+            self.tick_index_artifact = Some(artifact);
         } else {
             self.partial = true;
             self.tick_index_failure = true;
@@ -713,36 +696,42 @@ impl Recorder {
     fn publish(&self, completeness: CanonicalRecordingCompleteness) -> Result<(), String> {
         let mut completeness_reasons = Vec::new();
         if self.dropped_frames > 0 {
-            completeness_reasons.push("frame_loss");
+            completeness_reasons.push(IncompleteReason::FrameLoss);
         }
         if self.encoder_failure {
-            completeness_reasons.push("encoder_failure");
+            completeness_reasons.push(IncompleteReason::EncoderFailure);
         }
         if self.shutdown_timeout {
-            completeness_reasons.push("shutdown_timeout");
+            completeness_reasons.push(IncompleteReason::ShutdownTimeout);
         }
         if self.memory.memory_limit_exceeded.load(Ordering::Acquire) {
-            completeness_reasons.push("memory_limit");
+            completeness_reasons.push(IncompleteReason::MemoryLimit);
         }
         if self.tick_index_failure {
-            completeness_reasons.push("tick_index_failure");
+            completeness_reasons.push(IncompleteReason::TickIndexFailure);
         }
         if self.tick_count == 0 {
-            completeness_reasons.push("no_canonical_ticks");
+            completeness_reasons.push(IncompleteReason::NoCanonicalTicks);
         }
-        let manifest = Manifest {
-            schema: "scorepeek-canonical-session-recording-v4",
+        let manifest = CanonicalRecordingManifest {
+            schema: RECORDING_SCHEMA.into(),
+            frame_contract: CANONICAL_FRAME_CONTRACT_ID.into(),
+            session_id: self.session_id.clone(),
+            shape: CanonicalShape::fixed(),
+            tick_index: self
+                .tick_index_artifact
+                .clone()
+                .unwrap_or_else(|| TickIndexArtifact {
+                    path: TICK_INDEX_NAME.into(),
+                    sha256: String::new(),
+                    bytes: 0,
+                    count: 0,
+                }),
             completeness,
-            ffmpeg_sha256: self.ffmpeg.sha256.clone(),
-            ffmpeg_version: &self.ffmpeg.version,
-            tick_count: self.tick_count,
-            segments: &self.segments,
-            dropped_frames: self.dropped_frames,
+            tick_count: self.tick_count as u64,
+            segments: self.segments.clone(),
             completeness_reasons,
-            memory_limit_bytes: self.memory.limit,
-            memory_high_water_bytes: self.memory.high_water.load(Ordering::Relaxed),
-            capture_identity: self.capture_identity.as_ref(),
-            game_version: &self.game_version,
+            game_version: self.game_version.clone(),
         };
         let mut bytes = serde_json::to_vec(&manifest)
             .map_err(|_| "canonical manifest serialization failed".to_owned())?;
@@ -931,8 +920,9 @@ impl SegmentEncoder {
             path: filename.to_owned(),
             first_sequence: self.first_sequence,
             last_sequence: self.last_sequence,
-            frames: self.frames,
+            frames: self.frames as u64,
             bytes: metadata.len(),
+            sha256: digest_file(&self.path)?,
         })
     }
 
@@ -1060,16 +1050,11 @@ fn inspect_ffmpeg() -> Result<ToolIdentity, String> {
     if !version.status.success() {
         return Err("ffmpeg version preflight failed".to_owned());
     }
-    let version = String::from_utf8_lossy(&version.stdout)
+    String::from_utf8_lossy(&version.stdout)
         .lines()
         .next()
-        .ok_or_else(|| "ffmpeg version output is empty".to_owned())?
-        .to_owned();
-    Ok(ToolIdentity {
-        sha256: digest_file(&path)?,
-        path,
-        version,
-    })
+        .ok_or_else(|| "ffmpeg version output is empty".to_owned())?;
+    Ok(ToolIdentity { path })
 }
 
 fn executable_on_path(name: &str) -> Result<PathBuf, String> {
@@ -1190,14 +1175,12 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             ToolIdentity {
                 path: PathBuf::new(),
-                sha256: "0".repeat(64),
-                version: "test".to_owned(),
             },
             memory,
             None,
             metadata_memory,
             retention,
-            None,
+            "session-1".to_owned(),
         );
         recorder.dry_run = true;
         recorder
@@ -1233,17 +1216,17 @@ mod tests {
         assert!(
             recorder.ticks[..10]
                 .iter()
-                .all(|tick| tick.disposition == "retained")
+                .all(|tick| tick.disposition == TickDisposition::Retained)
         );
         assert!(
-            recorder.ticks[10..30]
-                .iter()
-                .all(|tick| tick.disposition == "play_interior")
+            recorder.ticks[10..30].iter().all(
+                |tick| tick.disposition == TickDisposition::Elided(ElisionReason::PlayInterior)
+            )
         );
         assert!(
             recorder.ticks[30..]
                 .iter()
-                .all(|tick| tick.disposition == "retained")
+                .all(|tick| tick.disposition == TickDisposition::Retained)
         );
     }
 
@@ -1263,7 +1246,7 @@ mod tests {
                 recorder
                     .ticks
                     .iter()
-                    .all(|tick| tick.disposition == "retained")
+                    .all(|tick| tick.disposition == TickDisposition::Retained)
             );
         }
     }
@@ -1283,9 +1266,9 @@ mod tests {
         assert!(
             recorder.ticks[..10]
                 .iter()
-                .all(|tick| tick.disposition == "title")
+                .all(|tick| tick.disposition == TickDisposition::Elided(ElisionReason::Title))
         );
-        assert_eq!(recorder.ticks[10].disposition, "retained");
+        assert_eq!(recorder.ticks[10].disposition, TickDisposition::Retained);
     }
 
     #[test]
@@ -1305,7 +1288,7 @@ mod tests {
                 recorder
                     .ticks
                     .iter()
-                    .all(|tick| tick.disposition == "retained")
+                    .all(|tick| tick.disposition == TickDisposition::Retained)
             );
         }
     }
@@ -1318,15 +1301,13 @@ mod tests {
         }
         recorder.observe(frame(41, ScreenClass::Play));
         recorder.retain_session_tail();
-        assert!(
-            recorder.ticks[10..30]
-                .iter()
-                .all(|tick| tick.disposition == "unknown_interior")
-        );
+        assert!(recorder.ticks[10..30].iter().all(
+            |tick| tick.disposition == TickDisposition::Elided(ElisionReason::UnknownInterior)
+        ));
         assert!(
             recorder.ticks[30..]
                 .iter()
-                .all(|tick| tick.disposition == "retained")
+                .all(|tick| tick.disposition == TickDisposition::Retained)
         );
     }
 
@@ -1365,16 +1346,17 @@ mod tests {
         let tick = TickRecord {
             sequence: 7,
             source_sequence: 70,
-            monotonic_ms: 700,
+            source_timestamp_ms: 700,
             screen: ScreenClass::Result,
             semantic_episode_id: Some(3),
-            disposition: "retained",
+            disposition: TickDisposition::Retained,
         };
         writer.write(&tick).unwrap();
-        let count = writer.finish().unwrap();
+        let artifact = writer.finish().unwrap();
         let bytes = std::fs::read(path).unwrap();
 
-        assert_eq!(count, 1);
+        assert_eq!(artifact.count, 1);
+        assert_eq!(artifact.sha256, digest_bytes(&bytes));
         assert!(bytes.ends_with(b"\n"));
         assert!(!bytes[..bytes.len() - 1].contains(&b'\n'));
     }
@@ -1387,7 +1369,6 @@ mod tests {
             "canonical",
             RecordingMemoryLimit::default_limit(),
             RecordingRetention::Selective,
-            None,
         )
         .unwrap();
         let outcome = worker.finish(GameVersionState::NotObserved);
@@ -1441,7 +1422,7 @@ mod tests {
         let (decoded_digest, decoded_frames) =
             decode_segment(&ffmpeg.path, &root.path().join(&segment.path)).unwrap();
         assert_eq!(decoded_digest, digest_bytes(frame.pixels.as_ref()));
-        assert_eq!(decoded_frames, segment.frames);
+        assert_eq!(decoded_frames as u64, segment.frames);
     }
 
     #[test]

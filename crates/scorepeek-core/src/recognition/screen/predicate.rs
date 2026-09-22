@@ -214,34 +214,6 @@ impl CanonicalLayout {
         Ok(())
     }
 
-    /// Returns the bounded text-presentation regions used by offline music-select motion review.
-    ///
-    /// # Errors
-    /// Returns an error when either committed layout artifact is invalid or their identities do
-    /// not agree.
-    pub fn music_select_motion_regions() -> Result<MusicSelectMotionRegions, RecognitionError> {
-        let canonical = Self::load()?;
-        let context = IntegratedContextLayout::load()?;
-        let list = canonical.music_select.list_titles;
-        let height = list
-            .stride_y
-            .checked_mul(list.slots.saturating_sub(1))
-            .and_then(|offset| offset.checked_add(list.height))
-            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        let list_titles = Roi {
-            x: list.x,
-            y: list.y,
-            width: list.width,
-            height,
-        };
-        list_titles.validate(canonical.width, canonical.height)?;
-        Ok(MusicSelectMotionRegions {
-            list_titles,
-            active_list_title: context.music_select.active_list_title,
-            central_title: canonical.music_select.selected_title,
-        })
-    }
-
     #[must_use]
     pub fn sha256() -> String {
         encode_sha256(LAYOUT_BYTES)

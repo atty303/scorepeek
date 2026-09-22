@@ -221,7 +221,7 @@ pub fn run_runtime_live_session(
     session.record_sampling_summary(
         counters.last_recognition_sequence.unwrap_or(0),
         finish_time,
-        scorepeek_core::diagnostics::RecognitionSamplingSummary {
+        crate::diagnostics::contract::RecognitionSamplingSummary {
             processed_ticks: counters.recognition_ticks,
             busy_skips: counters.recognition_busy_skips,
             maximum_consecutive_busy_skips: counters.maximum_consecutive_busy_skips,
@@ -400,7 +400,7 @@ fn start_field_observation_gate(
                 config.handoff.policy.clone(),
                 config.catalog_root,
                 config.bundle_root,
-                scorepeek_core::model::session::RecognitionExecutionMode::Live,
+                crate::service::session::recognition::RecognitionExecutionMode::Live,
             )
         },
         |directory_name| {
@@ -411,7 +411,7 @@ fn start_field_observation_gate(
                 config.handoff.policy.clone(),
                 config.catalog_root,
                 config.bundle_root,
-                scorepeek_core::model::session::RecognitionExecutionMode::Live,
+                crate::service::session::recognition::RecognitionExecutionMode::Live,
             )
         },
     ) {
@@ -449,17 +449,6 @@ fn start_field_observation_gate(
                     )
                 }
             });
-    let recording_capture_identity =
-        authored
-            .as_ref()
-            .map(|value| crate::recording::writer::RecordingCaptureIdentity {
-                capture_profile_sha256: value.capture_profile_sha256.clone(),
-                capture_profile_document: String::from_utf8(value.capture_profile_bytes.clone())
-                    .expect("canonical profile JSON is UTF-8"),
-                normalizer_sha256: value.normalizer_sha256.clone(),
-                normalizer_document: String::from_utf8(value.normalizer_bytes.clone())
-                    .expect("canonical normalizer JSON is UTF-8"),
-            });
     let (canonical_recorder, canonical_recording_start_failed) =
         if let Some(recording_root) = config.canonical_recording_root {
             match CanonicalRecordingWorker::start_named(
@@ -467,7 +456,6 @@ fn start_field_observation_gate(
                 "canonical",
                 config.recording_memory_limit,
                 config.recording_retention,
-                recording_capture_identity,
             ) {
                 Ok(recorder) => (Some(recorder), false),
                 Err(_) => (None, true),
@@ -737,7 +725,7 @@ pub(super) fn offer_field_observation_frames(
                 FieldObservationSubmission::BusySkipped => {
                     let _ = session.record_frame_processing_timing(
                         result.timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::BusySkip,
+                        crate::diagnostics::contract::FrameFieldStatus::BusySkip,
                         None,
                     );
                     unreachable!("offline gate has no pending OCR policy")
@@ -745,7 +733,7 @@ pub(super) fn offer_field_observation_frames(
                 FieldObservationSubmission::NotApplicable => {
                     let _ = session.record_frame_processing_timing(
                         result.timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::NotApplicable,
+                        crate::diagnostics::contract::FrameFieldStatus::NotApplicable,
                         None,
                     );
                     source.counters.field_not_applicable =
@@ -759,7 +747,7 @@ pub(super) fn offer_field_observation_frames(
                 FieldObservationSubmission::Rejected(error) => {
                     let _ = session.record_frame_processing_timing(
                         result.timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::Failed,
+                        crate::diagnostics::contract::FrameFieldStatus::Failed,
                         None,
                     );
                     source.counters.field_rejected =
@@ -979,7 +967,7 @@ pub(super) fn offer_live_field_observation_frames(
             if let Err(error) = transition_result {
                 let _ = session.record_frame_processing_timing(
                     frame_timing,
-                    scorepeek_core::diagnostics::FrameFieldStatus::Failed,
+                    crate::diagnostics::contract::FrameFieldStatus::Failed,
                     None,
                 );
                 semantic_close_failed = true;
@@ -991,7 +979,7 @@ pub(super) fn offer_live_field_observation_frames(
                 FieldObservationSubmission::BusySkipped => {
                     let _ = session.record_frame_processing_timing(
                         frame_timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::BusySkip,
+                        crate::diagnostics::contract::FrameFieldStatus::BusySkip,
                         None,
                     );
                     source.counters.field_observation_busy_skips = source
@@ -1012,7 +1000,7 @@ pub(super) fn offer_live_field_observation_frames(
                 FieldObservationSubmission::NotApplicable => {
                     let _ = session.record_frame_processing_timing(
                         frame_timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::NotApplicable,
+                        crate::diagnostics::contract::FrameFieldStatus::NotApplicable,
                         None,
                     );
                     source.counters.consecutive_field_observation_busy_skips = 0;
@@ -1023,7 +1011,7 @@ pub(super) fn offer_live_field_observation_frames(
                     let Some(screen_episode_id) = episodes.active_episode_id() else {
                         let _ = session.record_frame_processing_timing(
                             frame_timing,
-                            scorepeek_core::diagnostics::FrameFieldStatus::NotApplicable,
+                            crate::diagnostics::contract::FrameFieldStatus::NotApplicable,
                             None,
                         );
                         continue;
@@ -1038,7 +1026,7 @@ pub(super) fn offer_live_field_observation_frames(
                 FieldObservationSubmission::Rejected(error) => {
                     let _ = session.record_frame_processing_timing(
                         frame_timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::Failed,
+                        crate::diagnostics::contract::FrameFieldStatus::Failed,
                         None,
                     );
                     source.counters.consecutive_field_observation_busy_skips = 0;
@@ -1271,9 +1259,9 @@ pub(super) fn poll_field_observations(
                     let _ = session.record_frame_processing_timing(
                         timing,
                         if late {
-                            scorepeek_core::diagnostics::FrameFieldStatus::LateEpisode
+                            crate::diagnostics::contract::FrameFieldStatus::LateEpisode
                         } else {
-                            scorepeek_core::diagnostics::FrameFieldStatus::Completed
+                            crate::diagnostics::contract::FrameFieldStatus::Completed
                         },
                         Some(output.processing_timing()),
                     );
@@ -1286,9 +1274,9 @@ pub(super) fn poll_field_observations(
                             monotonic_start_ms,
                             monotonic_end_ms,
                             if late {
-                                scorepeek_core::diagnostics::FrameFieldStatus::LateEpisode
+                                crate::diagnostics::contract::FrameFieldStatus::LateEpisode
                             } else {
-                                scorepeek_core::diagnostics::FrameFieldStatus::Completed
+                                crate::diagnostics::contract::FrameFieldStatus::Completed
                             },
                             output,
                         ) {
@@ -1310,7 +1298,7 @@ pub(super) fn poll_field_observations(
                 } else {
                     let _ = session.record_frame_processing_timing(
                         timing,
-                        scorepeek_core::diagnostics::FrameFieldStatus::Failed,
+                        crate::diagnostics::contract::FrameFieldStatus::Failed,
                         None,
                     );
                     counters.field_ready_failure = counters.field_ready_failure.saturating_add(1);

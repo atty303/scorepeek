@@ -11,7 +11,7 @@ pub fn select(
     output: &Path,
     work: &Path,
 ) -> Result<serde_json::Value, String> {
-    scorepeek_core::catalog::artifact::select(candidate, current, output, work)
+    scorepeek_resources::artifact::select(candidate, current, output, work)
         .map_err(|error| error.to_string())
         .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
 }

@@ -28,41 +28,23 @@ empty-workspace editor automatically, and persists only to the supplied path:
 mise run overlay:visual:wayland -- /tmp/scorepeek-wayland-visual.toml 60
 ```
 
-To reproduce startup and selection cost with an existing current-schema document without modifying
-it, pass it as the third argument. The first path is still a create-only shadow copy and is the only
-configuration the run may save:
-
-```text
-mise run overlay:visual:wayland -- /tmp/scorepeek-wayland-latency.toml 60 /path/to/source-overlay.toml
-```
-
 When compositor nesting is part of the test, launch this task inside the nested compositor's own
 `WAYLAND_DISPLAY`; record that display and the compositor process independently from the parent
 desktop session.
 
-The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz, starts
-the production Wayland runner with four screen-filtered fixture canvases, including an explicit
-all-screen canvas, animated backgrounds, and multiple widgets split across those outputs. It drives
-production `EditorInput` transport to select a named canvas, move it
-between outputs, change visibility and delete it. A virtual-pointer client closes and reopens the
-editor through Scroll. The virtual-pointer client then drives the public Event API through
-`music_select` → `play` → `music_select`, waiting for the selection canvas's active, inactive, and
-active diagnostic acknowledgements before each next step and before the editor reopens. The canvas must
-unmap and remap under one native run ID, retain one skin runtime, paint within 250 ms of the second
-activation, and report no display-canvas worker failure. It also
-drives compositor-delivered motion, primary/secondary buttons and an
-axis event with the checked-in virtual-pointer client. Every deterministic lifecycle revision must
-be painted by each receiving stage; an independent compositor-input revision must be painted by the
-receiving output stage within 250 ms. Both outputs must sustain at least 55 effective paints per
-second, and every retained frame sample must contain every required phase:
+The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz. An
+external fixture starts the production private Wayland role with one status canvas on each output
+under an isolated home and XDG state. The harness injects a pointer drag through Scroll IPC,
+checks that the role reports complete paint summaries for both outputs, and rejects canvas failures:
 
 ```text
 mise run overlay:visual:wayland:nested
 ```
 
-This scenario is intentionally outside `mise run test`: it is used to confirm that the fake adapter
-still represents the observed compositor lifecycle and frame-callback loop, while the routine lifecycle,
-revision, input and retained-resource oracle remains the fake-Wayland integration test.
+This host-dependent scenario is intentionally outside `mise run test`. The routine lifecycle,
+revision, input and retained-resource oracle remains the fake-Wayland integration test. The
+nested harness keeps stdout, stderr and compositor logs until its assertions finish and prints
+them on failure.
 
 The native child emits timestamped `native_startup_timing` records for shell connection, renderer
 creation, application initialization and first paint. `elapsed_us` is measured from that surface
@@ -132,9 +114,8 @@ Also exercise output navigation, UNKNOWN preview, add/delete/undo, save/reopen a
 these cover state transitions that a single drag does not.
 
 Native and browser images are evidence for human or Codex comparison; pixel equality is not an
-acceptance condition. Browser integration, fake Wayland, and the checked-in nested compositor
-scenario are the routine completion gates. Use actual Wayland or OBS when investigating a
-backend-specific failure.
+acceptance condition. Browser integration and fake Wayland are routine checks. Use the opt-in
+nested compositor scenario or actual Wayland or OBS when investigating a backend-specific failure.
 
 A scenario may set `skin` to any installed reverse-domain skin ID. The visual tasks build and
 install repository packages into an isolated XDG store before running the scenario. A skin receives

@@ -1,17 +1,18 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{DirBuilder, File};
 #[cfg(test)]
 use std::io::BufWriter;
-use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+use std::io::{self, Read as _};
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-#[cfg(test)]
-use crate::config::document::ConfigFile;
-use crate::service::session::recognition as recognition_session;
+use crate::diagnostics::contract::{
+    DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRetention,
+    DiagnosticRunDescriptor,
+};
 use crate::{
     capture_live,
     config::{
@@ -30,21 +31,14 @@ use crate::{
     recording::{
         policy::{DEFAULT_RECORDING_MEMORY_MIB, RecordingMemoryLimit},
         retention::RecordingRetention,
-        simulation as recording_simulation, writer as canonical_recording,
+        writer as canonical_recording,
     },
     service::session as routine_watcher,
 };
-use scorepeek_core::catalog::CatalogStore;
-use scorepeek_core::diagnostics::{
-    DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRetention,
-    DiagnosticRunDescriptor,
-};
 use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
-use scorepeek_core::frame::{CanonicalFrame, CanonicalLayout};
-use scorepeek_core::recognition::title::{
-    DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
-};
+use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::recognition::{screen as recognition, title as recognition_title};
+use scorepeek_resources::CatalogStore;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -186,13 +180,6 @@ enum VulkanLayerCommand {
     Install,
     /// Remove the Scorepeek-managed manifest and layer library.
     Uninstall,
-}
-
-#[must_use]
-pub(crate) fn development_operation_main(operation: &'static str) -> ExitCode {
-    let mut args = vec![OsString::from("recognition"), OsString::from(operation)];
-    args.extend(env::args_os().skip(1));
-    exit_for_result(run(&args))
 }
 
 pub(crate) fn exit_for_result(result: Result<(), String>) -> ExitCode {
@@ -612,73 +599,6 @@ fn run_vulkan_layer_command(
     Ok(scorepeek_frontend_api::CommandResult::VulkanLayer { result })
 }
 
-#[allow(clippy::too_many_lines)]
-fn run(args: &[OsString]) -> Result<(), String> {
-    run_with_model_initializer(args, |override_bundle| {
-        scorepeek::resources::model::acquire::ensure_small_model(override_bundle, |event| {
-            match event {
-                scorepeek::resources::model::cache::ModelCacheEvent::DownloadStarted => {
-                    eprintln!("scorepeek: downloading PP-OCRv6-small model...");
-                }
-                scorepeek::resources::model::cache::ModelCacheEvent::DownloadCompleted => {
-                    eprintln!("scorepeek: PP-OCRv6-small model download complete");
-                }
-            }
-        })
-        .map_err(|error| format!("scorepeek model initialization failed: {error}"))
-    })
-}
-
-fn run_with_model_initializer(
-    args: &[OsString],
-    initialize: impl FnOnce(Option<&Path>) -> Result<PathBuf, String>,
-) -> Result<(), String> {
-    if let Some(result) = try_diagnostic_stream_command(args) {
-        return result;
-    }
-    if let Some(result) = try_offline_program_information(args)
-        .or_else(|| try_skin_command(args))
-        .or_else(|| try_doctor(args))
-    {
-        return result;
-    }
-    let (override_bundle, args) = parse_global_model_bundle(args)?;
-    if let [run, options @ ..] = args
-        && run == "run"
-    {
-        let options = parse_routine_run_options(options)?;
-        let invocation_id = new_run_id();
-        let mut diagnostics = diagnostic_stream::RunDiagnostics::start_default(&invocation_id);
-        let monitor = run_startup_stage(&diagnostics.sink(), "signal_monitor", || {
-            live_control::SignalStopMonitor::start()
-        })?;
-        let bundle_result =
-            initialize_routine_model(&diagnostics.sink(), override_bundle, initialize);
-        let bundle = settle_startup_result(&mut diagnostics, &monitor, bundle_result)?;
-        return run_routine_live_session(
-            &options.capture,
-            options.crop,
-            if options.recording {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            options.recording_memory_limit,
-            options.recording_retention,
-            options.scores_db.as_deref(),
-            options.no_scores,
-            options.overlays,
-            &bundle,
-            &config_paths::default_path(),
-            invocation_id,
-            diagnostics,
-            &monitor,
-        );
-    }
-    let bundle = initialize(override_bundle)?;
-    run_command(args, &bundle)
-}
-
 fn initialize_routine_model(
     diagnostics: &diagnostic_stream::DiagnosticSink,
     override_bundle: Option<&Path>,
@@ -699,434 +619,6 @@ fn new_run_id() -> String {
         elapsed.subsec_nanos(),
         std::process::id()
     )
-}
-
-fn try_diagnostic_stream_command(args: &[OsString]) -> Option<Result<(), String>> {
-    let result = match args {
-        [diagnostic, inspect, latest]
-            if diagnostic == "diagnostic" && inspect == "inspect" && latest == "--latest" =>
-        {
-            diagnostic_stream::default_store().and_then(|store| {
-                let status =
-                    diagnostic_inspect(&store, None, diagnostic_stream::InspectionFormat::Ndjson)?;
-                (status == 0)
-                    .then_some(())
-                    .ok_or_else(|| "diagnostic recording is partial".to_owned())
-            })
-        }
-        [diagnostic, inspect, run_id_flag, run_id]
-            if diagnostic == "diagnostic" && inspect == "inspect" && run_id_flag == "--run-id" =>
-        {
-            let run_id = run_id
-                .to_str()
-                .ok_or_else(|| "diagnostic run ID must be UTF-8".to_owned());
-            run_id.and_then(|run_id| {
-                diagnostic_stream::default_store().and_then(|store| {
-                    let status = diagnostic_inspect(
-                        &store,
-                        Some(run_id),
-                        diagnostic_stream::InspectionFormat::Ndjson,
-                    )?;
-                    (status == 0)
-                        .then_some(())
-                        .ok_or_else(|| "diagnostic recording is partial".to_owned())
-                })
-            })
-        }
-        [diagnostic, observe] if diagnostic == "diagnostic" && observe == "observe" => {
-            diagnostic_observe(None)
-        }
-        [diagnostic, observe, replay, seconds]
-            if diagnostic == "diagnostic" && observe == "observe" && replay == "--replay" =>
-        {
-            seconds
-                .to_str()
-                .ok_or_else(|| "diagnostic replay seconds must be UTF-8".to_owned())
-                .and_then(|seconds| {
-                    seconds
-                        .parse::<u64>()
-                        .ok()
-                        .filter(|seconds| *seconds > 0)
-                        .ok_or_else(|| {
-                            "diagnostic replay seconds must be a positive integer".to_owned()
-                        })
-                })
-                .and_then(|seconds| diagnostic_observe(Some(seconds)))
-        }
-        _ => return None,
-    };
-    Some(result)
-}
-
-fn try_skin_command(args: &[OsString]) -> Option<Result<(), String>> {
-    let store = scorepeek_overlay_wayland::skin::StoreRoot::discover();
-    match args {
-        [skin, install, path] if skin == "skin" && install == "install" => {
-            Some(store.install(Path::new(path)).map(|outcome| {
-                use scorepeek_overlay_wayland::skin::InstallOutcome;
-                match outcome {
-                    InstallOutcome::Installed => println!("installed"),
-                    InstallOutcome::Replaced { previous_release } => {
-                        println!("replaced {previous_release}");
-                    }
-                    InstallOutcome::Unchanged => println!("unchanged"),
-                }
-            }))
-        }
-        [skin, uninstall, id] if skin == "skin" && uninstall == "uninstall" => Some(
-            id.to_str()
-                .ok_or_else(|| "skin id must be UTF-8".to_owned())
-                .and_then(|id| store.uninstall(id))
-                .map(|()| println!("uninstalled")),
-        ),
-        [skin, list] if skin == "skin" && list == "list" => Some(store.list().map(|installed| {
-            for skin in installed {
-                println!("{}\t{}\t{}", skin.id, skin.release, skin.name);
-            }
-        })),
-        _ => None,
-    }
-}
-
-fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsString]), String> {
-    match args {
-        [flag, bundle, rest @ ..] if flag == "--model-bundle" => {
-            if rest.is_empty() {
-                return Err("--model-bundle requires a command".to_owned());
-            }
-            Ok((Some(Path::new(bundle)), rest))
-        }
-        _ => Ok((None, args)),
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
-    if let Some(result) = try_recording_simulation(args, bundle)
-        .or_else(|| try_provisional_title_candidates(args))
-        .or_else(|| try_integrated_context_crop(args))
-        .or_else(|| try_integrated_context_observe(args, bundle))
-        .or_else(|| try_registered_resource_gate(args, bundle))
-        .or_else(|| try_dynamic_official_onnx_decode(args))
-        .or_else(|| try_official_onnx_decode(args))
-        .or_else(|| try_title_model_contract_parity(args))
-        .or_else(|| try_title_onnx_parity(args))
-        .or_else(|| try_title_dictionary_audit(args))
-        .or_else(|| try_title_model_export_requirements(args))
-        .or_else(|| try_program_information(args))
-    {
-        return result;
-    }
-    match args {
-        [
-            recognition,
-            inspect,
-            extraction_flag,
-            extraction,
-            digest_flag,
-            digest,
-            frame_flag,
-            frame_id,
-        ] if recognition == "recognition"
-            && inspect == "inspect"
-            && extraction_flag == "--extraction"
-            && digest_flag == "--extraction-sha256"
-            && frame_flag == "--frame-id" =>
-        {
-            inspect_canonical_frame(extraction, digest, frame_id)
-        }
-        [
-            recognition,
-            crop,
-            extraction_flag,
-            extraction,
-            digest_flag,
-            digest,
-            frame_flag,
-            frame_id,
-            output_flag,
-            output,
-        ] if recognition == "recognition"
-            && crop == "crop"
-            && extraction_flag == "--extraction"
-            && digest_flag == "--extraction-sha256"
-            && frame_flag == "--frame-id"
-            && output_flag == "--output" =>
-        {
-            crop_canonical_result(extraction, digest, frame_id, output)
-        }
-        [
-            recognition,
-            crop,
-            extraction_flag,
-            extraction,
-            digest_flag,
-            digest,
-            frame_flag,
-            frame_id,
-            output_flag,
-            output,
-        ] if recognition == "recognition"
-            && crop == "music-select-crop"
-            && extraction_flag == "--extraction"
-            && digest_flag == "--extraction-sha256"
-            && frame_flag == "--frame-id"
-            && output_flag == "--output" =>
-        {
-            crop_canonical_music_select(extraction, digest, frame_id, output)
-        }
-        [
-            recognition,
-            title_spike,
-            store_flag,
-            store,
-            text_flag,
-            text,
-            confidence_flag,
-            confidence,
-        ] if recognition == "recognition"
-            && title_spike == "title-spike"
-            && store_flag == "--catalog-store"
-            && text_flag == "--ocr-text"
-            && confidence_flag == "--ocr-confidence" =>
-        {
-            diagnostic_title_spike(store, text, confidence)
-        }
-        _ => Err("usage: scorepeek --help".to_owned()),
-    }
-}
-
-#[derive(Serialize)]
-struct RegisteredResourceGateReport<'a> {
-    schema: &'static str,
-    status: &'static str,
-    error_type: Option<RegisteredResourceGateErrorType>,
-    catalog_sha256: &'a str,
-    model_sha256: &'a str,
-    runtime_sha256: &'a str,
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum RegisteredResourceGateErrorType {
-    InvalidBinding,
-    WorkerUnavailable,
-    FinishTimeout,
-    InvalidLocation,
-    ModelBindingMismatch,
-    RuntimeBindingMismatch,
-    CatalogUnavailable,
-    CatalogBindingMismatch,
-    CatalogLoadFailed,
-    ModelBundleInvalid,
-    RuntimeInitializationFailed,
-}
-
-struct RegisteredResourceOwner {
-    _resources: recognition_title::RegisteredRecognitionResources,
-}
-
-impl recognition_session::field_observer::FieldObserver for RegisteredResourceOwner {
-    type Output = ();
-
-    fn observe(
-        &mut self,
-        _input: &recognition_session::field_observer::FieldObserverInput,
-    ) -> Self::Output {
-    }
-}
-
-impl From<recognition_title::RegisteredResourceLoadErrorType> for RegisteredResourceGateErrorType {
-    fn from(error: recognition_title::RegisteredResourceLoadErrorType) -> Self {
-        match error {
-            recognition_title::RegisteredResourceLoadErrorType::InvalidLocation => {
-                Self::InvalidLocation
-            }
-            recognition_title::RegisteredResourceLoadErrorType::ModelBindingMismatch => {
-                Self::ModelBindingMismatch
-            }
-            recognition_title::RegisteredResourceLoadErrorType::RuntimeBindingMismatch => {
-                Self::RuntimeBindingMismatch
-            }
-            recognition_title::RegisteredResourceLoadErrorType::CatalogUnavailable => {
-                Self::CatalogUnavailable
-            }
-            recognition_title::RegisteredResourceLoadErrorType::CatalogBindingMismatch => {
-                Self::CatalogBindingMismatch
-            }
-            recognition_title::RegisteredResourceLoadErrorType::CatalogLoadFailed => {
-                Self::CatalogLoadFailed
-            }
-            recognition_title::RegisteredResourceLoadErrorType::ModelBundleInvalid => {
-                Self::ModelBundleInvalid
-            }
-            recognition_title::RegisteredResourceLoadErrorType::RuntimeInitializationFailed => {
-                Self::RuntimeInitializationFailed
-            }
-        }
-    }
-}
-
-fn try_registered_resource_gate(
-    args: &[OsString],
-    bundle_root: &Path,
-) -> Option<Result<(), String>> {
-    let [
-        recognition_command,
-        gate,
-        catalog_flag,
-        catalog_root,
-        catalog_digest_flag,
-        catalog_digest,
-    ] = args
-    else {
-        return None;
-    };
-    if recognition_command != "recognition"
-        || gate != "field-resource-load-gate"
-        || catalog_flag != "--catalog-store"
-        || catalog_digest_flag != "--catalog-sha256"
-    {
-        return None;
-    }
-    Some(registered_resource_gate(
-        catalog_root,
-        bundle_root,
-        catalog_digest,
-    ))
-}
-
-fn registered_resource_gate(
-    catalog_root: &OsStr,
-    bundle_root: &Path,
-    catalog_digest: &OsStr,
-) -> Result<(), String> {
-    let catalog_digest = parse_cli_sha256(catalog_digest, "catalog SHA-256")?;
-    let model_digest = recognition_title::LIVE_MODEL_SHA256.to_owned();
-    let runtime_digest = recognition_title::LIVE_RUNTIME_SHA256.to_owned();
-    let descriptor = DiagnosticRunDescriptor {
-        run_id: "field-resource-load-gate".to_owned(),
-        monotonic_start_ms: 0,
-        resource: DiagnosticResource {
-            program: "scorepeek",
-            version: env!("CARGO_PKG_VERSION"),
-            build_sha256: "0".repeat(64),
-        },
-        binding: DiagnosticBinding {
-            capture_generation: 1,
-            capture_profile_sha256: "0".repeat(64),
-            normalizer_sha256: "0".repeat(64),
-            canonical_layout_sha256: CanonicalLayout::sha256(),
-            catalog_sha256: catalog_digest.clone(),
-            model_sha256: model_digest.clone(),
-            runtime_sha256: runtime_digest.clone(),
-            replay: None,
-        },
-    };
-    let worker =
-        recognition_session::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
-            binding
-                .load_registered_resources(Path::new(catalog_root), bundle_root)
-                .map(|resources| RegisteredResourceOwner {
-                    _resources: resources,
-                })
-        });
-    match worker {
-        Ok(worker) => {
-            let outcome = worker
-                .finish(recognition_session::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT);
-            if outcome.status
-                != recognition_session::field_observer::FieldObserverFinishStatus::Complete
-            {
-                let error_type = match outcome.status {
-                    recognition_session::field_observer::FieldObserverFinishStatus::Timeout => {
-                        RegisteredResourceGateErrorType::FinishTimeout
-                    }
-                    recognition_session::field_observer::FieldObserverFinishStatus::WorkerUnavailable => {
-                        RegisteredResourceGateErrorType::WorkerUnavailable
-                    }
-                    recognition_session::field_observer::FieldObserverFinishStatus::Complete => {
-                        unreachable!("complete outcome was handled above")
-                    }
-                };
-                print_registered_resource_gate_report(
-                    "error",
-                    Some(error_type),
-                    &catalog_digest,
-                    &model_digest,
-                    &runtime_digest,
-                )?;
-                return Err("registered resource worker did not finish cleanly".to_owned());
-            }
-            let report = RegisteredResourceGateReport {
-                schema: "scorepeek-field-resource-load-gate-v1",
-                status: "success",
-                error_type: None,
-                catalog_sha256: &catalog_digest,
-                model_sha256: &model_digest,
-                runtime_sha256: &runtime_digest,
-            };
-            println!(
-                "{}",
-                serde_json::to_string(&report)
-                    .map_err(|_| "resource gate report serialization failed".to_owned())?
-            );
-            Ok(())
-        }
-        Err(error) => {
-            let (error_type, message) = registered_resource_start_error(error);
-            print_registered_resource_gate_report(
-                "error",
-                Some(error_type),
-                &catalog_digest,
-                &model_digest,
-                &runtime_digest,
-            )?;
-            Err(message)
-        }
-    }
-}
-
-fn registered_resource_start_error(
-    error: recognition_session::field_observer::FieldObserverStartError<
-        recognition_title::RegisteredResourceLoadError,
-    >,
-) -> (RegisteredResourceGateErrorType, String) {
-    use recognition_session::field_observer::FieldObserverStartError;
-    match error {
-        FieldObserverStartError::InvalidBinding => (
-            RegisteredResourceGateErrorType::InvalidBinding,
-            "registered resource worker binding is invalid".to_owned(),
-        ),
-        FieldObserverStartError::Load(error) => (error.error_type().into(), error.to_string()),
-        FieldObserverStartError::WorkerUnavailable => (
-            RegisteredResourceGateErrorType::WorkerUnavailable,
-            "registered resource worker is unavailable".to_owned(),
-        ),
-    }
-}
-
-fn print_registered_resource_gate_report(
-    status: &'static str,
-    error_type: Option<RegisteredResourceGateErrorType>,
-    catalog_sha256: &str,
-    model_sha256: &str,
-    runtime_sha256: &str,
-) -> Result<(), String> {
-    let report = RegisteredResourceGateReport {
-        schema: "scorepeek-field-resource-load-gate-v1",
-        status,
-        error_type,
-        catalog_sha256,
-        model_sha256,
-        runtime_sha256,
-    };
-    println!(
-        "{}",
-        serde_json::to_string(&report)
-            .map_err(|_| "resource gate report serialization failed".to_owned())?
-    );
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1247,24 +739,6 @@ mod inventory_tools;
 )]
 use inventory_tools::*;
 
-#[path = "application/recording_tools.rs"]
-mod recording_tools;
-
-#[allow(
-    clippy::wildcard_imports,
-    reason = "recording_tools is an implementation partition of application dispatch"
-)]
-use recording_tools::*;
-
-#[path = "application/recognition_tools.rs"]
-mod recognition_tools;
-
-#[allow(
-    clippy::wildcard_imports,
-    reason = "recognition_tools is an implementation partition shared with application tests"
-)]
-use recognition_tools::*;
-
 fn catalog_paths(
     xdg_data_home: Option<&OsStr>,
     xdg_cache_home: Option<&OsStr>,
@@ -1298,17 +772,6 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
         return Err(format!("{name} must be an absolute, non-empty path"));
     }
     Ok(path)
-}
-
-fn print_usage() {
-    println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek vulkan-layer install\n  scorepeek vulkan-layer uninstall\n  scorepeek run --capture vulkan-layer [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record | --record-all] [--record-memory-mib MIB]\n  scorepeek run --capture pipewire --node-name NAME [--crop-left PX] [--crop-top PX] [--crop-right PX] [--crop-bottom PX] [OTHER_OPTIONS...]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
-        env!("CARGO_PKG_VERSION")
-    );
-    println!(
-        "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --catalog-sha256 SHA256"
-    );
-    println!("  run option: --overlay-wayland-edit (enables Wayland and opens the editor)");
 }
 
 #[cfg(test)]

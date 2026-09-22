@@ -734,7 +734,7 @@ pub(super) mod tests {
             monotonic_start_ms: 0,
             monotonic_end_ms: 1,
             screen: "raw frame label".into(),
-            result_presence: scorepeek_core::recognition::screen::ResultPresenceEvidence {
+            result_presence: Some(scorepeek_core::recognition::screen::ResultPresenceEvidence {
                 warm_pixels: 0,
                 warm_pixels_min: 3_000,
                 panel_side: scorepeek_core::recognition::screen::ResultPanelSideState::Unknown(
@@ -755,8 +755,8 @@ pub(super) mod tests {
                     },
                 ],
                 horizontal_edge_pixels_min: 518,
-            },
-            play_presence: play_presence(),
+            }),
+            play_presence: Some(play_presence()),
             unknown_reason: None,
         });
         assert!(state.project(&raw).is_empty());

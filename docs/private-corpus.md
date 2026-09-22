@@ -1,219 +1,110 @@
-# Private canonical session corpus
+# Private canonical recording corpus
 
-The attempt regression corpus replays complete, operator-reviewed recording sessions. Its pixel
-authority is the canonical RGB8 1920x1080 stream produced during a `scorepeek run --record`
-session. It does not ingest ordinary video, invoke a capture normalizer, expand segments into QOI
-objects, or deduplicate frames by pixel content.
+A corpus input is one completed canonical recording directory. It contains
+`canonical-manifest.json`, `canonical-ticks.ndjson`, and the declared lossless
+Matroska segments. The manifest uses `scorepeek-canonical-session-recording-v5`.
+The canonical frame contract is contiguous RGB8 at 1920x1080. Each tick carries
+its input sequence, source sequence and timestamp, screen observation, semantic
+episode ID, and either a retained frame or a typed elision. The manifest carries
+a session-local ID, segment and tick-index integrity, completion, and one of the
+game-version states `identified`, `not_observed`, `ambiguous`, or
+`observer_failed`. An identified version remains the recorded external fact.
 
-## Recording boundary
-
-`scorepeek run` always saves one non-video diagnostic NDJSON stream. `scorepeek run --record` and
-`scorepeek run --record-all` also start the canonical session recorder; neither enables a second
-diagnostic format. Runtime QOI generation is absent, so canonical video is the session's only
-retained frame authority.
-
-Recording preflight requires a PATH-resolved FFmpeg that exposes
-`libx264rgb`. The artifact records the executable digest and first version line. The logically
-unbounded recorder uses one shared 1024 MiB memory account by default; use
-`--record-memory-mib MIB` with either recording flag to change it. The TUI shows current, limit, high-water,
-and dropped-frame values. A memory-limit admission loss, encoder failure, publication failure, or
-shutdown timeout marks the recording partial but does not change screen resolution, attempt
-finalization, or domain event emission.
-
-One invocation lives at `$XDG_STATE_HOME/scorepeek/diagnostics/<run-id>/`. Structured evidence is
-`diagnostics.ndjson`; optional video lives directly at
-`sessions/<capture-session-id>/canonical/`. There is no digest staging or joined-publication step.
-
-The canonical recorder indexes every 10 Hz due tick with original sequence, monotonic time, raw
-screen, active semantic episode ID, and either `retained` or a typed intentional-elision reason.
-It retains every `MusicSelect`, `DecideTransition`, and `Result` frame. It retains the session's
-first and last ten ticks and ten-tick windows around all raw-screen changes, including entry to and
-exit from `Unknown`. TITLE is the exception: ordinary `--record` always writes its tick metadata with
-the `title` disposition and never retains its pixels, even inside those windows. Stable `Play`,
-`ModeSelect`, and `Unknown` interiors are also elided.
-Use `--record-all` for calibration captures that must retain every 10 Hz due tick, including those
-stable interiors and TITLE. Its diagnostic stream records the effective `all` retention mode before capture.
-
-`scorepeek-canonical-session-recording-v4` requires a final `game_version` state of `identified`,
-`not_observed`, `ambiguous`, or `observer_failed`; only `identified` carries the complete version
-string. Corpus sessions use `scorepeek-private-capture-session-v4` and preserve that state. The
-ordinary importer accepts only canonical manifest v4 and corpus session v4; it has no v3 fallback.
-
-Retained frames are lossless RGB Matroska segments in tick-index order. Intentional sequence gaps
-remain inside a segment; 600 retained frames, chronology reset, or session end closes it. The
-realtime recorder does not hash video content. After semantic `session_finished`, the TUI shows
-`finalizing`; saved manifest publication produces `recording_completed`, after which the session can
-be imported while the invocation remains active.
+`scorepeek run --record` writes this directory under the same retained
+`$XDG_STATE_HOME/scorepeek/diagnostics/<run-id>/` envelope as the runtime
+diagnostic stream. The two files have separate contracts. The recording does
+not contain capture profile, normalizer, FFmpeg, model, catalog, runtime binary,
+run ID, or prior domain outputs. Diagnostic stream publication failure cannot
+change recognition or public event authority. Import selects the completed
+canonical directory itself; it never searches a run directory or reads the
+runtime diagnostic stream.
 
 ## Import and review
 
-Verify and import one completed capture session. This is where every segment is decoded and its
-digest and frame count are checked. Each segment decode has a bounded two-minute deadline; timeout,
-truncated output, or replay-observer failure kills and reaps the FFmpeg child before failing the
-import:
+Import verifies the manifest, tick chronology, complete segment coverage,
+encoded SHA-256 and byte length, video shape and codec, and decoded frame
+count before publishing an imported generation. It copies verified bytes into
+a store-owned staging directory, verifies the copy, and publishes the session
+and a review draft. The source remains read-only, including on failure.
+Import does not activate a regression oracle.
 
 ```text
-cargo run --locked -p scorepeek-corpus --features runtime-replay --bin diagnostic_verify -- /absolute/diagnostic-run --capture-session-id SESSION_ID
-cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_ingest -- --store /absolute/private-corpus-v2 --diagnostic /absolute/diagnostic-run --capture-session-id SESSION_ID --review-draft /absolute/review.json
+mise run corpus:operations -- import --store /absolute/private-corpus --recording /absolute/recording/canonical
 ```
 
-Import requires video and the session's saved `recording_completed` terminal record. A later partial
-invocation does not invalidate a completed session. Import computes video digests while reading,
-normally uploads segments to the configured remote, and removes successfully imported local video;
-the invocation diagnostics remain until rotation. A non-video import receipt makes interrupted
-post-publication video cleanup idempotently resumable. Identity is `run_id + capture_session_id`.
-Import publishes source evidence as immutable digest-addressed objects. Volatile recognition
-artifact and run-event schemas are not corpus storage contracts: import normalizes only the
-sequence, source time, screen, fields, and decision needed by offline analysis into
-`scorepeek-private-corpus-observation-v1`. Canonical segments, their tick index, capture bindings,
-catalog evidence, and operator labels remain available to reproduce current recognition. The
-review draft lists retained sequence identities; it does not create a separate image object per
-tick.
-
-Set `SCOREPEEK_CORPUS_S3_URL=s3://bucket/optional/prefix` and
-`SCOREPEEK_CORPUS_S3_REGION=REGION` to keep canonical Matroska segments out of the local corpus.
-`SCOREPEEK_CORPUS_S3_ENDPOINT` may select an S3-compatible HTTPS origin and
-`SCOREPEEK_CORPUS_S3_PATH_STYLE` accepts `true` or `false`. Credentials use the standard AWS
-process environment with a complete static, web-identity, task-relative container, or full
-container-URI plus token-file credential set. Remote mode stores only segment objects in S3; all
-metadata stays local, and no setting or locator file is written into the corpus. Corpus storage has
-no aggregate byte or object-count quota. Import uploads each segment directly to its final SHA-256
-key. It computes the complete local byte count and digest while filling signed-payload multipart
-parts and aborts before completion on mismatch. An existing final object is reused only when HEAD
-reports the declared size. Import performs no remote staging, readback GET, or server-side copy;
-local-only use performs no S3 request.
-The target bucket must also have an `AbortIncompleteMultipartUpload` lifecycle rule because no
-process can clean up an upload ID after its own abrupt termination. Scorepeek aborts multipart
-uploads for failures it observes while still running.
-
-Regression truth uses only `scorepeek-private-session-regression-label-v6`. Each episode includes:
-
-- a label-local `attempt_key` and optional earlier `parent_attempt_key`;
-- ordered select, decide, play, and result sequence spans;
-- an `accepted`, `abandoned`, `unlinked`, or `no_result` outcome;
-- song/chart identity, RESULT-panel `play_side`, clear type, numeric performance, and an explicit ordered distinct
-  `play_options` list, including `[]` when no option was shown.
-
-The existing `expected_result.play_type` is also SELECT play-type truth. `play_mode` must agree as
-`single_play` with `single` or `double_play` with `double`; no separate SELECT label or alternate
-conversion exists. Real full frames, complete labels, and generated corpus objects remain outside
-the repository. The two independently measured 100x80 SP/DP templates under
-`crates/scorepeek-core/assets/music-select-play-type-v1` are the sole narrow
-repository-inclusion exception.
-
-Every span endpoint must be retained on its expected raw screen, except that a PLAY endpoint may be
-a retained raw `Unknown` when the operator label is calibrating a previously unrecognized gameplay
-layout. Replay must classify that endpoint as PLAY before the truth can pass. Select, decide, play,
-and result spans must be ordered. Every tick inside `DecideTransition` and `Result` spans must be
-present, retained, and classified as that screen. Attempt keys are unique and a parent must name an
-earlier attempt in the same label.
-
-Apply the reviewed truth create-only:
+The removable `migration_v4` module reads a v4 canonical recording directory
+and its matching `scorepeek-private-capture-session-v4` document. It verifies
+canonical artifact digests and retained-frame bindings from that document,
+converts into a new v5 recording, and imports that recording. Neither v4 input
+is modified. No live crate reads v4 for this path.
 
 ```text
-cargo run --locked -p scorepeek-corpus --features runtime-replay --bin review_apply -- --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v6.json
+mise run corpus:operations -- import --store /absolute/private-corpus --recording /absolute/v4-recording/canonical --v4-session /absolute/v4-session.json
 ```
 
-Partial sessions cannot become active regression entries. There is no alternate label reader,
-converter, or archive path.
-
-## Replay semantics
+For a v4 session already imported into an old corpus store, supply its session
+digest and the old store root instead. The migration reader verifies
+`sessions/<digest>.json` and reconstructs the recording from `objects/<sha256>`.
+If the old store kept segment objects remotely, first place those exact object
+bytes in a separate read-only directory named by SHA-256 and pass it as
+`--v4-objects`. Missing or changed objects fail before the new corpus
+generation is published. This compatibility reader is confined to the
+removable corpus `migration_v4` module; it does not modify the old store or
+make runtime support v4.
 
 ```text
-cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_replay -- --store /absolute/private-corpus-v2
-# Explicit single-worker comparison only; this is not the default.
-cargo run --locked -p scorepeek-corpus --features runtime-replay --bin corpus_replay -- --store /absolute/private-corpus-v2 --text-workers 1 --memory-mib 2048
+mise run corpus:operations -- import --store /absolute/new-private-corpus --v4-store /absolute/old-private-corpus --v4-session-sha256 SESSION_SHA256 --v4-objects /absolute/v4-object-mirror
 ```
 
-Replay losslessly decodes retained segment frames and supplies their original sequence and
-monotonic time to the production screen-episode, field-recognition, attempt, RESULT-finalization,
-and run-event reducers. Each active replay session exposes those production run events through an
-isolated `diagnostics.sock`; replay connects live before publishing the session start and reduces
-the ordered stream as it arrives. Sequence gaps, malformed records, or a disconnect before the
-diagnostic run finishes fail the replay. The oracle retains only selection changes, confirmed
-results, and aggregate counts rather than the full event stream. The isolated stream is socket-only:
-it uses an 8 MiB byte-bounded ring and does not persist a second diagnostic NDJSON file. Frames are
-streamed one at a time. Success and failure paths finish the diagnostic producer and reap the
-observer and optional trace writer before releasing the active-session memory reservation.
-Intentional gaps are not filled with
-synthetic pixels: PLAY and MODE SELECT gaps continue their semantic screen, while a retained
-UNKNOWN suspends until the next retained known frame or session end. A DecideTransition gap is an
-invalid suite.
+The import command prints the session digest and review draft path. The
+operator edits a separate regression label document and applies it in a second
+operation. `review apply` checks the stored draft and session binding; only
+`include` publishes the session to `active.json`. Applied labels are immutable.
+The current label schema is `scorepeek-private-canonical-regression-label-v1`
+with `session_sha256`, `disposition` (`include` or `exclude`), and ordered
+`transitions` entries containing input `sequence` and `screen`, plus
+`domain_event_count` and `domain_event_sha256` from the ordered core event output.
+The digest binds each serialized event to its coordinator input sequence without
+keeping session-wide event copies in memory.
+The same explicit read-only replay target can print a report for one recording
+when authoring a reviewed label:
 
-Replay and other segment consumers first use a verified local object. A missing segment is fetched
-from the environment-configured S3 namespace into an anonymous temporary file, checked against its
-declared byte length and encoded SHA-256, rewound, and passed to FFmpeg through stdin. The temporary
-file is discarded after that decode and is not cached. Each active session prefetches up to two
-manifest-ordered segments while current-segment decode and recognition proceed, and up to two
-segments are materialized process-wide. Each uses four conditional Range GETs into non-overlapping
-file offsets. A terminal `download_failed` is retried once after 250 milliseconds; missing objects,
-permission failures, object replacement, size differences, and digest differences are not retried.
-After all ranges finish, replay reads and hashes the complete assembled file; a prefetched file is
-still never decoded before complete verification.
+```text
+cargo test --locked -p scorepeek-corpus --test full_replay -- --recording /absolute/private-corpus/sessions/SESSION_SHA256
+```
 
-OCR may complete out of order but field evidence is committed by admission sequence. All sessions
-share one text pool. A suite may contain sessions recorded against different immutable catalog
-generations. Replay loads the catalog generation named by each session and binds that session's
-candidate projection to it while continuing to share the catalog-independent text pool. A missing
-or mismatched recorded generation fails replay instead of substituting the currently active
-catalog. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then
-returns that session's ordered state to a FIFO so another ready session can use the slot before the
-next segment. The automatic decoder count is the smaller of the session count and one quarter of
-available parallelism, further constrained by memory; active session state is bounded at twice the
-decoder count and all later sessions remain digest-only metadata. There is no fixed session limit.
-The 2048 MiB default memory account bounds decoder reservations, active session state, and pending
-field frames by backpressure; replay never drops them. `--memory-mib` accepts 256 through 8192, and
-`--text-workers` accepts one through available parallelism. Replay stdout v4 additionally reports
-local segment decodes, remote segment downloads, and downloaded bytes; it retains selected text,
-preparation, and decoder concurrency; tracked memory high-water; decoder-consumer, preparation,
-field-queue, and ordered-commit waits; raw classification, crop, text, numeric, join, and catalog
-durations; stable per-session wall time; and corpus wall time. FFmpeg child wall time includes pipe
-backpressure and callback consumption and is not a pure decode benchmark. Ordinary offline replay
-always follows the available-parallelism-minus-four policy capped at twelve workers unless the
-operator explicitly supplies `--text-workers`; a one-worker comparison uses `--text-workers 1`.
+```text
+mise run corpus:operations -- review apply --store /absolute/private-corpus --draft /absolute/private-corpus/sessions/SESSION_SHA256/SESSION_SHA256.review.json --labels /absolute/reviewed-label.json
+```
 
-For every accepted label, replay requires exactly one ordered
-`scorepeek-result-detected-v4` event with equal semantic payload, ordered play options, and normalized
-parent relation. The runtime session ID, runtime attempt IDs, emission tick, and diagnostic metadata
-are not truth. Missing, duplicate, extra, payload-different, play-option-order-different, and
-parent-different events fail replay. Non-accepted outcomes require no event.
-`no_result` retains song/chart, numeric, play-option, and screen-layout truth for an attempt whose
-mandatory result fields never became complete. Its stable frames therefore do not require the
-expected clear type to have resolved; producing a public result event still fails the session.
+No real recording, player data, model bytes, catalog generation, or complete
+private label belongs in Git. This workflow does not provision a private corpus
+for CI. Do not start a new `scorepeek run` while importing from a run that may
+be rotated; a disappearing or changed source fails import without publishing a
+new active generation.
 
-## Normalization verification
+## Replay
 
-Observed-to-canonical correctness is independent of attempt regression. Verify it from a
-profile-calibration artifact or an explicitly bound observed/canonical pair. `corpus replay` never
-starts the normalizer; FFmpeg is used only to decode the already-canonical lossless segments.
+The repository-created synthetic recording test exercises canonical reading,
+segment decoding, the recorded game-version state, current screen predicates,
+semantic episode chronology, ordered core coordinator inputs, bounded output, oracle
+comparison, and failure. It runs under ordinary `cargo test --locked --workspace`
+and needs no private data. A full active generation runs only through the named
+custom Cargo test. Its exit status is nonzero for invalid input or oracle
+mismatch.
+Result and Music Select frames use registered OCR, the embedded numeric model,
+and the current catalog registered by this source tree. Replay acquires the
+registered catalog and model files into an isolated temporary store on first
+field observation. It does not select resources from the recording, an
+arbitrary local path, or active XDG state. A resource or field-observation
+failure is a replay failure. The private full replay is an explicit operator
+gate and has not been run with private data in this repository change.
 
-SELECT best replay uses the same production observer and reducer. Per-session replay summaries
-include `music_select_best_snapshots`; these never enter the accepted-result oracle. The current
-field semantics and snapshot authority are defined in
-[field semantics](field-semantics.md) and [Event API v4](event-api.md).
+```text
+mise run corpus:test -- --store /absolute/private-corpus
+```
 
-## Replay event traces
-
-`mise run corpus:test --trace-dir DIR` retains production state/domain events as session-indexed
-NDJSON in a new directory. Raw `field_observation` records are excluded: their OCR candidate
-payloads remain in the existing recognition recordings. Retained events are written incrementally
-from the same live diagnostic socket used by the replay oracle; the trace does not accumulate a
-session event vector in memory. Each session uses a bounded nonblocking writer queue, so a slow
-trace filesystem cannot stop diagnostic socket draining or another session's trace. Queue,
-capacity, sync, or filesystem failure is reported only in that session's trace status and does not
-alter result acceptance or the replay oracle. Headers identify the active corpus
-generation, executable digest, selected-source fingerprint, registered text/numeric manifests and integrated/best layout digests.
-Per-session `trace` summaries report path, written/total events, bytes and an optional error.
-The budget is 256 MiB across the run; existing directories/files are not overwritten. No trace
-output is created without `--trace-dir`; private traces must remain outside Git.
-
-Every traced `raw_screen_observed` event includes the RESULT and PLAY predicate evidence from the
-same production classification pass. RESULT evidence includes warm-header counts and both panels'
-upper/lower anchor counts, thresholds, qualification flags, and typed panel-side state. PLAY
-evidence includes qualifying top/bottom BPM-edge run counts, the first two distinct edge-pair
-candidates, and the fixed thresholds. This permits anchor analysis for frames classified as
-`unknown` without retaining pixels or enabling the separate diagnostic frame recorder.
-
-Compare interval starts, held identity, conflicts, content revisions and episode revisits using
-source sequences. Endpoint SELECT labels do not assert a stationary span: inspect ambiguous
-frames and retain interval labels privately before declaring a reset or repeat erroneous.
+The custom target has `test = false` and `harness = false`. It has no feature
+gate. The single mutating operations binary is available only with the empty
+package-local `operations` feature. Routine `mise run test` does not execute
+full private replay or corpus operations.

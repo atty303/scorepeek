@@ -27,6 +27,10 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 use crate::canonical_source::CanonicalFrameSource;
+use crate::diagnostics::contract::{
+    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
+    DiagnosticRunStatus,
+};
 use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::recognition_artifact::{
@@ -45,18 +49,15 @@ use crate::service::session::recognition::field_session::{
 use crate::service::session::recognition::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
 };
-use scorepeek_core::diagnostics::{
-    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
-    DiagnosticRunStatus,
-};
 use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::game_version::GameVersionResolver;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 use scorepeek_core::recognition::screen::{ScreenClass, ScreenFieldObservationError};
-use scorepeek_core::recognition::title::{OnnxParityError, RegisteredResourceLoadErrorType};
+use scorepeek_core::recognition::title::OnnxParityError;
 use scorepeek_core::session::episode::{RawScreenState, SemanticScreenEpisode};
 use scorepeek_core::session::result::{CadenceDecision, RecognitionCadence};
 use scorepeek_core::session::timeline::{TimelineAction, TimelineDriver};
+use scorepeek_resources::recognition::RegisteredResourceLoadErrorType;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);

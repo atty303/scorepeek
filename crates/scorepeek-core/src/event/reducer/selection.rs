@@ -23,7 +23,7 @@ pub struct SelectionDifficultyTransition {
     pub current: Option<CurrentSelectionDifficulty>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MusicSelectResolver {
     pub best: MusicSelectResolverState,
     pub best_last_sequence: Option<u64>,
@@ -291,7 +291,7 @@ impl SelectionEpochTracker {
     }
 }
 impl SelectionEpochTracker {
-    #[cfg(feature = "reducer-test-support")]
+    #[cfg(test)]
     pub fn observe_at(
         &mut self,
         sequence: u64,
@@ -350,7 +350,7 @@ impl SelectionEpochTracker {
         }
     }
 
-    #[cfg(feature = "reducer-test-support")]
+    #[cfg(test)]
     pub fn observe(
         &mut self,
         monotonic_ms: u64,

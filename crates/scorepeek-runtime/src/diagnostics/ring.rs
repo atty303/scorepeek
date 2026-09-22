@@ -4,15 +4,15 @@ use std::sync::{Arc, Barrier, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::diagnostics::contract::{
+    DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticOperation,
+    DiagnosticOperationStatus, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
+};
 use crate::diagnostics::writer::{
     CANONICAL_BYTES, DiagnosticExternalDegradation, DiagnosticFinishOutcome, DiagnosticFrameInput,
     DiagnosticRecorder, DiagnosticSourceFrameInput,
 };
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
-use scorepeek_core::diagnostics::{
-    DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticOperation,
-    DiagnosticOperationStatus, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
-};
 
 pub const DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY: usize = 2;
 const DIAGNOSTIC_FACT_QUEUE_CAPACITY: usize = 256;
@@ -819,7 +819,7 @@ fn acquire_worker_token(supervisor: &Mutex<Weak<()>>) -> Option<Arc<()>> {
 
 fn timeout_finish() -> DiagnosticFinishOutcome {
     DiagnosticFinishOutcome {
-        completeness: Some(scorepeek_core::diagnostics::DiagnosticCompleteness::Partial),
+        completeness: Some(crate::diagnostics::contract::DiagnosticCompleteness::Partial),
         error_type: Some(DiagnosticErrorType::FlushTimeout),
         manifest_sha256: None,
     }
@@ -827,7 +827,7 @@ fn timeout_finish() -> DiagnosticFinishOutcome {
 
 fn unavailable_finish() -> DiagnosticFinishOutcome {
     DiagnosticFinishOutcome {
-        completeness: Some(scorepeek_core::diagnostics::DiagnosticCompleteness::Dropped),
+        completeness: Some(crate::diagnostics::contract::DiagnosticCompleteness::Dropped),
         error_type: Some(DiagnosticErrorType::WorkerUnavailable),
         manifest_sha256: None,
     }
@@ -836,8 +836,8 @@ fn unavailable_finish() -> DiagnosticFinishOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scorepeek_core::diagnostics::DiagnosticCompleteness;
-    use scorepeek_core::diagnostics::{
+    use crate::diagnostics::contract::DiagnosticCompleteness;
+    use crate::diagnostics::contract::{
         DiagnosticBinding, DiagnosticReplayBinding, DiagnosticResource,
     };
     use std::fs;

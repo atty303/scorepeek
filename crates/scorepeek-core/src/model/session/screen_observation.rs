@@ -185,8 +185,23 @@ impl ProjectedScreenFieldObservation {
         fields: ScreenFieldObservations,
         title_evidence: Option<TitleEvidenceObservation>,
     ) -> Self {
+        Self::project_with::<crate::recognition::shared::SequentialCandidateExecution>(
+            candidate_domain,
+            catalog,
+            fields,
+            title_evidence,
+        )
+    }
+
+    #[must_use]
+    pub fn project_with<E: crate::recognition::shared::CandidateExecution>(
+        candidate_domain: &CatalogCandidateDomain,
+        catalog: &Catalog,
+        fields: ScreenFieldObservations,
+        title_evidence: Option<TitleEvidenceObservation>,
+    ) -> Self {
         let catalog_started = Instant::now();
-        let candidates = candidate_domain.observe(&fields);
+        let candidates = candidate_domain.observe_with::<E>(&fields);
         let catalog_evidence_us = duration_us(catalog_started.elapsed());
         let parsed_result_fields = match &fields {
             ScreenFieldObservations::Result(fields) => {

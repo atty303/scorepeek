@@ -1,37 +1,5 @@
 use super::*;
 
-pub(super) fn try_program_information(args: &[OsString]) -> Option<Result<(), String>> {
-    match args {
-        [flag] if flag == "--help" || flag == "-h" => {
-            print_usage();
-            Some(Ok(()))
-        }
-        [flag] if flag == "--version" || flag == "-V" => {
-            println!("scorepeek {}", env!("CARGO_PKG_VERSION"));
-            Some(Ok(()))
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn try_offline_program_information(args: &[OsString]) -> Option<Result<(), String>> {
-    match args {
-        [flag] if flag == "--help" => {
-            print_usage();
-            Some(Ok(()))
-        }
-        [flag] if flag == "--version" => {
-            println!("scorepeek {}", env!("CARGO_PKG_VERSION"));
-            Some(Ok(()))
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
-    matches!(args, [command] if command == "doctor").then(|| print_doctor(OutputFormat::Json))
-}
-
 pub(super) fn collect_doctor_report() -> Result<serde_json::Value, String> {
     let target_inventory: serde_json::Value = serde_json::from_str(&inventory::collect().to_json())
         .map_err(|error| format!("doctor report serialization failed: {error}"))?;

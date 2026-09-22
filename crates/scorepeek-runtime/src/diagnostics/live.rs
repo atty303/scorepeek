@@ -3,14 +3,14 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-use scorepeek::capture::{
-    CalibratedSourceFrameEvidence, NormalizedCanonicalFrame, UncalibratedMemoryType,
-    UncalibratedVideoContract,
-};
-use scorepeek_core::diagnostics::{
+use crate::diagnostics::contract::{
     DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
     DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy, DiagnosticRetention,
     DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
+};
+use scorepeek::capture::{
+    CalibratedSourceFrameEvidence, NormalizedCanonicalFrame, UncalibratedMemoryType,
+    UncalibratedVideoContract,
 };
 use scorepeek_core::frame::CanonicalFrame;
 use scorepeek_core::recognition::screen::{
@@ -70,36 +70,6 @@ impl BoundCanonicalFrame {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
-    }
-
-    /// Creates one offline replay owner under an already validated immutable binding.
-    ///
-    /// # Errors
-    /// Returns an error when the pixels do not satisfy the canonical RGB8 contract.
-    pub fn for_replay(
-        capture_generation: u64,
-        sequence: u64,
-        monotonic_ms: u64,
-        capture_profile_sha256: String,
-        normalizer_sha256: String,
-        pixels: Box<[u8]>,
-    ) -> Result<Self, scorepeek_core::recognition::screen::RecognitionError> {
-        if pixels.len() != crate::diagnostics::writer::CANONICAL_BYTES {
-            return Err(
-                scorepeek_core::recognition::screen::RecognitionError::InvalidCanonicalFrame,
-            );
-        }
-        Ok(Self {
-            capture_generation,
-            source_sequence: sequence,
-            sequence,
-            monotonic_start_ms: monotonic_ms,
-            monotonic_end_ms: monotonic_ms,
-            capture_profile_sha256,
-            normalizer_sha256,
-            pixels: Arc::new(pixels),
-            source: None,
-        })
     }
 
     #[must_use]
@@ -501,7 +471,7 @@ impl DiagnosticBridge {
     pub fn record_frame_processing_timing(
         &mut self,
         timing: crate::service::session::recognition::FrameProcessingTiming,
-        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        field_status: crate::diagnostics::contract::FrameFieldStatus,
         field_timing: Option<&scorepeek_core::model::session::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
         let screen = match timing.screen {
@@ -708,7 +678,7 @@ impl DiagnosticBridge {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        summary: scorepeek_core::diagnostics::RecognitionSamplingSummary,
+        summary: crate::diagnostics::contract::RecognitionSamplingSummary,
     ) -> DiagnosticEnqueueOutcome {
         self.worker.try_record_fact(DiagnosticFact {
             sequence,
@@ -918,9 +888,9 @@ fn diagnostic_text_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostics::contract::DiagnosticCompleteness;
+    use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticResource};
     use crate::service::session::recognition::RecognitionObservation;
-    use scorepeek_core::diagnostics::DiagnosticCompleteness;
-    use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
     use scorepeek_core::frame::CanonicalLayout;
     use scorepeek_core::recognition::screen::{
         ResultScreenFieldObservations, ScreenClass, ScreenFieldObservationError,
@@ -1112,12 +1082,12 @@ mod tests {
             8,
         );
         for (sequence, field_status) in [
-            (1, scorepeek_core::diagnostics::FrameFieldStatus::BusySkip),
+            (1, crate::diagnostics::contract::FrameFieldStatus::BusySkip),
             (
                 2,
-                scorepeek_core::diagnostics::FrameFieldStatus::NotApplicable,
+                crate::diagnostics::contract::FrameFieldStatus::NotApplicable,
             ),
-            (3, scorepeek_core::diagnostics::FrameFieldStatus::Failed),
+            (3, crate::diagnostics::contract::FrameFieldStatus::Failed),
         ] {
             assert_eq!(
                 bridge.offer(&frame(1, sequence, sequence * 100)),
@@ -1281,7 +1251,7 @@ mod tests {
             serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(
             manifest["schema"],
-            scorepeek_core::diagnostics::CAPTURE_MANIFEST_SCHEMA
+            crate::diagnostics::contract::CAPTURE_MANIFEST_SCHEMA
         );
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 3);
         assert!(manifest["frames"][0]["source"].is_object());

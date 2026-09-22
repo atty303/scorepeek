@@ -1,8 +1,4 @@
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -19,45 +15,23 @@ pub(super) mod screen_reference;
 use super::music_select::observe_music_select_play_type;
 use super::music_select::{
     MusicSelectBestCrops, MusicSelectBestObservation, MusicSelectDifficultyMarkerCrops,
-    MusicSelectMotionRegions, MusicSelectPlaySideCrops, MusicSelectScreenFieldObservations,
-    MusicSelectScreenRgb8Crops, MusicSelectSongResolution, observe_music_select_difficulty,
-    observe_music_select_play_side,
+    MusicSelectPlaySideCrops, MusicSelectScreenFieldObservations, MusicSelectScreenRgb8Crops,
+    MusicSelectSongResolution, observe_music_select_difficulty, observe_music_select_play_side,
 };
 use super::result::numeric::NumericBatchInference;
 use super::result::{PlayOptionsObservation, ResultSongResolution, observe_play_options};
 use super::shared::NumericField;
-use super::title::{
-    CtcCharacterSet, DynamicTextObservation, OnnxParityError, decode_dynamic_official_onnx_crops,
-};
+use super::title::{CtcCharacterSet, DynamicTextObservation, OnnxParityError};
 
 #[cfg(test)]
 use super::music_select::*;
 
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
 const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v7";
-const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
-const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
-const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
-const NORMALIZER_FILTER: &str = "scale=1920:1080:flags=bitexact:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24";
-const CALIBRATED_FFMPEG_SHA256: &str =
-    "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee";
-const FFMPEG_VERSION: &str = "8.1.2";
-const MAX_EXTRACTION_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
-const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
-const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("../canonical-layout-v2.json");
 const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("../screen-path-layout-v7.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] =
     include_bytes!("../integrated-context-layout-v8.json");
-const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
-#[cfg(test)]
-const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
-    "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
-
-fn calibrated_capture_profile(profile: &str) -> bool {
-    profile.len() == 64 && profile.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
 
 #[derive(Debug)]
 pub enum RecognitionError {
@@ -126,246 +100,6 @@ impl CanonicalFrame {
     pub fn crop(&self, roi: Roi) -> Result<Vec<u8>, RecognitionError> {
         self.crop_region(roi).map_err(Into::into)
     }
-
-    /// Reads one P6 frame only after validating its canonical extraction and normalizer evidence.
-    ///
-    /// # Errors
-    /// Returns an error for an unknown frame ID, invalid or mismatched evidence, or bytes outside
-    /// the fixed canonical RGB8 contract.
-    pub fn read_extraction(
-        directory: impl AsRef<Path>,
-        frame_id: &str,
-        expected_extraction_sha256: &str,
-    ) -> Result<Self, RecognitionError> {
-        if !valid_sha256(expected_extraction_sha256) {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        let directory = directory.as_ref();
-        if !directory.metadata()?.is_dir() {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        let manifest_path = directory.join("manifest.json");
-        let normalizer_path = directory.join("normalizer.json");
-        for path in [&manifest_path, &normalizer_path] {
-            if !path.metadata()?.is_file() {
-                return Err(RecognitionError::InvalidCanonicalFrame);
-            }
-        }
-        let manifest_bytes =
-            read_bounded_regular(&manifest_path, MAX_EXTRACTION_MANIFEST_BYTES, None)?;
-        if encode_sha256(&manifest_bytes) != expected_extraction_sha256 {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        let manifest: CanonicalExtractionEvidence = serde_json::from_slice(&manifest_bytes)?;
-        if canonical_evidence_json(&manifest)? != manifest_bytes {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        let normalizer_bytes = read_bounded_regular(&normalizer_path, MAX_NORMALIZER_BYTES, None)?;
-        let normalizer: DomainNormalizerEvidence = serde_json::from_slice(&normalizer_bytes)?;
-        if canonical_evidence_json(&normalizer)? != normalizer_bytes {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        manifest.validate(&normalizer, &normalizer_bytes)?;
-        let frame = manifest.frame(frame_id)?;
-        let frame_path = directory.join(&frame.filename);
-        let bytes = read_bounded_regular(&frame_path, CANONICAL_FILE_BYTES, Some(frame.bytes))?;
-        if encode_sha256(&bytes) != frame.file_sha256 {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        let pixels = bytes
-            .strip_prefix(PPM_HEADER)
-            .ok_or(RecognitionError::InvalidCanonicalFrame)?;
-        if pixels.len() != CANONICAL_BYTES || encode_sha256(pixels) != frame.frame_sha256 {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        Self::from_validated_parts(
-            pixels.into(),
-            frame.source_pts,
-            frame.decode_index,
-            manifest.capture_profile_id,
-            manifest.normalizer_artifact_sha256,
-            expected_extraction_sha256.to_owned(),
-        )
-        .map_err(Into::into)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalExtractionEvidence {
-    schema: String,
-    fixture_id: String,
-    source_manifest_sha256: String,
-    media_probe_sha256: String,
-    capture_profile_id: String,
-    normalizer_artifact_sha256: String,
-    canonical_frame_contract_id: String,
-    extractor: ExtractorEvidence,
-    source_time_base: TimeBaseEvidence,
-    video_stream_index: u32,
-    frames: Vec<CanonicalExtractedFrameEvidence>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalExtractedFrameEvidence {
-    frame_id: String,
-    source_pts: i64,
-    decode_index: u64,
-    filename: String,
-    frame_sha256: String,
-    file_sha256: String,
-    bytes: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct DomainNormalizerEvidence {
-    schema: String,
-    capture_profile_id: String,
-    observed: ObservedMediaEvidence,
-    canonical_frame_contract_id: String,
-    implementation: String,
-    ffmpeg_sha256: String,
-    filter: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ObservedMediaEvidence {
-    input_format: String,
-    codec_name: String,
-    pixel_format: String,
-    width: u32,
-    height: u32,
-    source_time_base: TimeBaseEvidence,
-    color_range: Option<String>,
-    color_space: Option<String>,
-    color_transfer: Option<String>,
-    color_primaries: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct TimeBaseEvidence {
-    numerator: u32,
-    denominator: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ExtractorEvidence {
-    tool_id: String,
-    tool_version: String,
-    extractor_manifest_sha256: String,
-    parameters_sha256: String,
-}
-
-impl CanonicalExtractionEvidence {
-    fn validate(
-        &self,
-        normalizer: &DomainNormalizerEvidence,
-        normalizer_bytes: &[u8],
-    ) -> Result<(), RecognitionError> {
-        if self.schema != EXTRACTION_SCHEMA
-            || self.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
-            || self.capture_profile_id != normalizer.capture_profile_id
-            || self.fixture_id.is_empty()
-            || !valid_sha256(&self.source_manifest_sha256)
-            || !valid_sha256(&self.media_probe_sha256)
-            || !valid_sha256(&self.capture_profile_id)
-            || !valid_sha256(&self.normalizer_artifact_sha256)
-            || encode_sha256(normalizer_bytes) != self.normalizer_artifact_sha256
-            || normalizer.schema != NORMALIZER_SCHEMA
-            || normalizer.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
-            || normalizer.implementation != NORMALIZER_IMPLEMENTATION
-            || normalizer.filter != NORMALIZER_FILTER
-            || !calibrated_capture_profile(&normalizer.capture_profile_id)
-            || normalizer.ffmpeg_sha256 != CALIBRATED_FFMPEG_SHA256
-            || !normalizer.observed.is_supported()
-            || normalizer.observed.source_time_base != self.source_time_base
-            || self.extractor.tool_id != "ffmpeg"
-            || self.extractor.tool_version != FFMPEG_VERSION
-            || self.extractor.extractor_manifest_sha256 != self.media_probe_sha256
-            || !valid_sha256(&self.extractor.parameters_sha256)
-            || self.video_stream_index > 255
-            || self.frames.is_empty()
-            || self.frames.len() > 512
-        {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        let mut frame_ids = BTreeSet::new();
-        let mut previous_decode_index = None;
-        for (index, frame) in self.frames.iter().enumerate() {
-            if frame.frame_id.is_empty()
-                || !frame_ids.insert(frame.frame_id.as_str())
-                || frame.filename != format!("frame-{index:06}.ppm")
-                || !valid_sha256(&frame.frame_sha256)
-                || !valid_sha256(&frame.file_sha256)
-                || frame.bytes != CANONICAL_FILE_BYTES
-                || previous_decode_index.is_some_and(|previous| previous >= frame.decode_index)
-            {
-                return Err(RecognitionError::InvalidCanonicalFrame);
-            }
-            previous_decode_index = Some(frame.decode_index);
-        }
-        Ok(())
-    }
-
-    fn frame(&self, frame_id: &str) -> Result<&CanonicalExtractedFrameEvidence, RecognitionError> {
-        let mut matching = self
-            .frames
-            .iter()
-            .filter(|frame| frame.frame_id == frame_id);
-        let frame = matching
-            .next()
-            .ok_or(RecognitionError::InvalidCanonicalFrame)?;
-        if matching.next().is_some() {
-            return Err(RecognitionError::InvalidCanonicalFrame);
-        }
-        Ok(frame)
-    }
-}
-
-impl ObservedMediaEvidence {
-    fn is_supported(&self) -> bool {
-        self.input_format == "matroska"
-            && self.codec_name == "ffv1"
-            && self.pixel_format == "yuv420p"
-            && self.width == CANONICAL_WIDTH
-            && self.height == CANONICAL_HEIGHT
-            && self.source_time_base.numerator == 1
-            && self.source_time_base.denominator == 1_000
-            && self.color_range.as_deref() == Some("tv")
-            && self.color_space.as_deref() == Some("bt709")
-            && self.color_transfer.as_deref() == Some("bt709")
-            && self.color_primaries.as_deref() == Some("bt709")
-    }
-}
-
-fn read_bounded_regular(
-    path: &Path,
-    maximum: u64,
-    exact: Option<u64>,
-) -> Result<Vec<u8>, RecognitionError> {
-    let metadata = path.metadata()?;
-    if !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > maximum
-        || exact.is_some_and(|expected| metadata.len() != expected)
-    {
-        return Err(RecognitionError::InvalidCanonicalFrame);
-    }
-    let capacity =
-        usize::try_from(metadata.len()).map_err(|_| RecognitionError::InvalidCanonicalFrame)?;
-    let mut bytes = Vec::with_capacity(capacity);
-    File::open(path)?
-        .take(maximum + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != metadata.len() {
-        return Err(RecognitionError::InvalidCanonicalFrame);
-    }
-    Ok(bytes)
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -381,12 +115,6 @@ pub(in crate::recognition) fn encode_sha256(bytes: &[u8]) -> String {
         write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
     }
     encoded
-}
-
-fn canonical_evidence_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json::Error> {
-    let mut bytes = serde_json::to_vec(value)?;
-    bytes.push(b'\n');
-    Ok(bytes)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -709,92 +437,6 @@ pub struct ScreenPredicateObservation {
     pub play_presence: PlayPresenceEvidence,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResultCropArtifact {
-    pub schema: String,
-    pub frame_id: String,
-    pub frame_extraction_sha256: String,
-    pub canonical_frame_sha256: String,
-    pub normalizer_artifact_sha256: String,
-    pub canonical_layout_sha256: String,
-    pub crops: Vec<ResultCropEvidence>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResultCropEvidence {
-    pub field: ResultCropField,
-    pub filename: String,
-    pub roi: Roi,
-    pub pixel_sha256: String,
-    pub file_sha256: String,
-    pub bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResultCropField {
-    Title,
-    Artist,
-    ClearType,
-    Difficulty,
-    Level,
-    Notes,
-    CurrentScore,
-    PreviousClearType,
-    PreviousScore,
-    PreviousMissCount,
-    MissCount,
-    Pgreat,
-    Great,
-    Good,
-    Bad,
-    Poor,
-    Fast,
-    Slow,
-    ComboBreak,
-    PlayOptions,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ResultCropExportSummary {
-    pub schema: String,
-    pub output: PathBuf,
-    pub manifest_sha256: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct MusicSelectCropArtifact {
-    pub schema: String,
-    pub frame_id: String,
-    pub frame_extraction_sha256: String,
-    pub canonical_frame_sha256: String,
-    pub normalizer_artifact_sha256: String,
-    pub canonical_layout_sha256: String,
-    pub crops: Vec<MusicSelectCropEvidence>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct MusicSelectCropEvidence {
-    pub field: String,
-    pub filename: String,
-    pub roi: Roi,
-    pub pixel_sha256: String,
-    pub file_sha256: String,
-    pub bytes: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct MusicSelectCropExportSummary {
-    pub schema: String,
-    pub output: PathBuf,
-    pub manifest_sha256: String,
-    pub list_slot_count: u32,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(in crate::recognition) struct IntegratedContextLayout {
@@ -954,49 +596,6 @@ impl IntegratedContextLayout {
     fn sha256() -> String {
         encode_sha256(INTEGRATED_CONTEXT_LAYOUT_BYTES)
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntegratedContextField {
-    ResultArtist,
-    MusicSelectArtist,
-    MusicSelectSelectedChart,
-    MusicSelectPlayType,
-    MusicSelectActiveListTitle,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct IntegratedContextCropEvidence {
-    pub field: IntegratedContextField,
-    pub filename: String,
-    pub roi: Roi,
-    pub pixel_sha256: String,
-    pub file_sha256: String,
-    pub bytes: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct IntegratedContextCropArtifact {
-    pub schema: String,
-    pub frame_id: String,
-    pub frame_extraction_sha256: String,
-    pub canonical_frame_sha256: String,
-    pub normalizer_artifact_sha256: String,
-    pub canonical_layout_sha256: String,
-    pub integrated_context_layout_sha256: String,
-    pub screen: ScreenClass,
-    pub crops: Vec<IntegratedContextCropEvidence>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct IntegratedContextCropExportSummary {
-    pub schema: String,
-    pub output: PathBuf,
-    pub manifest_sha256: String,
-    pub screen: ScreenClass,
 }
 
 /// One in-memory RGB8 crop from the scorepeek-owned canonical layouts.
@@ -1540,89 +1139,6 @@ pub fn observe_result_fields_with_numeric<E>(
     })
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct IntegratedContextTextObservation {
-    pub field: IntegratedContextField,
-    pub crop_file_sha256: String,
-    pub input_width: usize,
-    pub input_tensor_sha256: String,
-    pub output_timesteps: usize,
-    pub open_text: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntegratedChartContextState {
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntegratedChartContextUnknownReason {
-    ObserverNotImplemented,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct IntegratedChartContextEvidence {
-    pub field: IntegratedContextField,
-    pub crop_file_sha256: String,
-    pub pixel_sha256: String,
-    pub state: IntegratedChartContextState,
-    pub reason: IntegratedChartContextUnknownReason,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntegratedContextRecordingCompleteness {
-    Complete,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct IntegratedContextObservationArtifact {
-    pub schema: &'static str,
-    pub recording_completeness: IntegratedContextRecordingCompleteness,
-    pub source_manifest_sha256: String,
-    pub frame_id: String,
-    pub frame_extraction_sha256: String,
-    pub canonical_frame_sha256: String,
-    pub normalizer_artifact_sha256: String,
-    pub canonical_layout_sha256: String,
-    pub integrated_context_layout_sha256: String,
-    pub screen: ScreenClass,
-    pub model_id: String,
-    pub model_sha256: String,
-    pub dictionary_sha256: String,
-    pub preprocessor_id: &'static str,
-    pub request_sha256: String,
-    pub elapsed_ms: u128,
-    pub text_observations: Vec<IntegratedContextTextObservation>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chart_context: Option<IntegratedChartContextEvidence>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct IntegratedContextObservationSummary {
-    pub schema: &'static str,
-    pub output: PathBuf,
-    pub manifest_sha256: String,
-    pub screen: ScreenClass,
-    pub text_observation_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub chart_context_state: Option<IntegratedChartContextState>,
-}
-
-#[derive(Serialize)]
-struct IntegratedContextDecodeRequest<'a> {
-    schema: &'static str,
-    rows: Vec<IntegratedContextDecodeRequestRow<'a>>,
-}
-
-#[derive(Serialize)]
-struct IntegratedContextDecodeRequestRow<'a> {
-    path: &'a Path,
-    file_sha256: &'a str,
-}
-
 #[path = "screen/predicate.rs"]
 mod predicate;
 
@@ -1637,13 +1153,7 @@ pub use predicate::{
 mod export;
 
 use export::horizontal_edge_pixels;
-pub(super) use export::read_title_crop_artifact;
-pub use export::{
-    export_integrated_context_crops, export_music_select_crops, export_result_crops,
-    observe_integrated_context, route_screen_rgb8_crops,
-};
-#[cfg(test)]
-use export::{publish_private_manifest, read_integrated_context_crop_artifact};
+pub use export::route_screen_rgb8_crops;
 
 #[cfg(test)]
 #[path = "screen/tests.rs"]

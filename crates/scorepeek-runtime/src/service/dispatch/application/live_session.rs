@@ -699,6 +699,12 @@ pub(super) fn run_routine_live_session(
                 if report.output_failed() {
                     return Err("live result output failed".to_owned());
                 }
+                if state.recording_enabled {
+                    record_canonical_publication_summary(
+                        &output,
+                        session_paths.as_ref().map(|paths| paths.root.as_path()),
+                    );
+                }
                 if started {
                     let stop_reason = report.stop_reason();
                     let (outcome, readmit_same_node, fatal) =
@@ -875,6 +881,59 @@ pub(super) fn announce_watcher_state(
         *announced = Some(state);
     }
     Ok(())
+}
+
+pub(super) fn record_canonical_publication_summary(
+    output: &routine_output::RoutineOutput,
+    canonical_root: Option<&Path>,
+) {
+    let Some(root) = canonical_root else {
+        output.record_diagnostic(
+            "recording_summary",
+            &serde_json::json!({
+                "status": "unavailable", "error_type": "recording_root_unavailable"
+            }),
+            true,
+        );
+        return;
+    };
+    let manifest_path = root.join("canonical-manifest.json");
+    let manifest = std::fs::read(&manifest_path)
+        .ok()
+        .filter(|bytes| bytes.len() <= 1024 * 1024)
+        .and_then(|bytes| {
+            serde_json::from_slice::<
+                    scorepeek_core::canonical_recording::CanonicalRecordingManifest,
+                >(&bytes)
+                .ok()
+                .map(|manifest| (manifest, bytes.len() as u64))
+        });
+    let Some((manifest, manifest_bytes)) = manifest else {
+        output.record_diagnostic(
+            "recording_summary",
+            &serde_json::json!({
+                "status": "unavailable", "error_type": "manifest_unavailable", "locator": root
+            }),
+            true,
+        );
+        return;
+    };
+    let retained = manifest
+        .segments
+        .iter()
+        .fold(0_u64, |count, segment| count.saturating_add(segment.frames));
+    let segment_bytes = manifest
+        .segments
+        .iter()
+        .fold(0_u64, |bytes, segment| bytes.saturating_add(segment.bytes));
+    output.record_diagnostic("recording_summary", &serde_json::json!({
+        "status": if manifest.completeness == scorepeek_core::canonical_recording::Completion::Complete { "complete" } else { "partial" },
+        "locator": root,
+        "session_id": manifest.session_id,
+        "retained_frames": retained,
+        "elided_ticks": manifest.tick_count.saturating_sub(retained),
+        "bytes": manifest_bytes.saturating_add(manifest.tick_index.bytes).saturating_add(segment_bytes),
+    }), true);
 }
 
 #[cfg(test)]

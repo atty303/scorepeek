@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
+use crate::diagnostics::contract::DiagnosticRunDescriptor;
 #[cfg(test)]
-use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticReplayBinding};
+use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticReplayBinding};
 use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::recognition::screen::{ScreenClass, ScreenRgb8Crops};
-use scorepeek_core::recognition::title::{
+use scorepeek_resources::recognition::{
     RegisteredRecognitionResources, RegisteredResourceLoadError,
 };
 
@@ -447,14 +447,6 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         Self::start_inner(descriptor, loader, capacity, Some(production_supervisor()))
     }
 
-    pub(crate) fn start_unmanaged_with_capacity<E>(
-        descriptor: &DiagnosticRunDescriptor,
-        loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
-        capacity: usize,
-    ) -> Result<Self, FieldObserverStartError<E>> {
-        Self::start_inner(descriptor, loader, capacity, None)
-    }
-
     #[cfg(test)]
     pub(crate) fn start_for_test<E>(
         descriptor: &DiagnosticRunDescriptor,
@@ -730,59 +722,6 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
         }
     }
-
-    /// Offline replay owns its resources until the admitted worker work has actually stopped.
-    #[must_use]
-    pub fn finish_joining(self) -> FieldObserverFinishOutcome {
-        let Self {
-            binding: _,
-            sender,
-            workers,
-            submitted,
-            maximum_outstanding: _,
-            delivery_counts,
-            worker_unavailable: _,
-            admission: _,
-        } = self;
-        let (response, receiver) = mpsc::sync_channel(workers.len());
-        for _ in 0..workers.len() {
-            if sender
-                .send(FieldObserverMessage::Finish {
-                    response: response.clone(),
-                })
-                .is_err()
-            {
-                drop(sender);
-                for worker in workers {
-                    let _ = worker.join();
-                }
-                return FieldObserverFinishOutcome {
-                    status: FieldObserverFinishStatus::WorkerUnavailable,
-                    submitted,
-                    completed: None,
-                    abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
-                };
-            }
-        }
-        drop(response);
-        drop(sender);
-        let completed = (0..workers.len())
-            .try_fold(0_u64, |total, _| {
-                receiver.recv().map(|count| total.saturating_add(count))
-            })
-            .ok();
-        let joined = workers.into_iter().all(|worker| worker.join().is_ok());
-        FieldObserverFinishOutcome {
-            status: if completed.is_some() && joined {
-                FieldObserverFinishStatus::Complete
-            } else {
-                FieldObserverFinishStatus::WorkerUnavailable
-            },
-            submitted,
-            completed,
-            abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
-        }
-    }
 }
 
 fn incomplete_finish(
@@ -965,9 +904,9 @@ mod tests {
     use scorepeek_core::recognition::title::DynamicTextObservation;
 
     use super::*;
+    use crate::diagnostics::contract::{DiagnosticPolicy, DiagnosticResource, DiagnosticRunStatus};
     use crate::diagnostics::live::BoundCanonicalFrame;
     use crate::service::session::recognition::RecognitionSession;
-    use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticResource, DiagnosticRunStatus};
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
@@ -1242,7 +1181,7 @@ mod tests {
             result,
             Err(FieldObserverStartError::Load(error))
                 if error.error_type()
-                    == scorepeek_core::recognition::title::RegisteredResourceLoadErrorType::ModelBindingMismatch
+                    == scorepeek_resources::recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch
         ));
     }
 

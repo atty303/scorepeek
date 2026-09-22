@@ -2,8 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
 use serde::{Deserialize, Serialize};
@@ -171,10 +169,30 @@ struct TextCandidateDomain {
 }
 
 #[derive(Clone, Debug)]
-struct SongCandidateDomain {
+pub struct SongCandidateDomain {
     song_id: ScorepeekSongId,
     title: TextCandidateDomain,
     artist: TextCandidateDomain,
+}
+
+/// An execution strategy for independent per-song scoring. Strategies must preserve input order.
+pub trait CandidateExecution {
+    fn map<T: Send, F: Fn(&SongCandidateDomain) -> T + Sync>(
+        songs: &[SongCandidateDomain],
+        map: F,
+    ) -> Vec<T>;
+}
+
+/// Pure deterministic execution used by corpus replay and domain tests.
+pub struct SequentialCandidateExecution;
+
+impl CandidateExecution for SequentialCandidateExecution {
+    fn map<T: Send, F: Fn(&SongCandidateDomain) -> T + Sync>(
+        songs: &[SongCandidateDomain],
+        map: F,
+    ) -> Vec<T> {
+        songs.iter().map(map).collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,25 +273,34 @@ impl CatalogCandidateDomain {
         &self,
         observations: &ScreenFieldObservations,
     ) -> ScreenCatalogCandidateObservations {
+        self.observe_with::<SequentialCandidateExecution>(observations)
+    }
+
+    /// Scores with a caller-owned execution strategy while retaining core scoring semantics.
+    #[must_use]
+    pub fn observe_with<E: CandidateExecution>(
+        &self,
+        observations: &ScreenFieldObservations,
+    ) -> ScreenCatalogCandidateObservations {
         match observations {
             ScreenFieldObservations::Title(_) => ScreenCatalogCandidateObservations::Title {
                 comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
                 catalog: Arc::clone(&self.evidence),
             },
-            ScreenFieldObservations::Result(observations) => self.observe_result(observations),
+            ScreenFieldObservations::Result(observations) => self.observe_result::<E>(observations),
             ScreenFieldObservations::MusicSelect(observations) => {
-                self.observe_music_select(observations)
+                self.observe_music_select::<E>(observations)
             }
         }
     }
 
-    fn observe_result(
+    fn observe_result<E: CandidateExecution>(
         &self,
         observations: &ResultScreenFieldObservations,
     ) -> ScreenCatalogCandidateObservations {
         let title = observation_forms(&observations.title.open_text);
         let artist = observation_forms(&observations.artist.open_text);
-        let candidates = map_catalog_songs(&self.songs, |song| ResultSongCandidateObservation {
+        let candidates = E::map(&self.songs, |song| ResultSongCandidateObservation {
             song_id: song.song_id,
             title: score_text(&title, &song.title),
             artist: score_text(&artist, &song.artist),
@@ -285,21 +312,20 @@ impl CatalogCandidateDomain {
         }
     }
 
-    fn observe_music_select(
+    fn observe_music_select<E: CandidateExecution>(
         &self,
         observations: &MusicSelectScreenFieldObservations,
     ) -> ScreenCatalogCandidateObservations {
         let central_title = observation_forms(&observations.central_title.open_text);
         let artist = observation_forms(&observations.artist.open_text);
         let active_list_title = observation_forms(&observations.active_list_title.open_text);
-        let candidates =
-            map_catalog_songs(&self.songs, |song| MusicSelectSongCandidateObservation {
-                song_id: song.song_id,
-                central_title: score_text(&central_title, &song.title),
-                artist: score_text(&artist, &song.artist),
-                active_list_title: score_text(&active_list_title, &song.title),
-                active_list_title_prefix: score_prefix(&active_list_title, &song.title),
-            });
+        let candidates = E::map(&self.songs, |song| MusicSelectSongCandidateObservation {
+            song_id: song.song_id,
+            central_title: score_text(&central_title, &song.title),
+            artist: score_text(&artist, &song.artist),
+            active_list_title: score_text(&active_list_title, &song.title),
+            active_list_title_prefix: score_prefix(&active_list_title, &song.title),
+        });
         ScreenCatalogCandidateObservations::MusicSelect {
             comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
             catalog: Arc::clone(&self.evidence),
@@ -308,67 +334,7 @@ impl CatalogCandidateDomain {
     }
 }
 
-fn map_catalog_songs<T: Send, F: Fn(&SongCandidateDomain) -> T + Sync>(
-    songs: &[SongCandidateDomain],
-    map: F,
-) -> Vec<T> {
-    let desired_workers = 4.min(songs.len().max(1));
-    let permits = CatalogParallelPermits::acquire(desired_workers.saturating_sub(1));
-    let workers = 1 + permits.count;
-    if workers == 1 || songs.len() < workers * 2 {
-        return songs.iter().map(map).collect();
-    }
-    let chunk_size = songs.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        let mut handles = songs[chunk_size..]
-            .chunks(chunk_size)
-            .map(|chunk| {
-                let map = &map;
-                scope.spawn(move || chunk.iter().map(map).collect::<Vec<_>>())
-            })
-            .collect::<Vec<_>>();
-        let mut output = songs[..chunk_size].iter().map(&map).collect::<Vec<_>>();
-        for handle in handles.drain(..) {
-            output.extend(handle.join().expect("catalog scoring worker panicked"));
-        }
-        output
-    })
-}
-
-struct CatalogParallelPermits {
-    count: usize,
-}
-
-static CATALOG_PARALLEL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 const LEVENSHTEIN_STACK_ROW_UNITS: usize = 256;
-
-impl CatalogParallelPermits {
-    fn acquire(requested: usize) -> Self {
-        static MAXIMUM: OnceLock<usize> = OnceLock::new();
-        let maximum = *MAXIMUM.get_or_init(|| {
-            (std::thread::available_parallelism().map_or(1, usize::from) / 4).max(1)
-        });
-        let mut count = 0;
-        while count < requested {
-            let acquired = CATALOG_PARALLEL_ACTIVE
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                    (active < maximum).then_some(active + 1)
-                })
-                .is_ok();
-            if !acquired {
-                break;
-            }
-            count += 1;
-        }
-        Self { count }
-    }
-}
-
-impl Drop for CatalogParallelPermits {
-    fn drop(&mut self) {
-        CATALOG_PARALLEL_ACTIVE.fetch_sub(self.count, Ordering::AcqRel);
-    }
-}
 
 fn text_candidate_domains<'a, T: Copy + Ord>(
     candidates: impl IntoIterator<Item = (T, DisplayVariantKind, &'a str)>,

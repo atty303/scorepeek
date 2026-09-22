@@ -1,16 +1,17 @@
 use super::{
     CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
-    ConfigFile, LIVE_SESSION_FLAGS, PrivatePublicationPoint, RecordingRetention, RunArgs,
-    catalog_paths, command_flag_values, initialize_routine_model, live_session_event_value,
-    load_run_options, optional_recognition_root, parse_diagnostic_recording_policy,
-    parse_routine_run_options, prepare_live_diagnostic_root, publish_private_file,
-    publish_private_file_with, routine_session_disposition, run_command, run_config_command,
-    run_startup_stage, run_with_model_initializer, transient_admission_capture_error,
+    LIVE_SESSION_FLAGS, RecordingRetention, RunArgs, catalog_paths, command_flag_values,
+    initialize_routine_model, live_session_event_value, load_run_options,
+    optional_recognition_root, parse_diagnostic_recording_policy, parse_routine_run_options,
+    prepare_live_diagnostic_root, routine_session_disposition, run_config_command,
+    run_startup_stage, transient_admission_capture_error,
 };
 use super::{LiveSessionEmission, run_event_from_live_emission};
 use crate::capture_live::GamescopeLiveSessionEvent;
+use crate::config::document::ConfigFile;
 use crate::config::document::validate as validate_config_file;
 use crate::config::effective as config_effective;
+use crate::diagnostics::contract::{DiagnosticPolicy, DiagnosticRetention};
 use scorepeek::capture::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticStatus,
@@ -22,14 +23,12 @@ use scorepeek_core::catalog::{
     SourceChartObservation, SourceEvidence, SourceId, SourceObservation, SourcePolicy,
     SourceSnapshot, SourceTitleObservation, TachiObservation,
 };
-use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention};
 use scorepeek_core::event::{RunEvent, RunEventKind};
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 use scorepeek_core::recognition::screen as recognition;
 use scorepeek_core::recognition::screen::{ResultScreenFieldObservations, ScreenFieldObservations};
 use scorepeek_core::recognition::shared::CatalogCandidateDomain;
 use scorepeek_core::recognition::title::DynamicTextObservation;
-use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -471,6 +470,46 @@ fn output_owned_diagnostics_prioritize_interrupt_over_startup_failure() {
 }
 
 #[test]
+fn canonical_publication_summary_is_bounded_and_counts_retention() {
+    let root = tempfile::tempdir().unwrap();
+    let canonical = root.path().join("canonical");
+    fs::create_dir(&canonical).unwrap();
+    let manifest = serde_json::json!({
+        "schema": "scorepeek-canonical-session-recording-v5",
+        "frame_contract": "scorepeek-canonical-rgb8-1920x1080-v1",
+        "session_id": "synthetic-1",
+        "shape": {"width":1920,"height":1080,"pixel_format":"rgb8"},
+        "tick_index": {"path":"canonical-ticks.ndjson","sha256":"a".repeat(64),"bytes":7,"count":3},
+        "tick_count":3,
+        "segments":[{"path":"segment-0000.mkv","first_sequence":1,"last_sequence":3,"frames":2,"bytes":100,"sha256":"b".repeat(64)}],
+        "completeness":"complete","completeness_reasons":[],
+        "game_version":{"status":"not_observed"}
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    fs::write(canonical.join("canonical-manifest.json"), &manifest_bytes).unwrap();
+    let diagnostic_store = root.path().join("diagnostics");
+    let diagnostics =
+        crate::diagnostics::inspect::RunDiagnostics::start(&diagnostic_store, "run-1-0-1");
+    let mut output = crate::events::server::RoutineOutput::start_headless_with_diagnostics(
+        "invocation-summary".into(),
+        "a".repeat(64),
+        diagnostics,
+    );
+    super::record_canonical_publication_summary(&output, Some(&canonical));
+    output.finish_diagnostics("success");
+    let stream = fs::read_to_string(diagnostic_store.join("run-1-0-1/diagnostics.ndjson")).unwrap();
+    let summary = stream
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|record| record["operation"] == "recording_summary")
+        .unwrap();
+    assert_eq!(summary["data"]["retained_frames"], 2);
+    assert_eq!(summary["data"]["elided_ticks"], 1);
+    assert_eq!(summary["data"]["bytes"], manifest_bytes.len() as u64 + 107);
+    assert_eq!(summary["data"]["status"], "complete");
+}
+
+#[test]
 fn capture_diagnostic_events_use_the_stage_timing_schema() {
     let fact = CaptureDiagnosticFact {
         sequence: 1,
@@ -684,89 +723,6 @@ fn removed_or_duplicate_recording_options_are_rejected() {
 }
 
 #[test]
-fn help_version_and_doctor_skip_model_initialization() {
-    for args in [["--help"], ["--version"], ["doctor"]] {
-        let initialized = Cell::new(false);
-        run_with_model_initializer(&args.map(OsString::from), |_| {
-            initialized.set(true);
-            Err("must not initialize".to_owned())
-        })
-        .unwrap();
-        assert!(!initialized.get());
-    }
-}
-
-#[test]
-fn every_other_command_initializes_before_dispatch() {
-    let initialized = Cell::new(false);
-    let error = run_with_model_initializer(&[OsString::from("unknown")], |_| {
-        initialized.set(true);
-        Ok(PathBuf::from("/unused-model-bundle"))
-    })
-    .unwrap_err();
-    assert!(initialized.get());
-    assert_eq!(error, "usage: scorepeek --help");
-}
-
-#[test]
-fn short_information_aliases_initialize_before_dispatch() {
-    for flag in ["-h", "-V"] {
-        let initialized = Cell::new(false);
-        run_with_model_initializer(&[OsString::from(flag)], |_| {
-            initialized.set(true);
-            Ok(PathBuf::from("/unused-model-bundle"))
-        })
-        .unwrap();
-        assert!(initialized.get());
-    }
-}
-
-#[test]
-fn global_model_bundle_is_forwarded_to_initialization() {
-    let selected = Cell::new(false);
-    let args = [
-        OsString::from("--model-bundle"),
-        OsString::from("/development/small"),
-        OsString::from("unknown"),
-    ];
-    let _ = run_with_model_initializer(&args, |bundle| {
-        selected.set(bundle == Some(Path::new("/development/small")));
-        Ok(PathBuf::from("/development/small"))
-    });
-    assert!(selected.get());
-}
-
-#[test]
-fn private_file_publication_is_no_clobber_and_cleans_every_failed_checkpoint() {
-    for failed_point in [
-        PrivatePublicationPoint::FileSynced,
-        PrivatePublicationPoint::Linked,
-        PrivatePublicationPoint::StagingRemoved,
-    ] {
-        let root = tempfile::tempdir().unwrap();
-        let output = root.path().join("artifact.json");
-        let error = publish_private_file_with(&output, b"complete\n", |point| {
-            if point == failed_point {
-                Err(std::io::Error::other("checkpoint failure"))
-            } else {
-                Ok(())
-            }
-        })
-        .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::Other);
-        assert!(!output.exists());
-        assert_eq!(root.path().read_dir().unwrap().count(), 0);
-    }
-
-    let root = tempfile::tempdir().unwrap();
-    let output = root.path().join("artifact.json");
-    publish_private_file(&output, b"first\n").unwrap();
-    assert_eq!(fs::read(&output).unwrap(), b"first\n");
-    assert!(publish_private_file(&output, b"second\n").is_err());
-    assert_eq!(fs::read(&output).unwrap(), b"first\n");
-}
-
-#[test]
 fn catalog_paths_use_absolute_xdg_directories() {
     let paths = catalog_paths(Some(OsStr::new("/data")), Some(OsStr::new("/cache")), None).unwrap();
     assert_eq!(paths.0, PathBuf::from("/data/scorepeek/catalog"));
@@ -867,25 +823,6 @@ fn internal_capture_cli_never_enables_runtime_frame_artifacts() {
     let policy = parse_diagnostic_recording_policy(OsStr::new("enabled")).unwrap();
     assert!(policy.enabled);
     assert_eq!(policy.retention, DiagnosticRetention::FactsOnly);
-}
-
-#[test]
-fn removed_gamescope_capture_commands_are_not_dispatched() {
-    for args in [
-        vec!["run", "gamescope"],
-        vec!["capture", "gamescope-live-gate", "--duration-ms", "100"],
-        vec![
-            "capture",
-            "gamescope-binding-admission-gate",
-            "--binding",
-            "/tmp/ignored",
-            "--binding-sha256",
-            "0",
-        ],
-    ] {
-        let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(run_command(&args, Path::new("/tmp/unused-model-bundle")).is_err());
-    }
 }
 
 #[test]

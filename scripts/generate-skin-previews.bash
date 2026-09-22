@@ -5,8 +5,6 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-skin-previews.XXXXXX")
 stop_fifo="$run_root/stop"
 server_log="$run_root/server.log"
-config_path="$run_root/overlay.toml"
-source_config="$run_root/preview-source.toml"
 staging="$run_root/output"
 port=$(node -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
 address="127.0.0.1:$port"
@@ -18,19 +16,21 @@ cleanup() {
   status=$?
   exec 3>&- || true
   if [[ -n "${server_pid:-}" ]]; then
+    kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" || true
   fi
-  if [[ "$status" -ne 0 && -f "$server_log" ]]; then
-    sed -n '1,240p' "$server_log" >&2
+  if [[ "$status" -ne 0 ]]; then
+    for log in "$server_log" "$run_root/role.stdout" "$run_root/role.stderr"; do
+      if [[ -f "$log" ]]; then sed -n '1,240p' "$log" >&2; fi
+    done
   fi
   find "$run_root" -depth -delete
   return "$status"
 }
 trap cleanup EXIT
 
-node "$root/scripts/write-skin-preview-config.js" "$root/skins/preview-scene.json" "$source_config"
 "$root/scripts/with-isolated-skins.sh" \
-  "$root/target/debug/examples/visual_obs" "$config_path" "$address" "$source_config" \
+  node "$root/scripts/overlay-fixture-host.js" "$run_root" "$address" "$root/skins/preview-scene.json" \
   <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -48,7 +48,7 @@ curl --fail --silent --output /dev/null "http://$address/overlay"
 
 SCOREPEEK_SKIN_PREVIEW_URL="http://$address" \
 SCOREPEEK_SKIN_PREVIEW_OUTPUT="$staging" \
-playwright test tests/skin-preview-browser.spec.js --workers=1 --reporter=line --output="$run_root/playwright"
+playwright test scripts/generate-skin-previews.browser.spec.js --workers=1 --reporter=line --output="$run_root/playwright"
 
 destination=${1:-}
 if [[ -n "$destination" ]]; then

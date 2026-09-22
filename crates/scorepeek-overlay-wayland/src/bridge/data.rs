@@ -179,7 +179,7 @@ fn refresh_history(view: &mut OverlayState, path: Option<&std::path::Path>, hist
     let now = local_now.timestamp_millis();
     let graph_starts = graph_starts(local_now);
     let since = graph_starts[3];
-    match scorepeek_core::scores::query::chart_dashboard(
+    match scorepeek_scores::query::chart_dashboard(
         path,
         &chart.song_id,
         &chart.play_type,

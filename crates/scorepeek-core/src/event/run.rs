@@ -85,6 +85,10 @@ pub enum RunEventKind {
     WatcherStarted {
         invocation_id: String,
     },
+    /// Domain session boundary derived from a standalone canonical recording.
+    CanonicalSessionStarted {
+        session_id: String,
+    },
     SessionStarted {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -130,8 +134,10 @@ pub enum RunEventKind {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: String,
-        result_presence: ResultPresenceEvidence,
-        play_presence: PlayPresenceEvidence,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_presence: Option<ResultPresenceEvidence>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        play_presence: Option<PlayPresenceEvidence>,
         #[serde(skip_serializing_if = "Option::is_none")]
         unknown_reason: Option<String>,
     },
@@ -326,6 +332,10 @@ pub enum RunEventKind {
         capture_generation: u64,
         outcome: String,
         report: Value,
+    },
+    /// Completes a canonical session without a runtime capture binding.
+    CanonicalSessionFinished {
+        session_id: String,
     },
     WatcherStopped {
         invocation_id: String,

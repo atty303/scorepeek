@@ -1,22 +1,17 @@
-//! Private corpus manifest, storage, ingest, replay, derivation, and evaluation.
+//! Canonical recording import, review, and deterministic semantic regression.
 
-#[cfg(feature = "runtime-replay")]
-mod cli;
-pub mod derive;
-pub mod evaluation;
-pub mod ingest;
-pub mod manifest;
+extern crate self as scorepeek_corpus;
+
+pub mod canonical;
+mod field;
+pub mod migration_v4;
 pub mod replay;
+mod resources;
 pub mod store;
 
-#[cfg(feature = "runtime-replay")]
-pub use cli::operation_main;
-#[cfg(feature = "runtime-replay")]
-pub use derive::motion::*;
-pub use derive::regions::*;
-#[cfg(feature = "runtime-replay")]
-pub use evaluation::session::*;
-pub use ingest::recording::*;
-#[cfg(feature = "runtime-replay")]
-pub use replay::oracle::*;
-pub use store::*;
+// Cargo excludes `test = false` custom targets from `clippy --all-targets` on the pinned
+// toolchain. Typecheck the exact private entry-point source in ordinary lib-test compilation.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/full_replay.rs"]
+mod full_replay_entry_point_compile;

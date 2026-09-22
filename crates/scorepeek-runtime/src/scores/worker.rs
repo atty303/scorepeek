@@ -1,4 +1,4 @@
-use scorepeek_core::scores::{Error, Store};
+use scorepeek_scores::{Error, Store};
 use std::{
     path::Path,
     sync::{

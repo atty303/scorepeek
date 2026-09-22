@@ -3,8 +3,8 @@
 use super::absolute_path;
 use crate::{CatalogSync, CatalogSyncSource, QuarantineReason};
 use clap::Args;
-use scorepeek_core::catalog::CatalogStore;
-use scorepeek_core::catalog::artifact::{self, ArtifactManifest};
+use scorepeek_resources::CatalogStore;
+use scorepeek_resources::artifact::{self, ArtifactManifest};
 use serde::Serialize;
 use std::path::PathBuf;
 

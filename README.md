@@ -69,3 +69,14 @@ SHA-256 against the digest recorded by GitHub after upload.
 
 Third-party source acknowledgements and terms are documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+## Development validation
+
+`mise run test` runs the repository checks, Clippy, production asset builds,
+one standard `cargo test --locked --workspace`, Vulkan layer artifact checks,
+and the browser overlay test in fail-fast order. The browser test launches the
+production `scorepeek` private OBS role with temporary HOME and XDG directories.
+Private corpus replay, corpus import and review, skin preview generation, the
+site browser test, native visual rendering, and nested Wayland require their
+separate opt-in mise tasks. See [private corpus](docs/private-corpus.md) and
+[overlay visual debugging](docs/overlay-visual-debugging.md).

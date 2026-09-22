@@ -8,16 +8,6 @@ use crate::recognition::title::DynamicTextObservation;
 use super::super::screen::{IntegratedContextLayout, Rgb8Crop};
 use super::{MusicSelectBestCrops, MusicSelectBestObservation, MusicSelectPlayTypeObservation};
 
-/// Canonical regions whose motion must be reviewed separately before music-select dwell is
-/// calibrated.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct MusicSelectMotionRegions {
-    pub list_titles: crate::frame::Roi,
-    pub active_list_title: crate::frame::Roi,
-    pub central_title: crate::frame::Roi,
-}
-
 /// Every currently measured music-select field crop used by one selection observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MusicSelectScreenRgb8Crops {

@@ -6,6 +6,8 @@ mod music_select_flow;
 mod result;
 mod result_flow;
 mod selection;
+#[cfg(test)]
+mod semantic_tests;
 
 pub use hypothesis::*;
 pub use result::*;
@@ -128,20 +130,6 @@ fn selected_play_side(fields: &Value) -> Option<PlaySide> {
         "two_player" => Some(PlaySide::TwoPlayer),
         _ => None,
     }
-}
-
-#[cfg(feature = "reducer-test-support")]
-#[doc(hidden)]
-#[must_use]
-pub fn test_selected_play_side(fields: &Value) -> Option<PlaySide> {
-    selected_play_side(fields)
-}
-
-#[cfg(feature = "reducer-test-support")]
-#[doc(hidden)]
-#[must_use]
-pub const fn test_result_play_side(panel_side: Option<ResultPanelSide>) -> Option<PlaySide> {
-    result_play_side(panel_side)
 }
 
 fn result_panel_side(fields: &Value) -> Option<ResultPanelSide> {
@@ -543,7 +531,7 @@ impl ReducedRunEvents {
     clippy::struct_excessive_bools,
     reason = "these booleans are independent reducer facts rather than one state machine axis"
 )]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RunEventReducer {
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
@@ -599,6 +587,12 @@ impl RunEventReducer {
     )]
     fn emit(&mut self, event: RunEvent) -> Result<(), RunEventReductionError> {
         match &event.kind {
+            RunEventKind::CanonicalSessionStarted { session_id } => {
+                self.active_session_id = Some(session_id.clone());
+                self.capture_generation = Some(0);
+                self.current_screen = None;
+                self.raw_screen = None;
+            }
             RunEventKind::SessionStarted {
                 session_id,
                 capture_generation,
@@ -622,7 +616,8 @@ impl RunEventReducer {
                 SemanticEpisodePhase::Finalized => self.current_screen = None,
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
-            RunEventKind::SessionFinished { .. } => {
+            RunEventKind::SessionFinished { .. }
+            | RunEventKind::CanonicalSessionFinished { .. } => {
                 self.active_session_id = None;
                 self.capture_generation = None;
                 self.current_screen = None;
@@ -869,100 +864,6 @@ impl RunEventReducer {
                 }
             }),
         }
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_engine(&self) -> &ResolverEngine {
-        &self.engine
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_engine_mut(&mut self) -> &mut ResolverEngine {
-        &mut self.engine
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn test_accepted_numeric_result(&self) -> Option<&NumericResultView> {
-        self.accepted_numeric_result.as_ref()
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_accepted_numeric_result_mut(&mut self) -> Option<&mut NumericResultView> {
-        self.accepted_numeric_result.as_mut()
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn test_pending_numeric_result(&self) -> Option<&PendingNumericResult> {
-        self.pending_numeric_result.as_ref()
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn test_active_provisional_result(&self) -> Option<&ActiveProvisionalResult> {
-        self.active_provisional_result.as_ref()
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn test_result_select_context_detached(&self) -> bool {
-        self.result_select_context_detached
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_emitted_attempt_ids(&self) -> &BTreeSet<u64> {
-        &self.emitted_attempt_ids
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    pub fn test_stabilize_numeric_result(
-        &mut self,
-        view: NumericResultView,
-        chronology_reset: bool,
-    ) -> Option<NumericResultTransition> {
-        self.stabilize_numeric_result(view, chronology_reset)
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_music_select_resolver(&self) -> &MusicSelectResolver {
-        &self.music_select_resolver
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn test_music_select_resolver_mut(&mut self) -> &mut MusicSelectResolver {
-        &mut self.music_select_resolver
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn test_active_music_selection(&self) -> Option<&MusicSelectionState> {
-        self.active_music_selection.as_ref()
-    }
-
-    #[cfg(feature = "reducer-test-support")]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn test_music_selection_episode_active(&self) -> bool {
-        self.music_selection_episode_active
     }
 }
 

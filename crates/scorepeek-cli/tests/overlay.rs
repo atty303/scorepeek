@@ -1,14 +1,103 @@
 //! Uses only synthetic inputs and an absent, isolated score database.
 use scorepeek_overlay_wayland::bridge::data::{Backend, Config};
-use scorepeek_runtime::overlay::supervisor::Children;
 use std::{
     io::{Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
-    path::Path,
-    process::Command,
+    os::unix::fs::PermissionsExt as _,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
+
+struct IsolatedHome {
+    root: tempfile::TempDir,
+}
+
+impl IsolatedHome {
+    fn new() -> Self {
+        Self {
+            root: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.path().join(name)
+    }
+
+    fn apply(&self, command: &mut Command) {
+        for (key, name) in [
+            ("HOME", "home"),
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_DATA_HOME", "data"),
+            ("XDG_STATE_HOME", "state"),
+            ("XDG_CACHE_HOME", "cache"),
+            ("XDG_RUNTIME_DIR", "runtime"),
+        ] {
+            let path = self.path(name);
+            std::fs::create_dir_all(&path).unwrap();
+            if key == "XDG_RUNTIME_DIR" {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            command.env(key, path);
+        }
+    }
+}
+
+struct OverlayChild {
+    child: Child,
+    stdout: PathBuf,
+    stderr: PathBuf,
+}
+
+impl OverlayChild {
+    fn start(isolated: &IsolatedHome, config: &Config, name: &str) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
+        isolated.apply(&mut command);
+        let stdout = isolated.path(&format!("{name}.stdout"));
+        let stderr = isolated.path(&format!("{name}.stderr"));
+        let mut child = command
+            .arg("__scorepeek-overlay-web-host")
+            .stdin(Stdio::piped())
+            .stdout(std::fs::File::create(&stdout).unwrap())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap();
+        let mut line = serde_json::to_vec(config).unwrap();
+        line.push(b'\n');
+        child.stdin.as_mut().unwrap().write_all(&line).unwrap();
+        Self {
+            child,
+            stdout,
+            stderr,
+        }
+    }
+
+    fn stop(&mut self) {
+        self.child.stdin.take();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if self.child.try_wait().unwrap().is_some() {
+                return;
+            }
+            if Instant::now() >= deadline {
+                self.child.kill().unwrap();
+                self.child.wait().unwrap();
+                panic!("overlay child did not stop after its lease closed");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for OverlayChild {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
 
 fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(100))?;
@@ -24,17 +113,15 @@ fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
 
 #[test]
 fn skin_install_stdout_remains_one_result_line() {
-    let temporary = tempfile::tempdir().unwrap();
-    let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
-        || Path::new(env!("CARGO_BIN_EXE_scorepeek")).to_path_buf(),
-        std::path::PathBuf::from,
-    );
+    let isolated = IsolatedHome::new();
+    let executable = Path::new(env!("CARGO_BIN_EXE_scorepeek"));
     let package =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
-    let output = Command::new(executable)
+    let mut command = Command::new(executable);
+    isolated.apply(&mut command);
+    let output = command
         .args(["skin", "install"])
         .arg(package)
-        .env("XDG_DATA_HOME", temporary.path())
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -44,9 +131,8 @@ fn skin_install_stdout_remains_one_result_line() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
-    let temporary = tempfile::tempdir().unwrap();
-    let skin_store =
-        scorepeek_overlay_wayland::skin::StoreRoot::new(temporary.path().join("skins"));
+    let isolated = IsolatedHome::new();
+    let skin_store = scorepeek_overlay_wayland::skin::StoreRoot::new(isolated.path("skins"));
     skin_store
         .install(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
@@ -65,25 +151,23 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
                 "dev.atty303.scorepeek.skin.result-aurora".parse().unwrap(),
             )]
         },
-        config_path: temporary.path().join("overlay.toml"),
-        control_socket: temporary.path().join("absent-control.sock"),
+        config_path: isolated.path("overlay.toml"),
+        control_socket: isolated.path("absent-control.sock"),
         skin_store: skin_store.path().to_owned(),
-        socket: temporary.path().join("absent.sock"),
+        socket: isolated.path("absent.sock"),
         invocation: "test".into(),
         scores_db: None,
         listen: address,
         unknown_grace_ms: 1_000,
         edit_on_start: false,
     };
-    let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
-        || Path::new(env!("CARGO_BIN_EXE_scorepeek")).to_path_buf(),
-        std::path::PathBuf::from,
-    );
-    let mut children = Children::default();
-    children.start(&executable, &config).unwrap();
+    let mut child = OverlayChild::start(&isolated, &config, "primary");
     let deadline = Instant::now() + Duration::from_secs(10);
     let page = loop {
-        assert!(children.poll().is_empty(), "overlay exited before serving");
+        assert!(
+            child.child.try_wait().unwrap().is_none(),
+            "overlay exited before serving"
+        );
         if let Ok(page) = get(address, "/canvas/obs-selection") {
             break page;
         }
@@ -182,18 +266,30 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             .starts_with(b"HTTP/1.1 404")
     );
     // A conflicting OBS child fails its initialization; the ready child remains available.
-    let error = children.start(&executable, &config).unwrap_err();
-    assert!(error.contains("overlay initialization"), "{error}");
-    assert!(error.contains("Address already in use"), "{error}");
-    assert!(get(address, "/").unwrap().starts_with(b"HTTP/1.1 200"));
-    children.shutdown();
-    assert!(get(address, "/").is_err());
-    assert!(
-        children
-            .take_observations()
-            .iter()
-            .any(|record| record["record"]["operation"] == "child_exit")
+    let mut conflicting = OverlayChild::start(&isolated, &config, "conflict");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while conflicting.child.try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "conflicting overlay did not exit"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!conflicting.child.wait().unwrap().success());
+    let conflict_error = format!(
+        "{}{}",
+        std::fs::read_to_string(&conflicting.stderr).unwrap(),
+        std::fs::read_to_string(&conflicting.stdout).unwrap()
     );
+    assert!(
+        conflict_error.contains("Address already in use"),
+        "{conflict_error}"
+    );
+    assert!(get(address, "/").unwrap().starts_with(b"HTTP/1.1 200"));
+    child.stop();
+    assert!(get(address, "/").is_err());
+    let diagnostics = std::fs::read_to_string(&child.stdout).unwrap();
+    assert!(diagnostics.contains("\"operation\":\"child_exit\""));
     assert!(
         skin_store
             .path()

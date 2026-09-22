@@ -200,9 +200,9 @@ description = "Install the headless Chromium revision pinned by the repository P
 run = "playwright install --only-shell chromium"
 
 [tasks."overlay:web:browser:server:build"]
-description = "Build the OBS-equivalent browser test server with the current embedded bundle"
+description = "Build the production scorepeek binary with the current embedded bundle"
 depends = ["overlay:web:bundle"]
-run = "cargo build --locked -p scorepeek-runtime --example visual_obs"
+run = "cargo build --locked -p scorepeek-cli --bin scorepeek"
 
 [tasks."overlay:web:browser:test"]
 description = "Test the production browser editor and canvas replicas in pinned Chromium"
@@ -240,27 +240,22 @@ run = "scripts/generate-skin-previews.bash"
 [tasks."overlay:visual:native"]
 description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario without Wayland"
 depends = ["overlay:web:bundle"]
-run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-wayland --example visual_native -- "$@"'
+run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-wayland --features visual-native --bin visual_native -- "$@"'
 
 [tasks."overlay:visual:wayland"]
 description = "Open the production Wayland editor with an isolated empty config for a bounded live check"
-depends = ["overlay:web:bundle"]
-run = 'SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-runtime --example visual_wayland -- "$@"'
+depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
+run = 'scripts/visual-wayland.bash "$@"'
 
 [tasks."overlay:visual:wayland:nested"]
 description = "Run the production multi-output editor in a bounded headless nested Scroll scenario"
-depends = ["overlay:visual:wayland:nested:build"]
+depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
 run = "scripts/test-overlay-wayland-nested.bash"
-
-[tasks."overlay:visual:wayland:nested:build"]
-description = "Build the production Wayland visual runner used by the nested Scroll scenario"
-depends = ["overlay:skins:build", "overlay:web:bundle"]
-run = "cargo build --release --locked -p scorepeek-runtime --example visual_wayland -p scorepeek-overlay-wayland-handles --example virtual_pointer"
 
 [tasks."overlay:visual:obs"]
 description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
-depends = ["overlay:web:bundle"]
-run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-runtime --example visual_obs -- "$@"'
+depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
+run = 'scripts/visual-obs.bash "$@"'
 
 [tasks."overlay:test:live"]
 description = "Explicit live overlay run; supply capture selection and a dedicated scores database"
@@ -295,98 +290,20 @@ fi
 exec hk fix --all
 '''
 
-[tasks."test:checks"]
-description = "Run repository checks, Rust lints, and auxiliary tooling tests"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run native:verify
-mise run overlay:web:check
-mise run check README.md
-mise run check
-mise run test:tools
-exec cargo clippy --locked --workspace --all-targets -- -D warnings
-'''
-
-[tasks."test:capture"]
-description = "Run native Vulkan capture artifact and protocol tests"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run native:verify
-exec mise run capture:vulkan:test
-'''
-
-[tasks."test:runtime"]
-description = "Run non-overlay workspace Rust tests"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-readonly runtime_build_jobs="${SCOREPEEK_RUNTIME_TEST_BUILD_JOBS:-4}"
-mise run native:verify
-CARGO_BUILD_JOBS="$runtime_build_jobs" cargo test --locked --workspace --exclude scorepeek-overlay-wayland --exclude scorepeek-overlay-web-host --exclude scorepeek-overlay-web-client
-exec env CARGO_BUILD_JOBS="$runtime_build_jobs" cargo test --locked -p scorepeek-corpus --features runtime-replay
-'''
-
-[tasks."test:overlay:native"]
-description = "Run native overlay and standalone Wayland tests"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run native:verify
-mise run overlay:wayland:build:check
-exec scripts/with-isolated-skins.sh cargo test --locked -p scorepeek-overlay
-'''
-
-[tasks."test:overlay:browser"]
-description = "Run browser overlay integration tests"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run native:verify
-mise run site:browser:test
-exec scripts/with-isolated-skins.sh mise run overlay:web:browser:test
-'''
-
-[tasks."test:overlay:embedded-unit"]
-description = "Run embedded browser UI and overlay library tests"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run native:verify
-exec scripts/with-isolated-skins.sh mise run overlay:web:embedded:unit:test
-'''
-
-[tasks."test:overlay:embedded-integration"]
-description = "Run scorepeek embedded browser integration tests"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run native:verify
-exec scripts/with-isolated-skins.sh mise run overlay:web:embedded:integration:test
-'''
-
-[tasks."test:tools"]
-description = "Run offline OCR tooling tests"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec mise run //tools/ocr:test
-'''
-
 [tasks.test]
-description = "Run all reproducible checks in parallel shards"
-depends = ["overlay:skins:build", "overlay:web:bundle"]
+description = "Run static checks, lint, production builds, workspace tests, Vulkan checks, and browser integration in order"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-SCOREPEEK_PREBUILT_SKINS=1 mise run test:checks ::: test:capture ::: test:runtime ::: test:overlay:native ::: test:overlay:browser ::: test:overlay:embedded-unit ::: test:overlay:embedded-integration
+mise run check
+mise run native:verify
+cargo clippy --locked --workspace --all-targets -- -D warnings
+mise run overlay:skins:build
+mise run overlay:web:bundle
+cargo test --locked --workspace
+mise run capture:vulkan:artifact:check
+mise run overlay:web:browser:install
+scripts/test-overlay-browser.bash
 '''
 
 [tasks.doctor]
@@ -398,9 +315,8 @@ run = "cargo run --locked --quiet -p scorepeek-cli -- doctor --format json"
 description = "Build the Scorepeek Vulkan capture layer with pinned Zig"
 run = "zig build --build-file native/vulkan-capture/build.zig --cache-dir target/vulkan-capture-cache --global-cache-dir target/vulkan-capture-global-cache --release=fast -Dtarget=x86_64-linux-gnu -Dcpu=baseline --prefix target/vulkan-capture"
 
-[tasks."capture:vulkan:test"]
-description = "Verify the layer manifest, ELF boundary, and Rust protocol/import contracts"
-depends = ["overlay:web:bundle"]
+[tasks."capture:vulkan:artifact:check"]
+description = "Verify the built Vulkan layer manifest and ELF boundary"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -413,6 +329,15 @@ readelf -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulka
 ! readelf -S target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -q '\.symtab'
 readelf -h target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq 'Machine:.*X86-64'
 ! objdump -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq '%[yz]mm|[[:space:]]v[a-z][a-z0-9]+'
+'''
+
+[tasks."capture:vulkan:test"]
+description = "Verify the layer artifact and targeted Rust protocol/import contracts"
+depends = ["overlay:web:bundle"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+mise run capture:vulkan:artifact:check
 cargo test --locked -p scorepeek-vulkan-capture
 cargo test --locked -p scorepeek-runtime capture::vulkan
 cargo test --locked -p scorepeek-runtime vulkan_layer
@@ -431,286 +356,9 @@ description = "Verify the pinned PipeWire SDK and host native build prerequisite
 run = "scripts/verify-pipewire-build-environment.bash"
 
 [tasks."corpus:test"]
-description = "Replay the complete active frame-first private regression suite"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin corpus_replay -- --store "$root" "$@"
-'''
+description = "Explicitly replay an operator-selected private canonical corpus"
+run = 'cargo test --locked -p scorepeek-corpus --test full_replay -- "$@"'
 
-[tasks."corpus:temporal:evaluate"]
-description = "Evaluate registered temporal result policies over the active private corpus"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin corpus_evaluate -- --store "$root" "$@"
-'''
-
-[tasks."recognition:inspect"]
-description = "Inspect one normalized canonical frame with the shared layout"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example recognition_inspect -- "$@"
-'''
-
-[tasks."recognition:field-resource-load-gate"]
-description = "Load the exact registered catalog and text runtime through the field-observer worker"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example field_resource_load_gate -- "$@"
-'''
-
-[tasks."recognition:recording-simulation-profile-author"]
-description = "Validate and create a digest-bound private recording simulation profile"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example recording_simulation_profile_author -- "$@"
-'''
-
-[tasks."recognition:recording-simulation"]
-description = "Replay a bound canonical recording through the production field observer"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example recording_simulation -- "$@"
-'''
-
-[tasks."recognition:recording-evidence"]
-description = "Replay a bound canonical recording and retain exact recognition evidence"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example recording_recognition_evidence -- "$@"
-'''
-
-[tasks."recognition:recording-recognition-simulation"]
-description = "Replay and require expected result-song recognition with exact retained evidence"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example recording_recognition_simulation -- "$@"
-'''
-
-[tasks."recognition:crop"]
-description = "Export shared-layout crops from one validated canonical result frame"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example recognition_crop -- "$@"
-'''
-
-[tasks."recognition:music-select:crop"]
-description = "Export selected and visible-list title crops from one validated music-select frame"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example music_select_crop -- "$@"
-'''
-
-[tasks."recognition:integrated-context:crop"]
-description = "Export independently measured result or music-select context crops"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example integrated_context_crop -- "$@"
-'''
-
-[tasks."recognition:title:spike"]
-description = "Resolve diagnostic open-text OCR to one exact catalog candidate"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example title_spike -- "$@"
-'''
-
-[tasks."recognition:title:provisional-candidates"]
-description = "Export the active-catalog SP HYPER title domain for private provisional labeling"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example provisional_title_candidates -- "$@"
-'''
-
-[tasks."recognition:title:dictionary:audit"]
-description = "Audit active-catalog title coverage against the registered OCR dictionary"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example title_dictionary_audit -- "$@"
-'''
-
-[tasks."recognition:title:model-export:requirements"]
-description = "Write complete active-catalog requirements for a scorepeek-owned title model"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example title_model_export_requirements -- "$@"
-'''
-
-[tasks."corpus:music-list:observation-draft:inspect"]
-description = "Inspect the canonical shape of private music-list row observation drafts"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_list_observation_inspect -- "$@"
-'''
-
-[tasks."corpus:music-list:observation-draft:verify"]
-description = "Rehash music-list row artifacts and verify reported RGB L1 measurements"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_list_observation_verify -- "$@"
-'''
-
-[tasks."corpus:music-list:motion:measure"]
-description = "Measure all twenty rows in annotated adjacent music-list frame pairs"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_list_motion_measure -- "$@"
-'''
-
-[tasks."corpus:music-list:motion:verify"]
-description = "Rehash and verify complete-pair music-list motion artifacts"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_list_motion_verify -- "$@"
-'''
-
-[tasks."corpus:music-list:motion:review-plan"]
-description = "Group exact duplicate row crops in a verified music-list motion artifact"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_list_motion_review_plan -- "$@"
-'''
-
-[tasks."corpus:music-list:motion:review-apply"]
-description = "Apply partial human decisions from an exact-crop music-list review plan"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_list_motion_review_apply -- "$@"
-'''
-
-[tasks."corpus:music-select:motion:review-plan"]
-description = "Measure region-specific motion around music-select observations for operator review"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_select_motion_review_plan -- "$@"
-'''
-
-[tasks."corpus:music-select:motion:review-apply"]
-description = "Apply digest-bound operator intervals to a music-select motion draft"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_select_motion_review_apply -- "$@"
-'''
-
-[tasks."corpus:music-select:dwell:evaluate"]
-description = "Evaluate music-select dwell candidates against reviewed motion truth"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
-catalog="${SCOREPEEK_CATALOG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/catalog}"
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_select_dwell_evaluate -- --store "$root" --catalog-store "$catalog" "$@"
-'''
-
-[tasks."corpus:music-select:dwell:evaluate-correctness"]
-description = "Evaluate music-select hold-and-replace candidates against correct-song truth"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
-catalog="${SCOREPEEK_CATALOG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/catalog}"
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin music_select_correctness_evaluate -- --store "$root" --catalog-store "$catalog" "$@"
-'''
-
-[tasks."ocr:title-model:parity-run"]
-description = "Verify scorepeek-owned Paddle and ONNX tensor and dictionary contracts"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example title_model_contract_parity -- "$@"
-'''
-
-[tasks."ocr:official-onnx:decode-dynamic"]
-description = "Run a registered dynamic ONNX bundle over digest-bound crops"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example title_official_dynamic_onnx_decode -- "$@"
-'''
-
-[tasks."ocr:parity:run"]
-description = "Run Rust/Paddle/ONNX parity and diagnostic active-catalog title scoring"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example title_onnx_parity -- "$@"
-'''
-
-[tasks."corpus:synthetic:render"]
-description = "Render a deterministic catalog-independent synthetic title set"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus --features runtime-replay --bin synthetic_render -- "$@"
-'''
-
-[tasks."ocr:select-best:probe"]
-description = "Read private canonical QOI frames with the registered SELECT best recognizers"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example select_best_probe -- "$@"
-'''
-
-[tasks."ocr:select-difficulty:probe"]
-description = "Read private canonical QOI files or an RGB stream with the production difficulty marker predicate"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-runtime --example select_difficulty_probe -- "$@"
-'''
+[tasks."corpus:operations"]
+description = "Explicit canonical recording import and review apply operations"
+run = 'cargo run --locked -p scorepeek-corpus --features operations --bin corpus_operations -- "$@"'

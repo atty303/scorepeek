@@ -8,7 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 
-use scorepeek_core::catalog::{ActiveCatalog, CatalogStore};
+use scorepeek_resources::{ActiveCatalog, CatalogStore};
 
 use super::acquire::{UpdateError, UpdateErrorType, failure, state_error};
 

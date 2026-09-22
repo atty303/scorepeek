@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 clap.workspace = true
 scorepeek-core = { path = "../scorepeek-core" }
+scorepeek-resources = { path = "../scorepeek-resources" }
 encoding_rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true

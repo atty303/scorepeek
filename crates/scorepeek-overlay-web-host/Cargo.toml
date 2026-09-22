@@ -8,6 +8,7 @@ build = "../../scripts/overlay-build.rs"
 
 [dependencies]
 scorepeek-core = { path = "../scorepeek-core" }
+scorepeek-scores = { path = "../scorepeek-scores" }
 scorepeek-overlay = { path = "../scorepeek-overlay" }
 scorepeek-skin-sdk = { path = "../scorepeek-skin-sdk" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }

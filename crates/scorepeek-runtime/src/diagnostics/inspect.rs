@@ -120,20 +120,14 @@ impl RunDiagnostics {
     /// This is used by offline production-path consumers that must observe the same socket
     /// protocol without colliding with an active interactive run.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "the library entry point is consumed by corpus replay"
-    )]
+    #[cfg(test)]
     pub fn start_at(store: &Path, runtime: &Path, run_id: &str) -> Self {
         Self::from_disk_at(run_id, prepare_run(store, run_id), Some(runtime), true)
     }
 
     /// Starts an isolated socket-only diagnostic run without persistent output.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "the library entry point is consumed by corpus replay"
-    )]
+    #[cfg(test)]
     pub fn start_ephemeral_at(runtime: &Path, run_id: &str) -> Self {
         Self::from_disk_at(run_id, Err(String::new()), Some(runtime), false)
     }

@@ -7,7 +7,7 @@ mod domain {
 }
 
 mod store {
-    pub use scorepeek_core::catalog::{CatalogStore, CatalogStoreError};
+    pub use scorepeek_resources::{CatalogStore, CatalogStoreError};
 }
 
 #[cfg(test)]

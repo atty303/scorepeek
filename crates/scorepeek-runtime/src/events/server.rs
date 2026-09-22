@@ -10,7 +10,6 @@ use super::client::{
     broadcast, snapshot_bytes, try_send_event,
 };
 use super::snapshot as event_api;
-#[cfg(test)]
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 #[cfg(test)]
@@ -29,28 +28,17 @@ use std::time::{Duration, Instant};
 use crate::diagnostics::inspect::{DiagnosticSink, RunDiagnostics};
 #[cfg(test)]
 use scorepeek_core::catalog::{Difficulty, PlayType};
-#[cfg(test)]
-use scorepeek_core::event::ResultPanelSideEpisodeState;
-#[cfg(test)]
-use scorepeek_core::event::{
-    EVIDENCE_FAMILY_CAP, HypothesisAccumulator, JointKey, MusicSelectResolver,
-    PlayOptionsEpisodeAccumulator, ResultChartFactor, ResultPanelSideAccumulator,
-    SelectionEpochTracker, selected_difficulty, selected_play_type,
-    test_result_play_side as result_play_side, test_selected_play_side as selected_play_side,
-};
-#[cfg(test)]
-use scorepeek_core::event::{
-    EvidenceContribution, MusicSelectionUnresolvedReason, ResolverResolutionState,
-    ResultPanelSideTransitionReason, ResultRetractionReason, SelectionDifficultyTarget,
-    SelectionDifficultyTransitionReason, SongResolutionPresentation,
-};
+use scorepeek_core::event::coordinator::{CoordinatorPolicy, DomainCoordinator};
 use scorepeek_core::event::{
     MusicSelectResolverState, MusicSelectionState, RUN_EVENT_SCHEMA, ResultDomainEvent,
     ResultState, RunEvent, RunEventKind, SongPresentation, diagnostic_run_event_value,
 };
+#[cfg(test)]
 use scorepeek_core::event::{
-    RunEventReducer, RunReducerEffect, RunReducerSnapshot as ResolverDebugSnapshot,
+    MusicSelectionUnresolvedReason, ResolverResolutionState, ResultRetractionReason,
+    SelectionDifficultyTarget, SongResolutionPresentation,
 };
+use scorepeek_core::event::{RunReducerEffect, RunReducerSnapshot as ResolverDebugSnapshot};
 #[cfg(test)]
 use scorepeek_core::recognition::music_select::PlaySide;
 #[cfg(test)]
@@ -59,8 +47,8 @@ use scorepeek_core::recognition::result::{
 };
 #[cfg(test)]
 use scorepeek_core::recognition::result::{
-    PlayOption, PlayOptionsUnknownReason, PreviousBest, PreviousBestValue, ResultChartResolution,
-    ResultJudgments, ResultTiming, SupplementalResultValue,
+    PlayOption, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
+    ResultTiming, SupplementalResultValue,
 };
 #[cfg(test)]
 use scorepeek_core::recognition::screen::ResultPanelSide;
@@ -69,7 +57,7 @@ use scorepeek_core::recognition::shared::{
     EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
 };
 #[cfg(test)]
-use scorepeek_core::session::attempt::{PlayAttemptReason, PlayAttemptScreen, PlayAttemptState};
+use scorepeek_core::session::attempt::{PlayAttemptReason, PlayAttemptState};
 use scorepeek_core::session::timeline::SemanticEpisodePhase;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -269,7 +257,10 @@ impl RunViewState {
                 SemanticEpisodePhase::Finalized => self.current_screen = None,
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
-            RunEventKind::GameVersionChanged { .. }
+            // Standalone canonical replay is not dispatched through the live UI projection.
+            RunEventKind::CanonicalSessionStarted { .. }
+            | RunEventKind::CanonicalSessionFinished { .. }
+            | RunEventKind::GameVersionChanged { .. }
             | RunEventKind::OverlayObserved { .. }
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::ScreenTick { .. }
@@ -449,12 +440,102 @@ pub struct RoutineOutput {
     scores: Option<crate::scores::Worker>,
     publish_frontend_snapshots: bool,
     next_sequence: u64,
+    next_core_input_sequence: u64,
+    active_core_input_sequence: Option<u64>,
     timing_active: bool,
     output_us: u64,
     #[cfg(test)]
     headless_events: Vec<RunEvent>,
-    core_reducer: RunEventReducer,
+    core_reducer: DomainCoordinator,
+    trace_counters: TraceCounters,
     diagnostics: Option<RunDiagnostics>,
+}
+
+#[derive(Default)]
+struct TraceCounters {
+    inputs: u64,
+    no_op_inputs: u64,
+    domain_transitions: u64,
+    output_events: u64,
+    core_errors: u64,
+    admitted_frames: u64,
+    completed_field_observations: u64,
+    source_sequence_gaps: u64,
+    last_source_sequence: Option<u64>,
+    screen_counts: [u64; 7],
+    output_kinds: BTreeMap<&'static str, u64>,
+}
+
+impl TraceCounters {
+    fn observe_input(&mut self, kind: &RunEventKind) {
+        match kind {
+            RunEventKind::SessionStarted { .. } => self.last_source_sequence = None,
+            RunEventKind::RawScreenObserved {
+                sequence, screen, ..
+            } => {
+                self.admitted_frames = self.admitted_frames.saturating_add(1);
+                self.screen_counts[screen_bucket(screen)] =
+                    self.screen_counts[screen_bucket(screen)].saturating_add(1);
+                if let Some(previous) = self.last_source_sequence {
+                    self.source_sequence_gaps = self
+                        .source_sequence_gaps
+                        .saturating_add(sequence.saturating_sub(previous.saturating_add(1)));
+                }
+                self.last_source_sequence = Some(*sequence);
+            }
+            RunEventKind::FieldObservation { .. } => {
+                self.completed_field_observations =
+                    self.completed_field_observations.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn recording_publication(report: &Value, enabled: bool) -> &'static str {
+    if !enabled {
+        "disabled"
+    } else if report["canonical_recording_manifest_published"] == true
+        && report["canonical_recording_completeness"] == "complete"
+    {
+        "published"
+    } else if report["canonical_recording_completeness"] == "partial" {
+        "partial"
+    } else {
+        "failed"
+    }
+}
+
+fn annotate_session_start(
+    object: &mut serde_json::Map<String, Value>,
+    event: &RunEvent,
+    recording_enabled: bool,
+) {
+    if let RunEventKind::SessionStarted {
+        capture_generation,
+        capture_profile_sha256,
+        normalizer_artifact_sha256,
+        ..
+    } = &event.kind
+    {
+        object.insert(
+            "canonical_frame_contract".to_owned(),
+            scorepeek_core::frame::CANONICAL_FRAME_CONTRACT_ID.into(),
+        );
+        object.insert(
+            "canonical_recording_schema".to_owned(),
+            scorepeek_core::canonical_recording::RECORDING_SCHEMA.into(),
+        );
+        object.insert(
+            "runtime_config".to_owned(),
+            json!({
+                "capture_generation": capture_generation,
+                "capture_profile_sha256": capture_profile_sha256,
+                "normalizer_artifact_sha256": normalizer_artifact_sha256,
+                "recording_enabled": recording_enabled,
+            }),
+        );
+    }
 }
 
 pub struct RoutineOutputStartError {
@@ -527,6 +608,17 @@ impl RoutineOutput {
     }
 
     pub fn finish_diagnostics(&mut self, operation_status: &str) {
+        self.record_trace_summary(self.next_core_input_sequence.saturating_sub(1), None);
+        if let Ok(state) = self.state.lock() {
+            self.record_diagnostic("runtime_run_summary", &json!({
+                "session_count": state.session_count,
+                "result_count": state.result_count,
+                "recording_status": state.status_recording,
+                "recording_memory_high_water_bytes": state.recording_memory_high_water_bytes,
+                "recording_dropped_frames": state.recording_dropped_frames,
+                "diagnostic_health": self.diagnostics.as_ref().map(|diagnostics| diagnostics.sink().health()),
+            }), true);
+        }
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.finish(operation_status);
         }
@@ -584,11 +676,15 @@ impl RoutineOutput {
             scores: None,
             publish_frontend_snapshots,
             next_sequence: 1,
+            next_core_input_sequence: 1,
+            active_core_input_sequence: None,
             timing_active: false,
             output_us: 0,
             #[cfg(test)]
             headless_events: Vec::new(),
-            core_reducer: RunEventReducer::new(),
+            core_reducer: DomainCoordinator::new(CoordinatorPolicy::default())
+                .expect("fixed core coordinator policy"),
+            trace_counters: TraceCounters::default(),
             diagnostics,
         };
         match output.refresh() {
@@ -607,10 +703,7 @@ impl RoutineOutput {
     }
 
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "the library entry point is consumed by corpus replay"
-    )]
+    #[cfg(test)]
     pub fn start_headless_with_diagnostics(
         invocation_id: String,
         profile_sha256: String,
@@ -619,10 +712,7 @@ impl RoutineOutput {
         Self::start_headless_inner(invocation_id, profile_sha256, Some(diagnostics))
     }
 
-    #[allow(
-        dead_code,
-        reason = "the library entry point is consumed by corpus replay"
-    )]
+    #[cfg(test)]
     fn start_headless_inner(
         invocation_id: String,
         profile_sha256: String,
@@ -638,11 +728,15 @@ impl RoutineOutput {
             scores: None,
             publish_frontend_snapshots: false,
             next_sequence: 1,
+            next_core_input_sequence: 1,
+            active_core_input_sequence: None,
             timing_active: false,
             output_us: 0,
             #[cfg(test)]
             headless_events: Vec::new(),
-            core_reducer: RunEventReducer::new(),
+            core_reducer: DomainCoordinator::new(CoordinatorPolicy::default())
+                .expect("fixed core coordinator policy"),
+            trace_counters: TraceCounters::default(),
             diagnostics,
         }
     }
@@ -751,10 +845,44 @@ impl RoutineOutput {
         self.timing_active = true;
         self.output_us = 0;
         let started = Instant::now();
-        let reduced = match self.core_reducer.reduce(event) {
+        let input_sequence = self.next_core_input_sequence;
+        let reduced = match self.core_reducer.step(input_sequence, event) {
             Ok(reduced) => reduced,
-            Err(error) => match error {},
+            Err(error) => return Err(self.record_core_error(input_sequence, error)),
         };
+        self.next_core_input_sequence = input_sequence.saturating_add(1);
+        self.active_core_input_sequence = Some(input_sequence);
+        let transition_count = reduced.effects().iter().filter(|effect| {
+            matches!(effect, RunReducerEffect::Event(output) if trace_domain_transition(&output.kind))
+        }).count() as u64;
+        let output_count = reduced
+            .effects()
+            .iter()
+            .filter(|effect| matches!(effect, RunReducerEffect::Event(_)))
+            .count() as u64;
+        self.trace_counters.inputs = self.trace_counters.inputs.saturating_add(1);
+        self.trace_counters.domain_transitions = self
+            .trace_counters
+            .domain_transitions
+            .saturating_add(transition_count);
+        self.trace_counters.output_events = self
+            .trace_counters
+            .output_events
+            .saturating_add(output_count);
+        for effect in reduced.effects() {
+            if let RunReducerEffect::Event(output) = effect {
+                let count = self
+                    .trace_counters
+                    .output_kinds
+                    .entry(output_kind(&output.kind))
+                    .or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        self.trace_counters.observe_input(&event.kind);
+        if transition_count == 0 {
+            self.trace_counters.no_op_inputs = self.trace_counters.no_op_inputs.saturating_add(1);
+        }
         for effect in reduced.into_effects() {
             match effect {
                 RunReducerEffect::Event(event) => self.publish_one(&event)?,
@@ -782,6 +910,19 @@ impl RoutineOutput {
                 }
             }
         }
+        self.active_core_input_sequence = None;
+        if self.trace_counters.inputs.is_multiple_of(256)
+            || matches!(
+                event.kind,
+                RunEventKind::SessionFinished { .. } | RunEventKind::WatcherStopped { .. }
+            )
+        {
+            let report = match &event.kind {
+                RunEventKind::SessionFinished { report, .. } => Some(report),
+                _ => None,
+            };
+            self.record_trace_summary(input_sequence, report);
+        }
         let total_us = duration_us(started.elapsed());
         self.timing_active = false;
         let output_us = self.output_us.min(total_us);
@@ -799,6 +940,64 @@ impl RoutineOutput {
             attempt_resolver_us,
             output_us: Some(output_us),
         })
+    }
+
+    fn record_core_error(
+        &mut self,
+        input_sequence: u64,
+        error: scorepeek_core::event::coordinator::CoordinatorError,
+    ) -> String {
+        self.trace_counters.core_errors = self.trace_counters.core_errors.saturating_add(1);
+        self.record_diagnostic(
+            "core_error",
+            &json!({"input_sequence": input_sequence, "error_type": format!("{error:?}")}),
+            true,
+        );
+        self.record_trace_summary(input_sequence, None);
+        self.timing_active = false;
+        format!("core domain transition failed: {error:?}")
+    }
+
+    fn record_trace_summary(&self, input_sequence: u64, terminal_report: Option<&Value>) {
+        let snapshot = self.core_reducer.state().snapshot();
+        self.record_diagnostic("domain_summary", &json!({
+            "input_sequence": input_sequence,
+            "inputs": self.trace_counters.inputs,
+            "no_op_inputs": self.trace_counters.no_op_inputs,
+            "domain_transitions": self.trace_counters.domain_transitions,
+            "output_events": self.trace_counters.output_events,
+            "core_errors": self.trace_counters.core_errors,
+            "admitted_frames": self.trace_counters.admitted_frames,
+            "completed_field_observations": self.trace_counters.completed_field_observations,
+            "source_sequence_gaps": self.trace_counters.source_sequence_gaps,
+            "screen_counts": {
+                "title": self.trace_counters.screen_counts[0],
+                "result": self.trace_counters.screen_counts[1],
+                "music_select": self.trace_counters.screen_counts[2],
+                "mode_select": self.trace_counters.screen_counts[3],
+                "decide_transition": self.trace_counters.screen_counts[4],
+                "play": self.trace_counters.screen_counts[5],
+                "unknown": self.trace_counters.screen_counts[6],
+            },
+            "output_kinds": self.trace_counters.output_kinds,
+            "runtime_scheduling": terminal_report.map(|report| json!({
+                "recognition_ticks": report["recognition_ticks"],
+                "recognition_busy_skips": report["recognition_busy_skips"],
+                "field_observation_busy_skips": report["field_observation_busy_skips"],
+                "field_submitted": report["field_submitted"],
+                "field_rejected": report["field_rejected"],
+                "field_ready_failure": report["field_ready_failure"],
+                "field_worker_abandoned": report["field_worker_abandoned"],
+                "diagnostic_fact_queue_full": report["diagnostic_fact_queue_full"],
+                "dropped_capture_diagnostic_facts": report["dropped_capture_diagnostic_facts"],
+            })),
+            "final_state": {
+                "screen": snapshot.screen,
+                "screen_episode_id": snapshot.screen_episode_id,
+                "gate": snapshot.gate,
+                "attempt": snapshot.attempt.as_ref().map(|attempt| (&attempt.attempt_id, &attempt.phase, &attempt.state)),
+            },
+        }), true);
     }
 
     #[cfg(test)]
@@ -821,7 +1020,7 @@ impl RoutineOutput {
             kind: RunEventKind::FieldObservation {
                 session_id: session_id.cloned(),
                 capture_generation,
-                screen_episode_id: self.core_reducer.snapshot().screen_episode_id,
+                screen_episode_id: self.core_reducer.state().snapshot().screen_episode_id,
                 sequence,
                 monotonic_start_ms: monotonic_end_ms,
                 monotonic_end_ms,
@@ -862,8 +1061,42 @@ impl RoutineOutput {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         let mut value = diagnostic_run_event_value(event)?;
+        let recording_enabled = self
+            .state
+            .lock()
+            .is_ok_and(|state| state.recording == "enabled");
         if let Some(object) = value.as_object_mut() {
             object.insert("channel_sequence".to_owned(), sequence.into());
+            if let Some(input_sequence) = self.active_core_input_sequence {
+                object.insert("input_sequence".to_owned(), input_sequence.into());
+            }
+            annotate_session_start(object, event, recording_enabled);
+            if recording_enabled
+                && let RunEventKind::SessionStarted {
+                    session_id: Some(session_id),
+                    ..
+                }
+                | RunEventKind::SessionFinished { session_id, .. }
+                | RunEventKind::RecordingCompleted { session_id, .. } = &event.kind
+            {
+                object.insert(
+                    "recording_locator".to_owned(),
+                    format!("sessions/{session_id}/canonical").into(),
+                );
+            }
+            if let RunEventKind::SessionFinished { report, .. } = &event.kind {
+                let snapshot = self.core_reducer.state().snapshot();
+                object.insert("final_domain_state".to_owned(), json!({
+                    "screen": snapshot.screen,
+                    "screen_episode_id": snapshot.screen_episode_id,
+                    "gate": snapshot.gate,
+                    "attempt": snapshot.attempt.as_ref().map(|attempt| (&attempt.attempt_id, &attempt.phase, &attempt.state)),
+                }));
+                let publication = recording_publication(report, recording_enabled);
+                object.insert("recording_publication".to_owned(), publication.into());
+            } else if matches!(event.kind, RunEventKind::RecordingCompleted { .. }) {
+                object.insert("recording_publication".to_owned(), "published".into());
+            }
         }
         let mut public_observations = Vec::new();
         {
@@ -906,7 +1139,9 @@ impl RoutineOutput {
                 sink.record("public_event", &observation, false);
             }
             value["diagnostic_health"] = sink.health();
-            sink.record("run_event", &value, important_run_event(event));
+            if !trace_ephemeral_input(&event.kind) {
+                sink.record("run_event", &value, important_run_event(event));
+            }
         }
         #[cfg(test)]
         self.headless_events.push(event.clone());
@@ -1067,6 +1302,81 @@ fn important_run_event(event: &RunEvent) -> bool {
             | RunEventKind::RecordingHealthChanged { .. }
             | RunEventKind::RecordingFinalizing { .. }
             | RunEventKind::RecordingCompleted { .. }
+    )
+}
+
+fn trace_ephemeral_input(kind: &RunEventKind) -> bool {
+    matches!(
+        kind,
+        RunEventKind::RawScreenObserved { .. }
+            | RunEventKind::ScreenTick { .. }
+            | RunEventKind::FieldObservation { .. }
+    )
+}
+
+fn screen_bucket(screen: &str) -> usize {
+    match screen {
+        "title" => 0,
+        "result" => 1,
+        "music_select" => 2,
+        "mode_select" => 3,
+        "decide_transition" => 4,
+        "play" => 5,
+        _ => 6,
+    }
+}
+
+const fn output_kind(kind: &RunEventKind) -> &'static str {
+    match kind {
+        RunEventKind::OverlayObserved { .. } => "overlay_observed",
+        RunEventKind::MusicSelectBestObserved { .. } => "music_select_best_observed",
+        RunEventKind::MusicSelectResolverChanged { .. } => "music_select_resolver_changed",
+        RunEventKind::WatcherStarted { .. } => "watcher_started",
+        RunEventKind::CanonicalSessionStarted { .. } => "canonical_session_started",
+        RunEventKind::SessionStarted { .. } => "session_started",
+        RunEventKind::RecordingHealthChanged { .. } => "recording_health_changed",
+        RunEventKind::RecordingFinalizing { .. } => "recording_finalizing",
+        RunEventKind::RecordingCompleted { .. } => "recording_completed",
+        RunEventKind::GameVersionChanged { .. } => "game_version_changed",
+        RunEventKind::RawScreenObserved { .. } => "raw_screen_observed",
+        RunEventKind::SemanticScreenEpisodeChanged { .. } => "semantic_screen_episode_changed",
+        RunEventKind::ScreenChanged { .. } => "screen_changed",
+        RunEventKind::ScreenTick { .. } => "screen_tick",
+        RunEventKind::FieldObservation { .. } => "field_observation",
+        RunEventKind::ResultChanged { .. } => "result_changed",
+        RunEventKind::ResultPanelSideChanged { .. } => "result_panel_side_changed",
+        RunEventKind::ResultSelectContextMismatch { .. } => "result_select_context_mismatch",
+        RunEventKind::MusicSelectionChanged { .. } => "music_selection_changed",
+        RunEventKind::TemporalResultChanged { .. } => "temporal_result_changed",
+        RunEventKind::TemporalMusicSelectChanged { .. } => "temporal_music_select_changed",
+        RunEventKind::NumericResultChanged { .. } => "numeric_result_changed",
+        RunEventKind::PlayAttemptChanged { .. } => "play_attempt_changed",
+        RunEventKind::ResolverStateChanged { .. } => "resolver_state_changed",
+        RunEventKind::SelectionDifficultyChanged { .. } => "selection_difficulty_changed",
+        RunEventKind::SessionFinished { .. } => "session_finished",
+        RunEventKind::CanonicalSessionFinished { .. } => "canonical_session_finished",
+        RunEventKind::WatcherStopped { .. } => "watcher_stopped",
+    }
+}
+
+fn trace_domain_transition(kind: &RunEventKind) -> bool {
+    matches!(
+        kind,
+        RunEventKind::GameVersionChanged { .. }
+            | RunEventKind::SemanticScreenEpisodeChanged { .. }
+            | RunEventKind::ScreenChanged { .. }
+            | RunEventKind::ResultChanged { .. }
+            | RunEventKind::ResultPanelSideChanged { .. }
+            | RunEventKind::ResultSelectContextMismatch { .. }
+            | RunEventKind::MusicSelectionChanged { .. }
+            | RunEventKind::TemporalResultChanged { .. }
+            | RunEventKind::TemporalMusicSelectChanged { .. }
+            | RunEventKind::NumericResultChanged { .. }
+            | RunEventKind::PlayAttemptChanged { .. }
+            | RunEventKind::ResolverStateChanged { .. }
+            | RunEventKind::SelectionDifficultyChanged { .. }
+            | RunEventKind::MusicSelectResolverChanged { .. }
+            | RunEventKind::MusicSelectBestObserved { .. }
     )
 }
 

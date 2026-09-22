@@ -82,7 +82,7 @@ struct StoredObservation<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     processing_timing: Option<&'a RecognitionProcessingTiming>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    field_status: Option<scorepeek_core::diagnostics::FrameFieldStatus>,
+    field_status: Option<crate::diagnostics::contract::FrameFieldStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     title_evidence: Option<&'a TitleEvidenceObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,9 +94,6 @@ struct StoredObservation<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum RecognitionArtifactTiming {
-    Recording {
-        source_pts_ms: u64,
-    },
     Live {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
@@ -217,6 +214,7 @@ pub enum RecognitionArtifactRetention {
 }
 
 impl RecognitionArtifactWriter {
+    #[cfg(test)]
     pub fn create(root: &Path, run_id: String, profile_sha256: String) -> Result<Self, String> {
         Self::create_with_retention(
             root,
@@ -297,39 +295,12 @@ impl RecognitionArtifactWriter {
         )
     }
 
-    pub fn record_observation(
-        &mut self,
-        sequence: u64,
-        timing: RecognitionArtifactTiming,
-        output: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
-        expected: Option<RecognitionArtifactExpected<'_>>,
-    ) -> Result<(), String> {
-        self.record_with_result_context(
-            sequence,
-            None,
-            timing,
-            output.fields(),
-            output.candidates(),
-            output.song_resolution(),
-            output.parsed_result_fields(),
-            output.result_chart_resolution(),
-            output.result_performance_resolution(),
-            output.current_score_ocr_resolution(),
-            output.numeric_batch(),
-            Some(output.joint_evidence()),
-            Some(output.processing_timing()),
-            None,
-            output.title_evidence(),
-            expected,
-        )
-    }
-
     fn record_live_observation(
         &mut self,
         sequence: u64,
         screen_episode_id: u64,
         timing: RecognitionArtifactTiming,
-        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        field_status: crate::diagnostics::contract::FrameFieldStatus,
         output: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
     ) -> Result<(), String> {
         self.record_with_result_context(
@@ -368,7 +339,7 @@ impl RecognitionArtifactWriter {
         numeric_batch: Option<&NumericBatchInference>,
         joint_evidence: Option<&shared_recognition::JointEvidenceObservation>,
         processing_timing: Option<&RecognitionProcessingTiming>,
-        field_status: Option<scorepeek_core::diagnostics::FrameFieldStatus>,
+        field_status: Option<crate::diagnostics::contract::FrameFieldStatus>,
         title_evidence: Option<&TitleEvidenceObservation>,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
@@ -436,6 +407,7 @@ impl RecognitionArtifactWriter {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn finish(self, succeeded: bool) -> Result<String, String> {
         let input_observation_count = self.observation_count;
         self.finish_with_input_count(succeeded, input_observation_count)
@@ -550,7 +522,7 @@ struct LiveRecord {
     screen_episode_id: u64,
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
-    field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+    field_status: crate::diagnostics::contract::FrameFieldStatus,
     observation: LiveObservation,
 }
 
@@ -675,7 +647,7 @@ impl RecognitionArtifactWorker {
             0,
             monotonic_start_ms,
             monotonic_end_ms,
-            scorepeek_core::diagnostics::FrameFieldStatus::Completed,
+            crate::diagnostics::contract::FrameFieldStatus::Completed,
             LiveObservation::Completed(observation),
         )
     }
@@ -686,7 +658,7 @@ impl RecognitionArtifactWorker {
         screen_episode_id: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
-        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        field_status: crate::diagnostics::contract::FrameFieldStatus,
         observation: FrameTimedScreenFieldObservation,
     ) -> RecognitionArtifactEnqueueOutcome {
         self.try_record_value(
@@ -705,7 +677,7 @@ impl RecognitionArtifactWorker {
         screen_episode_id: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
-        field_status: scorepeek_core::diagnostics::FrameFieldStatus,
+        field_status: crate::diagnostics::contract::FrameFieldStatus,
         observation: LiveObservation,
     ) -> RecognitionArtifactEnqueueOutcome {
         let Some(sender) = &self.sender else {
@@ -1310,8 +1282,9 @@ mod tests {
         writer
             .record(
                 7,
-                RecognitionArtifactTiming::Recording {
-                    source_pts_ms: 140_000,
+                RecognitionArtifactTiming::Live {
+                    monotonic_start_ms: 140_000,
+                    monotonic_end_ms: 140_000,
                 },
                 &result_fields(),
                 &empty_candidates(),
@@ -1442,8 +1415,9 @@ mod tests {
         writer
             .record(
                 8,
-                RecognitionArtifactTiming::Recording {
-                    source_pts_ms: 141_000,
+                RecognitionArtifactTiming::Live {
+                    monotonic_start_ms: 141_000,
+                    monotonic_end_ms: 141_000,
                 },
                 &result_fields(),
                 &empty_catalog_candidates(),
