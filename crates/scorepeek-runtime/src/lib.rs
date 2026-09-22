@@ -34,7 +34,6 @@ pub use scorepeek_core::session::timeline;
 pub(crate) use capture::live as capture_live;
 pub(crate) use recording::artifact as recognition_artifact;
 pub(crate) use recording::source as canonical_source;
-pub use resources::model::cache::{ModelCacheError, ModelCacheEvent, ensure_small_model};
 pub use service::ServiceHandle;
 pub use service::dispatch::dev_operation_main;
 

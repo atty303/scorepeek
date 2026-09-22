@@ -2829,7 +2829,7 @@ pub fn replay_corpus_with_options(
     let mut episodes = 0;
     let mut canonical_frames = 0;
     let mut negatives = 0;
-    let bundle = scorepeek_runtime::ensure_small_model(None, |_| {})
+    let bundle = scorepeek_runtime::resources::model::acquire::ensure_small_model(None, |_| {})
         .map_err(|error| CorpusError::InvalidReplay(format!("model cache failed: {error}")))?;
     let catalog_root = default_catalog_root()?;
     let diagnostic_root = tempfile::tempdir()?;

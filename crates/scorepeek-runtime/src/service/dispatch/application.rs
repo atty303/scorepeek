@@ -531,13 +531,14 @@ fn validate_capture_specific(backend: CaptureKind, node_name: Option<&str>) -> R
 
 fn run_public(args: RunArgs, config_override: Option<PathBuf>) -> Result<(), String> {
     run_public_with_model_initializer(args, config_override, |override_bundle| {
-        scorepeek::resources::model::cache::ensure_small_model(override_bundle, |event| match event
-        {
-            scorepeek::resources::model::cache::ModelCacheEvent::DownloadStarted => {
-                eprintln!("scorepeek: downloading PP-OCRv6-small model...");
-            }
-            scorepeek::resources::model::cache::ModelCacheEvent::DownloadCompleted => {
-                eprintln!("scorepeek: PP-OCRv6-small model download complete");
+        scorepeek::resources::model::acquire::ensure_small_model(override_bundle, |event| {
+            match event {
+                scorepeek::resources::model::cache::ModelCacheEvent::DownloadStarted => {
+                    eprintln!("scorepeek: downloading PP-OCRv6-small model...");
+                }
+                scorepeek::resources::model::cache::ModelCacheEvent::DownloadCompleted => {
+                    eprintln!("scorepeek: PP-OCRv6-small model download complete");
+                }
             }
         })
         .map_err(|error| format!("model initialization failed: {error}"))
@@ -964,13 +965,14 @@ fn run_vulkan_layer_command(command: VulkanLayerCommand) -> Result<(), String> {
 #[allow(clippy::too_many_lines)]
 fn run(args: &[OsString]) -> Result<(), String> {
     run_with_model_initializer(args, |override_bundle| {
-        scorepeek::resources::model::cache::ensure_small_model(override_bundle, |event| match event
-        {
-            scorepeek::resources::model::cache::ModelCacheEvent::DownloadStarted => {
-                eprintln!("scorepeek: downloading PP-OCRv6-small model...");
-            }
-            scorepeek::resources::model::cache::ModelCacheEvent::DownloadCompleted => {
-                eprintln!("scorepeek: PP-OCRv6-small model download complete");
+        scorepeek::resources::model::acquire::ensure_small_model(override_bundle, |event| {
+            match event {
+                scorepeek::resources::model::cache::ModelCacheEvent::DownloadStarted => {
+                    eprintln!("scorepeek: downloading PP-OCRv6-small model...");
+                }
+                scorepeek::resources::model::cache::ModelCacheEvent::DownloadCompleted => {
+                    eprintln!("scorepeek: PP-OCRv6-small model download complete");
+                }
             }
         })
         .map_err(|error| format!("scorepeek model initialization failed: {error}"))

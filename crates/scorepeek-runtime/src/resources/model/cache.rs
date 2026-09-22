@@ -1,20 +1,12 @@
-//! Global acquisition and cache publication for the registered live OCR model.
+//! Bounded content-addressed cache publication for registered live OCR models.
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use sha2::{Digest as _, Sha256};
-
-use scorepeek_core::model::{
-    manifest::{
-        RegisteredLiveModelFile, registered_live_model_files, verify_registered_live_model_bundle,
-    },
-    registry::LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
-};
+use scorepeek_core::model::manifest::RegisteredLiveModelFile;
 
 const STORE_MARKER: &str = ".scorepeek-onnx-bundle-store-v1";
 const STORE_MARKER_BYTES: &[u8] = b"scorepeek-owned-onnx-bundle-store-v1\n";
@@ -26,8 +18,6 @@ const MAX_BUNDLE_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_BUNDLE_COUNT: usize = 8;
 const MAX_BUNDLE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_BUNDLE_OBJECT_BYTES: u64 = 192 * 1024 * 1024;
-const MAX_REDIRECTS: u32 = 10;
-const REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// A user-visible transition of the synchronous model cache operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,88 +115,6 @@ impl From<io::Error> for ModelCacheError {
     }
 }
 
-#[derive(Clone, Debug)]
-struct ModelHttpResponse {
-    status: u16,
-    content_length: Option<u64>,
-    body: Vec<u8>,
-}
-
-trait ModelTransport {
-    fn get(&self, file: &RegisteredLiveModelFile) -> Result<ModelHttpResponse, ModelCacheError>;
-}
-
-struct UreqModelTransport {
-    agent: ureq::Agent,
-}
-
-impl UreqModelTransport {
-    fn new() -> Self {
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .https_only(true)
-            .max_redirects(MAX_REDIRECTS)
-            .timeout_global(Some(REQUEST_TIMEOUT))
-            .user_agent(format!(
-                "scorepeek/{} (+https://github.com/atty303/scorepeek)",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .build();
-        Self {
-            agent: config.new_agent(),
-        }
-    }
-}
-
-impl ModelTransport for UreqModelTransport {
-    fn get(&self, file: &RegisteredLiveModelFile) -> Result<ModelHttpResponse, ModelCacheError> {
-        let mut response = self.agent.get(&file.source_url).call().map_err(|error| {
-            if matches!(error, ureq::Error::Timeout(_)) {
-                ModelCacheError::Timeout {
-                    filename: file.filename.clone(),
-                }
-            } else {
-                ModelCacheError::Transport {
-                    filename: file.filename.clone(),
-                    detail: error.to_string(),
-                }
-            }
-        })?;
-        let status = response.status().as_u16();
-        let content_length = response.body().content_length();
-        if content_length.is_some_and(|declared| declared != file.bytes) {
-            return Err(ModelCacheError::DeclaredSize {
-                filename: file.filename.clone(),
-                declared: content_length.expect("checked content length"),
-                expected: file.bytes,
-            });
-        }
-        let mut body = Vec::new();
-        response
-            .body_mut()
-            .as_reader()
-            .take(file.bytes + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::TimedOut {
-                    ModelCacheError::Timeout {
-                        filename: file.filename.clone(),
-                    }
-                } else {
-                    ModelCacheError::Transport {
-                        filename: file.filename.clone(),
-                        detail: "response body read failed".to_owned(),
-                    }
-                }
-            })?;
-        Ok(ModelHttpResponse {
-            status,
-            content_length,
-            body,
-        })
-    }
-}
-
 /// Resolves the normal XDG cache store used by both Rust and Python model tooling.
 ///
 /// # Errors
@@ -235,50 +143,11 @@ fn default_model_store_from(
     Ok(base.join("scorepeek/models"))
 }
 
-/// Ensures the registered live model exists, or verifies the explicit development override.
-///
-/// # Errors
-/// Returns before command dispatch when location, download, verification, locking, or publication
-/// fails. An existing completed cache is returned without network access or mutation.
-pub fn ensure_small_model(
-    override_bundle: Option<&Path>,
-    observer: impl FnMut(ModelCacheEvent),
-) -> Result<PathBuf, ModelCacheError> {
-    if let Some(bundle) = override_bundle {
-        validate_absolute_directory(bundle)?;
-        verify_registered_live_model_bundle(bundle)
-            .map_err(|error| ModelCacheError::InvalidBundle(error.to_string()))?;
-        return Ok(bundle.to_path_buf());
-    }
-    let store = default_model_store()?;
-    ensure_small_model_with(&store, &UreqModelTransport::new(), observer)
-}
-
-fn ensure_small_model_with(
-    store: &Path,
-    transport: &impl ModelTransport,
-    observer: impl FnMut(ModelCacheEvent),
-) -> Result<PathBuf, ModelCacheError> {
-    let files = registered_live_model_files()
-        .map_err(|error| ModelCacheError::Registration(error.to_string()))?;
-    ensure_model_with(
-        store,
-        LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
-        &files,
-        transport,
-        |path| {
-            verify_registered_live_model_bundle(path)
-                .map_err(|error| ModelCacheError::InvalidBundle(error.to_string()))
-        },
-        observer,
-    )
-}
-
-fn ensure_model_with(
+pub(super) fn ensure_model_with(
     store: &Path,
     manifest_sha256: &str,
     files: &[RegisteredLiveModelFile],
-    transport: &impl ModelTransport,
+    download: impl Fn(&RegisteredLiveModelFile) -> Result<Vec<u8>, ModelCacheError>,
     verify_bundle: impl Fn(&Path) -> Result<(), ModelCacheError>,
     observer: impl FnMut(ModelCacheEvent),
 ) -> Result<PathBuf, ModelCacheError> {
@@ -286,7 +155,7 @@ fn ensure_model_with(
         store,
         manifest_sha256,
         files,
-        transport,
+        download,
         verify_bundle,
         |_| Ok(()),
         observer,
@@ -297,7 +166,7 @@ fn ensure_model_with_publish_hook(
     store: &Path,
     manifest_sha256: &str,
     files: &[RegisteredLiveModelFile],
-    transport: &impl ModelTransport,
+    download: impl Fn(&RegisteredLiveModelFile) -> Result<Vec<u8>, ModelCacheError>,
     verify_bundle: impl Fn(&Path) -> Result<(), ModelCacheError>,
     before_publish: impl Fn(&Path) -> Result<(), ModelCacheError>,
     mut observer: impl FnMut(ModelCacheEvent),
@@ -335,9 +204,8 @@ fn ensure_model_with_publish_hook(
     sync_directory(staging.path())?;
     sync_directory(&bundles)?;
     for file in files {
-        let response = transport.get(file)?;
-        verify_response(file, &response)?;
-        write_durable_file(&staging.path().join(&file.filename), &response.body)?;
+        let bytes = download(file)?;
+        write_durable_file(&staging.path().join(&file.filename), &bytes)?;
     }
     verify_bundle(staging.path())?;
     sync_directory(staging.path())?;
@@ -365,51 +233,6 @@ fn ensure_model_with_publish_hook(
     }
     observer(ModelCacheEvent::DownloadCompleted);
     Ok(target)
-}
-
-fn verify_response(
-    file: &RegisteredLiveModelFile,
-    response: &ModelHttpResponse,
-) -> Result<(), ModelCacheError> {
-    if response.status != 200 {
-        return Err(ModelCacheError::Http {
-            filename: file.filename.clone(),
-            status: response.status,
-        });
-    }
-    if response
-        .content_length
-        .is_some_and(|declared| declared != file.bytes)
-    {
-        return Err(ModelCacheError::DeclaredSize {
-            filename: file.filename.clone(),
-            declared: response.content_length.expect("checked content length"),
-            expected: file.bytes,
-        });
-    }
-    if response.body.len() as u64 != file.bytes {
-        return Err(ModelCacheError::Size {
-            filename: file.filename.clone(),
-            actual: response.body.len(),
-            expected: file.bytes,
-        });
-    }
-    if sha256_hex(&response.body) != file.sha256 {
-        return Err(ModelCacheError::Digest {
-            filename: file.filename.clone(),
-        });
-    }
-    Ok(())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut encoded = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
 }
 
 fn create_private_directory(path: &Path) -> Result<(), ModelCacheError> {
@@ -626,7 +449,7 @@ fn sync_directory(path: &Path) -> Result<(), ModelCacheError> {
     Ok(())
 }
 
-fn validate_absolute_directory(path: &Path) -> Result<(), ModelCacheError> {
+pub(super) fn validate_absolute_directory(path: &Path) -> Result<(), ModelCacheError> {
     if !path.is_absolute() {
         return Err(ModelCacheError::Location(
             "model bundle must be an absolute directory",
@@ -650,6 +473,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
 
+    use super::super::acquire::{ModelHttpResponse, ModelTransport, download, sha256_hex};
     use super::*;
 
     #[derive(Clone)]
@@ -747,7 +571,7 @@ mod tests {
             &store,
             &"1".repeat(64),
             &files,
-            &transport,
+            |file| download(&transport, file),
             verify_fixture,
             |_| {},
         )
@@ -757,7 +581,7 @@ mod tests {
             &store,
             &"1".repeat(64),
             &files,
-            &transport,
+            |file| download(&transport, file),
             verify_fixture,
             |_| {},
         )
@@ -781,7 +605,7 @@ mod tests {
                 &store,
                 &"2".repeat(64),
                 &files,
-                &transport,
+                |file| download(&transport, file),
                 verify_fixture,
                 |_| {}
             )
@@ -838,7 +662,7 @@ mod tests {
                     &store,
                     &digest,
                     std::slice::from_ref(&file),
-                    transport,
+                    |file| download(transport, file),
                     |_| Ok(()),
                     |_| {}
                 )
@@ -863,7 +687,7 @@ mod tests {
                 &store,
                 &digest,
                 &files,
-                &transport,
+                |file| download(&transport, file),
                 verify_fixture,
                 |_| Err(ModelCacheError::Io(io::Error::other(
                     "publication interrupted"
@@ -935,7 +759,15 @@ mod tests {
         };
 
         assert!(
-            ensure_model_with(&store, &digest, &files, &transport, verify_fixture, |_| {}).is_err()
+            ensure_model_with(
+                &store,
+                &digest,
+                &files,
+                |file| download(&transport, file),
+                verify_fixture,
+                |_| {},
+            )
+            .is_err()
         );
         assert_eq!(requests.load(Ordering::SeqCst), 0);
         assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
@@ -968,7 +800,7 @@ mod tests {
                         &store,
                         &"3".repeat(64),
                         &files,
-                        &transport,
+                        |file| download(&transport, file),
                         verify_fixture,
                         |_| {},
                     )
@@ -1005,7 +837,7 @@ mod tests {
                 &store,
                 &existing,
                 &files,
-                &transport,
+                |file| download(&transport, file),
                 verify_fixture,
                 |_| {}
             )
@@ -1017,7 +849,7 @@ mod tests {
                 &store,
                 &"f".repeat(64),
                 &files,
-                &transport,
+                |file| download(&transport, file),
                 verify_fixture,
                 |_| {}
             )
