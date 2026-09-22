@@ -8,11 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
 use serde::{Deserialize, Serialize};
 
+use crate::recognition::music_select::MusicSelectScreenFieldObservations;
+use crate::recognition::screen::{ResultScreenFieldObservations, ScreenFieldObservations};
 use crate::recognition::title::observe::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, exact_comparison_key, folded_comparison_key,
-};
-use crate::recognition::{
-    MusicSelectScreenFieldObservations, ResultScreenFieldObservations, ScreenFieldObservations,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -618,9 +617,9 @@ mod tests {
     use super::*;
     use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
     use crate::catalog::{Chart, ChartKey, Difficulty, PlayType};
-    use crate::recognition::{
-        DynamicTextObservation, MusicSelectScreenFieldObservations, ResultScreenFieldObservations,
-    };
+    use crate::recognition::music_select::MusicSelectScreenFieldObservations;
+    use crate::recognition::screen::ResultScreenFieldObservations;
+    use crate::recognition::title::DynamicTextObservation;
 
     fn catalog() -> Catalog {
         catalog_from_records(&[
@@ -730,12 +729,14 @@ mod tests {
         for value in ["", " \t\n"] {
             let observations =
                 ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
-                    best: crate::recognition::MusicSelectBestObservation::default(),
+                    best: crate::recognition::music_select::MusicSelectBestObservation::default(),
                     central_title: text(value),
                     artist: text(value),
-                    play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),
-                    selected_difficulty: crate::recognition::test_music_select_difficulty(None),
-                    play_side: crate::recognition::test_music_select_play_side(None),
+                    play_type:
+                        crate::recognition::music_select::MusicSelectPlayTypeObservation::default(),
+                    selected_difficulty:
+                        crate::recognition::music_select::test_music_select_difficulty(None),
+                    play_side: crate::recognition::music_select::test_music_select_play_side(None),
                     active_list_title: text(value),
                 });
             let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =
@@ -763,14 +764,15 @@ mod tests {
         let domain = CatalogCandidateDomain::from_catalog(&catalog()).unwrap();
         let observations =
             ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
-                best: crate::recognition::MusicSelectBestObservation::default(),
+                best: crate::recognition::music_select::MusicSelectBestObservation::default(),
                 central_title: text("CAT"),
                 artist: text("ALPHA"),
-                play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),
-                selected_difficulty: crate::recognition::test_music_select_difficulty(Some(
-                    crate::catalog::Difficulty::Hyper,
-                )),
-                play_side: crate::recognition::test_music_select_play_side(None),
+                play_type:
+                    crate::recognition::music_select::MusicSelectPlayTypeObservation::default(),
+                selected_difficulty: crate::recognition::music_select::test_music_select_difficulty(
+                    Some(crate::catalog::Difficulty::Hyper),
+                ),
+                play_side: crate::recognition::music_select::test_music_select_play_side(None),
                 active_list_title: text("BAT"),
             });
         let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =

@@ -585,8 +585,8 @@ pub(super) mod tests {
     use super::*;
     use serde_json::{Value, json};
 
-    fn play_presence() -> scorepeek_core::recognition::PlayPresenceEvidence {
-        scorepeek_core::recognition::PlayPresenceEvidence {
+    fn play_presence() -> scorepeek_core::recognition::screen::PlayPresenceEvidence {
+        scorepeek_core::recognition::screen::PlayPresenceEvidence {
             qualifying_candidates: 0,
             top_edge_runs: 0,
             bottom_edge_runs: 0,
@@ -734,21 +734,21 @@ pub(super) mod tests {
             monotonic_start_ms: 0,
             monotonic_end_ms: 1,
             screen: "raw frame label".into(),
-            result_presence: scorepeek_core::recognition::ResultPresenceEvidence {
+            result_presence: scorepeek_core::recognition::screen::ResultPresenceEvidence {
                 warm_pixels: 0,
                 warm_pixels_min: 3_000,
-                panel_side: scorepeek_core::recognition::ResultPanelSideState::Unknown(
-                    scorepeek_core::recognition::ResultPanelSideUnknownReason::NoCandidate,
+                panel_side: scorepeek_core::recognition::screen::ResultPanelSideState::Unknown(
+                    scorepeek_core::recognition::screen::ResultPanelSideUnknownReason::NoCandidate,
                 ),
                 panels: [
-                    scorepeek_core::recognition::ResultPanelPresenceEvidence {
-                        panel_side: scorepeek_core::recognition::ResultPanelSide::Left,
+                    scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
+                        panel_side: scorepeek_core::recognition::screen::ResultPanelSide::Left,
                         upper_panel_edge_pixels: 0,
                         lower_panel_edge_pixels: 0,
                         qualifies: false,
                     },
-                    scorepeek_core::recognition::ResultPanelPresenceEvidence {
-                        panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
+                    scorepeek_core::recognition::screen::ResultPanelPresenceEvidence {
+                        panel_side: scorepeek_core::recognition::screen::ResultPanelSide::Right,
                         upper_panel_edge_pixels: 0,
                         lower_panel_edge_pixels: 0,
                         qualifies: false,

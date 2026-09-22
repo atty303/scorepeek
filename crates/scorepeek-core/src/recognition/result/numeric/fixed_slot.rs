@@ -1,10 +1,10 @@
 use crate::catalog::Difficulty;
 
+use crate::frame::{CanonicalLayout, Roi};
+use crate::recognition::result::ResultNumericCharacterLayout;
+use crate::recognition::screen::{RecognitionError, ResultScreenRgb8Crops, Rgb8Crop};
+use crate::recognition::shared::NumericField;
 use crate::recognition::title::preprocess::resize_linear_gray;
-use crate::recognition::{
-    CanonicalLayout, NumericField, RecognitionError, ResultNumericCharacterLayout,
-    ResultScreenRgb8Crops, Rgb8Crop, Roi,
-};
 
 pub const FIXED_SLOT_PREPROCESSOR_ID: &str = "scorepeek-fixed-slot-hog-hybrid-0p25-v1";
 pub const FIXED_SLOT_FEATURE_DIMENSIONS: usize = 2_244;
@@ -406,9 +406,8 @@ fn normalize(values: &mut [f64]) {
 mod tests {
     use super::*;
     use crate::frame::CANONICAL_BYTES;
-    use crate::recognition::{
-        ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops, route_screen_rgb8_crops,
-        screen::encode_sha256,
+    use crate::recognition::screen::{
+        ResultPanelSide, ScreenCropRoute, ScreenRgb8Crops, encode_sha256, route_screen_rgb8_crops,
     };
 
     #[test]

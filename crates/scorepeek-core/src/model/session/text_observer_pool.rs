@@ -3,9 +3,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use scorepeek::recognition::{
-    DynamicTextObservation, OnnxParityError, RegisteredDynamicTitleRuntime, Rgb8Crop,
-    ScreenTextField,
+use scorepeek::recognition::screen::{Rgb8Crop, ScreenTextField};
+use scorepeek::recognition::title::{
+    DynamicTextObservation, OnnxParityError, RegisteredDynamicTitleRuntime,
 };
 
 const MAX_TEXT_FIELDS_PER_FRAME: usize = 7;

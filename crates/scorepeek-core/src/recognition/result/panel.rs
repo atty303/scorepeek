@@ -1,10 +1,11 @@
 use crate::catalog::Difficulty;
 use serde::Deserialize;
 
-use crate::frame::{CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH};
-use crate::recognition::{
-    CanonicalLayout, NumericField, RecognitionError, Roi, screen::encode_sha256,
+use crate::frame::{
+    CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH, CanonicalLayout, Roi,
 };
+use crate::recognition::screen::{RecognitionError, encode_sha256};
+use crate::recognition::shared::NumericField;
 
 const LAYOUT_BYTES: &[u8] = include_bytes!("../../result-numeric-character-layout-v3.json");
 const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v3";

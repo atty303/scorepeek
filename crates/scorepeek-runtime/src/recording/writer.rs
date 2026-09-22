@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use scorepeek::game_version::GameVersionState;
-use scorepeek_core::recognition::ScreenClass;
+use scorepeek_core::recognition::screen::ScreenClass;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 

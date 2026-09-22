@@ -1,4 +1,4 @@
-use crate::recognition::ScreenClass;
+use crate::recognition::screen::ScreenClass;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus};
 use scorepeek_core::model::session::{RecognitionExecutionMode, RegisteredScreenFieldObservation};
-use scorepeek_core::recognition::{
-    OnnxParityError, RecognitionError, ScreenClass, ScreenFieldObservationError,
+use scorepeek_core::recognition::screen::{
+    RecognitionError, ScreenClass, ScreenFieldObservationError,
 };
+use scorepeek_core::recognition::title::OnnxParityError;
 
 use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::service::session::recognition::field_observer::{
@@ -279,12 +280,14 @@ impl<'a> ReplayFrameInspection<'a> {
     }
 
     #[must_use]
-    pub const fn result_presence(&self) -> scorepeek_core::recognition::ResultPresenceEvidence {
+    pub const fn result_presence(
+        &self,
+    ) -> scorepeek_core::recognition::screen::ResultPresenceEvidence {
         self.observation.result_presence()
     }
 
     #[must_use]
-    pub const fn play_presence(&self) -> scorepeek_core::recognition::PlayPresenceEvidence {
+    pub const fn play_presence(&self) -> scorepeek_core::recognition::screen::PlayPresenceEvidence {
         self.observation.play_presence()
     }
 }

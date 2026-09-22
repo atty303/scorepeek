@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::catalog::{PlayType, ScorepeekSongId};
-use crate::recognition::{
-    EvidenceFamily, JointEvidenceObservation, ParsedResultFields, PlayPresenceEvidence, PlaySide,
-    ResultChartResolution, ResultPerformanceResolution, ResultPresenceEvidence,
+use crate::recognition::music_select::PlaySide;
+use crate::recognition::result::{
+    ParsedResultFields, ResultChartResolution, ResultPerformanceResolution,
 };
+use crate::recognition::screen::{PlayPresenceEvidence, ResultPresenceEvidence};
+use crate::recognition::shared::{EvidenceFamily, JointEvidenceObservation};
 use crate::session::{
     MusicSelectTemporalState, MusicSelectTemporalTransitionReason, PlayAttemptState,
     ResultTemporalState, SemanticEpisodePhase, TemporalFieldTransition,

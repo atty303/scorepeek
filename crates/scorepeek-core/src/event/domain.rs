@@ -1,10 +1,13 @@
 //! Portable run-domain values independent of runtime transport and presentation.
 
 use crate::catalog::{Difficulty, PlayType, ScorepeekSongId};
-use crate::recognition::{
-    BestClearType, BestValue, MusicSelectBestValues, PlayOptions, PlaySide, PreviousBest,
-    ResultJudgments, ResultPanelSide, ResultTiming, StableBestField, SupplementalResultValue,
+use crate::recognition::music_select::{
+    BestClearType, BestValue, MusicSelectBestValues, PlaySide, StableBestField,
 };
+use crate::recognition::result::{
+    PlayOptions, PreviousBest, ResultJudgments, ResultTiming, SupplementalResultValue,
+};
+use crate::recognition::screen::ResultPanelSide;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -517,7 +520,7 @@ impl MusicSelectResolverState {
         let derived_dj_rank = match (&values.score, &values.clear_type) {
             (_, BestValue::Known(BestClearType::NoPlay)) => None,
             (BestValue::Known(score), _) => {
-                crate::recognition::dj_rank(*score, chart.notes).map(str::to_owned)
+                crate::recognition::music_select::dj_rank(*score, chart.notes).map(str::to_owned)
             }
             _ => None,
         };

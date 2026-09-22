@@ -12,9 +12,9 @@ use scorepeek_core::diagnostics::{
     DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy, DiagnosticRetention,
     DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
 };
-use scorepeek_core::recognition::{
-    CanonicalFrame, ScreenClass, ScreenFieldObservationError, ScreenFieldObservations,
-    ScreenTextField,
+use scorepeek_core::frame::CanonicalFrame;
+use scorepeek_core::recognition::screen::{
+    ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenTextField,
 };
 
 use crate::diagnostics::ring::{
@@ -83,9 +83,11 @@ impl BoundCanonicalFrame {
         capture_profile_sha256: String,
         normalizer_sha256: String,
         pixels: Box<[u8]>,
-    ) -> Result<Self, scorepeek_core::recognition::RecognitionError> {
+    ) -> Result<Self, scorepeek_core::recognition::screen::RecognitionError> {
         if pixels.len() != crate::diagnostics::writer::CANONICAL_BYTES {
-            return Err(scorepeek_core::recognition::RecognitionError::InvalidCanonicalFrame);
+            return Err(
+                scorepeek_core::recognition::screen::RecognitionError::InvalidCanonicalFrame,
+            );
         }
         Ok(Self {
             capture_generation,
@@ -411,17 +413,19 @@ impl DiagnosticBridge {
             self.canonical_layout_sha256
         );
         let screen = match observation.screen() {
-            scorepeek_core::recognition::ScreenClass::Title => DiagnosticScreen::Title,
-            scorepeek_core::recognition::ScreenClass::Result => DiagnosticScreen::Result,
-            scorepeek_core::recognition::ScreenClass::MusicSelect => {
+            scorepeek_core::recognition::screen::ScreenClass::Title => DiagnosticScreen::Title,
+            scorepeek_core::recognition::screen::ScreenClass::Result => DiagnosticScreen::Result,
+            scorepeek_core::recognition::screen::ScreenClass::MusicSelect => {
                 DiagnosticScreen::MusicSelection
             }
-            scorepeek_core::recognition::ScreenClass::ModeSelect => DiagnosticScreen::ModeSelection,
-            scorepeek_core::recognition::ScreenClass::DecideTransition => {
+            scorepeek_core::recognition::screen::ScreenClass::ModeSelect => {
+                DiagnosticScreen::ModeSelection
+            }
+            scorepeek_core::recognition::screen::ScreenClass::DecideTransition => {
                 DiagnosticScreen::DecideTransition
             }
-            scorepeek_core::recognition::ScreenClass::Play => DiagnosticScreen::Gameplay,
-            scorepeek_core::recognition::ScreenClass::Unknown => DiagnosticScreen::Unknown,
+            scorepeek_core::recognition::screen::ScreenClass::Play => DiagnosticScreen::Gameplay,
+            scorepeek_core::recognition::screen::ScreenClass::Unknown => DiagnosticScreen::Unknown,
         };
         let predicate = observation.predicate();
         self.worker.try_record_fact(DiagnosticFact {
@@ -917,10 +921,12 @@ mod tests {
     use crate::service::session::recognition::RecognitionObservation;
     use scorepeek_core::diagnostics::DiagnosticCompleteness;
     use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
-    use scorepeek_core::recognition::{
-        CanonicalLayout, DynamicTextObservation, ResultScreenFieldObservations, ScreenClass,
-        ScreenFieldObservationError, ScreenFieldObservations, ScreenTextField,
+    use scorepeek_core::frame::CanonicalLayout;
+    use scorepeek_core::recognition::screen::{
+        ResultScreenFieldObservations, ScreenClass, ScreenFieldObservationError,
+        ScreenFieldObservations, ScreenTextField,
     };
+    use scorepeek_core::recognition::title::DynamicTextObservation;
     use std::fs;
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {

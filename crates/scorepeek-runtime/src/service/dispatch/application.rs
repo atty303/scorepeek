@@ -40,9 +40,11 @@ use scorepeek_core::diagnostics::{
     DiagnosticRunDescriptor,
 };
 use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
-use scorepeek_core::recognition::{
-    self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
+use scorepeek_core::frame::{CanonicalFrame, CanonicalLayout};
+use scorepeek_core::recognition::title::{
+    DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
 };
+use scorepeek_core::recognition::{screen as recognition, title as recognition_title};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
@@ -869,7 +871,7 @@ enum RegisteredResourceGateErrorType {
 }
 
 struct RegisteredResourceOwner {
-    _resources: recognition::RegisteredRecognitionResources,
+    _resources: recognition_title::RegisteredRecognitionResources,
 }
 
 impl recognition_session::field_observer::FieldObserver for RegisteredResourceOwner {
@@ -882,29 +884,31 @@ impl recognition_session::field_observer::FieldObserver for RegisteredResourceOw
     }
 }
 
-impl From<recognition::RegisteredResourceLoadErrorType> for RegisteredResourceGateErrorType {
-    fn from(error: recognition::RegisteredResourceLoadErrorType) -> Self {
+impl From<recognition_title::RegisteredResourceLoadErrorType> for RegisteredResourceGateErrorType {
+    fn from(error: recognition_title::RegisteredResourceLoadErrorType) -> Self {
         match error {
-            recognition::RegisteredResourceLoadErrorType::InvalidLocation => Self::InvalidLocation,
-            recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch => {
+            recognition_title::RegisteredResourceLoadErrorType::InvalidLocation => {
+                Self::InvalidLocation
+            }
+            recognition_title::RegisteredResourceLoadErrorType::ModelBindingMismatch => {
                 Self::ModelBindingMismatch
             }
-            recognition::RegisteredResourceLoadErrorType::RuntimeBindingMismatch => {
+            recognition_title::RegisteredResourceLoadErrorType::RuntimeBindingMismatch => {
                 Self::RuntimeBindingMismatch
             }
-            recognition::RegisteredResourceLoadErrorType::CatalogUnavailable => {
+            recognition_title::RegisteredResourceLoadErrorType::CatalogUnavailable => {
                 Self::CatalogUnavailable
             }
-            recognition::RegisteredResourceLoadErrorType::CatalogBindingMismatch => {
+            recognition_title::RegisteredResourceLoadErrorType::CatalogBindingMismatch => {
                 Self::CatalogBindingMismatch
             }
-            recognition::RegisteredResourceLoadErrorType::CatalogLoadFailed => {
+            recognition_title::RegisteredResourceLoadErrorType::CatalogLoadFailed => {
                 Self::CatalogLoadFailed
             }
-            recognition::RegisteredResourceLoadErrorType::ModelBundleInvalid => {
+            recognition_title::RegisteredResourceLoadErrorType::ModelBundleInvalid => {
                 Self::ModelBundleInvalid
             }
-            recognition::RegisteredResourceLoadErrorType::RuntimeInitializationFailed => {
+            recognition_title::RegisteredResourceLoadErrorType::RuntimeInitializationFailed => {
                 Self::RuntimeInitializationFailed
             }
         }
@@ -946,8 +950,8 @@ fn registered_resource_gate(
     catalog_digest: &OsStr,
 ) -> Result<(), String> {
     let catalog_digest = parse_cli_sha256(catalog_digest, "catalog SHA-256")?;
-    let model_digest = recognition::LIVE_MODEL_SHA256.to_owned();
-    let runtime_digest = recognition::LIVE_RUNTIME_SHA256.to_owned();
+    let model_digest = recognition_title::LIVE_MODEL_SHA256.to_owned();
+    let runtime_digest = recognition_title::LIVE_RUNTIME_SHA256.to_owned();
     let descriptor = DiagnosticRunDescriptor {
         run_id: "field-resource-load-gate".to_owned(),
         monotonic_start_ms: 0,
@@ -960,7 +964,7 @@ fn registered_resource_gate(
             capture_generation: 1,
             capture_profile_sha256: "0".repeat(64),
             normalizer_sha256: "0".repeat(64),
-            canonical_layout_sha256: recognition::CanonicalLayout::sha256(),
+            canonical_layout_sha256: CanonicalLayout::sha256(),
             catalog_sha256: catalog_digest.clone(),
             model_sha256: model_digest.clone(),
             runtime_sha256: runtime_digest.clone(),
@@ -1033,7 +1037,7 @@ fn registered_resource_gate(
 
 fn registered_resource_start_error(
     error: recognition_session::field_observer::FieldObserverStartError<
-        recognition::RegisteredResourceLoadError,
+        recognition_title::RegisteredResourceLoadError,
     >,
 ) -> (RegisteredResourceGateErrorType, String) {
     use recognition_session::field_observer::FieldObserverStartError;
@@ -1999,7 +2003,7 @@ fn routine_live_values(
         catalog_root.as_os_str().to_owned(),
         session_id.into(),
         build_sha256.into(),
-        recognition::CanonicalLayout::sha256().into(),
+        CanonicalLayout::sha256().into(),
         catalog_sha256.into(),
         recording.into(),
         recognition_root
@@ -2201,8 +2205,8 @@ fn execute_live_session(
             normalizer_sha256: String::new(),
             canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
             catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: recognition::LIVE_MODEL_SHA256.to_owned(),
-            runtime_sha256: recognition::LIVE_RUNTIME_SHA256.to_owned(),
+            model_sha256: recognition_title::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: recognition_title::LIVE_RUNTIME_SHA256.to_owned(),
             replay: None,
         },
     };
@@ -2321,7 +2325,7 @@ fn execute_live_session(
 struct LiveSessionEmission {
     public_binding: Option<crate::events::snapshot::Binding>,
     value: serde_json::Value,
-    authority_joint_evidence: Option<scorepeek_core::recognition::JointEvidenceObservation>,
+    authority_joint_evidence: Option<scorepeek_core::recognition::shared::JointEvidenceObservation>,
     diagnostic_identity: Option<serde_json::Value>,
     diagnostic_capture_fact: Option<serde_json::Value>,
 }
@@ -2514,7 +2518,7 @@ fn live_session_event_value(
                 "screen": screen,
                 "result_presence": result_presence,
                 "play_presence": play_presence,
-                "unknown_reason": (screen == scorepeek_core::recognition::ScreenClass::Unknown)
+                "unknown_reason": (screen == recognition::ScreenClass::Unknown)
                     .then_some("predicate_not_matched"),
             });
             if let Some(session_id) = session_id {
@@ -2569,13 +2573,13 @@ fn live_session_event_value(
             output: observation,
         } => {
             let (screen, fields) = match observation.fields() {
-                scorepeek_core::recognition::ScreenFieldObservations::Title(fields) => (
+                recognition::ScreenFieldObservations::Title(fields) => (
                     "title",
                     serde_json::json!({
                         "game_version": fields.game_version.open_text,
                     }),
                 ),
-                scorepeek_core::recognition::ScreenFieldObservations::Result(fields) => (
+                recognition::ScreenFieldObservations::Result(fields) => (
                     "result",
                     serde_json::json!({
                         "panel_side": fields.panel_side,
@@ -2603,7 +2607,7 @@ fn live_session_event_value(
                         "play_options": fields.play_options,
                     }),
                 ),
-                scorepeek_core::recognition::ScreenFieldObservations::MusicSelect(fields) => (
+                recognition::ScreenFieldObservations::MusicSelect(fields) => (
                     "music_select",
                     serde_json::json!({
                         "best": fields.best,
@@ -2652,10 +2656,11 @@ fn live_session_event_value(
 fn song_resolution_presentation(
     observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
 ) -> Result<scorepeek_core::event::SongResolutionPresentation, String> {
-    use scorepeek_core::recognition::{MusicSelectSongResolution, ResultSongResolution};
+    use scorepeek_core::recognition::music_select::MusicSelectSongResolution;
+    use scorepeek_core::recognition::result::ResultSongResolution;
 
     match observation.song_resolution() {
-        scorepeek_core::recognition::ScreenSongResolution::Title => {
+        recognition::ScreenSongResolution::Title => {
             Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
                 reason: serde_json::Value::String("not_applicable".to_owned()),
                 selected: None,
@@ -2663,7 +2668,7 @@ fn song_resolution_presentation(
                 evidence_summary: None,
             })
         }
-        scorepeek_core::recognition::ScreenSongResolution::Result(resolution) => match resolution {
+        recognition::ScreenSongResolution::Result(resolution) => match resolution {
             ResultSongResolution::Accepted {
                 selected,
                 runner_up,
@@ -2704,7 +2709,7 @@ fn song_resolution_presentation(
                 )),
             }),
         },
-        scorepeek_core::recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
+        recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
             MusicSelectSongResolution::Accepted {
                 selected,
                 runner_up,
@@ -2819,8 +2824,8 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
             normalizer_sha256: String::new(),
             canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
             catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: recognition::LIVE_MODEL_SHA256.to_owned(),
-            runtime_sha256: recognition::LIVE_RUNTIME_SHA256.to_owned(),
+            model_sha256: recognition_title::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: recognition_title::LIVE_RUNTIME_SHA256.to_owned(),
             replay: None,
         },
     };
@@ -2893,8 +2898,8 @@ fn run_capture_field_observation(
             normalizer_sha256: String::new(),
             canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
             catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: recognition::LIVE_MODEL_SHA256.to_owned(),
-            runtime_sha256: recognition::LIVE_RUNTIME_SHA256.to_owned(),
+            model_sha256: recognition_title::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: recognition_title::LIVE_RUNTIME_SHA256.to_owned(),
             replay: None,
         },
     };
@@ -3220,20 +3225,22 @@ fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
 fn collect_doctor_report() -> Result<serde_json::Value, String> {
     let target_inventory: serde_json::Value = serde_json::from_str(&inventory::collect().to_json())
         .map_err(|error| format!("doctor report serialization failed: {error}"))?;
-    let numeric_model = match recognition::RegisteredNumericRuntime::load_embedded() {
-        Ok(runtime) => serde_json::json!({
-            "status": "active",
-            "model_id": runtime.contract().model_id,
-            "model_sha256": runtime.contract().model_sha256,
-            "manifest_sha256": recognition::NUMERIC_MODEL_MANIFEST_SHA256,
-            "preprocessor_id": runtime.contract().preprocessor_id,
-        }),
-        Err(error) => serde_json::json!({
-            "status": "unavailable",
-            "reason": error.to_string(),
-            "registered_manifest_sha256": recognition::NUMERIC_MODEL_MANIFEST_SHA256,
-        }),
-    };
+    let numeric_model =
+        match scorepeek_core::recognition::result::numeric::RegisteredNumericRuntime::load_embedded(
+        ) {
+            Ok(runtime) => serde_json::json!({
+                "status": "active",
+                "model_id": runtime.contract().model_id,
+                "model_sha256": runtime.contract().model_sha256,
+                "manifest_sha256": scorepeek_core::recognition::result::numeric::NUMERIC_MODEL_MANIFEST_SHA256,
+                "preprocessor_id": runtime.contract().preprocessor_id,
+            }),
+            Err(error) => serde_json::json!({
+                "status": "unavailable",
+                "reason": error.to_string(),
+                "registered_manifest_sha256": scorepeek_core::recognition::result::numeric::NUMERIC_MODEL_MANIFEST_SHA256,
+            }),
+        };
     let catalog = catalog_paths(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("XDG_CACHE_HOME").as_deref(),
@@ -3561,7 +3568,7 @@ fn try_dynamic_official_onnx_decode(args: &[OsString]) -> Option<Result<(), Stri
         && bundle_flag == "--bundle"
         && request_flag == "--request")
         .then(|| {
-            let summary = recognition::decode_dynamic_official_onnx_crops(
+            let summary = recognition_title::decode_dynamic_official_onnx_crops(
                 &model_id.to_string_lossy(),
                 Path::new(bundle),
                 Path::new(request),
@@ -3603,7 +3610,7 @@ fn try_integrated_context_observe(args: &[OsString], bundle: &Path) -> Option<Re
             let summary = recognition::observe_integrated_context(
                 Path::new(crops),
                 digest,
-                recognition::LIVE_MODEL_ID,
+                recognition_title::LIVE_MODEL_ID,
                 bundle,
                 Path::new(output),
             )
@@ -3638,7 +3645,7 @@ fn try_official_onnx_decode(args: &[OsString]) -> Option<Result<(), String>> {
         && dictionary_flag == "--dictionary"
         && request_flag == "--request")
         .then(|| {
-            let summary = recognition::decode_official_onnx_crops(
+            let summary = recognition_title::decode_official_onnx_crops(
                 Path::new(model),
                 Path::new(dictionary),
                 Path::new(request),
@@ -3889,7 +3896,7 @@ struct DiagnosticTitleSpikeSummary {
     catalog_sha256: String,
     comparison_key_id: &'static str,
     minimum_confidence: f64,
-    candidate: recognition::DiagnosticTitleCandidate,
+    candidate: recognition_title::DiagnosticTitleCandidate,
 }
 
 #[derive(Serialize)]
@@ -3897,7 +3904,7 @@ struct ProvisionalTitleCandidatesArtifact {
     schema: &'static str,
     catalog_sha256: String,
     #[serde(flatten)]
-    candidates: recognition::ProvisionalTitleCandidateSet,
+    candidates: recognition_title::ProvisionalTitleCandidateSet,
 }
 
 #[derive(Serialize)]
@@ -3977,7 +3984,7 @@ fn provisional_title_candidates(catalog_store: &OsStr, output: &OsStr) -> Result
         .load_active()
         .map_err(|error| format!("active catalog load failed: {error}"))?
         .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
-    let candidates = recognition::provisional_title_candidates(&active.catalog);
+    let candidates = recognition_title::provisional_title_candidates(&active.catalog);
     let candidate_count = candidates.candidates.len();
     let artifact = ProvisionalTitleCandidatesArtifact {
         schema: "scorepeek-private-provisional-title-candidates-v1",
@@ -4023,7 +4030,7 @@ fn diagnostic_title_spike(
         .map_err(|error| format!("active catalog load failed: {error}"))?
         .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
     let candidate =
-        recognition::diagnostic_title_candidate(&active.catalog, ocr_text, ocr_confidence)
+        recognition_title::diagnostic_title_candidate(&active.catalog, ocr_text, ocr_confidence)
             .map_err(|error| error.to_string())?;
     let summary = DiagnosticTitleSpikeSummary {
         schema: "scorepeek-diagnostic-title-spike-v1",
@@ -4044,7 +4051,7 @@ fn diagnostic_title_spike(
 struct TitleDictionaryAuditSummary {
     schema: &'static str,
     catalog_sha256: String,
-    audit: recognition::CatalogTitleDictionaryAudit,
+    audit: recognition_title::CatalogTitleDictionaryAudit,
 }
 
 fn title_dictionary_audit(catalog_store: &OsStr, dictionary: &OsStr) -> Result<(), String> {
@@ -4053,8 +4060,9 @@ fn title_dictionary_audit(catalog_store: &OsStr, dictionary: &OsStr) -> Result<(
         .load_active()
         .map_err(|error| format!("active catalog load failed: {error}"))?
         .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
-    let audit = recognition::audit_catalog_title_dictionary(&active.catalog, Path::new(dictionary))
-        .map_err(|error| error.to_string())?;
+    let audit =
+        recognition_title::audit_catalog_title_dictionary(&active.catalog, Path::new(dictionary))
+            .map_err(|error| error.to_string())?;
     let summary = TitleDictionaryAuditSummary {
         schema: "scorepeek-catalog-title-dictionary-audit-v1",
         catalog_sha256: active.digest,
@@ -4072,7 +4080,7 @@ fn title_dictionary_audit(catalog_store: &OsStr, dictionary: &OsStr) -> Result<(
 struct TitleModelExportRequirementsArtifact {
     schema: &'static str,
     catalog_sha256: String,
-    requirements: recognition::TitleModelExportRequirements,
+    requirements: recognition_title::TitleModelExportRequirements,
 }
 
 #[derive(Serialize)]
@@ -4107,7 +4115,7 @@ fn title_model_export_requirements(
         .map_err(|error| format!("active catalog load failed: {error}"))?
         .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
     let requirements =
-        recognition::title_model_export_requirements(&active.catalog, Path::new(dictionary))
+        recognition_title::title_model_export_requirements(&active.catalog, Path::new(dictionary))
             .map_err(|error| error.to_string())?;
     let summary = TitleModelExportRequirementsSummary {
         schema: "scorepeek-title-model-export-requirements-summary-v1",
@@ -4192,11 +4200,11 @@ fn title_onnx_parity(arguments: [&OsStr; 8]) -> Result<(), String> {
         parse_f64(minimum_log_probability, "minimum title log probability")?;
     let minimum_runner_up_margin =
         parse_f64(minimum_runner_up_margin, "minimum title runner-up margin")?;
-    let thresholds = recognition::DiagnosticTitleThresholds {
+    let thresholds = recognition_title::DiagnosticTitleThresholds {
         minimum_log_probability,
         minimum_runner_up_margin,
     };
-    let request = recognition::OnnxTitleDiagnosticRequest {
+    let request = recognition_title::OnnxTitleDiagnosticRequest {
         model_path: Path::new(model),
         reference_directory: Path::new(reference),
         reference_sha256,
@@ -4204,7 +4212,7 @@ fn title_onnx_parity(arguments: [&OsStr; 8]) -> Result<(), String> {
         catalog_sha256: &active.digest,
         inference_yml: Path::new(dictionary),
     };
-    let summary = recognition::compare_paddle_onnx(request, &active.catalog, thresholds)
+    let summary = recognition_title::compare_paddle_onnx(request, &active.catalog, thresholds)
         .map_err(|error| error.to_string())?;
     println!(
         "{}",
@@ -4222,7 +4230,7 @@ fn title_model_contract_parity(arguments: [&OsStr; 5]) -> Result<(), String> {
     let reference_sha256 = reference_sha256
         .to_str()
         .ok_or_else(|| "parity reference SHA-256 must be UTF-8".to_owned())?;
-    let request = recognition::ExportContractParityRequest {
+    let request = recognition_title::ExportContractParityRequest {
         model_path: Path::new(model),
         model_sha256,
         reference_directory: Path::new(reference),
@@ -4230,7 +4238,7 @@ fn title_model_contract_parity(arguments: [&OsStr; 5]) -> Result<(), String> {
         inference_yml: Path::new(dictionary),
     };
     let summary =
-        recognition::compare_export_contract(request).map_err(|error| error.to_string())?;
+        recognition_title::compare_export_contract(request).map_err(|error| error.to_string())?;
     println!(
         "{}",
         serde_json::to_string(&summary)
@@ -4322,10 +4330,12 @@ mod tests {
     use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRetention};
     use scorepeek_core::event::{RunEvent, RunEventKind};
     use scorepeek_core::model::session::RegisteredScreenFieldObservation;
-    use scorepeek_core::recognition::{
-        CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
-        ScreenFieldObservations,
+    use scorepeek_core::recognition::screen as recognition;
+    use scorepeek_core::recognition::screen::{
+        ResultScreenFieldObservations, ScreenFieldObservations,
     };
+    use scorepeek_core::recognition::shared::CatalogCandidateDomain;
+    use scorepeek_core::recognition::title::DynamicTextObservation;
     use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::ffi::{OsStr, OsString};
@@ -4333,57 +4343,49 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn result_presence(
-        panel_side: scorepeek_core::recognition::ResultPanelSideState,
-    ) -> scorepeek_core::recognition::ResultPresenceEvidence {
+        panel_side: recognition::ResultPanelSideState,
+    ) -> recognition::ResultPresenceEvidence {
         let known = panel_side.known();
-        scorepeek_core::recognition::ResultPresenceEvidence {
+        recognition::ResultPresenceEvidence {
             warm_pixels: if known.is_some() { 3_100 } else { 2_900 },
             warm_pixels_min: 3_000,
             panel_side,
             panels: [
-                scorepeek_core::recognition::ResultPanelPresenceEvidence {
-                    panel_side: scorepeek_core::recognition::ResultPanelSide::Left,
-                    upper_panel_edge_pixels: if known
-                        == Some(scorepeek_core::recognition::ResultPanelSide::Left)
-                    {
+                recognition::ResultPanelPresenceEvidence {
+                    panel_side: recognition::ResultPanelSide::Left,
+                    upper_panel_edge_pixels: if known == Some(recognition::ResultPanelSide::Left) {
                         520
                     } else {
                         0
                     },
-                    lower_panel_edge_pixels: if known
-                        == Some(scorepeek_core::recognition::ResultPanelSide::Left)
-                    {
+                    lower_panel_edge_pixels: if known == Some(recognition::ResultPanelSide::Left) {
                         520
                     } else {
                         0
                     },
-                    qualifies: known == Some(scorepeek_core::recognition::ResultPanelSide::Left),
+                    qualifies: known == Some(recognition::ResultPanelSide::Left),
                 },
-                scorepeek_core::recognition::ResultPanelPresenceEvidence {
-                    panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
-                    upper_panel_edge_pixels: if known
-                        == Some(scorepeek_core::recognition::ResultPanelSide::Right)
-                    {
+                recognition::ResultPanelPresenceEvidence {
+                    panel_side: recognition::ResultPanelSide::Right,
+                    upper_panel_edge_pixels: if known == Some(recognition::ResultPanelSide::Right) {
                         520
                     } else {
                         0
                     },
-                    lower_panel_edge_pixels: if known
-                        == Some(scorepeek_core::recognition::ResultPanelSide::Right)
-                    {
+                    lower_panel_edge_pixels: if known == Some(recognition::ResultPanelSide::Right) {
                         520
                     } else {
                         0
                     },
-                    qualifies: known == Some(scorepeek_core::recognition::ResultPanelSide::Right),
+                    qualifies: known == Some(recognition::ResultPanelSide::Right),
                 },
             ],
             horizontal_edge_pixels_min: 518,
         }
     }
 
-    fn play_presence() -> scorepeek_core::recognition::PlayPresenceEvidence {
-        scorepeek_core::recognition::PlayPresenceEvidence {
+    fn play_presence() -> recognition::PlayPresenceEvidence {
+        recognition::PlayPresenceEvidence {
             qualifying_candidates: 0,
             top_edge_runs: 0,
             bottom_edge_runs: 0,
@@ -4416,7 +4418,7 @@ mod tests {
             &domain,
             &catalog,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
-                panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
+                panel_side: recognition::ResultPanelSide::Right,
                 title: text("SYNTHETIC SONG"),
                 artist: text("SYNTHETIC ARTIST"),
                 clear_type: text("CLEAR"),
@@ -4463,31 +4465,31 @@ mod tests {
             (
                 1,
                 1,
-                scorepeek_core::recognition::ScreenClass::MusicSelect,
+                recognition::ScreenClass::MusicSelect,
                 crate::capture_live::SemanticScreenEpisodePhase::Started,
             ),
             (
                 1,
                 2,
-                scorepeek_core::recognition::ScreenClass::MusicSelect,
+                recognition::ScreenClass::MusicSelect,
                 crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             ),
             (
                 2,
                 3,
-                scorepeek_core::recognition::ScreenClass::Play,
+                recognition::ScreenClass::Play,
                 crate::capture_live::SemanticScreenEpisodePhase::Started,
             ),
             (
                 2,
                 4,
-                scorepeek_core::recognition::ScreenClass::Play,
+                recognition::ScreenClass::Play,
                 crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             ),
             (
                 3,
                 5,
-                scorepeek_core::recognition::ScreenClass::Result,
+                recognition::ScreenClass::Result,
                 crate::capture_live::SemanticScreenEpisodePhase::Started,
             ),
         ] {
@@ -4510,12 +4512,10 @@ mod tests {
                     sequence,
                     monotonic_start_ms: sequence * 100,
                     monotonic_end_ms: sequence * 100 + 25,
-                    screen: scorepeek_core::recognition::ScreenClass::Result,
-                    result_presence: result_presence(
-                        scorepeek_core::recognition::ResultPanelSideState::Known(
-                            scorepeek_core::recognition::ResultPanelSide::Right,
-                        ),
-                    ),
+                    screen: recognition::ScreenClass::Result,
+                    result_presence: result_presence(recognition::ResultPanelSideState::Known(
+                        recognition::ResultPanelSide::Right,
+                    )),
                     play_presence: play_presence(),
                 },
             );
@@ -5239,7 +5239,7 @@ node_name = "must-not-be-inherited"
                 screen_episode_id: 1,
                 sequence: 1,
                 monotonic_end_ms: 100,
-                screen: scorepeek_core::recognition::ScreenClass::MusicSelect,
+                screen: recognition::ScreenClass::MusicSelect,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Started,
             },
         ] {
@@ -5275,12 +5275,10 @@ node_name = "must-not-be-inherited"
                 sequence: 41,
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
-                screen: scorepeek_core::recognition::ScreenClass::Unknown,
-                result_presence: result_presence(
-                    scorepeek_core::recognition::ResultPanelSideState::Unknown(
-                        scorepeek_core::recognition::ResultPanelSideUnknownReason::NoCandidate,
-                    ),
-                ),
+                screen: recognition::ScreenClass::Unknown,
+                result_presence: result_presence(recognition::ResultPanelSideState::Unknown(
+                    recognition::ResultPanelSideUnknownReason::NoCandidate,
+                )),
                 play_presence: play_presence(),
             },
         )
@@ -5306,7 +5304,7 @@ node_name = "must-not-be-inherited"
                 screen_episode_id: 1,
                 sequence: 42,
                 monotonic_end_ms: 150,
-                screen: scorepeek_core::recognition::ScreenClass::ModeSelect,
+                screen: recognition::ScreenClass::ModeSelect,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Started,
             },
         )
@@ -5321,7 +5319,7 @@ node_name = "must-not-be-inherited"
         let output = project_fields(
             &domain,
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
-                panel_side: scorepeek_core::recognition::ResultPanelSide::Right,
+                panel_side: recognition::ResultPanelSide::Right,
                 title: text("TITLE EXACT"),
                 artist: text("ARTIST EXACT"),
                 clear_type: text("FAILED"),
@@ -5376,7 +5374,8 @@ node_name = "must-not-be-inherited"
             RunEventKind::ResultChanged {
                 state: ResultState::Provisional { ref result, .. },
                 ..
-            } if result.play_side == scorepeek_core::recognition::PlaySide::TwoPlayer
+            } if result.play_side
+                == scorepeek_core::recognition::music_select::PlaySide::TwoPlayer
         )));
 
         publish_headless_live_event(
@@ -5385,7 +5384,7 @@ node_name = "must-not-be-inherited"
                 screen_episode_id: 3,
                 sequence: 10,
                 monotonic_end_ms: 1_000,
-                screen: scorepeek_core::recognition::ScreenClass::Result,
+                screen: recognition::ScreenClass::Result,
                 phase: crate::capture_live::SemanticScreenEpisodePhase::Finalized,
             },
         );
@@ -5394,7 +5393,8 @@ node_name = "must-not-be-inherited"
             RunEventKind::ResultChanged {
                 state: ResultState::Confirmed { ref result, .. },
                 ..
-            } if result.play_side == scorepeek_core::recognition::PlaySide::TwoPlayer
+            } if result.play_side
+                == scorepeek_core::recognition::music_select::PlaySide::TwoPlayer
         )));
     }
 

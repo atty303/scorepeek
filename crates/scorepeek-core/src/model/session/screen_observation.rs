@@ -7,13 +7,17 @@ use std::time::Instant;
 use serde::Serialize;
 
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
-use crate::recognition::{
-    CatalogCandidateDomain, EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
-    MusicSelectSongResolution, NumericBatchInference, ParsedResultFields, ResultChartResolution,
-    ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
-    ScreenFieldObservations, ScreenSongResolution, assist_unknown_result_song_with_chart,
-    matching_observed_chart_songs, resolve_clear_type, resolve_music_select_song,
+use crate::recognition::music_select::{MusicSelectSongResolution, resolve_music_select_song};
+use crate::recognition::result::numeric::NumericBatchInference;
+use crate::recognition::result::{
+    ParsedResultFields, ResultChartResolution, ResultPerformanceResolution, ResultSongResolution,
+    assist_unknown_result_song_with_chart, matching_observed_chart_songs, resolve_clear_type,
     resolve_result_chart, resolve_result_performance, resolve_result_song,
+};
+use crate::recognition::screen::{ScreenFieldObservations, ScreenSongResolution};
+use crate::recognition::shared::{
+    CatalogCandidateDomain, EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
+    ScreenCatalogCandidateObservations,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,11 +76,11 @@ pub struct TitleEvidenceObservation {
     pub extractor_id: &'static str,
     pub runtime_manifest_sha256: &'static str,
     pub selected_view: &'static str,
-    pub full: crate::recognition::DynamicTextObservation,
-    pub foreground: Option<crate::recognition::DynamicTextObservation>,
+    pub full: crate::recognition::title::DynamicTextObservation,
+    pub foreground: Option<crate::recognition::title::DynamicTextObservation>,
     pub normalized_text: String,
     pub normalized_scalar_count: usize,
-    pub geometry: Option<crate::recognition::TitleForegroundGeometry>,
+    pub geometry: Option<crate::recognition::screen::TitleForegroundGeometry>,
     pub mask_absent: bool,
 }
 
@@ -162,8 +166,8 @@ pub struct CurrentScoreOcrAttempt {
     pub constrained_text: Option<String>,
 }
 
-impl From<&crate::recognition::DynamicTextObservation> for CurrentScoreOcrAttempt {
-    fn from(value: &crate::recognition::DynamicTextObservation) -> Self {
+impl From<&crate::recognition::title::DynamicTextObservation> for CurrentScoreOcrAttempt {
+    fn from(value: &crate::recognition::title::DynamicTextObservation) -> Self {
         Self {
             input_width: value.input_width,
             output_timesteps: value.output_timesteps,
@@ -499,14 +503,14 @@ fn structural_title_support(
     }
     u16::from(song.title_variants().iter().any(|variant| {
         variant.kind != DisplayVariantKind::SearchTerm
-            && crate::recognition::normalized_title_key(&variant.value)
+            && crate::recognition::title::normalized_title_key(&variant.value)
                 .chars()
                 .count()
                 == count
     })) * 60
 }
 
-fn text_support(score: crate::recognition::CatalogTextCandidateScore) -> u16 {
+fn text_support(score: crate::recognition::shared::CatalogTextCandidateScore) -> u16 {
     similarity_support(
         score.minimum_edit_distance,
         score.maximum_normalized_similarity.matching_units,
@@ -514,7 +518,7 @@ fn text_support(score: crate::recognition::CatalogTextCandidateScore) -> u16 {
     )
 }
 
-fn prefix_support(score: crate::recognition::CatalogPrefixCandidateScore) -> u16 {
+fn prefix_support(score: crate::recognition::shared::CatalogPrefixCandidateScore) -> u16 {
     similarity_support(
         score.minimum_edit_distance,
         score.maximum_normalized_similarity.matching_units,

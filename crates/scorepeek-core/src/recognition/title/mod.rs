@@ -9,3 +9,9 @@ pub use decode::*;
 pub use observe::*;
 pub use preprocess::*;
 pub use resolve::*;
+
+/// Produces the catalog comparison key used by title observation and resolution.
+#[must_use]
+pub fn normalized_title_key(value: &str) -> String {
+    observe::folded_comparison_key(value)
+}

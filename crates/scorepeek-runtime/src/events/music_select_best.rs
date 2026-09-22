@@ -8,7 +8,7 @@ use ratatui::text::Line;
 use scorepeek_core::event::{
     BestOutputState, MusicSelectResolverState, SelectIdentityStatus, SelectionDifficultyTarget,
 };
-use scorepeek_core::recognition::{BestValue, PlaySide, StableBestField};
+use scorepeek_core::recognition::music_select::{BestValue, PlaySide, StableBestField};
 
 use super::server::{difficulty_label, fitted_value, play_type_label};
 

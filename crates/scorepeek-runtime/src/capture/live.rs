@@ -50,11 +50,10 @@ use scorepeek_core::diagnostics::{
     DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
     DiagnosticRunStatus,
 };
+use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
-use scorepeek_core::recognition::{
-    CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
-    ScreenFieldObservationError,
-};
+use scorepeek_core::recognition::screen::{ScreenClass, ScreenFieldObservationError};
+use scorepeek_core::recognition::title::{OnnxParityError, RegisteredResourceLoadErrorType};
 use scorepeek_core::session::episode::{RawScreenState, SemanticScreenEpisode};
 use scorepeek_core::session::result::{CadenceDecision, RecognitionCadence};
 use scorepeek_core::session::timeline::{TimelineAction, TimelineDriver};
@@ -199,8 +198,8 @@ pub enum GamescopeLiveSessionEvent<'a> {
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: ScreenClass,
-        result_presence: scorepeek_core::recognition::ResultPresenceEvidence,
-        play_presence: scorepeek_core::recognition::PlayPresenceEvidence,
+        result_presence: scorepeek_core::recognition::screen::ResultPresenceEvidence,
+        play_presence: scorepeek_core::recognition::screen::PlayPresenceEvidence,
     },
     SemanticScreenEpisode {
         screen_episode_id: u64,
@@ -2455,14 +2454,16 @@ fn poll_field_observations(
                     );
                     if matches!(
                         output.fields(),
-                        scorepeek_core::recognition::ScreenFieldObservations::Result(_)
+                        scorepeek_core::recognition::screen::ScreenFieldObservations::Result(_)
                     ) {
                         counters.result_observations =
                             counters.result_observations.saturating_add(1);
                     }
                     let identified_version = match (output.fields(), game_version.as_deref_mut()) {
                         (
-                            scorepeek_core::recognition::ScreenFieldObservations::Title(fields),
+                            scorepeek_core::recognition::screen::ScreenFieldObservations::Title(
+                                fields,
+                            ),
                             Some(resolver),
                         ) => resolver
                             .observe_candidate(sequence, &fields.game_version.open_text)
@@ -3672,8 +3673,9 @@ mod tests {
         UncalibratedVideoContract,
     };
     use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
-    use scorepeek_core::recognition::{
-        CanonicalLayout, RegisteredResourceLoadError, RegisteredResourceLoadErrorType,
+    use scorepeek_core::frame::CanonicalLayout;
+    use scorepeek_core::recognition::title::{
+        RegisteredResourceLoadError, RegisteredResourceLoadErrorType,
     };
 
     use super::{

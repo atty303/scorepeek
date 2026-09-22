@@ -3,7 +3,8 @@ use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::recognition::{DynamicTextObservation, Rgb8Crop};
+use crate::recognition::screen::Rgb8Crop;
+use crate::recognition::title::DynamicTextObservation;
 
 const OPTION_PREFIX: &str = "USE OPTION ";
 const MARKER_WIDTH: usize = 120;
@@ -299,7 +300,7 @@ fn levenshtein_distance(left: &str, right: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recognition::Roi;
+    use crate::frame::Roi;
 
     fn crop(orange_pixels: usize) -> Rgb8Crop {
         let mut pixels = vec![0_u8; 530 * 50 * 3];

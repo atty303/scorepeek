@@ -15,9 +15,9 @@ use scorepeek_core::diagnostics::{
     DiagnosticBinding, DiagnosticCompleteness, DiagnosticPolicy, DiagnosticReplayBinding,
     DiagnosticResource, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
-use scorepeek_core::recognition::{
-    CanonicalFrame, CanonicalLayout, ResultSongResolution, ScreenClass, ScreenFieldObservations,
-};
+use scorepeek_core::frame::{CanonicalFrame, CanonicalLayout};
+use scorepeek_core::recognition::result::ResultSongResolution;
+use scorepeek_core::recognition::screen::{ScreenClass, ScreenFieldObservations};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -879,7 +879,7 @@ fn validate_profile_frames(
         {
             return Err("canonical extraction frame binding mismatch".to_owned());
         }
-        let screen = scorepeek_core::recognition::inspect_canonical_rgb8(frame.pixels())
+        let screen = scorepeek_core::recognition::screen::inspect_canonical_rgb8(frame.pixels())
             .map_err(|_| "canonical extraction frame is invalid")?
             .screen;
         if screen == ScreenClass::Result {

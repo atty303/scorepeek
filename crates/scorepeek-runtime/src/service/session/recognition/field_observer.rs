@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 use scorepeek_core::diagnostics::DiagnosticRunDescriptor;
 #[cfg(test)]
 use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticReplayBinding};
-use scorepeek_core::recognition::{
-    CanonicalLayout, RegisteredRecognitionResources, RegisteredResourceLoadError, ScreenClass,
-    ScreenRgb8Crops,
+use scorepeek_core::frame::CanonicalLayout;
+use scorepeek_core::recognition::screen::{ScreenClass, ScreenRgb8Crops};
+use scorepeek_core::recognition::title::{
+    RegisteredRecognitionResources, RegisteredResourceLoadError,
 };
 
 use super::BoundScreenRgb8Crops;
@@ -956,10 +957,12 @@ mod tests {
     use std::sync::Condvar;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use scorepeek_core::recognition::{
-        CanonicalLayout, DynamicTextObservation, ScreenFieldObservationError,
-        ScreenFieldObservations, ScreenRgb8Crops, observe_screen_fields,
+    use scorepeek_core::frame::CanonicalLayout;
+    use scorepeek_core::recognition::screen::{
+        ScreenFieldObservationError, ScreenFieldObservations, ScreenRgb8Crops,
+        observe_screen_fields,
     };
+    use scorepeek_core::recognition::title::DynamicTextObservation;
 
     use super::*;
     use crate::diagnostics::live::BoundCanonicalFrame;
@@ -1239,7 +1242,7 @@ mod tests {
             result,
             Err(FieldObserverStartError::Load(error))
                 if error.error_type()
-                    == scorepeek_core::recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch
+                    == scorepeek_core::recognition::title::RegisteredResourceLoadErrorType::ModelBindingMismatch
         ));
     }
 

@@ -1,4 +1,4 @@
-use crate::recognition::{MusicSelectLayout, ResultLayout};
+use crate::recognition::screen::{MusicSelectLayout, ResultLayout};
 use serde::Deserialize;
 
 /// Versioned canonical recognition layout.

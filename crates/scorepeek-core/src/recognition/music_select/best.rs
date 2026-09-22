@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::recognition::{RecognitionError, Rgb8Crop, Roi};
+use crate::frame::Roi;
+use crate::recognition::screen::{RecognitionError, Rgb8Crop};
 
 pub const MUSIC_SELECT_BEST_LAYOUT: &[u8] =
     include_bytes!("../../music-select-best-layout-v1.json");

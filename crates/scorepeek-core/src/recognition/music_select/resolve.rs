@@ -4,11 +4,11 @@ use serde::Serialize;
 
 use crate::catalog::ScorepeekSongId;
 
-use crate::recognition::title::observe::folded_comparison_key;
-use crate::recognition::{
+use crate::recognition::shared::{
     CatalogNormalizedSimilarity, CatalogPrefixCandidateScore, CatalogTextCandidateScore,
     MusicSelectSongCandidateObservation,
 };
+use crate::recognition::title::observe::folded_comparison_key;
 
 pub const MUSIC_SELECT_SONG_RESOLVER_ID: &str =
     "scorepeek-music-select-active-prefix-full-tiebreak-corroborated-v2";
@@ -487,7 +487,7 @@ fn compare_similarity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recognition::CatalogNormalizedSimilarity;
+    use crate::recognition::shared::CatalogNormalizedSimilarity;
 
     fn id(value: u128) -> ScorepeekSongId {
         serde_json::from_str(&format!("\"{value:032x}\""))

@@ -1,8 +1,7 @@
 //! Offline, read-only evaluation using only the two registered recognition bundles.
-use scorepeek_core::recognition::{
-    MusicSelectBestCrops, RegisteredDynamicTitleRuntime, RegisteredNumericRuntime,
-    resolve_music_select_best,
-};
+use scorepeek_core::recognition::music_select::{MusicSelectBestCrops, resolve_music_select_best};
+use scorepeek_core::recognition::result::numeric::RegisteredNumericRuntime;
+use scorepeek_core::recognition::title::RegisteredDynamicTitleRuntime;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);

@@ -1,7 +1,5 @@
 //! Portable model-session capabilities used by live and replay recognition.
 
-pub use crate::recognition::{OnnxParityError, RecognitionError};
-
 mod screen_observation;
 mod text_observer_pool;
 

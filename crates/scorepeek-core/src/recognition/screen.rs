@@ -16,97 +16,22 @@ use crate::frame::{
 #[path = "screen_reference.rs"]
 pub(super) mod screen_reference;
 
-#[cfg(test)]
-pub(crate) use super::music_select::test_music_select_difficulty;
-pub use super::music_select::{
-    BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,
-    MusicSelectBestCrops, MusicSelectBestLayout, MusicSelectBestObservation, MusicSelectBestValues,
-    StableBestField, dj_rank, resolve_music_select_best,
+use super::music_select::observe_music_select_play_type;
+use super::music_select::{
+    MusicSelectBestCrops, MusicSelectBestObservation, MusicSelectDifficultyMarkerCrops,
+    MusicSelectMotionRegions, MusicSelectPlaySideCrops, MusicSelectScreenFieldObservations,
+    MusicSelectScreenRgb8Crops, MusicSelectSongResolution, observe_music_select_difficulty,
+    observe_music_select_play_side,
 };
-pub use super::music_select::{
-    MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
-    MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
-};
-pub use super::music_select::{
-    MusicSelectDifficultyMarkerCrops, MusicSelectDifficultyMarkerEvidence,
-    MusicSelectDifficultyObservation, MusicSelectDifficultyState,
-    MusicSelectDifficultyUnknownReason, MusicSelectMotionRegions, MusicSelectPlaySideCrops,
-    MusicSelectPlaySideEvidence, MusicSelectPlaySideObservation, MusicSelectPlaySideState,
-    MusicSelectPlaySideUnknownReason, MusicSelectScreenFieldObservations,
-    MusicSelectScreenRgb8Crops, PlaySide, observe_music_select_difficulty,
-    observe_music_select_play_side, test_music_select_play_side,
-};
-pub use super::music_select::{
-    MusicSelectPlayTypeObservation, MusicSelectPlayTypeState, MusicSelectPlayTypeUnknownReason,
-    observe_music_select_play_type,
-};
-pub use super::result::numeric::{FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID};
-pub use super::result::numeric::{
-    NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
-    NumericBatchInference, NumericCellCandidate, NumericCellInference, NumericModelCalibrations,
-    NumericModelContract, RegisteredNumericRuntime,
-};
-pub use super::result::{
-    NumericCharacterFieldLayout, NumericCharacterLayoutVariant, ResultNumericCharacterLayout,
-};
-pub use super::result::{
-    ParsedResultFields, PreviousBest, PreviousBestValue, RESULT_FIELD_RESOLVER_ID,
-    RESULT_PERFORMANCE_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
-    ResultFieldUnknownReason, ResultFieldValue, ResultJudgments, ResultPerformanceResolution,
-    ResultPerformanceUnknownReason, ResultTiming, SupplementalResultValue,
-    matching_observed_chart_songs, observed_result_difficulty, resolve_clear_type,
-    resolve_result_chart, resolve_result_performance,
-};
-pub use super::result::{
-    PlayOption, PlayOptionMarkerObservation, PlayOptionMarkerState, PlayOptions,
-    PlayOptionsObservation, PlayOptionsUnknownReason, observe_play_options,
-};
-pub use super::result::{
-    RESULT_SONG_CHART_ASSISTED_RESOLVER_ID, RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate,
-    ResultSongResolution, ResultSongUnknownReason, assist_unknown_result_song_with_chart,
-    resolve_result_song,
-};
-pub use super::shared::{
-    CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
-    CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
-    CatalogPrefixCandidateScore, CatalogTextCandidateScore, EvidenceFamily, JointEvidenceCandidate,
-    JointEvidenceObservation, MusicSelectSongCandidateObservation, ResultSongCandidateObservation,
-    ScreenCatalogCandidateObservations,
-};
-pub use super::shared::{
-    NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NUMERIC_TOP_CANDIDATES, NumericCalibration,
-    NumericCandidate, NumericField, NumericFieldInference, ScoreBreakdownCandidate,
-    ScoreBreakdownDecision, rank_numeric_probabilities, rank_numeric_sequences,
-    select_score_breakdown,
-};
-pub use super::title::{
-    DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
-    DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
-    ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
-    diagnostic_title_candidate, provisional_title_candidates,
+use super::result::numeric::NumericBatchInference;
+use super::result::{PlayOptionsObservation, ResultSongResolution, observe_play_options};
+use super::shared::NumericField;
+use super::title::{
+    CtcCharacterSet, DynamicTextObservation, OnnxParityError, decode_dynamic_official_onnx_crops,
 };
 
-#[must_use]
-pub fn normalized_title_key(value: &str) -> String {
-    super::title::observe::folded_comparison_key(value)
-}
-pub use super::title::{
-    CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleDictionaryAudit,
-    CatalogTitleUnknownReason, DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256,
-    TitleDictionaryVariantKindAudit, TitleModelExportRequirements, audit_catalog_title_dictionary,
-    score_catalog_titles, title_model_export_requirements,
-};
-pub use super::title::{
-    CtcCharacterSet, DynamicOfficialOnnxDecodeSummary, DynamicTextObservation,
-    ExportContractParityRequest, ExportContractParitySummary, LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
-    LIVE_MODEL_ID, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OfficialOnnxDecodeSummary,
-    OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest, RegisteredDynamicTitleRuntime,
-    RegisteredLiveModelFile, RegisteredRecognitionResources, RegisteredResourceLoadError,
-    RegisteredResourceLoadErrorType, compare_export_contract, compare_paddle_onnx,
-    decode_dynamic_official_onnx_crops, decode_official_onnx_crops, registered_live_model_files,
-    verify_registered_live_model_bundle,
-};
-pub use super::title::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
+#[cfg(test)]
+use super::music_select::*;
 
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
 const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v7";

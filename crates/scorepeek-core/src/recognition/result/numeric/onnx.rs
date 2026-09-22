@@ -12,15 +12,16 @@ use super::fixed_slot::{
     FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID, extract_fixed_slot_fields,
     fixed_not_displayed_fields, fixed_slot_feature,
 };
+use crate::frame::CanonicalLayout;
 pub use crate::model::registry::NUMERIC_MODEL_MANIFEST_SHA256;
+use crate::recognition::result::ResultNumericCharacterLayout;
+use crate::recognition::screen::ResultScreenRgb8Crops;
 use crate::recognition::shared::{
     FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
     NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
 };
+use crate::recognition::title::DynamicTextObservation;
 use crate::recognition::title::OnnxParityError;
-use crate::recognition::{
-    CanonicalLayout, DynamicTextObservation, ResultNumericCharacterLayout, ResultScreenRgb8Crops,
-};
 
 pub const NUMERIC_PREPROCESSOR_ID: &str = FIXED_SLOT_PREPROCESSOR_ID;
 pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
@@ -463,9 +464,9 @@ impl RegisteredNumericRuntime {
     /// Rejects invalid crops, nonfinite output, or inference failure.
     pub fn observe_music_select_best(
         &mut self,
-        crops: &crate::recognition::MusicSelectBestCrops,
-    ) -> Result<crate::recognition::BestNumericObservation, OnnxParityError> {
-        let layout = crate::recognition::MusicSelectBestLayout::load()?;
+        crops: &crate::recognition::music_select::MusicSelectBestCrops,
+    ) -> Result<crate::recognition::music_select::BestNumericObservation, OnnxParityError> {
+        let layout = crate::recognition::music_select::MusicSelectBestLayout::load()?;
         let cells = crops.numeric_cells()?;
         let mut input = Vec::with_capacity(8 * FIXED_SLOT_FEATURE_DIMENSIONS);
         for cell in &cells {
@@ -484,7 +485,7 @@ impl RegisteredNumericRuntime {
         if shape.as_ref() != [8, 11] || logits.iter().any(|v| !v.is_finite()) {
             return Err(OnnxParityError::InvalidArtifact);
         }
-        let mut observation = crate::recognition::BestNumericObservation::default();
+        let mut observation = crate::recognition::music_select::BestNumericObservation::default();
         let mut values = Vec::new();
         for field in logits.chunks_exact(44) {
             let mut text = String::new();
@@ -512,15 +513,15 @@ impl RegisteredNumericRuntime {
                 None
             };
             values.push(value.map_or(
-                crate::recognition::BestValue::Unknown,
-                crate::recognition::BestValue::Known,
+                crate::recognition::music_select::BestValue::Unknown,
+                crate::recognition::music_select::BestValue::Known,
             ));
             observation.cell_classes.push(text);
             observation.minimum_margins_milli.push(margin);
         }
         observation.score = values.remove(0);
         observation.miss_count = if crops.miss_dashes() {
-            crate::recognition::BestValue::NoRecord
+            crate::recognition::music_select::BestValue::NoRecord
         } else {
             values.remove(0)
         };

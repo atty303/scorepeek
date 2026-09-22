@@ -4,9 +4,9 @@ use serde_json::{Value, json};
 
 use crate::catalog::ScorepeekSongId;
 use crate::model::session::RegisteredScreenFieldObservation;
-use crate::recognition::{
-    MusicSelectSongResolution, ResultSongResolution, ScreenFieldObservations, ScreenSongResolution,
-};
+use crate::recognition::music_select::MusicSelectSongResolution;
+use crate::recognition::result::ResultSongResolution;
+use crate::recognition::screen::{ScreenFieldObservations, ScreenSongResolution};
 
 use super::{
     RunEvent, RunEventKind, SongPresentation, SongResolutionPresentation, schema::RUN_EVENT_SCHEMA,

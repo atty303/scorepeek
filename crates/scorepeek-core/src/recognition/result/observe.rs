@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 
-use crate::recognition::{DynamicTextObservation, ResultScreenFieldObservations};
+use crate::recognition::screen::ResultScreenFieldObservations;
+use crate::recognition::title::DynamicTextObservation;
 
 pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v6";
 pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";

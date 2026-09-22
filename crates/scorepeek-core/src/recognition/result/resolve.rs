@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::catalog::ScorepeekSongId;
 
-use crate::recognition::{CatalogTextCandidateScore, ResultSongCandidateObservation};
+use crate::recognition::shared::{CatalogTextCandidateScore, ResultSongCandidateObservation};
 
 pub const RESULT_SONG_RESOLVER_ID: &str =
     "scorepeek-result-song-title-primary-artist-corroborated-v3";
@@ -234,7 +234,7 @@ fn ratio_at_least(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recognition::CatalogNormalizedSimilarity;
+    use crate::recognition::shared::CatalogNormalizedSimilarity;
 
     fn id(value: u128) -> ScorepeekSongId {
         serde_json::from_str(&format!("\"{value:032x}\""))

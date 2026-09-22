@@ -1,4 +1,5 @@
-use crate::recognition::{CanonicalLayout, RecognitionError, Roi};
+use crate::frame::{CanonicalLayout, Roi};
+use crate::recognition::screen::RecognitionError;
 
 pub const TITLE_PREPROCESSOR_ID: &str = "paddlex-3.7.0-bgr-rec-resize-3x48x320-v1";
 pub(super) const DYNAMIC_TITLE_PREPROCESSOR_ID: &str =
@@ -225,7 +226,8 @@ fn interpolation_vertical_axis(
 
 #[cfg(test)]
 mod tests {
-    use crate::recognition::{CanonicalLayout, screen::encode_sha256};
+    use crate::frame::CanonicalLayout;
+    use crate::recognition::screen::encode_sha256;
 
     use super::*;
 

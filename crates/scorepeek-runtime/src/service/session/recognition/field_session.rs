@@ -4,8 +4,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use scorepeek_core::diagnostics::{DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus};
-use scorepeek_core::recognition::RegisteredNumericRuntime;
-use scorepeek_core::recognition::ScreenFieldObservationError;
+use scorepeek_core::recognition::result::numeric::RegisteredNumericRuntime;
+use scorepeek_core::recognition::screen::ScreenFieldObservationError;
 
 use super::DiagnosticScreenFieldObservation;
 use super::field_observer::{
@@ -313,8 +313,8 @@ impl<O: FieldObserver> FieldObservationSession<O> {
             (FieldInputPolicy::SkipBusy | FieldInputPolicy::SkipBusyAndTitle, None)
                 if matches!(
                     observation.screen(),
-                    scorepeek_core::recognition::ScreenClass::Result
-                        | scorepeek_core::recognition::ScreenClass::MusicSelect
+                    scorepeek_core::recognition::screen::ScreenClass::Result
+                        | scorepeek_core::recognition::screen::ScreenClass::MusicSelect
                 ) =>
             {
                 let _ = self
@@ -667,10 +667,11 @@ impl<O: FieldObserver> FieldObservationSession<O> {
 mod tests {
     use std::fs;
 
-    use scorepeek_core::recognition::{
-        CanonicalLayout, DynamicTextObservation, ScreenClass, ScreenFieldObservationError,
-        ScreenFieldObservations, observe_screen_fields,
+    use scorepeek_core::frame::CanonicalLayout;
+    use scorepeek_core::recognition::screen::{
+        ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, observe_screen_fields,
     };
+    use scorepeek_core::recognition::title::DynamicTextObservation;
 
     use super::*;
     use crate::service::session::recognition::field_observer::{

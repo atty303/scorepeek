@@ -131,7 +131,7 @@ fn transition_actions(transition: ScreenEpisodeTransition) -> Vec<TimelineAction
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recognition::ScreenClass;
+    use crate::recognition::screen::ScreenClass;
 
     #[test]
     fn replacement_has_one_close_drain_finalize_start_order() {

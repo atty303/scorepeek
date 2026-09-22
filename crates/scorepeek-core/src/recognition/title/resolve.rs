@@ -27,9 +27,8 @@ use crate::catalog::{Catalog, CatalogStore, CatalogStoreError};
 pub use crate::model::manifest::RegisteredLiveModelFile;
 use crate::model::manifest::{DynamicBundleManifest, ManifestError};
 pub use crate::model::text::DynamicTextObservation;
-use crate::recognition::{
-    RecognitionError, Rgb8Crop, screen::read_title_crop_artifact, shared::ctc::CtcSequenceTrie,
-};
+use crate::recognition::screen::{RecognitionError, Rgb8Crop, read_title_crop_artifact};
+use crate::recognition::shared::ctc::CtcSequenceTrie;
 
 const MODEL_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../../models/manifests/pp-ocrv6-small-rec-onnx-v1.json");

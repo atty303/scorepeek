@@ -5,10 +5,12 @@ use std::time::Instant;
 use scorepeek_core::diagnostics::{
     DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
-use scorepeek_core::recognition::{
-    CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
-    ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
-    ScreenRgb8Crops, TitleScreenRgb8Crops, inspect_canonical_rgb8, route_screen_rgb8_crops,
+use scorepeek_core::frame::CanonicalLayout;
+use scorepeek_core::recognition::music_select::MusicSelectScreenRgb8Crops;
+use scorepeek_core::recognition::screen::{
+    RecognitionError, ResultScreenRgb8Crops, ScreenClass, ScreenFieldObservationError,
+    ScreenFieldObservations, ScreenPredicateObservation, ScreenRgb8Crops, TitleScreenRgb8Crops,
+    inspect_canonical_rgb8, route_screen_rgb8_crops,
 };
 
 use self::field_observer::{
@@ -128,12 +130,14 @@ impl<'a> RecognitionObservation<'a> {
     }
 
     #[must_use]
-    pub const fn result_presence(&self) -> scorepeek_core::recognition::ResultPresenceEvidence {
+    pub const fn result_presence(
+        &self,
+    ) -> scorepeek_core::recognition::screen::ResultPresenceEvidence {
         self.predicate.result_presence
     }
 
     #[must_use]
-    pub const fn play_presence(&self) -> scorepeek_core::recognition::PlayPresenceEvidence {
+    pub const fn play_presence(&self) -> scorepeek_core::recognition::screen::PlayPresenceEvidence {
         self.predicate.play_presence
     }
 
@@ -750,7 +754,8 @@ mod tests {
     use std::fs;
     use std::time::{Duration, Instant};
 
-    use scorepeek_core::recognition::{CanonicalLayout, ScreenClass};
+    use scorepeek_core::frame::CanonicalLayout;
+    use scorepeek_core::recognition::screen::ScreenClass;
 
     use super::*;
     use scorepeek_core::diagnostics::{DiagnosticBinding, DiagnosticResource};
@@ -927,7 +932,10 @@ mod tests {
                 .all(|(_, crop)| !crop.pixels().is_empty())
         );
         assert_eq!(
-            scorepeek_core::recognition::observe_music_select_play_side(&crops.play_side).known(),
+            scorepeek_core::recognition::music_select::observe_music_select_play_side(
+                &crops.play_side,
+            )
+            .known(),
             None
         );
         assert!(!crops.active_list_title.pixels().is_empty());
