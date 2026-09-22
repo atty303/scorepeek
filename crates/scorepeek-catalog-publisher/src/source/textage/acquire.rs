@@ -6,8 +6,8 @@ use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::cache::atomic::create_private_directory;
 use crate::source::common::{AdapterError, SourceRevision};
-use crate::source::dqn::acquire::create_private_directory;
 use crate::source::textage::decode::{
     MAX_TEXTAGE_FILE_BYTES, TextageLiveAdapter, textage_bundle_digest,
 };
@@ -404,62 +404,54 @@ fn cache_verified_bundle<'a>(
 }
 
 fn recover_cache_staging(directory: &Path) -> Result<(), TextageAcquisitionError> {
-    let mut removed = false;
-    for entry in fs::read_dir(directory).map_err(TextageAcquisitionError::CacheIo)? {
-        let entry = entry.map_err(TextageAcquisitionError::CacheIo)?;
-        let is_staging = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(CACHE_STAGING_PREFIX));
-        if !is_staging {
-            continue;
+    match crate::cache::recovery::recover(
+        directory,
+        CACHE_STAGING_PREFIX,
+        crate::cache::recovery::StagingKind::Directory,
+    ) {
+        Ok(()) => Ok(()),
+        Err(crate::cache::recovery::RecoveryError::Io(error)) => {
+            Err(TextageAcquisitionError::CacheIo(error))
         }
-        if !entry
-            .path()
-            .symlink_metadata()
-            .map_err(TextageAcquisitionError::CacheIo)?
-            .is_dir()
-        {
-            return Err(TextageAcquisitionError::CacheCapacityExceeded);
+        Err(crate::cache::recovery::RecoveryError::UnexpectedEntry(_)) => {
+            Err(TextageAcquisitionError::CacheCapacityExceeded)
         }
-        fs::remove_dir_all(entry.path()).map_err(TextageAcquisitionError::CacheIo)?;
-        removed = true;
     }
-    if removed {
-        File::open(directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(TextageAcquisitionError::CacheIo)?;
-    }
-    Ok(())
 }
 
 fn ensure_cache_capacity(
     directory: &Path,
     incoming_bytes: u64,
 ) -> Result<(), TextageAcquisitionError> {
-    let mut revisions = 0_usize;
-    let mut total_bytes = 0_u64;
-    for entry in fs::read_dir(directory).map_err(TextageAcquisitionError::CacheIo)? {
-        let entry = entry.map_err(TextageAcquisitionError::CacheIo)?;
-        let metadata = entry
-            .path()
-            .metadata()
-            .map_err(TextageAcquisitionError::CacheIo)?;
-        if !metadata.is_dir() || !valid_digest(&entry.file_name().to_string_lossy()) {
-            return Err(TextageAcquisitionError::CacheCapacityExceeded);
+    let result = crate::cache::capacity::ensure(
+        directory,
+        incoming_bytes,
+        MAX_CACHE_REVISIONS,
+        MAX_CACHE_BYTES,
+        |entry| {
+            let metadata = entry.path().metadata()?;
+            if !metadata.is_dir() || !valid_digest(&entry.file_name().to_string_lossy()) {
+                return Err(crate::cache::capacity::CapacityError::InvalidEntry);
+            }
+            match bundle_size(&entry.path()) {
+                Ok(bytes) => Ok(bytes),
+                Err(TextageAcquisitionError::CacheIo(error)) => {
+                    Err(crate::cache::capacity::CapacityError::Io(error))
+                }
+                Err(_) => Err(crate::cache::capacity::CapacityError::InvalidEntry),
+            }
+        },
+    );
+    match result {
+        Ok(()) => Ok(()),
+        Err(crate::cache::capacity::CapacityError::Io(error)) => {
+            Err(TextageAcquisitionError::CacheIo(error))
         }
-        revisions = revisions.saturating_add(1);
-        total_bytes = total_bytes.saturating_add(bundle_size(&entry.path())?);
-        if revisions >= MAX_CACHE_REVISIONS || total_bytes > MAX_CACHE_BYTES {
-            return Err(TextageAcquisitionError::CacheCapacityExceeded);
-        }
+        Err(
+            crate::cache::capacity::CapacityError::InvalidEntry
+            | crate::cache::capacity::CapacityError::Exceeded,
+        ) => Err(TextageAcquisitionError::CacheCapacityExceeded),
     }
-    if incoming_bytes > MAX_CACHE_BYTES
-        || total_bytes.saturating_add(incoming_bytes) > MAX_CACHE_BYTES
-    {
-        return Err(TextageAcquisitionError::CacheCapacityExceeded);
-    }
-    Ok(())
 }
 
 fn bundle_size(path: &Path) -> Result<u64, TextageAcquisitionError> {

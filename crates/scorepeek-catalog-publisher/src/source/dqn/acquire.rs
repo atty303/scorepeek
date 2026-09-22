@@ -1,14 +1,18 @@
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::source::common::{AdapterError, MAX_SOURCE_BYTES, SourceRevision};
 use crate::source::dqn::decode::DqnLiveAdapter;
 use scorepeek_core::catalog::SourceSnapshot;
+
+use crate::cache::atomic::create_private_directory;
+
+#[cfg(test)]
+use std::fs;
 
 const DQN_ENDPOINT: &str = "https://dqn.github.io/iidxapi/infinitas/music.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -280,66 +284,55 @@ fn cache_verified_bytes_with(
 }
 
 fn recover_cache_staging(directory: &Path) -> Result<(), DqnAcquisitionError> {
-    let mut removed = false;
-    for entry in fs::read_dir(directory).map_err(DqnAcquisitionError::CacheIo)? {
-        let entry = entry.map_err(DqnAcquisitionError::CacheIo)?;
-        let is_staging = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(CACHE_STAGING_PREFIX));
-        if !is_staging {
-            continue;
+    match crate::cache::recovery::recover(
+        directory,
+        CACHE_STAGING_PREFIX,
+        crate::cache::recovery::StagingKind::File,
+    ) {
+        Ok(()) => Ok(()),
+        Err(crate::cache::recovery::RecoveryError::Io(error)) => {
+            Err(DqnAcquisitionError::CacheIo(error))
         }
-        let metadata = entry
-            .path()
-            .symlink_metadata()
-            .map_err(DqnAcquisitionError::CacheIo)?;
-        if !metadata.is_file() {
-            return Err(DqnAcquisitionError::CacheCapacityExceeded);
+        Err(crate::cache::recovery::RecoveryError::UnexpectedEntry(_)) => {
+            Err(DqnAcquisitionError::CacheCapacityExceeded)
         }
-        fs::remove_file(entry.path()).map_err(DqnAcquisitionError::CacheIo)?;
-        removed = true;
     }
-    if removed {
-        File::open(directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(DqnAcquisitionError::CacheIo)?;
-    }
-    Ok(())
 }
 
 fn ensure_cache_capacity(
     directory: &Path,
     incoming_bytes: usize,
 ) -> Result<(), DqnAcquisitionError> {
-    let mut revisions = 0_usize;
-    let mut total_bytes = 0_u64;
-    for entry in fs::read_dir(directory).map_err(DqnAcquisitionError::CacheIo)? {
-        let entry = entry.map_err(DqnAcquisitionError::CacheIo)?;
-        let metadata = entry
-            .path()
-            .metadata()
-            .map_err(DqnAcquisitionError::CacheIo)?;
-        if !metadata.is_file()
-            || entry
-                .path()
-                .extension()
-                .and_then(|extension| extension.to_str())
-                != Some("json")
-            || metadata.len() > MAX_SOURCE_BYTES as u64
-        {
-            return Err(DqnAcquisitionError::CacheCapacityExceeded);
+    let result = crate::cache::capacity::ensure(
+        directory,
+        incoming_bytes as u64,
+        MAX_CACHE_REVISIONS,
+        MAX_CACHE_BYTES,
+        |entry| {
+            let metadata = entry.path().metadata()?;
+            if !metadata.is_file()
+                || entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    != Some("json")
+                || metadata.len() > MAX_SOURCE_BYTES as u64
+            {
+                return Err(crate::cache::capacity::CapacityError::InvalidEntry);
+            }
+            Ok(metadata.len())
+        },
+    );
+    match result {
+        Ok(()) => Ok(()),
+        Err(crate::cache::capacity::CapacityError::Io(error)) => {
+            Err(DqnAcquisitionError::CacheIo(error))
         }
-        revisions = revisions.saturating_add(1);
-        total_bytes = total_bytes.saturating_add(metadata.len());
-        if revisions >= MAX_CACHE_REVISIONS || total_bytes > MAX_CACHE_BYTES {
-            return Err(DqnAcquisitionError::CacheCapacityExceeded);
-        }
+        Err(
+            crate::cache::capacity::CapacityError::InvalidEntry
+            | crate::cache::capacity::CapacityError::Exceeded,
+        ) => Err(DqnAcquisitionError::CacheCapacityExceeded),
     }
-    if total_bytes.saturating_add(incoming_bytes as u64) > MAX_CACHE_BYTES {
-        return Err(DqnAcquisitionError::CacheCapacityExceeded);
-    }
-    Ok(())
 }
 
 fn verify_existing_cache(
@@ -364,45 +357,6 @@ fn verify_existing_cache(
     File::open(directory)
         .and_then(|directory| directory.sync_all())
         .map_err(DqnAcquisitionError::CacheIo)
-}
-
-pub(crate) fn create_private_directory(path: &Path) -> io::Result<()> {
-    let mut missing = Vec::new();
-    let mut candidate = path;
-    loop {
-        match candidate.metadata() {
-            Ok(metadata) if metadata.is_dir() => break,
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotADirectory,
-                    "cache ancestor is not a directory",
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                missing.push(candidate.to_owned());
-                candidate = candidate.parent().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "directory has no existing ancestor",
-                    )
-                })?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    for directory in missing.into_iter().rev() {
-        fs::DirBuilder::new().mode(0o700).create(&directory)?;
-        sync_directory_and_parent(&directory)?;
-    }
-    sync_directory_and_parent(path)
-}
-
-fn sync_directory_and_parent(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()?;
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

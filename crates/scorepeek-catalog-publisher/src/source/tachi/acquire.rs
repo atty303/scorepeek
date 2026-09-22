@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::cache::atomic::create_private_directory;
 use crate::source::common::{AdapterError, SourceRevision};
-use crate::source::dqn::acquire::create_private_directory;
 use crate::source::tachi::decode::{MAX_TACHI_CHART_BYTES, MAX_TACHI_SONG_BYTES, TachiLiveAdapter};
 use scorepeek_core::catalog::SourceSnapshot;
 
@@ -461,59 +461,55 @@ fn cache_verified_bundle<'a>(
 }
 
 fn recover_cache_staging(directory: &Path) -> Result<(), TachiAcquisitionError> {
-    let mut removed = false;
-    for entry in fs::read_dir(directory).map_err(TachiAcquisitionError::CacheIo)? {
-        let entry = entry.map_err(TachiAcquisitionError::CacheIo)?;
-        let is_staging = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(CACHE_STAGING_PREFIX));
-        if !is_staging {
-            continue;
+    match crate::cache::recovery::recover(
+        directory,
+        CACHE_STAGING_PREFIX,
+        crate::cache::recovery::StagingKind::Directory,
+    ) {
+        Ok(()) => Ok(()),
+        Err(crate::cache::recovery::RecoveryError::Io(error)) => {
+            Err(TachiAcquisitionError::CacheIo(error))
         }
-        let metadata = entry
-            .path()
-            .symlink_metadata()
-            .map_err(TachiAcquisitionError::CacheIo)?;
-        if !metadata.is_dir() {
-            return Err(TachiAcquisitionError::CacheCapacityExceeded);
+        Err(crate::cache::recovery::RecoveryError::UnexpectedEntry(_)) => {
+            Err(TachiAcquisitionError::CacheCapacityExceeded)
         }
-        fs::remove_dir_all(entry.path()).map_err(TachiAcquisitionError::CacheIo)?;
-        removed = true;
     }
-    if removed {
-        File::open(directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(TachiAcquisitionError::CacheIo)?;
-    }
-    Ok(())
 }
 
 fn ensure_cache_capacity(
     directory: &Path,
     incoming_bytes: u64,
 ) -> Result<(), TachiAcquisitionError> {
-    let mut revisions = 0_usize;
-    let mut total_bytes = 0_u64;
-    for entry in fs::read_dir(directory).map_err(TachiAcquisitionError::CacheIo)? {
-        let entry = entry.map_err(TachiAcquisitionError::CacheIo)?;
-        let path = entry.path();
-        let metadata = path.metadata().map_err(TachiAcquisitionError::CacheIo)?;
-        if !metadata.is_dir() || !valid_generation_name(&entry.file_name().to_string_lossy()) {
-            return Err(TachiAcquisitionError::CacheCapacityExceeded);
+    let result = crate::cache::capacity::ensure(
+        directory,
+        incoming_bytes,
+        MAX_CACHE_REVISIONS,
+        MAX_CACHE_BYTES,
+        |entry| {
+            let path = entry.path();
+            let metadata = path.metadata()?;
+            if !metadata.is_dir() || !valid_generation_name(&entry.file_name().to_string_lossy()) {
+                return Err(crate::cache::capacity::CapacityError::InvalidEntry);
+            }
+            match bundle_size(&path) {
+                Ok(bytes) => Ok(bytes),
+                Err(TachiAcquisitionError::CacheIo(error)) => {
+                    Err(crate::cache::capacity::CapacityError::Io(error))
+                }
+                Err(_) => Err(crate::cache::capacity::CapacityError::InvalidEntry),
+            }
+        },
+    );
+    match result {
+        Ok(()) => Ok(()),
+        Err(crate::cache::capacity::CapacityError::Io(error)) => {
+            Err(TachiAcquisitionError::CacheIo(error))
         }
-        revisions = revisions.saturating_add(1);
-        total_bytes = total_bytes.saturating_add(bundle_size(&path)?);
-        if revisions >= MAX_CACHE_REVISIONS || total_bytes > MAX_CACHE_BYTES {
-            return Err(TachiAcquisitionError::CacheCapacityExceeded);
-        }
+        Err(
+            crate::cache::capacity::CapacityError::InvalidEntry
+            | crate::cache::capacity::CapacityError::Exceeded,
+        ) => Err(TachiAcquisitionError::CacheCapacityExceeded),
     }
-    if incoming_bytes > MAX_CACHE_BYTES
-        || total_bytes.saturating_add(incoming_bytes) > MAX_CACHE_BYTES
-    {
-        return Err(TachiAcquisitionError::CacheCapacityExceeded);
-    }
-    Ok(())
 }
 
 fn bundle_size(path: &Path) -> Result<u64, TachiAcquisitionError> {
