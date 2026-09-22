@@ -4,6 +4,12 @@ use sha2::{Digest, Sha256};
 
 fn main() -> io::Result<()> {
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory");
+    if env::var_os("CARGO_PKG_NAME").as_deref() == Some("scorepeek-overlay-web-host".as_ref()) {
+        let asset_dir = env::var_os("SCOREPEEK_WEB_ASSET_DIR").expect("web asset directory");
+        // The mise dependency creates this input; Cargo only invalidates the embedding crate.
+        println!("cargo:rerun-if-env-changed=SCOREPEEK_WEB_ASSET_DIR");
+        println!("cargo:rerun-if-changed={}", Path::new(&asset_dir).display());
+    }
     let root = Path::new(&manifest_dir)
         .parent()
         .and_then(Path::parent)
