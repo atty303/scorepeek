@@ -324,9 +324,10 @@ depends = ["overlay:web:bundle"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
+readonly runtime_build_jobs="${SCOREPEEK_RUNTIME_TEST_BUILD_JOBS:-4}"
 mise run native:verify
-cargo test --locked --workspace --exclude scorepeek-overlay-wayland --exclude scorepeek-overlay-web-host --exclude scorepeek-overlay-web-client
-exec cargo test --locked -p scorepeek-corpus --features runtime-replay
+CARGO_BUILD_JOBS="$runtime_build_jobs" cargo test --locked --workspace --exclude scorepeek-overlay-wayland --exclude scorepeek-overlay-web-host --exclude scorepeek-overlay-web-client
+exec env CARGO_BUILD_JOBS="$runtime_build_jobs" cargo test --locked -p scorepeek-corpus --features runtime-replay
 '''
 
 [tasks."test:overlay:native"]
