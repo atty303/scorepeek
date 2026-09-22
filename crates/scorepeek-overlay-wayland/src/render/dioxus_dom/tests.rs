@@ -3,6 +3,66 @@ use crate::render::blitz::NativeEventOutcome;
 use crate::render::vello::retain_native_image_atlas;
 use blitz_dom::Document as _;
 
+struct TemporaryDirectory(std::path::PathBuf);
+
+impl TemporaryDirectory {
+    fn new(name: &str) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "scorepeek-overlay-wayland-{name}-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TemporaryDirectory {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn visual_debug_accepts_only_absent_or_empty_output_directories() {
+    let root = TemporaryDirectory::new("visual-output");
+    let absent = root.0.join("absent");
+    let absent_lease = prepare_visual_output(&absent).unwrap();
+    assert!(absent.is_dir());
+    assert!(prepare_visual_output(&absent).is_err());
+    drop(absent_lease);
+    assert_eq!(std::fs::read_dir(&absent).unwrap().count(), 0);
+    drop(prepare_visual_output(&absent).unwrap());
+
+    let empty = root.0.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let empty_lease = prepare_visual_output(&empty).unwrap();
+    assert!(prepare_visual_output(&empty).is_err());
+    drop(empty_lease);
+    assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
+
+    let nonempty = root.0.join("nonempty");
+    std::fs::create_dir(&nonempty).unwrap();
+    std::fs::write(nonempty.join("existing"), b"preserve").unwrap();
+    assert_eq!(
+        prepare_visual_output(&nonempty).err().as_deref(),
+        Some("visual output directory is not empty")
+    );
+    assert_eq!(
+        std::fs::read(nonempty.join("existing")).unwrap(),
+        b"preserve"
+    );
+
+    let file = root.0.join("file");
+    std::fs::write(&file, b"preserve").unwrap();
+    assert_eq!(
+        prepare_visual_output(&file).err().as_deref(),
+        Some("visual output already exists and is not a directory")
+    );
+    assert_eq!(std::fs::read(file).unwrap(), b"preserve");
+}
+
 fn test_skin(id: &str) -> scorepeek_overlay::Skin {
     id.parse().unwrap()
 }

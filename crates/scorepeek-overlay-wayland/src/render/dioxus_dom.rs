@@ -3936,11 +3936,11 @@ fn document_config_inner_with_handle(
 }
 
 mod visual_debug;
-#[cfg(test)]
-use visual_debug::VisualDebugSession;
 pub use visual_debug::{
     VisualDebugAction, VisualDebugButton, VisualDebugScenario, run_visual_debug,
 };
+#[cfg(test)]
+use visual_debug::{VisualDebugSession, prepare_visual_output};
 
 #[cfg(test)]
 #[path = "dioxus_dom/tests.rs"]

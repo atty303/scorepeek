@@ -788,6 +788,8 @@ impl VisualDebugSession {
 
 /// Renders the production Dioxus native DOM through Blitz and Vello without a
 /// Wayland compositor, recording every requested interaction and layout.
+/// The output may be absent or an existing empty directory. A nonempty path is
+/// rejected, and an execution lease prevents concurrent runs from sharing it.
 ///
 /// # Errors
 ///
@@ -797,7 +799,7 @@ pub fn run_visual_debug(
     scenario: &VisualDebugScenario,
     output: &std::path::Path,
 ) -> Result<(), String> {
-    std::fs::create_dir(output).map_err(|error| format!("create visual output: {error}"))?;
+    let _output_lease = prepare_visual_output(output)?;
     let physical_size = if scenario.scale.is_finite() && scenario.scale > 0.0 {
         [
             u32::try_from(
@@ -925,6 +927,58 @@ pub fn run_visual_debug(
     )
     .map_err(|error| error.to_string())?;
     result
+}
+
+pub(super) struct VisualOutputLease {
+    path: std::path::PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl Drop for VisualOutputLease {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub(super) fn prepare_visual_output(output: &std::path::Path) -> Result<VisualOutputLease, String> {
+    let created = match std::fs::create_dir(output) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(output)
+                .map_err(|error| format!("inspect visual output: {error}"))?;
+            if !metadata.file_type().is_dir() {
+                return Err("visual output already exists and is not a directory".into());
+            }
+            let mut entries = std::fs::read_dir(output)
+                .map_err(|error| format!("inspect visual output: {error}"))?;
+            if entries
+                .next()
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .is_some()
+            {
+                return Err("visual output directory is not empty".into());
+            }
+            false
+        }
+        Err(error) => return Err(format!("create visual output: {error}")),
+    };
+    let path = output.join(".scorepeek-visual-debug.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| {
+            if created {
+                let _ = std::fs::remove_dir(output);
+            }
+            format!("acquire visual output lease: {error}")
+        })?;
+    Ok(VisualOutputLease {
+        path,
+        file: Some(file),
+    })
 }
 
 fn capture_visual_debug(
