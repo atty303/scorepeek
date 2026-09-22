@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::bridge::data::{Config, Feed};
-use crate::host::event_loop::{Event, OutputDescription, Shell};
+use crate::host::event_loop::{Event, OutputDescription};
 use crate::input::pointer::PointerInput;
 use crate::render::blitz::{
     NativeEventConsumer, dispatch_native_event, poll_native_document,
@@ -27,6 +27,7 @@ use crate::render::frame::{NativeFramePresenter, WindowPresenter};
 use crate::render::vello::{paint_native_scene, resolve_with_loaded_resources};
 #[cfg(test)]
 use crate::window::geometry::{editor_geometry, editor_panel_width};
+use crate::window::surface::Shell;
 use anyrender::{CompositeAlphaMode, ImageRenderer, WindowRenderer};
 use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
 use blitz_dom::DocumentConfig;

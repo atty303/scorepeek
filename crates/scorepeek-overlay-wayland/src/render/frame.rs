@@ -2,7 +2,7 @@
 
 use super::dioxus_dom::FrameWorkProfile;
 use super::vello::paint_native_scene;
-use crate::host::event_loop::Shell;
+use crate::window::surface::Shell;
 use anyrender::WindowRenderer as _;
 use anyrender_vello::VelloWindowRenderer;
 use std::time::{Duration, Instant};

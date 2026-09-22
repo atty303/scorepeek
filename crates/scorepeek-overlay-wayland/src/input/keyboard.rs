@@ -1,4 +1,5 @@
-use crate::host::event_loop::{Event, Platform, Shell};
+use crate::host::event_loop::{Event, Platform};
+use crate::window::surface::Shell;
 use smithay_client_toolkit::{
     reexports::calloop::LoopHandle,
     seat::{

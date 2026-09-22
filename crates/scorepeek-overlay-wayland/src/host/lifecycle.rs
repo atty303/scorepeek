@@ -1,6 +1,4 @@
-//! Parent-process lease and shell lifecycle.
-
-pub use crate::host::event_loop::Shell;
+//! Parent-process lease lifecycle.
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
