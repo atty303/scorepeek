@@ -9,14 +9,23 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+#[cfg(test)]
+use crate::config::document::ConfigFile;
 use crate::service::session::recognition as recognition_session;
 use crate::{
     capture_live,
-    config::document as local_profiles,
+    config::{
+        document::{self as config_document, CaptureKind},
+        effective::{
+            self as config_effective, OverlayOptions, RoutineCapture, RoutineRunOptions, RunArgs,
+        },
+        paths as config_paths,
+    },
     diagnostics::inspect as diagnostic_stream,
     events::server as routine_output,
     inventory::{doctor as inventory, vulkan_layer},
     platform::signal as live_control,
+    platform::state as local_profiles,
     recognition_artifact,
     recording::{
         policy::{DEFAULT_RECORDING_MEMORY_MIB, RecordingMemoryLimit},
@@ -34,7 +43,7 @@ use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
 use scorepeek_core::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 pub(crate) fn frontend_event(event: scorepeek_frontend_api::FrontendEvent) -> bool {
@@ -129,44 +138,6 @@ enum PublicCommand {
     VulkanLayer { command: VulkanLayerCommand },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum CaptureKind {
-    Pipewire,
-    VulkanLayer,
-}
-
-#[derive(Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "paired frontend flags preserve explicit enable and disable overrides"
-)]
-struct RunArgs {
-    /// Capture backend. Required unless configuration or environment supplies it.
-    capture: Option<CaptureKind>,
-    /// `PipeWire` node.name selected when the effective backend is pipewire.
-    node_name: Option<String>,
-    crop_left: Option<u32>,
-    crop_top: Option<u32>,
-    crop_right: Option<u32>,
-    crop_bottom: Option<u32>,
-    scores_db: Option<PathBuf>,
-    no_scores: bool,
-    scores: bool,
-    record: bool,
-    /// Retain every canonical 10 Hz tick, including stable screen interiors.
-    record_all: bool,
-    no_record: bool,
-    record_memory_mib: Option<usize>,
-    overlay_wayland: bool,
-    no_overlay_wayland: bool,
-    overlay_wayland_edit: bool,
-    no_overlay_wayland_edit: bool,
-    overlay_obs: bool,
-    no_overlay_obs: bool,
-    overlay_config: Option<PathBuf>,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 enum OutputFormat {
     #[default]
@@ -242,69 +213,13 @@ fn result_exit_status(result: &Result<(), String>) -> u8 {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ConfigFile {
-    capture: Option<CaptureConfig>,
-    crop: CropConfig,
-    scores: ScoresConfig,
-    overlay: OverlayConfig,
-    recording: RecordingConfig,
-    catalog: Option<CatalogConfig>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CaptureConfig {
-    backend: CaptureKind,
-    node_name: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct CropConfig {
-    left: Option<u32>,
-    top: Option<u32>,
-    right: Option<u32>,
-    bottom: Option<u32>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ScoresConfig {
-    enabled: Option<bool>,
-    database: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct OverlayConfig {
-    wayland: Option<bool>,
-    wayland_edit: Option<bool>,
-    obs: Option<bool>,
-    config: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RecordingConfig {
-    enabled: Option<bool>,
-    memory_mib: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CatalogConfig {
-    url: String,
-}
-
 fn dispatch_public(cli: PublicCli) -> Result<(), String> {
     let PublicCli { config, command } = cli;
     match command {
         PublicCommand::Run(args) => run_public(args, config),
         PublicCommand::Doctor(format) => print_doctor(format.format),
         PublicCommand::Config { command } => {
-            let config_path = resolve_config_path(config)?;
+            let config_path = config_paths::resolve(config)?;
             run_config_command(command, &config_path)
         }
         PublicCommand::Diagnostic { command } => run_diagnostic_command(command),
@@ -442,93 +357,6 @@ const fn frontend_output_format(format: scorepeek_frontend_api::OutputFormat) ->
     }
 }
 
-fn resolve_config_path(cli: Option<PathBuf>) -> Result<PathBuf, String> {
-    if let Some(path) = cli {
-        return nonempty_path(path, "--config");
-    }
-    match env::var_os("SCOREPEEK_CONFIG") {
-        Some(path) => nonempty_path(PathBuf::from(path), "SCOREPEEK_CONFIG"),
-        None => Ok(scorepeek::catalog::update::default_config_path()),
-    }
-}
-
-fn nonempty_path(path: PathBuf, label: &str) -> Result<PathBuf, String> {
-    (!path.as_os_str().is_empty())
-        .then_some(path)
-        .ok_or_else(|| format!("{label} must not be empty"))
-}
-
-fn read_config(path: &Path) -> Result<Option<(String, ConfigFile)>, String> {
-    let Some(text) = read_config_text(path)? else {
-        return Ok(None);
-    };
-    let config = toml::from_str::<ConfigFile>(&text)
-        .map_err(|error| format!("config file is invalid: {error}"))?;
-    validate_config_file(&config)?;
-    Ok(Some((text, config)))
-}
-
-fn read_config_text(path: &Path) -> Result<Option<String>, String> {
-    const MAX_CONFIG_BYTES: u64 = 64 * 1024;
-    let metadata = match path.metadata() {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("config file could not be inspected: {error}")),
-    };
-    if !metadata.is_file() || metadata.len() > MAX_CONFIG_BYTES {
-        return Err("config path must be a regular file no larger than 64 KiB".to_owned());
-    }
-    Ok(Some(fs::read_to_string(path).map_err(|error| {
-        format!("config file could not be read as UTF-8: {error}")
-    })?))
-}
-
-fn validate_config_file(config: &ConfigFile) -> Result<(), String> {
-    if let Some(capture) = &config.capture {
-        match (capture.backend, capture.node_name.as_deref()) {
-            (CaptureKind::VulkanLayer, Some(_)) => {
-                return Err("node_name is valid only for pipewire capture".to_owned());
-            }
-            (CaptureKind::Pipewire, Some("")) => {
-                return Err("capture.node_name must not be empty".to_owned());
-            }
-            _ => {}
-        }
-    }
-    if config.scores.enabled == Some(false) && config.scores.database.is_some() {
-        return Err("scores.database requires scores.enabled = true".to_owned());
-    }
-    if config.recording.enabled == Some(false) && config.recording.memory_mib.is_some() {
-        return Err("recording.memory_mib requires recording.enabled = true".to_owned());
-    }
-    if config.overlay.wayland == Some(false) && config.overlay.wayland_edit == Some(true) {
-        return Err("overlay.wayland_edit requires overlay.wayland = true".to_owned());
-    }
-    if let Some(catalog) = &config.catalog
-        && catalog.url.is_empty()
-    {
-        return Err("catalog.url must not be empty".to_owned());
-    }
-    if let Some(catalog) = &config.catalog {
-        scorepeek::catalog::update::validate_configured_url(&catalog.url)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn validate_capture_specific(backend: CaptureKind, node_name: Option<&str>) -> Result<(), String> {
-    match (backend, node_name) {
-        (CaptureKind::Pipewire, Some(node)) if !node.is_empty() => Ok(()),
-        (CaptureKind::Pipewire, _) => {
-            Err("pipewire capture requires a non-empty node_name".to_owned())
-        }
-        (CaptureKind::VulkanLayer, None) => Ok(()),
-        (CaptureKind::VulkanLayer, Some(_)) => {
-            Err("node_name is valid only for pipewire capture".to_owned())
-        }
-    }
-}
-
 fn run_public(args: RunArgs, config_override: Option<PathBuf>) -> Result<(), String> {
     run_public_with_model_initializer(args, config_override, |override_bundle| {
         scorepeek::resources::model::acquire::ensure_small_model(override_bundle, |event| {
@@ -557,7 +385,7 @@ fn run_public_with_model_initializer(
         live_control::SignalStopMonitor::start()
     })?;
     let config_path_result = run_startup_stage(&sink, "config_path", || {
-        resolve_config_path(config_override)
+        config_paths::resolve(config_override)
     });
     let config_path = settle_startup_result(&mut diagnostics, &monitor, config_path_result)?;
     let options = load_run_options(&mut diagnostics, &monitor, &config_path, args)?;
@@ -592,246 +420,14 @@ fn load_run_options(
 ) -> Result<RoutineRunOptions, String> {
     let sink = diagnostics.sink();
     let config_result = run_startup_stage(&sink, "config_load", || {
-        read_config(config_path).map(|value| value.map(|(_, config)| config).unwrap_or_default())
+        config_document::read(config_path)
+            .map(|value| value.map(|(_, config)| config).unwrap_or_default())
     });
     let config = settle_startup_result(diagnostics, monitor, config_result)?;
-    let merge_result = run_startup_stage(&sink, "config_merge", || merge_run_options(config, args));
+    let merge_result = run_startup_stage(&sink, "config_merge", || {
+        config_effective::merge_run_options(config, args)
+    });
     settle_startup_result(diagnostics, monitor, merge_result)
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one function keeps the config, environment, and CLI precedence visible in order"
-)]
-fn merge_run_options(config: ConfigFile, cli: RunArgs) -> Result<RoutineRunOptions, String> {
-    let mut capture = config
-        .capture
-        .map(|capture| (capture.backend, capture.node_name));
-    if let Some(backend) = env_capture()? {
-        capture = Some((backend, None));
-    }
-    if let Some(node_name) = env_text("SCOREPEEK_PIPEWIRE_NODE_NAME")? {
-        let backend = capture.as_ref().map(|value| value.0).ok_or_else(|| {
-            "SCOREPEEK_PIPEWIRE_NODE_NAME requires SCOREPEEK_CAPTURE or config capture.backend"
-                .to_owned()
-        })?;
-        capture = Some((backend, Some(node_name)));
-    }
-    if let Some(backend) = cli.capture {
-        capture = Some((backend, None));
-    }
-    if let Some(node_name) = cli.node_name {
-        let backend = capture.as_ref().map(|value| value.0).ok_or_else(|| {
-            "--node-name requires --capture or configured capture.backend".to_owned()
-        })?;
-        capture = Some((backend, Some(node_name)));
-    }
-    let (backend, node_name) = capture.ok_or_else(|| {
-        "capture backend is required in config, SCOREPEEK_CAPTURE, or --capture".to_owned()
-    })?;
-    validate_capture_specific(backend, node_name.as_deref())?;
-    let capture = match backend {
-        CaptureKind::Pipewire => RoutineCapture::Pipewire {
-            node_name: node_name.expect("validated pipewire node"),
-        },
-        CaptureKind::VulkanLayer => RoutineCapture::VulkanLayer,
-    };
-
-    let crop = scorepeek::capture::EdgeCrop {
-        left: cli
-            .crop_left
-            .or(env_u32("SCOREPEEK_CROP_LEFT")?)
-            .or(config.crop.left)
-            .unwrap_or(0),
-        top: cli
-            .crop_top
-            .or(env_u32("SCOREPEEK_CROP_TOP")?)
-            .or(config.crop.top)
-            .unwrap_or(0),
-        right: cli
-            .crop_right
-            .or(env_u32("SCOREPEEK_CROP_RIGHT")?)
-            .or(config.crop.right)
-            .unwrap_or(0),
-        bottom: cli
-            .crop_bottom
-            .or(env_u32("SCOREPEEK_CROP_BOTTOM")?)
-            .or(config.crop.bottom)
-            .unwrap_or(0),
-    };
-
-    let mut scores_enabled = config.scores.enabled.unwrap_or(true);
-    let mut scores_db = config.scores.database;
-    if let Some(value) = env_bool("SCOREPEEK_SCORES_ENABLED")? {
-        scores_enabled = value;
-    }
-    if let Some(path) = env_path("SCOREPEEK_SCORES_DB")? {
-        scores_db = Some(path);
-    }
-    if cli.no_scores {
-        scores_enabled = false;
-        scores_db = None;
-    } else if cli.scores {
-        scores_enabled = true;
-    }
-    if let Some(path) = cli.scores_db {
-        scores_enabled = true;
-        scores_db = Some(path);
-    }
-
-    let mut recording = config.recording.enabled.unwrap_or(false);
-    let mut recording_memory_mib = config.recording.memory_mib;
-    let environment_recording = env_bool("SCOREPEEK_RECORDING_ENABLED")?;
-    let environment_recording_memory = env_usize("SCOREPEEK_RECORDING_MEMORY_MIB")?;
-    if let Some(value) = environment_recording {
-        recording = value;
-        if !value {
-            recording_memory_mib = None;
-        }
-    }
-    if environment_recording == Some(false) && environment_recording_memory.is_some() {
-        return Err(
-            "SCOREPEEK_RECORDING_MEMORY_MIB conflicts with SCOREPEEK_RECORDING_ENABLED=false"
-                .to_owned(),
-        );
-    }
-    if let Some(value) = environment_recording_memory {
-        recording_memory_mib = Some(value);
-    }
-    let mut recording_retention = RecordingRetention::Selective;
-    if cli.record || cli.record_all {
-        recording = true;
-    } else if cli.no_record {
-        recording = false;
-        recording_memory_mib = None;
-    }
-    if let Some(value) = cli.record_memory_mib {
-        recording_memory_mib = Some(value);
-    }
-    if cli.record_all {
-        recording_retention = RecordingRetention::All;
-    }
-    if recording_memory_mib.is_some() && !recording {
-        return Err("recording memory limit requires recording to be enabled".to_owned());
-    }
-    let recording_memory_limit = RecordingMemoryLimit::from_mib(
-        recording_memory_mib.unwrap_or(DEFAULT_RECORDING_MEMORY_MIB),
-    )?;
-
-    let mut overlays = OverlayOptions {
-        wayland: config.overlay.wayland.unwrap_or(false)
-            || config.overlay.wayland_edit.unwrap_or(false),
-        wayland_edit: config.overlay.wayland_edit.unwrap_or(false),
-        obs: config.overlay.obs.unwrap_or(false),
-        config_path: config.overlay.config,
-    };
-    apply_overlay_environment(&mut overlays)?;
-    if cli.overlay_wayland {
-        overlays.wayland = true;
-    } else if cli.no_overlay_wayland {
-        overlays.wayland = false;
-        overlays.wayland_edit = false;
-    }
-    if cli.overlay_wayland_edit {
-        overlays.wayland = true;
-        overlays.wayland_edit = true;
-    } else if cli.no_overlay_wayland_edit {
-        overlays.wayland_edit = false;
-    }
-    if cli.overlay_obs {
-        overlays.obs = true;
-    } else if cli.no_overlay_obs {
-        overlays.obs = false;
-    }
-    if let Some(path) = cli.overlay_config {
-        overlays.config_path = Some(path);
-    }
-
-    Ok(RoutineRunOptions {
-        overlays,
-        capture,
-        crop,
-        scores_db,
-        no_scores: !scores_enabled,
-        recording,
-        recording_memory_limit,
-        recording_retention,
-    })
-}
-
-fn env_capture() -> Result<Option<CaptureKind>, String> {
-    env_text("SCOREPEEK_CAPTURE")?
-        .map(|value| match value.as_str() {
-            "pipewire" => Ok(CaptureKind::Pipewire),
-            "vulkan-layer" => Ok(CaptureKind::VulkanLayer),
-            _ => Err("SCOREPEEK_CAPTURE requires pipewire or vulkan-layer".to_owned()),
-        })
-        .transpose()
-}
-
-fn env_text(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) if !value.is_empty() => Ok(Some(value)),
-        Ok(_) => Err(format!("{name} must not be empty")),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(env::VarError::NotUnicode(_)) => Err(format!("{name} must be UTF-8")),
-    }
-}
-
-fn env_bool(name: &str) -> Result<Option<bool>, String> {
-    env_text(name)?
-        .map(|value| match value.as_str() {
-            "true" | "1" => Ok(true),
-            "false" | "0" => Ok(false),
-            _ => Err(format!("{name} requires true, false, 1, or 0")),
-        })
-        .transpose()
-}
-
-fn env_u32(name: &str) -> Result<Option<u32>, String> {
-    env_text(name)?
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|_| format!("{name} requires a non-negative integer"))
-        })
-        .transpose()
-}
-
-fn env_usize(name: &str) -> Result<Option<usize>, String> {
-    env_text(name)?
-        .map(|value| {
-            value
-                .parse()
-                .map_err(|_| format!("{name} requires a non-negative integer"))
-        })
-        .transpose()
-}
-
-fn env_path(name: &str) -> Result<Option<PathBuf>, String> {
-    env::var_os(name)
-        .map(|value| nonempty_path(PathBuf::from(value), name))
-        .transpose()
-}
-
-fn apply_overlay_environment(overlays: &mut OverlayOptions) -> Result<(), String> {
-    if let Some(value) = env_bool("SCOREPEEK_OVERLAY_WAYLAND")? {
-        overlays.wayland = value;
-        if !value {
-            overlays.wayland_edit = false;
-        }
-    }
-    if let Some(value) = env_bool("SCOREPEEK_OVERLAY_WAYLAND_EDIT")? {
-        overlays.wayland_edit = value;
-        overlays.wayland |= value;
-    }
-    if let Some(value) = env_bool("SCOREPEEK_OVERLAY_OBS")? {
-        overlays.obs = value;
-    }
-    if let Some(path) = env_path("SCOREPEEK_OVERLAY_CONFIG")? {
-        overlays.config_path = Some(path);
-    }
-    Ok(())
 }
 
 fn run_config_command(command: ConfigCommand, path: &Path) -> Result<(), String> {
@@ -844,7 +440,7 @@ fn run_config_command(command: ConfigCommand, path: &Path) -> Result<(), String>
             }
         },
         ConfigCommand::Show(format) => {
-            let content = read_config_text(path)?;
+            let content = config_document::read_text(path)?;
             match format.format {
                 OutputFormat::Human => {
                     if let Some(content) = content {
@@ -863,7 +459,7 @@ fn run_config_command(command: ConfigCommand, path: &Path) -> Result<(), String>
             }
         }
         ConfigCommand::Check(format) => {
-            let present = read_config(path)?.is_some();
+            let present = config_document::read(path)?.is_some();
             match format.format {
                 OutputFormat::Human => {
                     if present {
@@ -1019,7 +615,7 @@ fn run_with_model_initializer(
             options.no_scores,
             options.overlays,
             &bundle,
-            &scorepeek::catalog::update::default_config_path(),
+            &config_paths::default_path(),
             invocation_id,
             diagnostics,
             &monitor,
@@ -1549,31 +1145,6 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
     "--recognition-artifact",
 ];
 
-struct RoutineRunOptions {
-    overlays: OverlayOptions,
-    capture: RoutineCapture,
-    crop: scorepeek::capture::EdgeCrop,
-    scores_db: Option<PathBuf>,
-    no_scores: bool,
-    recording: bool,
-    recording_memory_limit: RecordingMemoryLimit,
-    recording_retention: RecordingRetention,
-}
-
-#[derive(Clone)]
-enum RoutineCapture {
-    Pipewire { node_name: String },
-    VulkanLayer,
-}
-
-#[derive(Default)]
-struct OverlayOptions {
-    wayland: bool,
-    wayland_edit: bool,
-    obs: bool,
-    config_path: Option<PathBuf>,
-}
-
 fn run_startup_stage<T>(
     diagnostics: &diagnostic_stream::DiagnosticSink,
     stage: &str,
@@ -1837,15 +1408,19 @@ fn run_routine_live_session(
     });
     let (catalog_root, _) = settle_startup_result(&mut diagnostics, monitor, catalog_paths_result)?;
     let catalog_url_result = run_startup_stage(&diagnostic_sink, "catalog_url", || {
-        scorepeek::catalog::update::resolve_effective_url(config_path)
+        crate::resources::catalog::acquire::resolve_effective_url(config_path)
             .map_err(|error| error.to_string())
     });
     let effective_catalog_url =
         settle_startup_result(&mut diagnostics, monitor, catalog_url_result)?;
     let prepared_catalog_result = run_startup_stage(&diagnostic_sink, "active_catalog", || {
-        scorepeek::catalog::update::prepare(&catalog_root, &effective_catalog_url, |event| {
-            record_catalog_update(&diagnostic_sink, &event);
-        })
+        crate::resources::catalog::acquire::prepare(
+            &catalog_root,
+            &effective_catalog_url,
+            |event| {
+                record_catalog_update(&diagnostic_sink, &event);
+            },
+        )
         .map_err(|error| error.to_string())
     });
     let prepared_catalog =
@@ -2374,7 +1949,7 @@ fn run_routine_live_session(
 
 fn record_catalog_update(
     sink: &diagnostic_stream::DiagnosticSink,
-    event: &scorepeek::catalog::update::UpdateEvent,
+    event: &crate::resources::catalog::acquire::UpdateEvent,
 ) {
     if let Ok(value) = serde_json::to_value(event) {
         sink.record("catalog_update", &value, true);
@@ -4728,10 +4303,11 @@ mod tests {
         parse_routine_run_options, prepare_live_diagnostic_root, publish_private_file,
         publish_private_file_with, routine_session_disposition, run_command, run_config_command,
         run_startup_stage, run_with_model_initializer, transient_admission_capture_error,
-        validate_config_file,
     };
     use super::{LiveSessionEmission, run_event_from_live_emission};
     use crate::capture_live::GamescopeLiveSessionEvent;
+    use crate::config::document::validate as validate_config_file;
+    use crate::config::effective as config_effective;
     use scorepeek::capture::{
         CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
         CaptureDiagnosticStatus,
@@ -5002,7 +4578,7 @@ node_name = "must-not-be-inherited"
         let config: ConfigFile =
             toml::from_str("[capture]\nbackend = 'vulkan-layer'\n[overlay]\nwayland_edit = true\n")
                 .unwrap();
-        let options = super::merge_run_options(config, RunArgs::default()).unwrap();
+        let options = config_effective::merge_run_options(config, RunArgs::default()).unwrap();
         assert!(options.overlays.wayland);
         assert!(options.overlays.wayland_edit);
     }
@@ -5017,7 +4593,7 @@ node_name = "must-not-be-inherited"
                 "[capture]\nbackend = 'vulkan-layer'\n[recording]\nenabled = true\nmemory_mib = 64\n",
             )
             .unwrap();
-            let options = super::merge_run_options(config, RunArgs::default()).unwrap();
+            let options = config_effective::merge_run_options(config, RunArgs::default()).unwrap();
             assert!(!options.recording);
             return;
         }

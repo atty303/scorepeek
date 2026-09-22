@@ -5,7 +5,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _};
 use std::net::IpAddr;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -146,19 +146,6 @@ pub fn resolve_effective_url(config_path: &Path) -> Result<EffectiveUrl, UpdateE
 /// Returns an error outside the accepted HTTPS, loopback HTTP, and `file://` URL contract.
 pub fn validate_configured_url(value: &str) -> Result<(), UpdateError> {
     parse_url(value).map(|_| ())
-}
-
-#[must_use]
-pub fn default_config_path() -> PathBuf {
-    env::var_os("XDG_CONFIG_HOME").map_or_else(
-        || {
-            env::var_os("HOME").map_or_else(
-                || PathBuf::from(".config/scorepeek/config.toml"),
-                |home| PathBuf::from(home).join(".config/scorepeek/config.toml"),
-            )
-        },
-        |root| PathBuf::from(root).join("scorepeek/config.toml"),
-    )
 }
 
 /// Returns an immediately usable catalog or performs the required synchronous acquisition.
@@ -787,6 +774,7 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use std::path::PathBuf;
 
     use super::super::cache::{STATE_FILE, STATE_SCHEMA, STATE_STAGING_PREFIX};
     use super::super::schedule::update_background;

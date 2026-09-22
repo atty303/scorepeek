@@ -386,7 +386,7 @@ fn record_at(state: &State, sequence: u64) -> Option<&Record> {
 
 fn prepare_run(store: &Path, run_id: &str) -> Result<(PathBuf, File, File), String> {
     validate_run_id(run_id)?;
-    crate::config::document::ensure_directory_tree(store)?;
+    crate::platform::state::ensure_directory_tree(store)?;
     rotate(store)?;
     let run_root = store.join(run_id);
     DirBuilder::new()
@@ -559,7 +559,7 @@ fn start_server_at(
     runtime: &Path,
 ) -> Result<(PathBuf, JoinHandle<()>), String> {
     let directory = runtime.join("scorepeek");
-    crate::config::document::ensure_directory_tree(&directory)?;
+    crate::platform::state::ensure_directory_tree(&directory)?;
     let path = directory.join(SOCKET_NAME);
     remove_stale_socket(&path)?;
     let listener = UnixListener::bind(&path)
