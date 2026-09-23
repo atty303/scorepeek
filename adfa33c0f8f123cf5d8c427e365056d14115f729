@@ -1,0 +1,22 @@
+Task: Push scorepeek changes, fix CI through success, collect all CI nextest failures, and run manual Release through success
+Anchor: adfa33c0f8f123cf5d8c427e365056d14115f729
+Base: 7071ceac3aca0c448c05dcb8372fc1eefe648f77
+Branch: main
+Commits: 969d673 fix(ci): build embedded web assets before workspace Clippy; bf57407 fix(overlay): find visual debug skins in its asset cache; 4d6063f ci: collect all nextest failures in the test job; adfa33c test(overlay): isolate config control skin validation
+Guidance: AGENTS.md; develop-repository; investigate-problem; design-program-observability applicability; independent review; Git task evidence
+Conditions: push and manual Release dispatch explicitly authorized; local nextest fail-fast retained; no private corpus data used
+## Evidence
+- CI 35841268179 and 35842023453 failed on cold-checkout asset and isolated-XDG skin assumptions respectively; CI 35844481624 collected 2 config test failures.
+- CI 35846409138 succeeded at adfa33c: 796 Rust tests passed and 3 browser tests passed. Pages 35846409280 succeeded.
+- Manual Release 35847454477 succeeded at adfa33c; tag v2026.9.2 points to that commit. One raw asset scorepeek-2026.9.2-x86_64-unknown-linux-gnu with GitHub digest sha256:767f8d6ae00fee045c3d51e2f4c644965c9ac608755129bb097fd6b9c1895ef3.
+Authority: current user push, CI, nextest, and manual Release instructions; repository AGENTS.md; committed source and tests
+## Transcript
+- U1:
+    pushしてciが成功するまで修正
+  - A: Pushed existing work, investigated CI 35841268179, fixed cold-checkout asset build order, ran full local tests, committed and pushed 969d673. CI 35842023453 exposed a visual debug skin lookup failure; reproduced it with isolated XDG, fixed the asset-cache lookup, verified locally and pushed bf57407.
+- U2:
+    ciがpassした後はreleaseもmanual dispatchして通るまで修正して。
+  - A: Accepted the authorized manual Release dispatch after CI success; continued investigation of the remaining CI failures.
+- U3:
+    ci nextestはfail fastせず、全部のfailが出るまで続けたほうが1回でおおくの情報がえられる。localはfail fastのままでいい
+  - A: Updated CI to pass --no-fail-fast through mise run test, while local mise run test retains nextest default fail-fast; committed and pushed 4d6063f. CI 35844481624 exposed two host-dependent config tests; isolated their store, verified all 796 Rust and 3 browser tests, obtained independent review, committed and pushed adfa33c. CI 35846409138 and Pages 35846409280 succeeded. Dispatched Release 35847454477 manually; it succeeded and published v2026.9.2 with one raw binary and a verified digest.
