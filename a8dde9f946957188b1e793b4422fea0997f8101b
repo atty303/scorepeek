@@ -1,0 +1,22 @@
+Task: Update every workflow-referenced public GitHub Action to its latest release and verify CI, Pages, and manual Release
+Anchor: a8dde9f946957188b1e793b4422fea0997f8101b
+Base: adfa33c0f8f123cf5d8c427e365056d14115f729
+Branch: main
+Commits: a8dde9f946957188b1e793b4422fea0997f8101b chore(ci): update pinned GitHub Actions to latest releases
+Guidance: AGENTS.md; develop-repository; independent review; Git task evidence
+Conditions: prior explicit push and CI-success instruction applied to continuing CI maintenance; prior manual Release instruction applied after CI success; no private data used
+## Evidence
+- Upstream GitHub release tags resolved to checkout v7.0.1 3d3c42e5aac5ba805825da76410c181273ba90b1; mise-action v4.3.0 c2a87611a18de5b3828c5652fe268e992400cb5c; configure-pages v6.0.0 45bfe0192ca1faeb007ade9deae92b16b8254a0d; upload-pages-artifact v5.0.0 fc324d3547104276b827a68afc52ff2a11cc49c9; deploy-pages v5.0.1 368f82528645a54fb793d4d04e342629a3f51346.
+- Independent review of exact diff 0f0dcf179e1cb9c33bf4df8e077395e5b334bfa1ece635a2c15704db80adefb5 found no actionable issue.
+- CI 35850572184 passed 796 Rust and 3 browser tests; Pages 35850572307 passed assemble and deploy; manual Release 35851941808 succeeded with no releasable commit. All executed job annotations were empty. Pages deploy and Release logs still show upstream Node deprecations.
+Authority: current user request to update all Actions; earlier explicit push, CI-success, and post-CI manual Release instructions; repository AGENTS.md and committed workflow contracts
+## Transcript
+- U1:
+    すべてのCI jobでwarningは出ていないか？
+  - A: Inspected CI 35846409138, Pages 35846409280, and Release 35847454477 jobs, annotations, and logs. CI test had no warning annotation; Pages had Node.js 20 action warnings; Release had six ignored non-Conventional commit warnings; all jobs succeeded.
+- U2:
+    workflowで参照しているactionsはすべて最新か？
+  - A: Enumerated all directly referenced workflow Actions and checked upstream latest releases. Five public Actions were behind; the pinned reusable release Action directory matched its latest content. Reported current and latest versions without changes.
+- U3:
+    すべて更新して
+  - A: Pinned five public Actions to their latest release commit SHAs across three workflows. Verified release notes and action manifests, actionlint and mise run check, full mise run test (796 Rust and 3 browser tests), and independent review with no findings. Committed a8dde9f and pushed main. CI 35850572184 passed 796 Rust and 3 browser tests; Pages 35850572307 passed assemble and deploy; all their job annotations were empty. Manual Release 35851941808 succeeded, found no releasable commits, and published no new release. Pages deploy and Release logs retain upstream Node deprecation messages.
