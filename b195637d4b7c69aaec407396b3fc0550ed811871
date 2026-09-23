@@ -1,0 +1,136 @@
+Task: Refactor Scorepeek capture to canonical session recognition and Event API v5
+Anchor: b195637d4b7c69aaec407396b3fc0550ed811871
+Base: a8dde9f946957188b1e793b4422fea0997f8101b
+Branch: codex/capture-canonical-session-refactor
+Commits: b195637d4b7c69aaec407396b3fc0550ed811871 refactor(capture): center recognition on canonical session frames
+Guidance: repository AGENTS.md; dig; develop-repository; design-program-observability; independent review; Git task evidence
+Conditions: durable local source change; user excluded score-data migration, live target apply, deploy, release, push, and external v4 compatibility; no new dependencies or private runtime data
+## Evidence
+- Initial tree clean at a8dde9f; branch codex/capture-canonical-session-refactor. Exact reviewed staged diff SHA256 da078136e9e5cd74d58ecac4972b98241239413b9a4036374b18c19839b9dba6 equals committed diff.
+- mise run check passed; mise run test completed 758 Rust tests and 3 browser tests; targeted core 200, corpus 5, runtime 300, scores 19 passed; runtime clippy -D warnings passed.
+- Fresh independent review found one opt-in live-script assertion on removed generation fields; updated both scripts, bash -n and check passed, delta review found no further issue. Real Gamescope, OBS, GPU, and live PipeWire checks were out of scope.
+Authority: user implementation request and confirmed dig choices; repository AGENTS.md; committed source and current living references
+## Transcript
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) 今後の開発をスケールさせるためにリファクタリングをしたい。まず単一責任の原則に反している実装はないか？
+  - A: 現行コードと資料を調査し、capture receiver が source 探索、正規化、lease、診断を重ねて持つ主要候補と説明した。
+- U2: A
+  - A: 選択 A に従い capture receiver と呼び出し元を追い、PipeWire と Vulkan の分割境界を確認した。
+- U3: captureの抽象概念と実装が混濁している
+  - A: 共通概念が PipeWire 側の型へ置かれている依存の混濁を認め、正規化境界の再設計を提案した。
+- U4: A
+  - A: 最小 BGRx frame を共通境界に置く A を採用し、必要な入力項目と source 固有情報を調べた。
+- U5: A
+  - A: source contract と memory type を正規化 frame から分け、session 診断用 evidence にする A を採用した。
+- U6: admissionってなに？ なんのためにある？
+  - A: admission が source と canonical 正規化条件を検証し、その session で認識に使う入口であると説明した。
+- U7: 世代/profile/normalizerが過去の設計により想定より厳密すぎるかもしれない。coreはcanonical frameになっていてアプリの重要なところはcoreになったので、capture profileはさして今は重要ではない。
+  - A: core canonical frame 契約と source 来歴の hash 照合が過度に結合している現行経路を確認した。
+- U8: profileってどう使ってる？ 今はvulkanは専用layerだから実質固定だし、pipewireはcropぐらいしか調整できないはず。profile抽象は過剰かもしれない
+  - A: 通常 run の profile は利用者設定ではなく観測 source と crop の文書であり、用途を確認した。
+- U9: B. coreが中心でcanonical frameを中心にしたい。profile相当の情報はsessionの開始時に診断として残す必要はあるが、eventには不要だし、frameごとに出す必要もない
+  - A: core の canonical 入力を中心にし、profile 相当の情報を session 開始診断一回に置く方針を採用した。
+- U10: generationってなに？
+  - A: generation が run 内の capture 寿命を数える番号であり、frame sequence とは別と説明した。
+- U11: ん？ じゃあsessionの開始は？ そのgeneration相当がsessionだと思っていた
+  - A: 成功した capture generation と session が一対一であると確認し、重複した寿命表現を訂正した。
+- U12: A
+  - A: session を唯一の capture 寿命とし、番号は session ID 生成だけに残す A を採用した。
+- U13: A
+  - A: 独立 profile/normalizer hash 文書を廃し、source contract と crop を構造化診断へ残す A を採用した。
+- U14: A
+  - A: 旧 Gamescope profile と handoff が通常製品経路で不要かを調査した。
+- U15: A
+  - A: 旧 profile/handoff を整理する A を採用し、core と runtime の frame 表現を確認した。
+- U16: A
+  - A: core の canonical frame を借用画素型に統一し live と replay に共通化する A を採用した。
+- U17: A
+  - A: Event API v5 の capture は session ID だけにし resource provenance は診断へ置く A を採用した。
+- U18: A. 外部利用者はいないので文書もいらない
+  - A: 外部 v4 利用者がいない前提で並行提供と移行文書を作らない方針を採用した。
+- U19: A
+  - A: 現行診断履歴の互換性と構造化診断に必要な項目を調べた。
+- U20: A
+  - A: 認識 session と worker の実行 context と診断 descriptor の責任を分ける A を採用した。
+- U21: AとBは実装手法だけの違いか？
+  - A: adapter interface の選択肢を比較し、enum と trait の差が新 adapter 追加時の変更範囲だと説明した。
+- U22: enumは新しいadapterの追加が大変じゃないか？
+  - A: enum の追加コストを認め、接続後の小さい interface を推奨した。
+- U23: A
+  - A: 接続後の capture interface と backend ごとの探索、接続、終了所有を採用した。
+- U24: A
+  - A: 合意事項を実装依頼の成功条件と制約へ整理し、対象外を明確にした。
+- U25: # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の capture から core の認識入力までをリファクタリングし、capture の共通概念と PipeWire／Vulkan の実装を分離してください。合意した session・診断・Event API の契約変更も実装してください。
+    
+    ## 目的
+    
+    - core が固定の canonical frame を中心に扱えるようにする。
+    - capture adapter を追加するとき、既存 backend の実装や認識処理への変更を少なくする。
+    - capture の来歴を診断可能に保ちながら、profile を認識の許可条件として伝搬させる複雑さをなくす。
+    
+    ## 成功条件
+    
+    - PipeWire と Vulkan は、それぞれ source の探索・接続・固有の失敗処理・終了を所有する。接続後の共通操作には小さな interface があり、新 adapter の追加はその実装と起動時の登録が中心となる。
+    - 両 adapter は、正規化に必要な寸法、stride、画素、source sequence、受信時刻を持つ最小限の BGRx フレームを共通経路へ渡す。source 固有の contract やメモリ種別は別の診断用 evidence として保持する。
+    - source の形式・寸法・stride・crop を検証し、固定の contiguous RGB8 1920×1080 canonical frame 以外を core の認識へ渡さない。異なる session の遅延フレームや非同期結果を混ぜない。
+    - core は capture profile を含まない、画素を借用する canonical frame 型を持つ。live と corpus replay が同じ canonical 入力経路を使用し、フレーム統一のための画素複製を増やさない。
+    - session を唯一の capture 寿命・識別単位にする。通し番号が必要なら session ID の生成に限って使用し、フレーム順序の source sequence は維持する。
+    - session 開始時の構造化診断に、backend、実際の source contract、crop、正規化方式、canonical 出力契約、および認識に使用する resource revision を記録する。profile／normalizer の独立した hash 文書や各フレームへの同情報の付与は廃止する。
+    - 認識 session と worker は、診断 descriptor ではなく実行用 session context によって寿命と catalog・model・layout の固定を管理する。診断は処理の結果を観測する。
+    - 旧 Gamescope profile／handoff、`DiagnosticBridge`、テスト専用 recognition artifact 経路を整理する。現在必要な失敗分類、処理時間、capture lifecycle の観測は構造化診断で確認でき、`--record` の canonical recording と corpus replay が機能する。
+    - 公開 Event API は v5 に切り替え、`capture` には session ID だけを残す。リポジトリ内の score consumer と overlay を同時に更新し、v4 は並行提供しない。
+    - PipeWire と Vulkan の既存の認識結果、source loss、再接続、失敗時 cleanup、診断 degradation の振る舞いを、上記の意図した契約変更を除いて保つ。関連する既存の検証と現行契約の文書を更新する。
+    
+    ## 決定事項
+    
+    - 共通 capture 境界は最小限の BGRx フレームと正規化経路に置く。
+      - 理由: 両 backend が共通して必要とする画素処理を共有し、source 固有の交渉情報を共通フレームから外せる。
+      - 主な棄却案: canonical frame のみを共通境界にすると正規化経路の変更範囲が広い。現行の PipeWire 型を共通型として残すと依存の混濁が続く。
+    - 診断用 source evidence は正規化用フレームから分離する。
+      - 理由: source contract とメモリ種別は診断には必要でも、正規化の入力要件ではない。
+      - 主な棄却案: 単一フレーム型にすべて載せると backend 固有の詳細が共通契約に戻る。
+    - profile 相当の情報は session 開始時の構造化診断に置き、認識・フレーム・公開イベントの許可条件にしない。
+      - 理由: 通常の run では profile は利用者が選ぶ設定ではなく、観測した source と crop の記録である。
+      - 主な棄却案: 現行の hash 文書とフレームごとの digest 照合は、現在の用途に対して複雑すぎる。情報そのものの廃止は診断可能性を損なう。
+    - session を capture 寿命の識別単位とし、core の canonical 入力を借用型へ統一する。
+      - 理由: 成功した capture generation は一つの session に対応し、live と replay は同じ画素契約で認識できる。
+      - 主な棄却案: session ID と generation の併用は同じ寿命を重複して表す。core が画素を所有する型への統一は毎フレームの複製につながり得る。
+    - capture adapter の接続後の共通操作に小さな interface を設ける。
+      - 理由: 新 adapter の追加時に既存 backend の `match` 群を広く編集する負担を減らす。
+      - 主な棄却案: enum だけで全操作を振り分ける構成は、adapter が増えるほど変更箇所が増える。探索・接続まで一つの共通 interface に押し込むことはしない。
+    - Event API は v5 のみを提供し、公開 `capture` は session ID のみとする。
+      - 理由: 公開利用者に必要な session の区別を残し、resource の来歴は診断で扱う。外部の v4 利用者はいない。
+      - 主な棄却案: v4 の並行提供と binding digest の公開継続は、不要な配信・互換性処理を残す。
+    
+    ## 制約
+    
+    - canonical RGB8 1920×1080 契約、source ごとの失敗時停止、曖昧な source の拒否、明示された crop の検証を維持する。
+    - catalog・model・layout は session 中に固定し、非同期結果が別 session に入らないことを保証する。
+    - PipeWire と Vulkan を独立した capture backend として扱う。新 backend を今回追加したり、未検証の backend をサポート対象にしたりしない。
+    - 保存済み score data の migration、live 環境への適用、deploy、release、push は行わない。
+    - v4 利用者向けの移行文書は作らない。現行仕様を説明する文書は v5 と実装に合わせる。
+    
+    ## 対象外
+    
+    - OCR・catalog 解決・結果判定の意味や閾値の変更。
+    - capture backend の自動選択、fallback、新しい画素形式のサポート。
+    - 外部 v4 クライアントの互換性維持。
+    - 実機 Gamescope、OBS、GPU 環境への適用。
+    
+    ## 未検証の前提
+    
+    - 実装開始時の作業ツリー、公開 API の全利用箇所、テスト専用経路の到達性は再確認する。
+    - 旧 `DiagnosticBridge` と recognition artifact が記録する項目のうち、現行の構造化診断に必要だが欠けているものがあるか確認する。
+    - 借用 canonical frame 型を live と replay で使う際の所有権・非同期 worker 境界と、診断用 source evidence の保持期間をコード上で確認する。
+    
+    ## 実装時の指示
+    
+    - 先に capture、session、core、診断、Event API の依存方向と観測点を確認し、意味を変える変更と構造変更を区別して進める。
+    - 現行 backend の source contract 検証、正規化結果、session 境界、遅延結果の拒否、失敗時 cleanup を、変更後の契約に対して検証する。
+    - Event API v5 の producer・score consumer・overlay と、live／corpus replay の canonical 入力を一緒に検証する。
+  - A: 作業ツリーを確認して分離、v5 切替、session 診断、旧経路削除を実装し、check、全 758 Rust とブラウザ 3 件、独立レビューを実施した。
+- U26: 続けて
+  - A: 中断後の状態を確認し、review 指摘の実機スクリプトを新診断へ更新して delta review と check を通し、ローカル commit に確定した。
