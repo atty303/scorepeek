@@ -1,0 +1,17 @@
+Task: Make overlay integration tests execute the selected distribution binary
+Anchor: 0b9ed3df95e89f73673a3f80c0a0afea9446918b
+Base: 866b516f74d4cbfc332c7a9e414a441304281d19
+Branch: main
+Commits: 0b9ed3d selects SCOREPEEK_TEST_BINARY in both overlay integration paths
+Guidance: repository AGENTS.md; investigate-problem; develop-repository; review; failure oracle and Git task evidence references
+Conditions: local commit only; no deployment, release, push, or external service changes; no private data used
+## Evidence
+Before change, nonexistent SCOREPEEK_TEST_BINARY made both overlay nextest tests pass. After change, both failed with os error 2; unset override and extracted local archive binary each passed 2/2.
+Target Clippy, formatter, and mise run test passed; standard nextest suite 795/795, browser overlay 3/3.
+mise run dist:test built release artifact but failed before overlay tests: script expects scorepeek-x86_64-unknown-linux-gnu.tar.xz while cargo-dist produced scorepeek-cli-x86_64-unknown-linux-gnu.tar.xz. This pre-existing separate issue remains.
+Independent review of exact diff SHA256 d48333ea0ee9dafc8c7b637e9b10ec3ee89d1439507e54de2fc6cb91019c37d7 found no actionable issue.
+Authority: user follow-up to fix overlay test; current repository source, tests, documentation, and AGENTS.md
+## Transcript
+- U1:
+    そのoverlayテストも修正して
+  - A: Reproduced ignored override, selected the environment-specified binary in both test paths with Cargo fallback, checked failure and success paths and full validation, independently reviewed, and committed locally. The dist script archive-name mismatch remains outside this fix.
