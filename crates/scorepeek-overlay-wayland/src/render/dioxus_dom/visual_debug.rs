@@ -289,9 +289,7 @@ impl VisualDebugSession {
             if scenario.editing {
                 continue;
             }
-            let store = crate::skin::StoreRoot::discover();
-            let package_path = store.path().join(format!("{}.zip", mounted.skin.name()));
-            if !package_path.exists() {
+            if !skin_assets.has_package(mounted.skin.name()) {
                 continue;
             }
             let package = skin_assets.load(mounted.skin.name())?;
@@ -448,9 +446,7 @@ impl VisualDebugSession {
         for canvas in canvases {
             let desired_skin = canvas.skin.name();
             if !self.skins.contains_key(&canvas.id) {
-                let store = crate::skin::StoreRoot::discover();
-                let package_path = store.path().join(format!("{desired_skin}.zip"));
-                if !package_path.exists() {
+                if !self.skin_assets.has_package(desired_skin) {
                     continue;
                 }
                 let package = self.skin_assets.load(desired_skin)?;

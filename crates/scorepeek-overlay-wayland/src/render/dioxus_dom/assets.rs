@@ -93,6 +93,14 @@ impl SkinAssetCache {
         }
     }
 
+    pub(super) fn has_package(&self, id: &str) -> bool {
+        self.packages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(id)
+            || self.store.path().join(format!("{id}.zip")).exists()
+    }
+
     pub(super) fn load(&self, id: &str) -> Result<Arc<crate::skin::Package>, String> {
         let clone_started = Instant::now();
         let mut packages = self
