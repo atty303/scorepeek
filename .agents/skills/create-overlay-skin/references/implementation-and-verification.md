@@ -62,7 +62,7 @@ mise run overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:1738
 
 `overlay:visual:obs` はbundle依存を持つ。backendだけを古いbundleと組み合わせない。
 通常のcargo build/testもbundleを埋め込み、bundleの欠落またはbuild identity不一致はbuild時に拒否する。
-実際に配布用binaryを作る依頼なら既存の `mise run dist:build` 等のbuild手順と成果物を確認する。
+実際に配布用binaryを作る依頼なら `mise run release:build -- VERSION OUTPUT_DIRECTORY` のbuild手順と成果物を確認する。
 
 ## 共通matrixと合否
 

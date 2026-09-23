@@ -14,13 +14,6 @@ struct IsolatedHome {
     root: tempfile::TempDir,
 }
 
-fn test_binary() -> PathBuf {
-    std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
-        || PathBuf::from(env!("CARGO_BIN_EXE_scorepeek")),
-        PathBuf::from,
-    )
-}
-
 impl IsolatedHome {
     fn new() -> Self {
         Self {
@@ -59,7 +52,7 @@ struct OverlayChild {
 
 impl OverlayChild {
     fn start(isolated: &IsolatedHome, config: &Config, name: &str) -> Self {
-        let mut command = Command::new(test_binary());
+        let mut command = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
         isolated.apply(&mut command);
         let stdout = isolated.path(&format!("{name}.stdout"));
         let stderr = isolated.path(&format!("{name}.stderr"));
@@ -121,7 +114,7 @@ fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
 #[test]
 fn skin_install_stdout_remains_one_result_line() {
     let isolated = IsolatedHome::new();
-    let executable = test_binary();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_scorepeek"));
     let package =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
     let mut command = Command::new(executable);

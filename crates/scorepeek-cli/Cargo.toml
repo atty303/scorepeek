@@ -9,9 +9,6 @@ publish = false
 name = "scorepeek"
 path = "src/main.rs"
 
-[package.metadata.dist]
-dist = true
-
 [dependencies]
 clap.workspace = true
 clap_complete.workspace = true

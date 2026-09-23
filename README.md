@@ -61,9 +61,9 @@ GitHub Releases use `YYYY.M.COUNTER` CalVer, starting at counter `0` each month.
 The release workflow checks for releasable commits every day at 04:17
 Asia/Tokyo and can also be started manually; pushes to `main` do not release
 immediately.
-Each release contains the Linux x86-64 archive produced by the repository's
-verified cargo-dist build. Release automation verifies its locally computed
-SHA-256 against the digest recorded by GitHub after upload.
+Each release contains a Linux x86-64 executable named
+`scorepeek-VERSION-x86_64-unknown-linux-gnu`. Release automation verifies its
+locally computed SHA-256 against the digest recorded by GitHub after upload.
 
 ## Third-party notices
 
