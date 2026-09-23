@@ -65,6 +65,18 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
 /// # Errors
 /// Returns an error for invalid configuration, unavailable skins, or filesystem failures.
 pub fn save_atomic(path: &Path, config: &OverlayConfig) -> Result<(), String> {
+    save_atomic_in_store(path, config, &crate::skin::StoreRoot::discover())
+}
+
+/// Validates and atomically saves the overlay document using the supplied skin store.
+///
+/// # Errors
+/// Returns an error for invalid configuration, unavailable skins, or filesystem failures.
+pub fn save_atomic_in_store(
+    path: &Path,
+    config: &OverlayConfig,
+    store: &crate::skin::StoreRoot,
+) -> Result<(), String> {
     let (canvases, issues) = config.validated()?;
     if let Some(issue) = issues.first() {
         return Err(format!(
@@ -72,7 +84,6 @@ pub fn save_atomic(path: &Path, config: &OverlayConfig) -> Result<(), String> {
             issue.canvas_id, issue.message
         ));
     }
-    let store = crate::skin::StoreRoot::discover();
     for canvas in canvases {
         if !store.is_installed(canvas.skin.name())? {
             return Err(format!(

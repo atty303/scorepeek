@@ -2,7 +2,8 @@
 
 use scorepeek_overlay_wayland::{
     bridge::data::{Backend, CanvasPresentation},
-    config::{Canvas, OverlayConfig, empty_canvas, save_atomic},
+    config::{Canvas, OverlayConfig, empty_canvas, save_atomic_in_store},
+    skin::StoreRoot,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -36,6 +37,7 @@ struct Lease {
 }
 struct State {
     config: OverlayConfig,
+    skin_store: StoreRoot,
     leases: BTreeMap<Backend, Lease>,
     diagnostics: VecDeque<serde_json::Value>,
     dropped_diagnostics: u64,
@@ -54,6 +56,14 @@ impl Controller {
     /// # Errors
     /// Returns socket or worker creation errors.
     pub fn start(path: &Path, config: OverlayConfig) -> Result<Self, String> {
+        Self::start_with_store(path, config, StoreRoot::discover())
+    }
+
+    fn start_with_store(
+        path: &Path,
+        config: OverlayConfig,
+        skin_store: StoreRoot,
+    ) -> Result<Self, String> {
         let config_lock = acquire_config_lock(path)?;
         let parent = path
             .parent()
@@ -69,6 +79,7 @@ impl Controller {
         let config_path = path.to_owned();
         let state = Arc::new(Mutex::new(State {
             config,
+            skin_store,
             leases: BTreeMap::new(),
             diagnostics: VecDeque::new(),
             dropped_diagnostics: 0,
@@ -423,7 +434,7 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 .retain(|canvas| canvas.backend != backend);
             candidate.canvases.extend(replacements);
             candidate.projection_generations.increment(backend)?;
-            if let Err(error) = save_atomic(path, &candidate) {
+            if let Err(error) = save_atomic_in_store(path, &candidate, &state.skin_store) {
                 state.observe(
                     "overlay_editor_commit",
                     serde_json::json!({
@@ -586,6 +597,23 @@ mod tests {
         "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap()
     }
 
+    fn seed_skin_store(root: &Path) -> StoreRoot {
+        let store = StoreRoot::new(root.join("skins"));
+        std::fs::create_dir_all(store.path()).unwrap();
+        let packages = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
+        for (name, id) in [
+            ("cyan-system", "dev.atty303.scorepeek.skin.cyan-system"),
+            ("dj-blackbox", "dev.atty303.scorepeek.skin.dj-blackbox"),
+        ] {
+            std::fs::copy(
+                packages.join(format!("{name}.zip")),
+                store.path().join(format!("{id}.zip")),
+            )
+            .unwrap();
+        }
+        store
+    }
+
     fn fixture(name: &str) -> (PathBuf, Mutex<State>) {
         let root = std::env::temp_dir().join(format!(
             "scorepeek-overlay-control-{name}-{}",
@@ -596,6 +624,7 @@ mod tests {
             root.join("overlay.toml"),
             Mutex::new(State {
                 config: scorepeek_overlay_wayland::config::visual_debug_config(cyan_skin()),
+                skin_store: StoreRoot::new(root.join("skins")),
                 leases: BTreeMap::new(),
                 diagnostics: VecDeque::new(),
                 dropped_diagnostics: 0,
@@ -623,6 +652,7 @@ mod tests {
     #[test]
     fn backend_lease_serializes_editors_and_commit_is_atomic() {
         let (path, shared) = fixture("atomic");
+        seed_skin_store(path.parent().unwrap());
         let first = apply(
             Request::AcquireBackend {
                 backend: Backend::Obs,
@@ -915,9 +945,10 @@ mod tests {
     fn production_adapter_clients_reach_atomic_runtime_authority() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("overlay.toml");
-        let controller = Controller::start(
+        let controller = Controller::start_with_store(
             &path,
             scorepeek_overlay_wayland::config::visual_debug_config(cyan_skin()),
+            seed_skin_store(root.path()),
         )
         .unwrap();
 
