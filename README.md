@@ -73,7 +73,7 @@ Third-party source acknowledgements and terms are documented in
 ## Development validation
 
 `mise run test` runs the repository checks, Clippy, production asset builds,
-one standard `cargo test --locked --workspace`, Vulkan layer artifact checks,
+one standard `cargo nextest run --locked --workspace`, Vulkan layer artifact checks,
 and the browser overlay test in fail-fast order. The browser test launches the
 production `scorepeek` private OBS role with temporary HOME and XDG directories.
 Private corpus replay, corpus import and review, skin preview generation, the

@@ -48,7 +48,7 @@ The same explicit read-only replay target can inspect one recording while
 authoring a reviewed label:
 
 ```text
-cargo test --locked -p scorepeek-corpus --test full_replay -- --recording /absolute/private-corpus/sessions/SESSION_SHA256
+mise run corpus:test -- --recording /absolute/private-corpus/sessions/SESSION_SHA256
 ```
 
 ```text
@@ -66,9 +66,9 @@ new active generation.
 The repository-created synthetic recording test exercises canonical reading,
 segment decoding, the recorded game-version state, current screen predicates,
 semantic episode chronology, ordered core coordinator inputs, bounded output,
-reviewed oracle comparison, and failure. It runs under ordinary `cargo test --locked --workspace`
+reviewed oracle comparison, and failure. It runs under ordinary `cargo nextest run --locked --workspace`
 and needs no private data. A full active generation runs only through the named
-custom Cargo test. Its exit status is nonzero for invalid input or oracle
+`corpus:test` task. Its exit status is nonzero for invalid input or oracle
 mismatch.
 Result and Music Select frames use registered OCR, the embedded numeric model,
 and the current catalog registered by this source tree. Replay acquires the
@@ -84,7 +84,7 @@ resource set and shares its core worker pools across sessions; corpus supplies t
 resolved resources and consumes the results. Each
 session still submits canonical inputs,
 field observations, and core outputs in input order; reports retain suite order.
-The explicit replay test prints progress to stderr while verifying segments and
+The explicit replay command prints progress to stderr while verifying segments and
 about every 15 seconds during frame processing. Each line shows the recording,
 phase, processed and total inputs, retained frames, segments, and elapsed time.
 
@@ -92,7 +92,6 @@ phase, processed and total inputs, retained frames, segments, and elapsed time.
 mise run corpus:test -- --store /absolute/private-corpus
 ```
 
-The custom target has `test = false` and `harness = false`. It has no feature
-gate. The single mutating operations binary is available only with the empty
-package-local `operations` feature. Routine `mise run test` does not execute
-full private replay or corpus operations.
+The `corpus:test` task invokes the `replay` subcommand of `corpus_operations`.
+That binary is available only with the empty package-local `operations` feature.
+Routine `mise run test` does not execute full private replay or corpus operations.

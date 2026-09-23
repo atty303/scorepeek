@@ -92,6 +92,10 @@ url = "https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-d
 url_api = "https://api.github.com/repos/axodotdev/cargo-dist/releases/assets/426804467"
 provenance = "github-attestations"
 
+[[tools."cargo:cargo-nextest"]]
+version = "0.9.145"
+backend = "cargo:cargo-nextest"
+
 [[tools."cargo:dioxus-cli"]]
 version = "0.7.10"
 backend = "cargo:dioxus-cli"

@@ -8,6 +8,7 @@ config_roots = ["tools/ocr"]
 cargo.binstall_native = true
 
 [tools]
+"cargo:cargo-nextest" = "0.9.145"
 "cargo:dioxus-cli" = "0.7.10"
 actionlint = "1.7.12"
 cargo-dist = "0.32.0"
@@ -184,16 +185,16 @@ depends = ["overlay:web:bundle"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-cargo test --locked -p scorepeek-overlay-web-client
-cargo test --locked -p scorepeek-overlay --lib
-cargo test --locked -p scorepeek-overlay-wayland --lib
-exec cargo test --locked -p scorepeek-overlay-web-host --lib
+cargo nextest run --locked -p scorepeek-overlay-web-client
+cargo nextest run --locked -p scorepeek-overlay --lib
+cargo nextest run --locked -p scorepeek-overlay-wayland --lib
+exec cargo nextest run --locked -p scorepeek-overlay-web-host --lib
 '''
 
 [tasks."overlay:web:embedded:integration:test"]
 description = "Test embedded browser assets in the scorepeek process"
 depends = ["overlay:web:bundle"]
-run = "cargo test --locked -p scorepeek-cli --test overlay"
+run = "cargo nextest run --locked -p scorepeek-cli --test overlay"
 
 [tasks."overlay:web:browser:install"]
 description = "Install the headless Chromium revision pinned by the repository Playwright tool"
@@ -215,7 +216,7 @@ run = "scripts/test-overlay-browser.bash"
 
 [tasks."overlay:wayland:build:check"]
 description = "Build and test the standalone Wayland shell without host development metadata"
-run = "cargo test --locked -p scorepeek-overlay-wayland-handles --lib"
+run = "cargo nextest run --locked -p scorepeek-overlay-wayland-handles --lib"
 
 [tasks."overlay:skins:build"]
 description = "Build repository skin ZIP packages without installing them"
@@ -300,7 +301,7 @@ mise run native:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
 mise run overlay:skins:build
 mise run overlay:web:bundle
-cargo test --locked --workspace
+cargo nextest run --locked --workspace
 mise run capture:vulkan:artifact:check
 mise run overlay:web:browser:install
 scripts/test-overlay-browser.bash
@@ -338,9 +339,9 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run capture:vulkan:artifact:check
-cargo test --locked -p scorepeek-vulkan-capture
-cargo test --locked -p scorepeek-runtime capture::vulkan
-cargo test --locked -p scorepeek-runtime vulkan_layer
+cargo nextest run --locked -p scorepeek-vulkan-capture
+cargo nextest run --locked -p scorepeek-runtime capture::vulkan
+cargo nextest run --locked -p scorepeek-runtime vulkan_layer
 '''
 
 [tasks."capture:pipewire:test:live"]
@@ -357,7 +358,7 @@ run = "scripts/verify-pipewire-build-environment.bash"
 
 [tasks."corpus:test"]
 description = "Explicitly replay an operator-selected private canonical corpus"
-run = 'cargo test --locked -p scorepeek-corpus --test full_replay -- "$@"'
+run = 'cargo run --locked -p scorepeek-corpus --features operations --bin corpus_operations -- replay "$@"'
 
 [tasks."corpus:operations"]
 description = "Explicit canonical recording import and review apply operations"

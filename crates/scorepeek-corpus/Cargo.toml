@@ -18,12 +18,6 @@ required-features = ["operations"]
 test = false
 bench = false
 
-[[test]]
-name = "full_replay"
-path = "tests/full_replay.rs"
-test = false
-harness = false
-
 [dependencies]
 clap.workspace = true
 scorepeek-core = { path = "../scorepeek-core" }
