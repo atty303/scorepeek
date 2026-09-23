@@ -106,7 +106,7 @@ impl RegisteredTextRecognitionSession {
         worker_count: usize,
     ) -> Result<Self, OnnxParityError> {
         let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
-        if worker_count == 0 || worker_count > available_parallelism {
+        if worker_count == 0 || worker_count > 12 || worker_count > available_parallelism {
             return Err(OnnxParityError::InvalidArtifact);
         }
         let mut runtimes = Vec::with_capacity(worker_count);
