@@ -583,6 +583,7 @@ mod tests {
     use super::*;
     use crate::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
     use crate::catalog::{Chart, ChartKey, Difficulty, PlayType};
+    use crate::recognition::candidate_execution::ParallelCandidateExecution;
     use crate::recognition::music_select::MusicSelectScreenFieldObservations;
     use crate::recognition::screen::ResultScreenFieldObservations;
     use crate::recognition::title::DynamicTextObservation;
@@ -592,6 +593,30 @@ mod tests {
             tachi_record("song-cat", "CAT", "ALPHA"),
             tachi_record("song-bat", "BAT", "BETA"),
         ])
+    }
+
+    #[test]
+    fn parallel_candidate_scoring_preserves_semantic_order() {
+        let records = (0..32)
+            .map(|index| (format!("song-{index}"), format!("TITLE {index}")))
+            .collect::<Vec<_>>();
+        let records = records
+            .iter()
+            .map(|(id, title)| tachi_record(id, title, "ARTIST"))
+            .collect::<Vec<_>>();
+        let domain = CatalogCandidateDomain::from_catalog(&catalog_from_records(&records)).unwrap();
+        let observations = ScreenFieldObservations::Result(ResultScreenFieldObservations {
+            title: text("TITLE 12"),
+            artist: text("ARTIST"),
+            ..Default::default()
+        });
+        let sequential = domain.observe_with::<SequentialCandidateExecution>(&observations);
+        for _ in 0..4 {
+            assert_eq!(
+                domain.observe_with::<ParallelCandidateExecution>(&observations),
+                sequential
+            );
+        }
     }
 
     fn catalog_from_records(records: &[SyntheticTachiRecord<'_>]) -> Catalog {

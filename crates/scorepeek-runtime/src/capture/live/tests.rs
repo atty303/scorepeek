@@ -681,10 +681,6 @@ fn field_gate_keeps_registered_resource_failures_actionable() {
         field_resource_error(RegisteredResourceLoadErrorType::CatalogBindingMismatch),
         FieldObservationGateErrorType::CatalogBindingMismatch
     );
-    assert_eq!(
-        field_resource_error(RegisteredResourceLoadErrorType::RuntimeInitializationFailed),
-        FieldObservationGateErrorType::RuntimeInitializationFailed
-    );
     let (error_type, finish, detail) = field_start_error(
             crate::service::session::recognition::field_session::FieldObservationStartError::FieldObserver(
                 crate::service::session::recognition::field_observer::FieldObserverStartError::Load(

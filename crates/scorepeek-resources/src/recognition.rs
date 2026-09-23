@@ -3,12 +3,11 @@
 use std::path::Path;
 
 use scorepeek_core::catalog::Catalog;
-use scorepeek_core::recognition::title::{
-    LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OnnxParityError, RegisteredDynamicTitleRuntime,
-};
+use scorepeek_core::recognition::registered_field::RegisteredTextBundleBytes;
+use scorepeek_core::recognition::title::{LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OnnxParityError};
 use serde::Serialize;
 
-use crate::model::load_registered_dynamic_title_runtime;
+use crate::model::load_registered_text_bundle;
 use crate::{CatalogStore, CatalogStoreError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -21,7 +20,6 @@ pub enum RegisteredResourceLoadErrorType {
     CatalogBindingMismatch,
     CatalogLoadFailed,
     ModelBundleInvalid,
-    RuntimeInitializationFailed,
 }
 
 #[derive(Debug)]
@@ -48,9 +46,6 @@ impl RegisteredResourceLoadError {
             Self::CatalogUnavailable => RegisteredResourceLoadErrorType::CatalogUnavailable,
             Self::CatalogBindingMismatch => RegisteredResourceLoadErrorType::CatalogBindingMismatch,
             Self::Catalog(_) => RegisteredResourceLoadErrorType::CatalogLoadFailed,
-            Self::Runtime(OnnxParityError::Ort(_)) => {
-                RegisteredResourceLoadErrorType::RuntimeInitializationFailed
-            }
             Self::Runtime(_) => RegisteredResourceLoadErrorType::ModelBundleInvalid,
         }
     }
@@ -102,18 +97,18 @@ impl std::error::Error for RegisteredResourceLoadError {
     }
 }
 
-/// Exact catalog and text-runtime inputs retained for one immutable recognition run.
+/// Exact catalog and verified text-model bytes retained for one immutable recognition run.
 pub struct RegisteredRecognitionResources {
     catalog_digest: String,
     catalog: Catalog,
-    title_runtime: RegisteredDynamicTitleRuntime,
+    text_bundle: RegisteredTextBundleBytes,
 }
 
 impl RegisteredRecognitionResources {
-    /// Loads and digest-checks the active catalog and registered runtime exactly once.
+    /// Loads and digest-checks the active catalog and registered model bundle.
     ///
     /// # Errors
-    /// Returns a stable typed failure for location, binding, catalog, bundle, or runtime errors.
+    /// Returns a stable typed failure for location, binding, catalog, or bundle errors.
     /// No download, fallback, or active-state mutation is attempted.
     pub fn load(
         catalog_root: &Path,
@@ -139,12 +134,12 @@ impl RegisteredRecognitionResources {
             }
             Err(error) => return Err(RegisteredResourceLoadError::Catalog(error)),
         };
-        let title_runtime = load_registered_dynamic_title_runtime(bundle_root)
+        let text_bundle = load_registered_text_bundle(bundle_root)
             .map_err(RegisteredResourceLoadError::Runtime)?;
         Ok(Self {
             catalog_digest: active.digest,
             catalog: active.catalog,
-            title_runtime,
+            text_bundle,
         })
     }
 
@@ -159,13 +154,8 @@ impl RegisteredRecognitionResources {
     }
 
     #[must_use]
-    pub const fn title_runtime(&mut self) -> &mut RegisteredDynamicTitleRuntime {
-        &mut self.title_runtime
-    }
-
-    #[must_use]
-    pub fn into_catalog_and_title_runtime(self) -> (Catalog, RegisteredDynamicTitleRuntime) {
-        (self.catalog, self.title_runtime)
+    pub fn into_catalog_and_text_bundle(self) -> (Catalog, RegisteredTextBundleBytes) {
+        (self.catalog, self.text_bundle)
     }
 }
 

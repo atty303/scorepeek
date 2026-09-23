@@ -628,7 +628,14 @@ pub(super) fn field_start_error(
             FieldObserverStartError::Load(RegisteredScreenFieldObserverLoadError::TextRuntime(
                 error,
             )) => (
-                FieldObservationGateErrorType::FieldObserverUnavailable,
+                if matches!(
+                    &error,
+                    scorepeek_core::recognition::title::OnnxParityError::Ort(_)
+                ) {
+                    FieldObservationGateErrorType::RuntimeInitializationFailed
+                } else {
+                    FieldObservationGateErrorType::FieldObserverUnavailable
+                },
                 None,
                 Some(error.to_string()),
             ),
@@ -673,9 +680,6 @@ pub(super) const fn field_resource_error(
         }
         RegisteredResourceLoadErrorType::ModelBundleInvalid => {
             FieldObservationGateErrorType::ModelBundleInvalid
-        }
-        RegisteredResourceLoadErrorType::RuntimeInitializationFailed => {
-            FieldObservationGateErrorType::RuntimeInitializationFailed
         }
     }
 }

@@ -127,8 +127,10 @@ arbitrary local path, or active XDG state. A resource or field-observation
 failure is a replay failure. The private full replay is an explicit operator
 gate.
 Replay inspects at most eight frames in parallel per session and runs at most
-four active sessions concurrently. Core owns the bounded field and PP-OCR pools;
-corpus supplies resolved registered resources and consumes their results. Each
+four active sessions concurrently. Core owns the bounded shared text and numeric OCR pools,
+field assembly, and catalog candidate scheduler. The active suite loads one registered
+resource set and shares its core worker pools across sessions; corpus supplies those
+resolved resources and consumes the results. Each
 session still submits canonical inputs,
 field observations, and core outputs in input order; reports retain suite order.
 The explicit replay test prints progress to stderr while verifying segments and

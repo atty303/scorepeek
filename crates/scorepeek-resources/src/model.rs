@@ -7,7 +7,8 @@ use std::path::Path;
 use scorepeek_core::model::manifest::{
     registered_live_model_files, verify_registered_live_model_bundle_bytes,
 };
-use scorepeek_core::recognition::title::{OnnxParityError, RegisteredDynamicTitleRuntime};
+use scorepeek_core::recognition::registered_field::RegisteredTextBundleBytes;
+use scorepeek_core::recognition::title::OnnxParityError;
 
 fn read_bundle(root: &Path) -> Result<Vec<(String, Vec<u8>)>, OnnxParityError> {
     let mut files = Vec::new();
@@ -47,13 +48,13 @@ pub fn verify_registered_live_model_bundle(root: &Path) -> Result<(), OnnxParity
     verify_registered_live_model_bundle_bytes(&borrowed(&files)).map_err(Into::into)
 }
 
-/// Opens the registered CPU OCR session from a verified directory.
+/// Reads registered model bytes for core-owned OCR worker construction.
 ///
 /// # Errors
-/// Rejects changed bundle files or a failed ONNX session initialization.
-pub fn load_registered_dynamic_title_runtime(
+/// Rejects changed bundle files before any OCR worker starts.
+pub fn load_registered_text_bundle(
     root: &Path,
-) -> Result<RegisteredDynamicTitleRuntime, OnnxParityError> {
+) -> Result<RegisteredTextBundleBytes, OnnxParityError> {
     let files = read_bundle(root)?;
-    RegisteredDynamicTitleRuntime::from_registered_bundle_bytes(&borrowed(&files))
+    RegisteredTextBundleBytes::from_files(files)
 }

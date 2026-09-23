@@ -6,7 +6,6 @@ use std::time::Instant;
 use crate::diagnostics::contract::{
     DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
-use scorepeek_core::recognition::result::numeric::RegisteredNumericRuntime;
 use scorepeek_core::recognition::screen::ScreenFieldObservationError;
 
 use super::DiagnosticScreenFieldObservation;
@@ -443,9 +442,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         };
         Self::start_with_capacity(root, descriptor, policy, capacity, |binding| {
             let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
-            let numeric_runtime = RegisteredNumericRuntime::load_embedded()
-                .map_err(RegisteredScreenFieldObserverLoadError::NumericModel)?;
-            RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
+            RegisteredScreenFieldObserver::new(resources, execution_mode)
         })
     }
 
@@ -472,9 +469,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
             capacity,
             |binding| {
                 let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
-                let numeric_runtime = RegisteredNumericRuntime::load_embedded()
-                    .map_err(RegisteredScreenFieldObserverLoadError::NumericModel)?;
-                RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
+                RegisteredScreenFieldObserver::new(resources, execution_mode)
             },
         )
     }

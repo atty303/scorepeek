@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,11 @@ use scorepeek_core::session::timeline::{TimelineAction, TimelineDriver};
 use crate::canonical::{self, RecordingError};
 use crate::resources;
 use crate::store::{self, ExpectedTransition, LabelDisposition, RegressionLabel, StoreError};
-use scorepeek_core::recognition::registered_field::{PendingFieldRecognition, RegisteredFieldPool};
+use scorepeek_core::recognition::registered_field::{
+    FieldRecognitionInput, RegisteredScreenFieldObserver,
+};
+use scorepeek_core::recognition::screen::ScreenRgb8Crops;
+use scorepeek_core::recognition::text_observer_pool::RecognitionExecutionMode;
 
 const FRAME_BYTES: usize = 1920 * 1080 * 3;
 
@@ -185,7 +190,7 @@ type InspectedFrame = (Vec<u8>, ScreenPredicateObservation);
 
 struct PreparedInput {
     observed: Option<ScreenPredicateObservation>,
-    field_response: Option<PendingFieldRecognition>,
+    field_crops: Option<ScreenRgb8Crops>,
 }
 
 fn inspect_batch(frames: Vec<Option<Vec<u8>>>) -> Result<Vec<Option<InspectedFrame>>, ReplayError> {
@@ -327,7 +332,7 @@ pub fn replay_recording_with_progress(
     root: &Path,
     on_progress: &(dyn Fn(&ReplayProgress) + Sync),
 ) -> Result<ReplayReport, ReplayError> {
-    replay_recording_observed(root, on_progress, &mut ())
+    replay_recording_observed(root, on_progress, &mut (), None)
 }
 
 #[allow(
@@ -339,6 +344,7 @@ fn replay_recording_observed(
     root: &Path,
     on_progress: &(dyn Fn(&ReplayProgress) + Sync),
     observer: &mut dyn ReplayObserver,
+    shared_engine: Option<&OnceLock<Result<SharedReplayEngine, String>>>,
 ) -> Result<ReplayReport, ReplayError> {
     let started = Instant::now();
     on_progress(&ReplayProgress {
@@ -415,7 +421,7 @@ fn replay_recording_observed(
     let mut timeline = TimelineDriver::default();
     let mut title_confirmation = TitleConfirmationState::default();
     let mut resource_root = None;
-    let mut field_pool: Option<RegisteredFieldPool> = None;
+    let mut field_engine: Option<RegisteredScreenFieldObserver> = None;
     for ticks in recording.ticks.chunks(PREPROCESS_BATCH) {
         let mut frames = Vec::with_capacity(ticks.len());
         for tick in ticks {
@@ -454,12 +460,12 @@ fn replay_recording_observed(
             }
         }
         let mut prepared_inputs = Vec::with_capacity(ticks.len());
-        for prepared in inspect_batch(frames)? {
+        for (tick, prepared) in ticks.iter().zip(inspect_batch(frames)?) {
             if let Some((pixels, inspected)) = prepared {
                 let (next_title_confirmation, inspected) =
                     confirm_title_screen(title_confirmation, inspected);
                 title_confirmation = next_title_confirmation;
-                let field_response = if matches!(
+                let field_crops = if matches!(
                     inspected.screen,
                     ScreenClass::Result | ScreenClass::MusicSelect
                 ) {
@@ -469,40 +475,38 @@ fn replay_recording_observed(
                     let crops = route_screen_rgb8_crops(&pixels, route).map_err(|error| {
                         ReplayError::Field(format!("crop routing failed: {error:?}"))
                     })?;
-                    if field_pool.is_none() {
-                        let root = tempfile::tempdir()?;
-                        let resources = resources::prepare_registered(root.path())
-                            .map_err(ReplayError::Resource)?;
-                        let registered = resources
-                            .load_observer_resources()
-                            .map_err(ReplayError::Resource)?;
-                        let (catalog, title_runtime) = registered.into_catalog_and_title_runtime();
-                        field_pool = Some(
-                            RegisteredFieldPool::start(&catalog, title_runtime)
-                                .map_err(ReplayError::Field)?,
-                        );
-                        resource_root = Some(root);
+                    if field_engine.is_none() {
+                        if let Some(shared) = shared_engine {
+                            let engine = shared
+                                .get_or_init(prepare_shared_engine)
+                                .as_ref()
+                                .map_err(|error| ReplayError::Resource(error.clone()))?;
+                            field_engine = Some(engine.core.fork_session());
+                        } else {
+                            let engine = prepare_shared_engine().map_err(ReplayError::Resource)?;
+                            field_engine = Some(engine.core.fork_session());
+                            resource_root = Some(engine);
+                        }
                     }
-                    Some(
-                        field_pool
-                            .as_mut()
-                            .ok_or(ReplayError::Invalid(
-                                "field observer workers are unavailable",
-                            ))?
-                            .submit(crops)
-                            .map_err(ReplayError::Field)?,
-                    )
+                    field_engine
+                        .as_ref()
+                        .ok_or(ReplayError::Invalid(
+                            "field observer workers are unavailable",
+                        ))?
+                        .prefetch_fields(&FieldRecognitionInput::new(tick.sequence, &crops, 0))
+                        .map_err(|error| ReplayError::Field(format!("{error:?}")))?;
+                    Some(crops)
                 } else {
                     None
                 };
                 prepared_inputs.push(PreparedInput {
                     observed: Some(inspected),
-                    field_response,
+                    field_crops,
                 });
             } else {
                 prepared_inputs.push(PreparedInput {
                     observed: None,
-                    field_response: None,
+                    field_crops: None,
                 });
             }
         }
@@ -547,8 +551,14 @@ fn replay_recording_observed(
                 &recording.manifest.session_id,
                 observer,
             )?;
-            if let Some(response) = prepared.field_response {
-                let field_output = response.join().map_err(ReplayError::Field)?;
+            if let Some(crops) = prepared.field_crops {
+                let field_output = field_engine
+                    .as_mut()
+                    .ok_or(ReplayError::Invalid(
+                        "field observer workers are unavailable",
+                    ))?
+                    .observe(&FieldRecognitionInput::new(tick.sequence, &crops, 0))
+                    .map_err(|error| ReplayError::Field(format!("{error:?}")))?;
                 let episode = step.active_episode_id.ok_or(ReplayError::Invalid(
                     "field observation has no semantic episode",
                 ))?;
@@ -574,7 +584,7 @@ fn replay_recording_observed(
             last_progress = Instant::now();
         }
     }
-    drop(field_pool);
+    drop(field_engine);
     drop(resource_root);
     if let Some(last) = recording.ticks.last() {
         apply_timeline_actions(
@@ -607,6 +617,25 @@ fn replay_recording_observed(
     Ok(report)
 }
 
+struct SharedReplayEngine {
+    _root: tempfile::TempDir,
+    core: RegisteredScreenFieldObserver,
+}
+
+fn prepare_shared_engine() -> Result<SharedReplayEngine, String> {
+    let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let prepared = resources::prepare_registered(root.path())?;
+    let registered = prepared.load_observer_resources()?;
+    let (catalog, text_bundle) = registered.into_catalog_and_text_bundle();
+    let core = RegisteredScreenFieldObserver::new(
+        catalog,
+        &text_bundle,
+        RecognitionExecutionMode::Offline,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(SharedReplayEngine { _root: root, core })
+}
+
 /// Replays the operator-reviewed active generation and compares its regression oracle.
 ///
 /// # Errors
@@ -624,6 +653,7 @@ pub fn replay_active_with_progress(
     on_progress: &(dyn Fn(&ReplayProgress) + Sync),
 ) -> Result<Vec<ReplayReport>, ReplayError> {
     let sessions = store::active_sessions(store_root)?;
+    let shared_engine = OnceLock::new();
     let workers = thread::available_parallelism()
         .map_or(1, usize::from)
         .div_ceil(4)
@@ -634,7 +664,9 @@ pub fn replay_active_with_progress(
             let pending = batch
                 .iter()
                 .map(|digest| {
-                    scope.spawn(move || replay_active_session(store_root, digest, on_progress))
+                    scope.spawn(|| {
+                        replay_active_session(store_root, digest, on_progress, Some(&shared_engine))
+                    })
                 })
                 .collect::<Vec<_>>();
             pending
@@ -654,6 +686,7 @@ fn replay_active_session(
     store_root: &Path,
     digest: &str,
     on_progress: &(dyn Fn(&ReplayProgress) + Sync),
+    shared_engine: Option<&OnceLock<Result<SharedReplayEngine, String>>>,
 ) -> Result<ReplayReport, ReplayError> {
     let session_root = store_root.join("sessions").join(digest);
     let descriptor = store::verify_session_descriptor(&session_root, digest)?;
@@ -669,7 +702,7 @@ fn replay_active_session(
         return Err(ReplayError::Invalid("active reviewed label schema differs"));
     }
     let mut oracle = crate::oracle::OracleObserver::new(&label.episodes, &label.negative_frames);
-    let report = replay_recording_observed(&session_root, on_progress, &mut oracle)?;
+    let report = replay_recording_observed(&session_root, on_progress, &mut oracle, shared_engine)?;
     oracle.finish()?;
     if report.inputs != descriptor.tick_count {
         return Err(ReplayError::Invalid(

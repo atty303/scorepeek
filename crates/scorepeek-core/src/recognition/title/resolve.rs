@@ -33,6 +33,7 @@ pub enum OnnxParityError {
     Recognition(RecognitionError),
     CatalogDecoder(CatalogTitleDecoderError),
     InvalidArtifact,
+    WorkerUnavailable,
     NonFiniteProbability,
     NegativeProbability,
     ProbabilityRowSum { sum: f64 },
@@ -52,6 +53,7 @@ impl std::fmt::Display for OnnxParityError {
                 write!(formatter, "catalog title decoding failed: {error}")
             }
             Self::InvalidArtifact => formatter.write_str("ONNX parity artifact is invalid"),
+            Self::WorkerUnavailable => formatter.write_str("recognition worker is unavailable"),
             Self::NonFiniteProbability => {
                 formatter.write_str("ONNX output contains a non-finite probability")
             }

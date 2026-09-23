@@ -1,13 +1,13 @@
-//! Live-only parallel scheduling for pure core catalog scoring.
+//! Bounded parallel scheduling for pure core catalog scoring.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use scorepeek_core::recognition::shared::{CandidateExecution, SongCandidateDomain};
+use crate::recognition::shared::{CandidateExecution, SongCandidateDomain};
 
-pub(super) struct LiveCandidateExecution;
+pub struct ParallelCandidateExecution;
 
-impl CandidateExecution for LiveCandidateExecution {
+impl CandidateExecution for ParallelCandidateExecution {
     fn map<T: Send, F: Fn(&SongCandidateDomain) -> T + Sync>(
         songs: &[SongCandidateDomain],
         map: F,

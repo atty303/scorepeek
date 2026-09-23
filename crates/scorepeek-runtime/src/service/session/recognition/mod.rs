@@ -22,7 +22,6 @@ use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 
-mod candidate_execution;
 pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;

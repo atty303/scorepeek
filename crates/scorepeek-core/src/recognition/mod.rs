@@ -2,6 +2,7 @@
 
 pub mod screen;
 
+pub mod candidate_execution;
 pub mod music_select;
 pub mod registered_field;
 pub mod result;
