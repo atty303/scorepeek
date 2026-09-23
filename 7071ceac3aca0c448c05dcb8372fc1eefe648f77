@@ -1,0 +1,82 @@
+Task: Replace cargo-dist archive publishing with a versioned raw Linux executable and move doctor validation into normal tests
+Anchor: 7071ceac3aca0c448c05dcb8372fc1eefe648f77
+Base: 0b9ed3df95e89f73673a3f80c0a0afea9446918b
+Branch: main
+Commits: 7071ceac3aca0c448c05dcb8372fc1eefe648f77 refactor(release): ship versioned Linux executable without cargo-dist
+Guidance: AGENTS.md; develop-repository; design-program-observability applicability; investigate-problem for lockfile failure; independent review; Git task evidence
+Conditions: local Linux x86-64; initially clean main ahead of origin; no publish, push, release, or external-service change authorized
+## Evidence
+- mise run check passed; isolated doctor nextest passed 1/1; mise run test passed 796 Rust tests and 3 browser tests.
+- Local release:build 2099.1.2 produced executable ELF scorepeek-2099.1.2-x86_64-unknown-linux-gnu; --version matched; Cargo.toml and Cargo.lock SHA-256 values restored; one raw output file.
+- First release:build attempt failed because Cargo.lock retained 0.1.0 under --locked; cargo update --offline --workspace corrected the temporary lock state. Independent release review found no actionable issue.
+Authority: current user implementation request and addendum, repository AGENTS.md, committed source and tests, pinned release-action contract
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の配布経路から cargo-dist と配布物専用の smoke test を廃止してください。`release:build` は Linux x86-64 の実行ファイルを直接出力する構成に変更し、`doctor` の CLI テストを通常の `mise run test` に追加してください。
+    
+    ## 目的
+    
+    - 配布物の組み立てを、現在必要な単一バイナリに合わせて簡素化する。
+    - アプリケーションの動作検証を通常のテストに集める。
+    
+    ## 成功条件
+    
+    - `release:build -- VERSION OUTPUT_DIRECTORY` が、指定された版を埋め込んだ実行ファイル `scorepeek-x86_64-unknown-linux-gnu` を出力先に作る。
+    - `.tar.xz` archive は作成・公開せず、リリース処理は raw binary を成果物として受け取れる。
+    - `dist:test`、`dist:plan`、`dist:build`、cargo-dist の設定・tool pin・lock entry、および配布物専用の動作確認 script がなくなる。
+    - `mise run check` は cargo-dist に依存しない。
+    - `mise run test` に、隔離された HOME/XDG 環境で実際の CLI を起動する `doctor` テストが含まれる。ホスト固有の inventory 値は決め打ちしない。
+    - overlay と Vulkan layer の既存の通常テストを維持する。
+    - 変更後の完全な `mise run test` と、公開せずに行う `release:build` のローカル検証が通る。
+    
+    ## 決定事項
+    
+    - cargo-dist を廃止する。
+      - 理由: 現在使っているのは単一 Linux target の成果物作成だけで、CI 生成・hosting・installer・checksum 機能は使っていないため。
+      - 主な棄却案: cargo-dist を archive 作成だけに残す案。現在の用途に対して設定と依存の維持負担が大きいため。
+    - リリース成果物は `scorepeek-x86_64-unknown-linux-gnu` という raw binary にする。
+      - 理由: archive と収録ファイル検査が不要で、target triple はファイル名から分かる必要があるため。
+      - 主な棄却案: 従来の `.tar.xz` を維持する案。利用者向け形式の変更を了承済みのため。
+    - `dist:test`、`dist:plan`、`dist:build` を削除し、配布用ビルドの入口を `release:build` に一本化する。
+      - 理由: 独立した配布物検証とローカル専用 task を維持する必要がないため。
+      - 主な棄却案: `dist:build` を raw binary 用に残す案。使い分ける必要が確認できないため。
+    - 動作検証は通常のテストで行い、`doctor` の CLI テストを追加する。
+      - 理由: 配布物を展開して行う動作確認は不要で、`doctor` の CLI 経路には通常テストの不足があるため。
+      - 主な棄却案: 旧 script の操作列を通常テストへ丸ごと移す案。overlay と Vulkan layer には既存の通常テストがあるため。
+    
+    ## 制約
+    
+    - `mise run test` を完全な再現可能検証の入口として維持する。
+    - リリース時のバイナリのバージョン表示が指定された `VERSION` と一致する既存の契約を維持する。
+    - 現在のリリース action が要求する `release:build` の引数と出力先契約、および成果物の SHA-256 検証を維持する。
+    - 既存の未コミット変更があれば調査して保護する。
+    - デプロイ、リリース、push、外部サービスの変更は行わない。
+    - 適用される AGENTS.md とリポジトリの開発・検証規則に従う。
+    
+    ## 対象外
+    
+    - `--version` 専用テストの追加。
+    - 配布物を展開して行う overlay、`doctor`、Vulkan layer の smoke test。
+    - archive の収録ファイル一覧の検査。
+    - 新しい platform や installer の追加。
+    
+    ## 未検証の前提
+    
+    - cargo-dist を使わない Cargo ビルドでも、既存の `dist` profile、埋め込み OBS UI・Vulkan layer、および指定版のバージョン埋め込みを維持できること。実装時に source とローカル成果物で確認すること。
+    - `doctor` の CLI テストを、外部データやホスト固有の値に依存せず通常テストで実行できること。実装時に確認すること。
+    
+    ## 実装時の指示
+    
+    - 現行の archive 名不一致を raw binary への変更で解消し、旧 archive 名への参照を現行 task・script・文書から除くこと。
+    - 配布物専用 script の削除後に用途がなくなる `SCOREPEEK_TEST_BINARY` 経路も整理すること。
+    - `release:build` のローカル検証には使い捨ての出力先を使い、版の注入に一時的な source 変更が必要なら失敗時も復元すること。
+    - 最終報告の直前に、適用 guidance に従って `mise run build` を一度実行すること。
+    
+    
+    
+    追加でbinaryには指定されたVERSIONを含める
+  - A: Inspected clean Git state and current docs; removed cargo-dist and distribution tasks/script; added versioned raw release build with temporary manifest/lock restoration and isolated doctor CLI test; verified check, targeted test, full test, local artifact, and independent review; committed locally without push.
