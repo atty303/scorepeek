@@ -271,7 +271,7 @@ mise run native:verify
 mise run overlay:skins:build
 mise run overlay:web:bundle
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo nextest run --locked --workspace
+cargo nextest run --locked --workspace "$@"
 mise run capture:vulkan:artifact:check
 mise run overlay:web:browser:install
 scripts/test-overlay-browser.bash
