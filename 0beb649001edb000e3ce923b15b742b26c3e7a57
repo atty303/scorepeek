@@ -1,0 +1,84 @@
+Task: Remove unused Scorepeek scripts and redundant mise task entrypoints
+Anchor: 0beb649001edb000e3ce923b15b742b26c3e7a57
+Base: b195637d4b7c69aaec407396b3fc0550ed811871
+Branch: codex/capture-canonical-session-refactor
+Commits: 0beb649001edb000e3ce923b15b742b26c3e7a57 chore(test): remove unused manual verification entrypoints
+Guidance: repository AGENTS.md; dig; develop-repository; Git task evidence
+Conditions: durable local source cleanup; no deploy, release, push, or live target changes; keep standard tests, skin previews, visual native/OBS, nested Wayland, and CLI doctor
+## Evidence
+- Initial tree clean at b195637; code fetch succeeded; local and remote notes refs diverged, so remote notes were fetched to refs/notes/origin-commits without overwriting local notes.
+- mise tasks validate passed with 20 tasks; mise run check passed; mise run test passed 758 Rust tests and 3 browser tests; deleted-name reference search and git diff --check passed.
+Authority: user implementation request and confirmed dig choices; repository AGENTS.md; committed source and current living references
+## Transcript
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) scriptsの不要を整理
+  - A: Invoked dig, inventoried nineteen scripts and their mise/build references, and asked what unnecessary means.
+- U2: a
+  - A: Mapped optional and routine routes; user chose to consider non-routine manual functions.
+- U3: a. agentの利用経路がないものは削除
+  - A: Separated agent guidance from CI and documentation routes; user specified deleting functions without an agent route.
+- U4: bだが経路があるだけで残さない
+  - A: Confirmed that a reference alone is insufficient; compared unique outcomes and maintenance cost.
+- U5: a
+  - A: Agreed to remove the two live capture harnesses and their dedicated C source.
+- U6: a
+  - A: Agreed to remove the separate site browser test while keeping site:check.
+- U7: a
+  - A: Agreed to remove the manual live Wayland visual launcher.
+- U8: a
+  - A: Agreed to retain the nested Wayland scenario with its two-output and input oracle.
+- U9: b
+  - A: Agreed that the cleanup also includes the task-only overlay:test:live entrypoint.
+- U10: a
+  - A: Agreed to remove targeted test aliases already covered by mise run test.
+- U11: a
+  - A: Agreed to remove the mise doctor alias while retaining the CLI doctor command.
+- U12: a
+  - A: Confirmed the full deletion and retention scope and produced a self-contained implementation prompt.
+- U13: # 実装依頼
+    
+    ## 依頼
+    scorepeek リポジトリの不要な `scripts/` と、合意した専用 `mise` タスクを削除してください。参照元と現行ドキュメントも整合させてください。
+    
+    ## 目的
+    - agent が使わない手動検証機能と、通常テストに重複するタスクの維持負担を減らす。
+    
+    ## 成功条件
+    - 実機キャプチャ検証2経路、サイト専用ブラウザテスト、手動 Wayland 表示確認のスクリプト・専用素材・タスクが削除されている。
+    - `overlay:test:live`、通常テストと重複する対象別タスク群、`mise run doctor` のタスク定義が削除されている。
+    - 削除した名前への古い参照が設定、現行ドキュメント、agent 向け手順に残っていない。
+    - 残す検証経路が動作し、リポジトリの所定のチェック・テスト・最終ビルドが成功する。
+    
+    ## 決定事項
+    - `scripts/test-capture-pipewire-live.bash`、`scripts/test-capture-vulkan-live.bash`、前者専用の `scripts/pipewire-contract-source.c` と、対応する `capture:pipewire:test:live`、`capture:vulkan:test:live` を削除する。
+      - 理由: 通常テストと agent 向け手順に利用経路がなく、実機環境への依存が大きい。
+      - 主な棄却案: 専用の再接続・共存検証として残す案。今回の整理基準では維持しない。
+    - `scripts/test-site-browser.bash`、`tests/site-browser.spec.js`、`site:browser:test` を削除する。
+      - 理由: 独立したブラウザ検証の利用経路がない。通常の `site:check` は残す。
+      - 主な棄却案: 言語切替と画面幅ごとのブラウザ検証を残す案。
+    - `scripts/visual-wayland.bash` と `overlay:visual:wayland` を削除する。
+      - 理由: 手動の実デスクトップ表示確認経路は今回の整理対象とする。
+      - 主な棄却案: 短時間の実デスクトップ確認用に残す案。
+    - `overlay:test:live`、`overlay:web:test` とその内訳の対象別タスク、`overlay:wayland:build:check`、`capture:vulkan:test`、`doctor` の各 `mise` タスクを削除する。
+      - 理由: 手動専用、通常テストとの重複、または CLI を呼ぶだけの入口である。対応する製品機能や通常テスト本体は残す。
+      - 主な棄却案: 対象別の再実行用入口として残す案。
+    - `overlay:visual:wayland:nested` は残す。
+      - 理由: agent の完了条件に明記され、2画面描画と compositor 経由の入力を確認する固有の役割がある。
+      - 主な棄却案: ほかの手動 Wayland 検証とともに削除する案。
+    
+    ## 制約
+    - `mise run test`、`site:check`、スキンプレビュー生成、native・OBS の視覚確認、nested Wayland 検証、製品の `scorepeek doctor` は維持する。
+    - `scripts/test-overlay-browser.bash` など、残す通常テストやビルドに必要な実装は削除しない。
+    - 既存の利用者作業を保護する。デプロイ、リリース、push、実機環境の変更は行わない。
+    
+    ## 対象外
+    - 製品のキャプチャ機能、overlay 機能、ランディングページ自体の変更。
+    - CI や通常テストへ nested Wayland 検証を追加すること。
+    
+    ## 未検証の前提
+    - 実装開始時点の作業ツリーと参照関係が、この設計時の調査結果から変わっていないこと。着手前に確認する。
+    
+    ## 実装時の指示
+    - 削除対象のタスク定義とその参照を追跡し、`hk.pkl` のサイト関連対象指定、現行ドキュメント、agent 向け手順を実際の残存経路に合わせて更新する。
+    - `overlay:web:test` の「内訳」には、そこから呼ばれる embedded と browser の対象別タスクを含める。通常テストが直接使う検証スクリプトは残す。
+    - 削除後に `mise` タスク定義と参照の整合性を確認し、所定の検証を実行する。
+  - A: Confirmed a clean tree and current references; removed six files and redundant task definitions, updated README, overlay guidance, and hk; mise tasks validate, check, 758 Rust tests, 3 browser tests, and pre-commit checks passed; committed 0beb649.
