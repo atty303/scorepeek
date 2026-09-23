@@ -139,11 +139,6 @@ outputs = [
 description = "Install the headless Chromium revision pinned by the repository Playwright tool"
 run = "playwright install --only-shell chromium"
 
-[tasks."overlay:web:browser:server:build"]
-description = "Build the production scorepeek binary with the current embedded bundle"
-depends = ["overlay:web:bundle"]
-run = "cargo build --locked -p scorepeek-cli --bin scorepeek"
-
 [tasks."overlay:skins:build"]
 description = "Build repository skin ZIP packages without installing them"
 run = '''
@@ -157,11 +152,7 @@ exec bash scripts/build-skins.sh
 
 [tasks."overlay:skins:preview:generate"]
 description = "Regenerate bundled skin PNG and WebM previews from the production browser renderer"
-depends = [
-  "overlay:web:browser:server:build",
-  "overlay:skins:build",
-  "overlay:web:browser:install",
-]
+depends = ["build", "overlay:skins:build", "overlay:web:browser:install"]
 run = "scripts/generate-skin-previews.bash"
 
 [tasks."overlay:visual:native"]
@@ -171,12 +162,12 @@ run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-wa
 
 [tasks."overlay:visual:wayland:nested"]
 description = "Run the production multi-output editor in a bounded headless nested Scroll scenario"
-depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
+depends = ["build", "overlay:skins:build"]
 run = "scripts/test-overlay-wayland-nested.bash"
 
 [tasks."overlay:visual:obs"]
 description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
-depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
+depends = ["build", "overlay:skins:build"]
 run = 'scripts/visual-obs.bash "$@"'
 
 [tasks.fix]
@@ -206,24 +197,31 @@ mise run overlay:web:browser:install
 scripts/test-overlay-browser.bash
 '''
 
-[tasks."capture:vulkan:build"]
-description = "Build the Scorepeek Vulkan capture layer with pinned Zig"
-run = "zig build --build-file native/vulkan-capture/build.zig --cache-dir target/vulkan-capture-cache --global-cache-dir target/vulkan-capture-global-cache --release=fast -Dtarget=x86_64-linux-gnu -Dcpu=baseline --prefix target/vulkan-capture"
-
 [tasks."capture:vulkan:artifact:check"]
-description = "Verify the built Vulkan layer manifest and ELF boundary"
+description = "Verify the embedded Vulkan layer manifest and ELF boundary"
+depends = ["build"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-mise run capture:vulkan:build
-test -f target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so
-test -f target/vulkan-capture/share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json
-cmp native/vulkan-capture/layer/VkLayer_SCOREPEEK_capture.json target/vulkan-capture/share/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json
-readelf -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -q 'libc.so'
-! readelf -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq 'libstdc\+\+|libc\+\+'
-! readelf -S target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -q '\.symtab'
-readelf -h target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq 'Machine:.*X86-64'
-! objdump -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq '%[yz]mm|[[:space:]]v[a-z][a-z0-9]+'
+artifact_root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-vulkan-artifact.XXXXXX")
+trap 'rm -rf -- "$artifact_root"' EXIT
+export HOME="$artifact_root/home"
+export XDG_DATA_HOME="$artifact_root/data"
+export XDG_CONFIG_HOME="$artifact_root/config"
+export XDG_STATE_HOME="$artifact_root/state"
+export XDG_CACHE_HOME="$artifact_root/cache"
+mkdir -p "$HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+test "$(target/debug/scorepeek vulkan-layer install)" = installed
+library="$XDG_DATA_HOME/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so"
+manifest="$XDG_DATA_HOME/vulkan/explicit_layer.d/VkLayer_SCOREPEEK_capture.json"
+test -f "$library"
+test -f "$manifest"
+cmp native/vulkan-capture/layer/VkLayer_SCOREPEEK_capture.json "$manifest"
+readelf -d "$library" | grep -q 'libc.so'
+! readelf -d "$library" | grep -Eq 'libstdc\+\+|libc\+\+'
+! readelf -S "$library" | grep -q '\.symtab'
+readelf -h "$library" | grep -Eq 'Machine:.*X86-64'
+! objdump -d "$library" | grep -Eq '%[yz]mm|[[:space:]]v[a-z][a-z0-9]+'
 '''
 
 [tasks."native:verify"]

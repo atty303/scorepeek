@@ -191,11 +191,11 @@ The overlay backend and browser WASM compile the same SHA-256 build identity fro
 workspace dependencies and build configuration; this is a build identity, not the
 configuration revision. Rebuild the web bundle before building the embedded backend.
 Repository tasks that build the embedded backend, release artifacts, or browser/OBS
-verification targets declare `overlay:web:bundle` as a prerequisite. That task owns the
-completion marker and generated assets, so the embedded build receives the bundle from
-the same source revision. Plain Cargo type checking does not enforce workflow-level
-bundle freshness; use the repository task when producing an executable or distributable
-artifact.
+verification targets depend on `overlay:web:bundle`, directly or through `build`.
+That task owns the completion marker and generated assets, so the embedded build
+receives the bundle from the same source revision. Plain Cargo type checking does
+not enforce workflow-level bundle freshness; use the repository task when
+producing an executable or distributable artifact.
 
 Each stage connection and editing request must match the backend build identity.
 Until the first matching stage arrives, editing is disabled. A mismatch discards the
