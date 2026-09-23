@@ -268,9 +268,9 @@ run = '''
 set -euo pipefail
 mise run check
 mise run native:verify
-cargo clippy --locked --workspace --all-targets -- -D warnings
 mise run overlay:skins:build
 mise run overlay:web:bundle
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo nextest run --locked --workspace
 mise run capture:vulkan:artifact:check
 mise run overlay:web:browser:install
