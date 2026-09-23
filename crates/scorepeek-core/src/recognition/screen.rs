@@ -5,8 +5,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::catalog::Difficulty;
 use crate::frame::{
-    CANONICAL_BYTES, CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH,
-    CanonicalFrame, CanonicalLayout, FrameError, Roi, crop_pixels as crop_canonical_pixels,
+    CANONICAL_FRAME_CONTRACT_ID, CANONICAL_HEIGHT, CANONICAL_WIDTH, CanonicalLayout, FrameError,
+    Roi, crop_pixels as crop_canonical_pixels,
 };
 
 #[path = "screen_reference.rs"]
@@ -25,6 +25,8 @@ use super::title::{CtcCharacterSet, DynamicTextObservation, OnnxParityError};
 
 #[cfg(test)]
 use super::music_select::*;
+#[cfg(test)]
+use crate::frame::CANONICAL_BYTES;
 
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v2";
 const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v7";
@@ -89,16 +91,6 @@ impl From<FrameError> for RecognitionError {
 impl From<OnnxParityError> for RecognitionError {
     fn from(error: OnnxParityError) -> Self {
         Self::Onnx(Box::new(error))
-    }
-}
-
-impl CanonicalFrame {
-    /// Copies one layout-bound RGB8 crop in row-major order.
-    ///
-    /// # Errors
-    /// Returns a recognition error when the ROI is outside the canonical frame.
-    pub fn crop(&self, roi: Roi) -> Result<Vec<u8>, RecognitionError> {
-        self.crop_region(roi).map_err(Into::into)
     }
 }
 
@@ -388,44 +380,9 @@ impl ResultPanelSideState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct RecognitionSnapshot {
-    pub schema: String,
-    pub canonical_frame_sha256: String,
-    pub normalizer_artifact_sha256: String,
-    pub frame_extraction_sha256: String,
-    pub canonical_layout_sha256: String,
-    pub screen_path_layout_sha256: String,
-    pub screen: ScreenClass,
-    pub title_presence: TitlePresenceEvidence,
-    pub result_presence: ResultPresenceEvidence,
-    pub music_select_presence: MusicSelectPresenceEvidence,
-    pub decide_transition_presence: DecideTransitionPresenceEvidence,
-    pub play_presence: PlayPresenceEvidence,
-}
-
-impl RecognitionSnapshot {
-    #[must_use]
-    pub const fn crop_route(&self) -> Option<ScreenCropRoute> {
-        match self.screen {
-            ScreenClass::Title => Some(ScreenCropRoute::Title),
-            ScreenClass::Result => match self.result_presence.panel_side.known() {
-                Some(side) => Some(ScreenCropRoute::Result(side)),
-                None => None,
-            },
-            ScreenClass::MusicSelect => Some(ScreenCropRoute::MusicSelect),
-            ScreenClass::ModeSelect
-            | ScreenClass::DecideTransition
-            | ScreenClass::Play
-            | ScreenClass::Unknown => None,
-        }
-    }
-}
-
 /// A pure canonical-RGB8 screen-predicate result without capture or extraction provenance.
 ///
-/// This value is not an accepted live recognition input. The application must bind it to its
-/// profile- and generation-bearing live frame before recording or accepting the observation.
+/// Runtime associates the observation with its capture session before publishing it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ScreenPredicateObservation {
     pub screen_path_layout_sha256: String,
@@ -1172,7 +1129,7 @@ use predicate::ScreenPathLayout;
 pub use predicate::{
     DecideTransitionPresenceEvidence, MusicSelectPresenceEvidence, PlayBpmEdgePairEvidence,
     PlayPresenceEvidence, ResultPanelPresenceEvidence, ResultPresenceEvidence,
-    TitlePresenceEvidence, inspect, inspect_canonical_rgb8,
+    TitlePresenceEvidence, inspect_canonical_frame, inspect_canonical_rgb8,
 };
 
 #[path = "screen/export.rs"]

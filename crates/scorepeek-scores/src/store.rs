@@ -1,4 +1,4 @@
-//! Persistence consumer for the public event v4 contract, independent of recognition.
+//! Persistence consumer for the public event v5 contract, independent of recognition.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
@@ -11,7 +11,7 @@ use std::{
 pub use super::error::Error;
 use super::event::{
     Chart, Envelope, ResultData, STORED_RESULT_SCHEMA, stored_result_from_event,
-    validate_result_context, validate_v4_envelope,
+    validate_result_context, validate_v5_envelope,
 };
 use super::facts::{
     COLUMNS, Fact, Fields, Origin, PlaySide, ResultMutation, cumulative, integrate, prepare,
@@ -93,7 +93,7 @@ impl Store {
     /// Returns unsupported contract, parsing or transaction errors. No partial event is saved.
     pub fn consume(&mut self, bytes: &[u8], received_unix_ms: u64) -> Result<bool, Error> {
         let raw: Value = serde_json::from_slice(bytes)?;
-        validate_v4_envelope(&raw)?;
+        validate_v5_envelope(&raw)?;
         let envelope: Envelope = serde_json::from_slice(bytes)?;
         if envelope.schema != super::event::EVENT_SCHEMA {
             return Err(Error::UnsupportedContract);

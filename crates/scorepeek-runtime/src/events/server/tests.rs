@@ -7,6 +7,18 @@ use scorepeek_core::recognition::result::ResultFieldValue;
 
 use super::*;
 
+#[test]
+fn diagnostic_timing_summary_counts_only_measured_values() {
+    let mut timings = TimingAccumulator::default();
+    timings.observe(&Value::Null);
+    timings.observe(&json!(12));
+    timings.observe(&json!(7));
+    timings.observe(&json!("invalid"));
+    assert_eq!(timings.count, 2);
+    assert_eq!(timings.total_us, 19);
+    assert_eq!(timings.max_us, 12);
+}
+
 fn frontend_snapshot(output: &RoutineOutput) -> Value {
     serde_json::from_slice(&snapshot_bytes(&output.state, &ChannelHealth::default()).unwrap())
         .unwrap()
@@ -48,15 +60,11 @@ fn live_output_uses_one_ordered_core_coordinator_across_two_sessions() {
         output
             .publish(&event(RunEventKind::SessionStarted {
                 session_id: Some(session_id.clone()),
-                capture_generation: generation,
-                capture_profile_sha256: "a".repeat(64),
-                normalizer_artifact_sha256: "b".repeat(64),
             }))
             .unwrap();
         output
             .publish(&event(RunEventKind::SessionFinished {
                 session_id,
-                capture_generation: generation,
                 outcome: "complete".into(),
                 report: Value::Null,
             }))
@@ -93,16 +101,12 @@ fn diagnostic_trace_counts_no_op_ticks_without_repeating_them() {
     output
         .publish(&event(RunEventKind::SessionStarted {
             session_id: Some("session-1".into()),
-            capture_generation: 1,
-            capture_profile_sha256: "a".repeat(64),
-            normalizer_artifact_sha256: "b".repeat(64),
         }))
         .unwrap();
     for (sequence, timestamp) in [(1, 100), (3, 300)] {
         output
             .publish(&event(RunEventKind::RawScreenObserved {
                 session_id: Some("session-1".into()),
-                capture_generation: Some(1),
                 semantic_episode_id: Some(1),
                 sequence,
                 monotonic_start_ms: timestamp,
@@ -117,7 +121,6 @@ fn diagnostic_trace_counts_no_op_ticks_without_repeating_them() {
     output
         .publish(&event(RunEventKind::ScreenChanged {
             session_id: Some("session-1".into()),
-            capture_generation: Some(1),
             screen_episode_id: 1,
             sequence: 1,
             monotonic_start_ms: 100,
@@ -136,7 +139,6 @@ fn diagnostic_trace_counts_no_op_ticks_without_repeating_them() {
     output
         .publish(&event(RunEventKind::SessionFinished {
             session_id: "session-1".into(),
-            capture_generation: 1,
             outcome: "complete".into(),
             report: Value::Null,
         }))
@@ -181,7 +183,6 @@ fn session_finish_trace_records_completed_publication_result() {
             schema: RUN_EVENT_SCHEMA.into(),
             kind: RunEventKind::SessionFinished {
                 session_id: "session-1".into(),
-                capture_generation: 1,
                 outcome: "complete".into(),
                 report: json!({
                     "canonical_recording_completeness": "complete",
@@ -347,7 +348,6 @@ fn scores_select_only_uses_production_projection_without_creating_a_play() {
         output
             .reduce_music_select_observation(
                 Some(&session),
-                Some(1),
                 sequence,
                 sequence * 100,
                 &fields,
@@ -401,7 +401,6 @@ fn watcher_stop_publishes_store_changes_drained_during_shutdown() {
         output
             .reduce_music_select_observation(
                 Some(&session),
-                Some(1),
                 sequence,
                 sequence * 100,
                 &fields,
@@ -437,7 +436,6 @@ fn watcher_stop_publishes_store_changes_drained_during_shutdown() {
 fn state() -> Arc<Mutex<RunViewState>> {
     Arc::new(Mutex::new(RunViewState::new(
         "invocation-1".to_owned(),
-        "a".repeat(64),
         true,
     )))
 }
@@ -483,7 +481,6 @@ fn accepted_result_event(sequence: u64) -> RunEvent {
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::FieldObservation {
             session_id: Some("invocation-1-session-1".to_owned()),
-            capture_generation: Some(1),
             screen_episode_id: 0,
             sequence,
             monotonic_start_ms: sequence.saturating_mul(100),
@@ -618,7 +615,6 @@ fn accepted_result_event(sequence: u64) -> RunEvent {
 
 fn detected_result_event(
     session_id: &str,
-    capture_generation: u64,
     source_sequence: u64,
     result: ResultDomainEvent,
 ) -> RunEvent {
@@ -626,7 +622,6 @@ fn detected_result_event(
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::ResultChanged {
             session_id: session_id.to_owned(),
-            capture_generation,
             source_sequence,
             state: ResultState::Confirmed {
                 song: None,
@@ -654,7 +649,6 @@ fn prime_result_panel(output: &mut RoutineOutput, side: ResultPanelSide, first_s
                 schema: RUN_EVENT_SCHEMA.to_owned(),
                 kind: RunEventKind::RawScreenObserved {
                     session_id: Some("invocation-1-session-1".to_owned()),
-                    capture_generation: Some(1),
                     semantic_episode_id: Some(0),
                     sequence,
                     monotonic_start_ms: sequence,
@@ -723,7 +717,6 @@ fn screen_event(sequence: u64, screen: &str) -> RunEvent {
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::ScreenChanged {
             session_id: Some("invocation-1-session-1".to_owned()),
-            capture_generation: Some(1),
             screen_episode_id: sequence,
             sequence,
             monotonic_start_ms: sequence.saturating_mul(100),
@@ -738,7 +731,6 @@ fn semantic_episode_event(sequence: u64, screen: &str, phase: SemanticEpisodePha
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::SemanticScreenEpisodeChanged {
             session_id: Some("invocation-1-session-1".to_owned()),
-            capture_generation: Some(1),
             screen_episode_id: sequence,
             sequence,
             monotonic_end_ms: sequence.saturating_mul(100).saturating_add(25),
@@ -753,7 +745,6 @@ fn failed_session_finished_event() -> RunEvent {
         "schema": RUN_EVENT_SCHEMA,
         "event": "session_finished",
         "session_id": "invocation-1-session-1",
-        "capture_generation": 1,
         "outcome": "error",
         "report": { "error_type": "field_observer_finish_failed" }
     }))
@@ -837,7 +828,7 @@ fn socket_sends_snapshot_before_live_events_and_removes_its_own_path() {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     let snapshot: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v4");
+    assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v5");
     assert_eq!(snapshot["invocation_id"], "invocation-1");
     assert_eq!(snapshot["next_sequence"], 1);
     assert_eq!(snapshot["status"]["watcher"], "starting");
@@ -1400,7 +1391,6 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::ResultChanged {
             session_id: "invocation-1-session-1".to_owned(),
-            capture_generation: 1,
             source_sequence: 4,
             state: ResultState::Provisional {
                 song: provisional_song.clone(),
@@ -1418,7 +1408,6 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::ResultChanged {
             session_id: "invocation-1-session-1".to_owned(),
-            capture_generation: 1,
             source_sequence: 5,
             state: ResultState::Retracted {
                 song: provisional_song,
@@ -1437,7 +1426,6 @@ fn run_view_tracks_each_result_state_without_falling_back_after_retraction() {
             schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResultChanged {
                 session_id: "invocation-1-session-1".to_owned(),
-                capture_generation: 1,
                 source_sequence: 6,
                 state: ResultState::Inactive,
             },
@@ -1616,7 +1604,7 @@ fn socket_broadcasts_one_live_event_to_multiple_clients() {
     for reader in &mut readers {
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
-        assert!(snapshot.contains("scorepeek-event-snapshot-v4"));
+        assert!(snapshot.contains("scorepeek-event-snapshot-v5"));
     }
     channel.publish(wire_event(1));
     for reader in &mut readers {
@@ -1807,7 +1795,6 @@ fn public_worker_loss_and_oversize_do_not_fail_internal_publication() {
         schema: RUN_EVENT_SCHEMA.into(),
         kind: RunEventKind::MusicSelectionChanged {
             session_id: Some("x".repeat(event_api::MAX_RECORD_BYTES)),
-            capture_generation: Some(1),
             screen_episode_id: 1,
             source_sequence: 1,
             revision: 1,
@@ -1946,7 +1933,7 @@ fn full_event_queue_is_counted_without_blocking_the_producer() {
 
 #[test]
 fn plain_status_does_not_change_for_a_field_observation() {
-    let mut state = RunViewState::new("invocation-1".to_owned(), "e".repeat(64), true);
+    let mut state = RunViewState::new("invocation-1".to_owned(), true);
     let health = ChannelHealth::default();
     let before = plain_status_line(&state, &health);
     state.latest_observation = Some(json!({
@@ -1959,14 +1946,11 @@ fn plain_status_does_not_change_for_a_field_observation() {
 
 #[test]
 fn typed_reducer_tracks_session_report_and_stop_transitions() {
-    let mut state = RunViewState::new("invocation-1".to_owned(), "d".repeat(64), true);
+    let mut state = RunViewState::new("invocation-1".to_owned(), true);
     let started = RunEvent::from_value(json!({
         "schema": RUN_EVENT_SCHEMA,
         "event": "session_started",
         "session_id": "invocation-1-session-1",
-        "capture_generation": 1,
-        "capture_profile_sha256": "profile",
-        "normalizer_artifact_sha256": "normalizer"
     }))
     .unwrap();
     state.reduce(&started, &started.to_value().unwrap());
@@ -1981,7 +1965,6 @@ fn typed_reducer_tracks_session_report_and_stop_transitions() {
         "schema": RUN_EVENT_SCHEMA,
         "event": "session_finished",
         "session_id": "invocation-1-session-1",
-        "capture_generation": 1,
         "outcome": "source_ended",
         "report": { "recognition_ticks": 3 }
     }))
@@ -2000,9 +1983,6 @@ fn typed_reducer_tracks_session_report_and_stop_transitions() {
         "schema": RUN_EVENT_SCHEMA,
         "event": "session_started",
         "session_id": "invocation-1-session-2",
-        "capture_generation": 2,
-        "capture_profile_sha256": "profile",
-        "normalizer_artifact_sha256": "normalizer"
     }))
     .unwrap();
     state.reduce(&next_started, &next_started.to_value().unwrap());
@@ -2029,13 +2009,12 @@ fn typed_reducer_tracks_session_report_and_stop_transitions() {
 
 #[test]
 fn recording_health_and_ready_lifecycle_are_visible_in_the_typed_state() {
-    let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+    let mut state = RunViewState::new("invocation-1".to_owned(), true);
     assert_eq!(state.status_recording, "armed");
     let health = RunEvent::from_value(json!({
         "schema": RUN_EVENT_SCHEMA,
         "event": "recording_health_changed",
         "session_id": "session-1",
-        "capture_generation": 1,
         "state": "pressured",
         "memory_limit_bytes": 1_073_741_824_u64,
         "memory_used_bytes": 900_000_000_u64,
@@ -2051,7 +2030,6 @@ fn recording_health_and_ready_lifecycle_are_visible_in_the_typed_state() {
         "schema": RUN_EVENT_SCHEMA,
         "event": "session_finished",
         "session_id": "session-1",
-        "capture_generation": 1,
         "outcome": "source_ended",
         "report": {}
     }))
@@ -2074,7 +2052,7 @@ fn recording_health_and_ready_lifecycle_are_visible_in_the_typed_state() {
 #[test]
 fn result_history_remains_bounded_and_survives_session_changes() {
     let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-    let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+    let mut state = RunViewState::new("invocation-1".to_owned(), true);
     state.stable_result_song = Some(SongPresentation {
         scorepeek_song_id: song_id,
         display_titles: vec!["TITLE".to_owned()],
@@ -2083,7 +2061,6 @@ fn result_history_remains_bounded_and_survives_session_changes() {
     for source_sequence in 1..=(RESULT_HISTORY_CAPACITY as u64 + 1) {
         let result = detected_result_event(
             "session-1",
-            1,
             source_sequence,
             ResultDomainEvent {
                 contract: "scorepeek-result-detected-v4".to_owned(),
@@ -2133,9 +2110,6 @@ fn result_history_remains_bounded_and_survives_session_changes() {
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::SessionStarted {
             session_id: Some("session-2".to_owned()),
-            capture_generation: 2,
-            capture_profile_sha256: "b".repeat(64),
-            normalizer_artifact_sha256: "c".repeat(64),
         },
     };
     state.reduce(&next_session, &next_session.to_value().unwrap());
@@ -2175,7 +2149,6 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
     output
         .reduce_music_select_observation(
             Some(&"invocation-1-session-1".to_owned()),
-            Some(1),
             42,
             4_200,
             &fields,
@@ -2228,7 +2201,6 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
             schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some("invocation-1-session-1".to_owned()),
-                capture_generation: Some(1),
                 screen_episode_id: 43,
                 sequence: 43,
                 monotonic_end_ms: 4_300,
@@ -2291,7 +2263,6 @@ fn select_best_test_episode(session: &str, phase: SemanticEpisodePhase, sequence
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::SemanticScreenEpisodeChanged {
             session_id: Some(session.to_owned()),
-            capture_generation: Some(1),
             screen_episode_id: 1,
             sequence,
             monotonic_end_ms: sequence * 100,
@@ -2343,7 +2314,6 @@ fn select_best_is_frame_bound_suspended_and_separate_from_results() {
         output
             .reduce_music_select_observation(
                 Some(&session),
-                Some(1),
                 sequence,
                 sequence * 100,
                 fields,
@@ -2449,7 +2419,6 @@ fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot(
         output
             .reduce_music_select_observation(
                 Some(&session),
-                Some(1),
                 sequence,
                 sequence * 100,
                 &fields,
@@ -2464,7 +2433,6 @@ fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot(
         output
             .reduce_music_select_observation(
                 Some(&session),
-                Some(1),
                 sequence,
                 sequence * 100,
                 &fields,
@@ -2509,7 +2477,6 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
             output
                 .reduce_music_select_observation(
                     Some(&session),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &fields,
@@ -2535,7 +2502,6 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
             output
                 .reduce_music_select_observation(
                     Some(&session),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &missing_fields,
@@ -2549,7 +2515,6 @@ fn select_missing_frame_identity_holds_interval_without_adopting_values() {
             output
                 .reduce_music_select_observation(
                     Some(&session),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &fields,
@@ -2589,7 +2554,6 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
             output
                 .reduce_music_select_observation(
                     Some(&session),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &fields,
@@ -2623,7 +2587,6 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
         output
             .reduce_music_select_observation(
                 Some(&session),
-                Some(1),
                 6,
                 600,
                 &changed_fields,
@@ -2636,7 +2599,6 @@ fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
             output
                 .reduce_music_select_observation(
                     Some(&session),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &fields,
@@ -2683,7 +2645,6 @@ fn best_suppression_does_not_discard_admitted_selection_identity() {
             output
                 .reduce_music_select_observation(
                     Some(&session),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &fields,
@@ -2717,7 +2678,6 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
         output
             .reduce_music_select_observation(
                 Some(&session_id),
-                Some(1),
                 sequence,
                 sequence * 100,
                 &fields,
@@ -2734,7 +2694,6 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
     output
         .reduce_music_select_observation(
             Some(&session_id),
-            Some(1),
             4,
             400,
             &conflicting_fields,
@@ -2748,7 +2707,6 @@ fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
                 schema: RUN_EVENT_SCHEMA.to_owned(),
                 kind: RunEventKind::ScreenChanged {
                     session_id: Some(session_id),
-                    capture_generation: Some(1),
                     screen_episode_id: 10,
                     sequence: 5,
                     monotonic_start_ms: 500,
@@ -2834,7 +2792,6 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
             schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some(session_id.clone()),
-                capture_generation: Some(1),
                 screen_episode_id: 9,
                 sequence,
                 monotonic_end_ms: sequence * 100,
@@ -2850,7 +2807,6 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
             output
                 .reduce_music_select_observation(
                     Some(&session_id),
-                    Some(1),
                     sequence,
                     sequence * 100,
                     &fields,
@@ -2879,7 +2835,6 @@ fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
                 schema: RUN_EVENT_SCHEMA.to_owned(),
                 kind: RunEventKind::SessionFinished {
                     session_id: session_id.clone(),
-                    capture_generation: 1,
                     outcome: if finalize { "complete" } else { "failed" }.to_owned(),
                     report: json!({}),
                 },
@@ -2928,7 +2883,6 @@ fn pending_marker_is_visible_before_any_song_evidence() {
     output
         .reduce_music_select_observation(
             Some(&"invocation-1-session-1".to_owned()),
-            Some(1),
             10,
             1_000,
             &fields,

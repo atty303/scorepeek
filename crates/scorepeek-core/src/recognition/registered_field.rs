@@ -1088,7 +1088,6 @@ mod tests {
                 schema: RUN_EVENT_SCHEMA.into(),
                 kind: RunEventKind::ScreenChanged {
                     session_id: Some("session".into()),
-                    capture_generation: Some(0),
                     screen_episode_id: 1,
                     sequence: 1,
                     monotonic_start_ms: 100,
@@ -1099,8 +1098,7 @@ mod tests {
             coordinator.step(1, &start).unwrap();
             coordinator.step(2, &screen).unwrap();
             let event =
-                run_event_from_field_observation("session", 0, 1, 2, 200, 200, &observation)
-                    .unwrap();
+                run_event_from_field_observation("session", 1, 2, 200, 200, &observation).unwrap();
             let outputs = coordinator.step(3, &event).unwrap();
             let semantic_outputs = outputs
                 .effects()

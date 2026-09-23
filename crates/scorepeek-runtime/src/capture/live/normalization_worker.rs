@@ -1,16 +1,15 @@
 use super::*;
 
-pub(super) struct GamescopeCanonicalFrameSource<'a> {
+pub(super) struct LiveCanonicalFrameSource<'a> {
+    pub(super) session_id: std::sync::Arc<str>,
     pub(super) lease: &'a mut CaptureLease,
     pub(super) counters: &'a mut FieldObservationCounters,
     pub(super) sink: &'a mut BoundedDiagnosticSink,
     pub(super) normalizer: NormalizationWorker,
 }
 
-pub(super) type NormalizationResult = Result<
-    (NormalizedCanonicalFrame, CalibratedSourceFrameEvidence),
-    scorepeek::capture::CaptureError,
->;
+pub(super) type NormalizationResult =
+    Result<NormalizedCanonicalFrame, scorepeek::capture::CaptureError>;
 
 pub(super) struct NormalizationCompletion {
     pub(super) source_sequence: u64,
@@ -38,7 +37,7 @@ impl NormalizationWorker {
                     if results
                         .send(NormalizationCompletion {
                             source_sequence,
-                            result: normalizer.normalize_with_source(frame),
+                            result: normalizer.normalize(frame),
                         })
                         .is_err()
                     {
@@ -106,7 +105,7 @@ impl Drop for NormalizationWorker {
     }
 }
 
-impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
+impl CanonicalFrameSource for LiveCanonicalFrameSource<'_> {
     type Error = (FieldObservationGateErrorType, Option<CaptureErrorType>);
 
     fn next_frame(
@@ -124,15 +123,16 @@ impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
                 error_type,
                 self.sink,
             );
-            let (normalized, source) = completion.result.map_err(|error| {
+            let normalized = completion.result.map_err(|error| {
                 (
                     FieldObservationGateErrorType::NormalizationFailed,
                     Some(error.error_type()),
                 )
             })?;
             self.counters.normalized_frames = self.counters.normalized_frames.saturating_add(1);
-            return Ok(Some(BoundCanonicalFrame::from_normalized_with_source(
-                normalized, source,
+            return Ok(Some(BoundCanonicalFrame::from_normalized(
+                normalized,
+                std::sync::Arc::clone(&self.session_id),
             )));
         }
         if !self.normalizer.pending
@@ -157,15 +157,16 @@ impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
                 error_type,
                 self.sink,
             );
-            let (normalized, source) = completion.result.map_err(|error| {
+            let normalized = completion.result.map_err(|error| {
                 (
                     FieldObservationGateErrorType::NormalizationFailed,
                     Some(error.error_type()),
                 )
             })?;
             self.counters.normalized_frames = self.counters.normalized_frames.saturating_add(1);
-            return Ok(Some(BoundCanonicalFrame::from_normalized_with_source(
-                normalized, source,
+            return Ok(Some(BoundCanonicalFrame::from_normalized(
+                normalized,
+                std::sync::Arc::clone(&self.session_id),
             )));
         }
         let poll_timeout = if self.normalizer.pending {

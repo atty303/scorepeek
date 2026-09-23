@@ -35,7 +35,7 @@ impl Consumer {
             return Err("overlay invocation mismatch".into());
         }
         match text(record, "schema")? {
-            "scorepeek-event-snapshot-v4" => {
+            "scorepeek-event-snapshot-v5" => {
                 validate_status(&record["status"])?;
                 if record.get("result").is_none_or(Value::is_null) {
                     return Err("missing snapshot result state".into());
@@ -94,7 +94,7 @@ impl Consumer {
                 replacement.view.connected = true;
                 *self = replacement;
             }
-            "scorepeek-event-v4" => {
+            "scorepeek-event-v5" => {
                 validate_public_record(record, expected_invocation)?;
                 let sequence = number(record, "sequence")?;
                 if !self.view.connected
@@ -224,7 +224,7 @@ impl Consumer {
 fn validate_public_record(record: &Value, expected_invocation: &str) -> Result<(), String> {
     let envelope: PublicEnvelope =
         serde_json::from_value(record.clone()).map_err(|_| "invalid public event envelope")?;
-    if envelope.schema != "scorepeek-event-v4" || envelope.invocation_id != expected_invocation {
+    if envelope.schema != "scorepeek-event-v5" || envelope.invocation_id != expected_invocation {
         return Err("invalid public event envelope".into());
     }
     let _ = (
@@ -255,29 +255,13 @@ fn validate_capture(capture: &Value) -> Result<(), String> {
         return Ok(());
     }
     let object = capture.as_object().ok_or("invalid capture context")?;
-    if !object.contains_key("session_id")
-        || !(object["session_id"].is_null() || object["session_id"].is_string())
+    if object.len() != 1
+        || object
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
     {
         return Err("invalid capture session".into());
-    }
-    number(capture, "capture_generation")?;
-    let binding = object.get("binding").ok_or("missing capture binding")?;
-    if let Some(binding) = binding.as_object() {
-        for key in [
-            "capture_profile_sha256",
-            "normalizer_sha256",
-            "canonical_layout_sha256",
-            "catalog_sha256",
-            "model_sha256",
-            "runtime_sha256",
-        ] {
-            binding
-                .get(key)
-                .and_then(Value::as_str)
-                .ok_or("incomplete capture binding")?;
-        }
-    } else if !binding.is_null() {
-        return Err("invalid capture binding".into());
     }
     Ok(())
 }
@@ -453,7 +437,7 @@ fn validate_select_best(record: &Value) -> Result<(), String> {
     if snapshot.is_null() {
         return Ok(());
     }
-    if text(snapshot, "contract")? != "scorepeek-music-select-best-snapshot-v3" {
+    if text(snapshot, "contract")? != "scorepeek-music-select-best-snapshot-v4" {
         return Err("unsupported music select best snapshot".into());
     }
     number(snapshot, "revision")?;
@@ -577,7 +561,7 @@ mod tests {
     use serde_json::json;
 
     fn status() -> Value {
-        json!({"watcher":"session_active","capture":{"session_id":"session","capture_generation":1,"binding":null},"catalog":"ready","model":"ready","scores":"ready","recording":null,"last_session_outcome":null})
+        json!({"watcher":"session_active","capture":{"session_id":"session"},"catalog":"ready","model":"ready","scores":"ready","recording":null,"last_session_outcome":null})
     }
 
     fn result_payload() -> Value {
@@ -604,7 +588,7 @@ mod tests {
     }
 
     fn wire(sequence: u64, event: &Value) -> Value {
-        let mut record = json!({"schema":"scorepeek-event-v4","invocation_id":"a","sequence":sequence,"event_id":format!("a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+i64::try_from(sequence).unwrap(),"capture":{"session_id":"session","capture_generation":1,"binding":null}});
+        let mut record = json!({"schema":"scorepeek-event-v5","invocation_id":"a","sequence":sequence,"event_id":format!("a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+i64::try_from(sequence).unwrap(),"capture":{"session_id":"session"}});
         record
             .as_object_mut()
             .unwrap()
@@ -614,11 +598,11 @@ mod tests {
 
     fn snapshot(next_sequence: u64, result: &Value, screen: Option<&Value>) -> Value {
         let result = json!({"event":"result_changed","source_sequence":0,"state":result});
-        json!({"schema":"scorepeek-event-snapshot-v4","invocation_id":"a","next_sequence":next_sequence,"status":status(),"result":wire(0,&result),"screen_state":screen,"music_selection":null,"music_select_best":null})
+        json!({"schema":"scorepeek-event-snapshot-v5","invocation_id":"a","next_sequence":next_sequence,"status":status(),"result":wire(0,&result),"screen_state":screen,"music_selection":null,"music_select_best":null})
     }
 
     #[test]
-    fn unknown_v4_event_advances_sequence() {
+    fn unknown_v5_event_advances_sequence() {
         let mut c = Consumer::default();
         c.apply(&snapshot(2, &result_state("inactive"), None), "a")
             .unwrap();

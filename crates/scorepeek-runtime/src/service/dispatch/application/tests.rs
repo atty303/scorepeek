@@ -1,17 +1,15 @@
-use super::{
-    CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
-    LIVE_SESSION_FLAGS, RecordingRetention, RunArgs, catalog_paths, command_flag_values,
-    initialize_routine_model, live_session_event_value, load_run_options,
-    optional_recognition_root, parse_diagnostic_recording_policy, parse_routine_run_options,
-    prepare_live_diagnostic_root, routine_session_disposition, run_config_command,
-    run_startup_stage, transient_admission_capture_error,
-};
 use super::{LiveSessionEmission, run_event_from_live_emission};
-use crate::capture_live::GamescopeLiveSessionEvent;
+use super::{
+    RecordingRetention, RunArgs, catalog_paths, initialize_routine_model, live_session_event_value,
+    load_run_options, parse_routine_run_options, prepare_live_diagnostic_root,
+    routine_session_disposition, run_config_command, run_startup_stage,
+    transient_admission_capture_error,
+};
+use crate::capture_live::CaptureSessionEvent;
 use crate::config::document::ConfigFile;
 use crate::config::document::validate as validate_config_file;
 use crate::config::effective as config_effective;
-use crate::diagnostics::contract::{DiagnosticPolicy, DiagnosticRetention};
+use crate::diagnostics::contract::DiagnosticPolicy;
 use scorepeek::capture::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticStatus,
@@ -141,7 +139,7 @@ fn resolved_two_player_result_observation() -> RegisteredScreenFieldObservation 
 
 fn publish_headless_live_event(
     routine: &mut crate::events::server::RoutineOutput,
-    event: GamescopeLiveSessionEvent<'_>,
+    event: CaptureSessionEvent<'_>,
 ) {
     let value = live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
     routine
@@ -187,7 +185,7 @@ fn publish_two_player_result_episode(
     ] {
         publish_headless_live_event(
             routine,
-            GamescopeLiveSessionEvent::SemanticScreenEpisode {
+            CaptureSessionEvent::SemanticScreenEpisode {
                 screen_episode_id,
                 sequence,
                 monotonic_end_ms: sequence * 100,
@@ -199,7 +197,7 @@ fn publish_two_player_result_episode(
     for sequence in [6, 7] {
         publish_headless_live_event(
             routine,
-            GamescopeLiveSessionEvent::RawScreenObserved {
+            CaptureSessionEvent::RawScreenObserved {
                 semantic_episode_id: Some(3),
                 sequence,
                 monotonic_start_ms: sequence * 100,
@@ -215,7 +213,7 @@ fn publish_two_player_result_episode(
     for sequence in [8, 9] {
         publish_headless_live_event(
             routine,
-            GamescopeLiveSessionEvent::Observation {
+            CaptureSessionEvent::Observation {
                 screen_episode_id: 3,
                 sequence,
                 monotonic_start_ms: sequence * 100,
@@ -515,18 +513,18 @@ fn capture_diagnostic_events_use_the_stage_timing_schema() {
         sequence: 1,
         monotonic_start_ms: 2,
         monotonic_end_ms: 3,
-        operation: CaptureDiagnosticOperation::ProfileBindingAdmission,
+        operation: CaptureDiagnosticOperation::SourceAdmission,
         status: CaptureDiagnosticStatus::Success,
         error_type: None,
-        detail: CaptureDiagnosticDetail::ProfileBindingAdmission,
+        detail: CaptureDiagnosticDetail::SourceAdmission,
     };
     let value = live_session_event_value(
         Some("session-1"),
         Some(1),
-        GamescopeLiveSessionEvent::CaptureDiagnostic { fact: &fact },
+        CaptureSessionEvent::CaptureDiagnostic { fact: &fact },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-capture-diagnostic-v2");
+    assert_eq!(value["schema"], "scorepeek-capture-diagnostic-v3");
     assert_eq!(value["event"], "capture_diagnostic");
 }
 
@@ -600,13 +598,6 @@ fn scores_options_are_independent_of_recording_and_reject_conflicts() {
             .collect::<Vec<_>>();
         assert!(parse_routine_run_options(&options).is_err());
     }
-}
-
-#[test]
-fn unrecorded_run_disables_the_recognition_artifact_root() {
-    let root = Path::new("/tmp/recognition");
-    assert_eq!(optional_recognition_root(false, root), None);
-    assert_eq!(optional_recognition_root(true, root), Some(root));
 }
 
 #[test]
@@ -751,64 +742,6 @@ fn catalog_paths_fall_back_to_home_and_reject_relative_values() {
 }
 
 #[test]
-fn live_session_command_requires_the_exact_ordered_contract() {
-    let mut args = vec!["run".into(), "gamescope".into()];
-    for (index, flag) in LIVE_SESSION_FLAGS.iter().enumerate() {
-        args.push((*flag).into());
-        args.push(format!("value-{index}").into());
-    }
-    let values = command_flag_values(&args, "run", "gamescope", LIVE_SESSION_FLAGS).unwrap();
-    assert_eq!(values.len(), LIVE_SESSION_FLAGS.len());
-    assert_eq!(values[0], OsStr::new("value-0"));
-
-    args[0] = "capture".into();
-    assert!(command_flag_values(&args, "run", "gamescope", LIVE_SESSION_FLAGS).is_none());
-    args[0] = "run".into();
-    args.pop();
-    assert!(command_flag_values(&args, "run", "gamescope", LIVE_SESSION_FLAGS).is_none());
-}
-
-#[test]
-fn runtime_gate_contracts_have_no_launch_metadata_arguments() {
-    for flags in [
-        LIVE_SESSION_FLAGS,
-        CAPTURE_HANDOFF_FLAGS,
-        CAPTURE_FIELD_OBSERVATION_FLAGS,
-        CAPTURE_RESULT_RECOGNITION_FLAGS,
-    ] {
-        for removed in [
-            "--environment-id",
-            "--gamescope-version",
-            "--backend",
-            "--output-width",
-            "--output-height",
-            "--nested-width",
-            "--nested-height",
-            "--nested-refresh",
-            "--scaler",
-            "--filter",
-        ] {
-            assert!(!flags.contains(&removed));
-        }
-    }
-
-    let mut args = vec!["capture".into(), "gamescope-field-observation-gate".into()];
-    for (index, flag) in CAPTURE_FIELD_OBSERVATION_FLAGS.iter().enumerate() {
-        args.push((*flag).into());
-        args.push(format!("value-{index}").into());
-    }
-    assert!(
-        command_flag_values(
-            &args,
-            "capture",
-            "gamescope-field-observation-gate",
-            CAPTURE_FIELD_OBSERVATION_FLAGS,
-        )
-        .is_some()
-    );
-}
-
-#[test]
 fn live_session_prepares_an_absent_private_diagnostic_root() {
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("diagnostics");
@@ -816,13 +749,6 @@ fn live_session_prepares_an_absent_private_diagnostic_root() {
     assert_eq!(preflight.status, "ready");
     assert_eq!(preflight.error_type, None);
     assert!(root.is_dir());
-}
-
-#[test]
-fn internal_capture_cli_never_enables_runtime_frame_artifacts() {
-    let policy = parse_diagnostic_recording_policy(OsStr::new("enabled")).unwrap();
-    assert!(policy.enabled);
-    assert_eq!(policy.retention, DiagnosticRetention::FactsOnly);
 }
 
 #[test]
@@ -867,15 +793,21 @@ fn only_source_disappearance_is_retried_during_admission() {
 fn live_serializer_and_reducer_keep_one_recording_schema() {
     use crate::events::server::RoutineOutput;
     let mut output = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
+    let source_evidence = scorepeek::capture::RuntimeCaptureEvidence {
+        backend: "pipewire",
+        source_contract: serde_json::json!({"width": 1920, "height": 1080}),
+        normalization_input_format: "BGRx",
+        memory_type: scorepeek::capture::UncalibratedMemoryType::MemoryPointer,
+        stride: 7680,
+        crop: scorepeek::capture::EdgeCrop::default(),
+        normalization: "edge_crop_linear_bgrx_to_rgb8_v1",
+        canonical_output: scorepeek_core::frame::CANONICAL_FRAME_CONTRACT_ID,
+    };
     for event in [
-        GamescopeLiveSessionEvent::Started {
-            capture_generation: 1,
-            capture_profile_sha256: "profile",
-            normalizer_artifact_sha256: "normalizer",
-            capture_profile_document: None,
-            normalizer_document: None,
+        CaptureSessionEvent::Started {
+            source_evidence: &source_evidence,
         },
-        GamescopeLiveSessionEvent::SemanticScreenEpisode {
+        CaptureSessionEvent::SemanticScreenEpisode {
             screen_episode_id: 1,
             sequence: 1,
             monotonic_end_ms: 100,
@@ -901,7 +833,7 @@ fn live_serializer_and_reducer_keep_one_recording_schema() {
         1,
         "the corpus reader rejects mixed-schema sessions"
     );
-    assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v17"));
+    assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v18"));
 }
 
 #[test]
@@ -909,7 +841,7 @@ fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
     let value = live_session_event_value(
         Some("invocation-session-2"),
         Some(2),
-        GamescopeLiveSessionEvent::RawScreenObserved {
+        CaptureSessionEvent::RawScreenObserved {
             semantic_episode_id: Some(1),
             sequence: 41,
             monotonic_start_ms: 100,
@@ -922,11 +854,11 @@ fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
         },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-run-event-v17");
+    assert_eq!(value["schema"], "scorepeek-run-event-v18");
     assert_eq!(value["event"], "raw_screen_observed");
     assert_eq!(value["semantic_episode_id"], 1);
     assert_eq!(value["session_id"], "invocation-session-2");
-    assert_eq!(value["capture_generation"], 2);
+    assert!(value.get("capture_generation").is_none());
     assert_eq!(value["sequence"], 41);
     assert_eq!(value["screen"], "unknown");
     assert_eq!(value["result_presence"]["warm_pixels"], 2_900);
@@ -939,7 +871,7 @@ fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
     let mode = live_session_event_value(
         Some("invocation-session-2"),
         Some(2),
-        GamescopeLiveSessionEvent::SemanticScreenEpisode {
+        CaptureSessionEvent::SemanticScreenEpisode {
             screen_episode_id: 1,
             sequence: 42,
             monotonic_end_ms: 150,
@@ -973,7 +905,7 @@ fn live_result_output_retains_exact_ocr_and_typed_resolution() {
     let value = live_session_event_value(
         Some("invocation-session-1"),
         Some(1),
-        GamescopeLiveSessionEvent::Observation {
+        CaptureSessionEvent::Observation {
             screen_episode_id: 0,
             sequence: 42,
             monotonic_start_ms: 100,
@@ -1019,7 +951,7 @@ fn production_result_serializer_reaches_provisional_and_confirmed_output() {
 
     publish_headless_live_event(
         &mut routine,
-        GamescopeLiveSessionEvent::SemanticScreenEpisode {
+        CaptureSessionEvent::SemanticScreenEpisode {
             screen_episode_id: 3,
             sequence: 10,
             monotonic_end_ms: 1_000,
@@ -1038,7 +970,7 @@ fn production_result_serializer_reaches_provisional_and_confirmed_output() {
 }
 
 #[test]
-fn routine_observation_binds_session_and_generation() {
+fn routine_observation_binds_session_without_generation() {
     let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
     let output = project_fields(
         &domain,
@@ -1056,7 +988,7 @@ fn routine_observation_binds_session_and_generation() {
     let value = live_session_event_value(
         Some("invocation-session-2"),
         Some(2),
-        GamescopeLiveSessionEvent::Observation {
+        CaptureSessionEvent::Observation {
             screen_episode_id: 0,
             sequence: 1,
             monotonic_start_ms: 10,
@@ -1065,9 +997,9 @@ fn routine_observation_binds_session_and_generation() {
         },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-run-event-v17");
+    assert_eq!(value["schema"], "scorepeek-run-event-v18");
     assert_eq!(value["session_id"], "invocation-session-2");
-    assert_eq!(value["capture_generation"], 2);
+    assert!(value.get("capture_generation").is_none());
     assert_eq!(value["sequence"], 1);
 }
 
@@ -1098,7 +1030,7 @@ fn routine_live_emission_bounds_json_without_truncating_authority() {
     let value = live_session_event_value(
         Some("invocation-session-2"),
         Some(2),
-        GamescopeLiveSessionEvent::Observation {
+        CaptureSessionEvent::Observation {
             screen_episode_id: 7,
             sequence: 8,
             monotonic_start_ms: 10,
@@ -1116,7 +1048,6 @@ fn routine_live_emission_bounds_json_without_truncating_authority() {
     );
 
     let event = run_event_from_live_emission(LiveSessionEmission {
-        public_binding: None,
         value,
         authority_joint_evidence: Some(authority.clone()),
         diagnostic_identity: None,
@@ -1152,7 +1083,7 @@ fn accepted_resolution_includes_catalog_title_artist_and_evidence() {
     let value = live_session_event_value(
         Some("invocation-session-1"),
         Some(1),
-        GamescopeLiveSessionEvent::Observation {
+        CaptureSessionEvent::Observation {
             screen_episode_id: 0,
             sequence: 1,
             monotonic_start_ms: 10,

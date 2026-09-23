@@ -14,7 +14,6 @@ impl RunEventReducer {
     pub(super) fn reduce_result_observation(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         sequence: u64,
         monotonic_end_ms: u64,
         fields: &Value,
@@ -50,7 +49,6 @@ impl RunEventReducer {
                 schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
                 kind: RunEventKind::ResultSelectContextMismatch {
                     session_id: session_id.cloned(),
-                    capture_generation,
                     screen_episode_id: self.screen_episode_id,
                     source_sequence: sequence,
                     select_play_side: select_side,
@@ -58,17 +56,11 @@ impl RunEventReducer {
                 },
             })?;
             if let Some(state) = self.engine.play_attempt.detach_selection_linkage() {
-                self.publish_play_attempt_update(
-                    session_id.cloned(),
-                    capture_generation,
-                    Some(sequence),
-                    state,
-                )?;
+                self.publish_play_attempt_update(session_id.cloned(), Some(sequence), state)?;
             }
         }
         self.publish_resolver_transition(
             session_id,
-            capture_generation,
             sequence,
             ResolverScope::Result,
             &result_summary,
@@ -79,7 +71,6 @@ impl RunEventReducer {
         let joint_summary = joint.summary();
         self.publish_resolver_transition(
             session_id,
-            capture_generation,
             sequence,
             ResolverScope::AttemptJoint,
             &joint_summary,
@@ -129,21 +120,18 @@ impl RunEventReducer {
                         schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
                         kind: RunEventKind::NumericResultChanged {
                             session_id: session_id.cloned(),
-                            capture_generation,
                             source_sequence: evidence.sequence,
                             state: transition.state,
                             reason: transition.reason,
                             event_suppression_reason: self
-                                .numeric_event_suppression_reason(session_id, capture_generation),
+                                .numeric_event_suppression_reason(session_id),
                         },
                     })?;
                     if transition.replaced_accepted
-                        && let (Some(session_id), Some(capture_generation)) =
-                            (session_id.cloned(), capture_generation)
+                        && let Some(session_id) = session_id.cloned()
                     {
                         self.withdraw_result_provisional(
                             session_id,
-                            capture_generation,
                             evidence.sequence,
                             ResultRetractionReason::EvidenceUnresolved,
                         )?;
@@ -151,8 +139,8 @@ impl RunEventReducer {
                 }
             }
         }
-        self.sync_result_provisional(session_id.cloned(), capture_generation, sequence)?;
-        self.try_emit_result(session_id.cloned(), capture_generation, sequence)?;
+        self.sync_result_provisional(session_id.cloned(), sequence)?;
+        self.try_emit_result(session_id.cloned(), sequence)?;
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
         self.refresh()
     }
@@ -362,7 +350,6 @@ impl RunEventReducer {
     pub(super) fn numeric_event_suppression_reason(
         &self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
     ) -> Option<NumericResultEventSuppressionReason> {
         if self
             .engine
@@ -372,7 +359,7 @@ impl RunEventReducer {
         {
             return Some(NumericResultEventSuppressionReason::AlreadyEmitted);
         }
-        if session_id.is_none() || capture_generation.is_none() {
+        if session_id.is_none() {
             return Some(NumericResultEventSuppressionReason::SessionUnavailable);
         }
         let Some(numeric) = self.accepted_numeric_result.as_ref() else {
@@ -392,13 +379,12 @@ impl RunEventReducer {
     pub(super) fn try_emit_result(
         &mut self,
         session_id: Option<String>,
-        capture_generation: Option<u64>,
         fallback_sequence: u64,
     ) -> Result<(), RunEventReductionError> {
         if !self.result_episode_finalizing {
             return Ok(());
         }
-        let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation) else {
+        let Some(session_id) = session_id else {
             return Ok(());
         };
         let Some(numeric) = self.accepted_numeric_result.as_ref() else {
@@ -425,7 +411,6 @@ impl RunEventReducer {
             let attempt_id = accepted_attempt.attempt_id;
             self.publish_result_state(
                 session_id,
-                capture_generation,
                 source_sequence,
                 ResultState::Confirmed {
                     song: candidate.song,
@@ -464,7 +449,6 @@ impl RunEventReducer {
         if self.active_provisional_result.as_ref() != Some(&candidate) {
             self.publish_result_state(
                 session_id.clone(),
-                capture_generation,
                 source_sequence,
                 ResultState::Provisional {
                     song: candidate.song.clone(),
@@ -474,7 +458,6 @@ impl RunEventReducer {
         }
         self.publish_result_state(
             session_id,
-            capture_generation,
             source_sequence,
             ResultState::Confirmed {
                 song: candidate.song.clone(),
@@ -489,7 +472,6 @@ impl RunEventReducer {
     pub(super) fn sync_result_provisional(
         &mut self,
         session_id: Option<String>,
-        capture_generation: Option<u64>,
         fallback_sequence: u64,
     ) -> Result<(), RunEventReductionError> {
         if self.holds_stable_numeric_result() {
@@ -516,7 +498,7 @@ impl RunEventReducer {
                     numeric.source_sequence.max(fallback_sequence),
                 ))
             });
-        let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation) else {
+        let Some(session_id) = session_id else {
             return Ok(());
         };
         match candidate {
@@ -525,7 +507,6 @@ impl RunEventReducer {
             {
                 self.publish_result_state(
                     session_id,
-                    capture_generation,
                     source_sequence,
                     ResultState::Provisional {
                         song: candidate.song.clone(),
@@ -537,7 +518,6 @@ impl RunEventReducer {
             None if self.active_provisional_result.is_some() => {
                 self.withdraw_result_provisional(
                     session_id,
-                    capture_generation,
                     fallback_sequence,
                     ResultRetractionReason::EvidenceUnresolved,
                 )?;
@@ -563,7 +543,6 @@ impl RunEventReducer {
     pub(super) fn withdraw_result_provisional(
         &mut self,
         session_id: String,
-        capture_generation: u64,
         source_sequence: u64,
         reason: ResultRetractionReason,
     ) -> Result<(), RunEventReductionError> {
@@ -572,7 +551,6 @@ impl RunEventReducer {
         };
         self.publish_result_state(
             session_id,
-            capture_generation,
             source_sequence,
             ResultState::Retracted {
                 song: candidate.song,
@@ -585,7 +563,6 @@ impl RunEventReducer {
     pub(super) fn publish_result_state(
         &mut self,
         session_id: String,
-        capture_generation: u64,
         source_sequence: u64,
         state: ResultState,
     ) -> Result<(), RunEventReductionError> {
@@ -593,7 +570,6 @@ impl RunEventReducer {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResultChanged {
                 session_id,
-                capture_generation,
                 source_sequence,
                 state,
             },

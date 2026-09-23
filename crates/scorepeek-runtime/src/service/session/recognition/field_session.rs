@@ -21,9 +21,9 @@ use super::{
     FieldInputPolicy, PreparedRecognitionFrame, RecognitionFrameResult, RecognitionObservation,
     RecognitionSession, RecognitionSessionError,
 };
-use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
+use crate::service::session::recognition::BoundCanonicalFrame;
 
 #[derive(Debug)]
 pub enum FieldObservationStartError<E> {
@@ -100,6 +100,10 @@ pub struct FieldObservationSession<O: FieldObserver> {
 }
 
 impl<O: FieldObserver> FieldObservationSession<O> {
+    pub(crate) fn session_id(&self) -> &str {
+        self.recognition.session_id()
+    }
+
     pub(crate) fn record_sampling_summary(
         &mut self,
         sequence: u64,
@@ -422,6 +426,50 @@ fn duration_millis_saturating(duration: Duration) -> u64 {
 }
 
 impl FieldObservationSession<RegisteredScreenFieldObserver> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "session start binds diagnostics, resources, and worker mode once"
+    )]
+    pub(crate) fn start_registered_with_execution_context(
+        root: &Path,
+        directory_name: Option<&str>,
+        context: super::RecognitionExecutionContext,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        catalog_root: &Path,
+        bundle_root: &Path,
+        execution_mode: RecognitionExecutionMode,
+    ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
+        let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+        let workers = recommended_text_worker_count(execution_mode, available_parallelism);
+        let capacity = match execution_mode {
+            RecognitionExecutionMode::Live => 2,
+            RecognitionExecutionMode::Offline => workers.saturating_mul(2),
+        };
+        let field_observer = FieldObserverWorker::start_with_execution_context(
+            &context,
+            |binding| {
+                let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
+                RegisteredScreenFieldObserver::new(resources, execution_mode)
+            },
+            capacity,
+        )
+        .map_err(FieldObservationStartError::FieldObserver)?;
+        let recognition = RecognitionSession::start_with_execution_context(
+            root,
+            directory_name,
+            context,
+            descriptor,
+            policy,
+        );
+        Ok(Self {
+            recognition,
+            field_observer,
+            owner: Arc::new(()),
+            outstanding: Vec::new(),
+        })
+    }
+
     /// Starts the production session with the exact registered catalog, model, and runtime.
     ///
     /// # Errors
@@ -610,7 +658,7 @@ mod tests {
         FieldObserverFinishStatus, FieldObserverInput,
     };
 
-    fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
+    fn descriptor(run_id: &str, _generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
             run_id: run_id.to_owned(),
             monotonic_start_ms: 0,
@@ -620,9 +668,6 @@ mod tests {
                 build_sha256: "1".repeat(64),
             },
             binding: DiagnosticBinding {
-                capture_generation: generation,
-                capture_profile_sha256: "2".repeat(64),
-                normalizer_sha256: "3".repeat(64),
                 canonical_layout_sha256: CanonicalLayout::sha256(),
                 catalog_sha256: "5".repeat(64),
                 model_sha256: "6".repeat(64),
@@ -690,7 +735,7 @@ mod tests {
             2,
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame = solid_frame([200, 100, 20], 1, 1).for_test_session("integrated-field");
         let result = session.inspect(&frame).unwrap();
         assert_eq!(result.observation.screen(), ScreenClass::Result);
         let FieldObservationSubmission::Submitted(pending) = result.field_submission else {
@@ -740,7 +785,8 @@ mod tests {
         )
         .unwrap();
 
-        let result_frame = solid_frame([200, 100, 20], 1, 1);
+        let result_frame =
+            solid_frame([200, 100, 20], 1, 1).for_test_session("busy-field-screen-tick");
         let result = session.inspect_while_field_busy(&result_frame).unwrap();
         assert_eq!(result.observation.screen(), ScreenClass::Result);
         assert!(matches!(
@@ -748,7 +794,7 @@ mod tests {
             FieldObservationSubmission::BusySkipped
         ));
 
-        let unknown_frame = solid_frame([0, 0, 0], 1, 2);
+        let unknown_frame = solid_frame([0, 0, 0], 1, 2).for_test_session("busy-field-screen-tick");
         let unknown = session.inspect_while_field_busy(&unknown_frame).unwrap();
         assert_eq!(unknown.observation.screen(), ScreenClass::Unknown);
         assert!(matches!(
@@ -774,7 +820,7 @@ mod tests {
             2,
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame = solid_frame([200, 100, 20], 1, 1).for_test_session("integrated-field-disabled");
         let result = session.inspect(&frame).unwrap();
         let FieldObservationSubmission::Submitted(pending) = result.field_submission else {
             panic!("result screen did not submit complete field inputs");
@@ -813,12 +859,13 @@ mod tests {
             1,
         )
         .unwrap();
-        let first = solid_frame([200, 100, 20], 1, 1);
+        let first = solid_frame([200, 100, 20], 1, 1).for_test_session("integrated-field-capacity");
         let first_result = session.inspect(&first).unwrap();
         let FieldObservationSubmission::Submitted(pending) = first_result.field_submission else {
             panic!("first result was not submitted");
         };
-        let second = solid_frame([200, 100, 20], 1, 2);
+        let second =
+            solid_frame([200, 100, 20], 1, 2).for_test_session("integrated-field-capacity");
         let second_result = session.inspect(&second).unwrap();
         assert_eq!(second_result.observation.screen(), ScreenClass::Result);
         assert!(matches!(
@@ -877,7 +924,7 @@ mod tests {
             1,
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame = solid_frame([200, 100, 20], 1, 1).for_test_session("integrated-field-first");
         let first_result = first_session.inspect(&frame).unwrap();
         let FieldObservationSubmission::Submitted(first_pending) = first_result.field_submission
         else {
@@ -917,7 +964,8 @@ mod tests {
             1,
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame =
+            solid_frame([200, 100, 20], 1, 1).for_test_session("integrated-field-disconnected");
         let result = session.inspect(&frame).unwrap();
         let FieldObservationSubmission::Submitted(pending) = result.field_submission else {
             panic!("result screen did not submit complete field inputs");

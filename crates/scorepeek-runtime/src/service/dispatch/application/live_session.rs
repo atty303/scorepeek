@@ -336,12 +336,8 @@ pub(super) fn run_routine_live_session(
     });
     let build_sha256 = settle_startup_result(&mut diagnostics, monitor, identity_result)?;
     let stop = monitor.stop_token();
-    let output_result = routine_output::RoutineOutput::start(
-        invocation_id.clone(),
-        "0".repeat(64),
-        recording_enabled,
-        diagnostics,
-    );
+    let output_result =
+        routine_output::RoutineOutput::start(invocation_id.clone(), recording_enabled, diagnostics);
     let mut output = match output_result {
         Ok(output) => output,
         Err(error) => {
@@ -616,19 +612,6 @@ pub(super) fn run_routine_live_session(
                         None
                     }
                 };
-                let diagnostic_root = Path::new("/");
-                let recognition_root = None;
-                let values = routine_live_values(
-                    generation,
-                    diagnostic_root,
-                    &catalog_root,
-                    &session_id,
-                    &build_sha256,
-                    &run_catalog_digest,
-                    "disabled",
-                    recognition_root,
-                );
-                let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
                 let runtime_capture = match capture {
                     RoutineCapture::Pipewire { node_name } => {
                         capture_live::RuntimeCaptureInput::Pipewire {
@@ -655,11 +638,8 @@ pub(super) fn run_routine_live_session(
                     output.refresh_scores()?;
                     output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
                     let output_started = std::time::Instant::now();
-                    if let Some(binding) = emission.public_binding.clone() {
-                        output.bind_public_session(binding);
-                    }
                     if let Some(identity) = emission.diagnostic_identity.as_ref() {
-                        output.record_diagnostic("capture_generation_identity", identity, true);
+                        output.record_diagnostic("capture_session_identity", identity, true);
                     }
                     if let Some(fact) = emission.diagnostic_capture_fact.as_ref() {
                         output.record_diagnostic("capture", fact, true);
@@ -684,14 +664,14 @@ pub(super) fn run_routine_live_session(
                     })
                 };
                 let report = execute_live_session(
-                    &references,
+                    &catalog_root,
                     bundle,
-                    false,
+                    &session_id,
+                    &build_sha256,
+                    &run_catalog_digest,
                     recording_memory_limit,
                     recording_retention,
                     session_paths.as_ref().map(|paths| paths.root.as_path()),
-                    Some(&session_id),
-                    Some(node_id),
                     runtime_capture,
                     &stop,
                     &mut emit,
@@ -717,7 +697,6 @@ pub(super) fn run_routine_live_session(
                         schema: RUN_EVENT_SCHEMA.to_owned(),
                         kind: RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
-                            capture_generation: generation,
                             outcome: outcome.to_owned(),
                             report: serde_json::to_value(&report).map_err(|error| {
                                 format!("live report serialization failed: {error}")
@@ -744,7 +723,7 @@ pub(super) fn run_routine_live_session(
                     if fatal {
                         return Err(report
                             .failure_detail()
-                            .unwrap_or("capture generation failed")
+                            .unwrap_or("capture session failed")
                             .to_owned());
                     }
                 } else {
@@ -841,42 +820,13 @@ pub(super) const fn transient_admission_capture_error(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn routine_live_values(
-    generation: u64,
-    diagnostic_root: &Path,
-    catalog_root: &Path,
-    session_id: &str,
-    build_sha256: &str,
-    catalog_sha256: &str,
-    recording: &str,
-    recognition_root: Option<&Path>,
-) -> Vec<OsString> {
-    vec![
-        Path::new("/").as_os_str().to_owned(),
-        "0".repeat(64).into(),
-        generation.to_string().into(),
-        diagnostic_root.as_os_str().to_owned(),
-        catalog_root.as_os_str().to_owned(),
-        session_id.into(),
-        build_sha256.into(),
-        CanonicalLayout::sha256().into(),
-        catalog_sha256.into(),
-        recording.into(),
-        recognition_root
-            .unwrap_or(Path::new("/"))
-            .as_os_str()
-            .to_owned(),
-    ]
-}
-
 pub(super) fn announce_watcher_state(
     announced: &mut Option<routine_watcher::WatcherState>,
     state: routine_watcher::WatcherState,
     message: &str,
     output: &mut routine_output::RoutineOutput,
 ) -> Result<(), String> {
-    output.watcher_state(state.as_str(), None, None, message)?;
+    output.watcher_state(state.as_str(), None, message)?;
     if *announced != Some(state) {
         *announced = Some(state);
     }
@@ -936,230 +886,66 @@ pub(super) fn record_canonical_publication_summary(
     }), true);
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub(super) fn try_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
-    let values = command_flag_values(args, "run", "gamescope", LIVE_SESSION_FLAGS)?;
-    Some(run_live_session(&values, bundle, true))
-}
-#[cfg(test)]
-pub(super) fn try_capture_result_recognition(
-    args: &[OsString],
-    bundle: &Path,
-) -> Option<Result<(), String>> {
-    let values = capture_flag_values(
-        args,
-        "gamescope-result-recognition-gate",
-        CAPTURE_RESULT_RECOGNITION_FLAGS,
-    )?;
-    let (artifact, common) = values
-        .split_last()
-        .expect("result recognition flags are non-empty");
-    Some(run_capture_field_observation(
-        common,
-        bundle,
-        Some(Path::new(artifact)),
-    ))
-}
-
-#[cfg(test)]
-pub(super) fn try_capture_field_observation(
-    args: &[OsString],
-    bundle: &Path,
-) -> Option<Result<(), String>> {
-    let values = capture_flag_values(
-        args,
-        "gamescope-field-observation-gate",
-        CAPTURE_FIELD_OBSERVATION_FLAGS,
-    )?;
-    Some(run_capture_field_observation(&values, bundle, None))
-}
-
-#[cfg(test)]
-pub(super) fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), String>> {
-    let values = capture_flag_values(
-        args,
-        "gamescope-recognition-handoff-gate",
-        CAPTURE_HANDOFF_FLAGS,
-    )?;
-    Some(run_capture_handoff(&values, true))
-}
-
-#[cfg(test)]
-pub(super) fn try_capture_diagnostic_handoff(args: &[OsString]) -> Option<Result<(), String>> {
-    let values = capture_flag_values(
-        args,
-        "gamescope-diagnostic-handoff-gate",
-        CAPTURE_HANDOFF_FLAGS,
-    )?;
-    Some(run_capture_handoff(&values, false))
-}
-
-#[cfg(test)]
-pub(super) fn capture_flag_values<'a>(
-    args: &'a [OsString],
-    command: &str,
-    flags: &[&str],
-) -> Option<Vec<&'a OsStr>> {
-    command_flag_values(args, "capture", command, flags)
-}
-
-#[cfg(test)]
-pub(super) fn command_flag_values<'a>(
-    args: &'a [OsString],
-    namespace: &str,
-    command: &str,
-    flags: &[&str],
-) -> Option<Vec<&'a OsStr>> {
-    if args.first()? != namespace || args.get(1)? != command || args.len() != 2 + flags.len() * 2 {
-        return None;
-    }
-    let mut values = Vec::with_capacity(flags.len());
-    for (pair, expected_flag) in args[2..].chunks_exact(2).zip(flags) {
-        if pair[0] != *expected_flag {
-            return None;
-        }
-        values.push(pair[1].as_os_str());
-    }
-    Some(values)
-}
-
-#[cfg(test)]
-pub(super) fn run_live_session(
-    values: &[&OsStr],
-    bundle_root: &Path,
-    persist_recognition: bool,
-) -> Result<(), String> {
-    let monitor = live_control::SignalStopMonitor::start()?;
-    let stop = monitor.stop_token();
-    let stdout = io::stdout();
-    let mut output = BufWriter::new(stdout.lock());
-    let mut emit = |emission: LiveSessionEmission| {
-        let started = std::time::Instant::now();
-        write_ndjson(&mut output, &emission.value)?;
-        Ok(capture_live::LiveEventProcessingTiming {
-            screen_resolver_us: None,
-            attempt_resolver_us: None,
-            output_us: Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)),
-        })
-    };
-    let legacy_capture = capture_live::RuntimeCaptureInput::LegacyGamescope {
-        binding_path: Path::new(&values[0]),
-        expected_binding_sha256: values[1]
-            .to_str()
-            .ok_or_else(|| "binding digest must be UTF-8".to_owned())?,
-        expected_source_node_id: None,
-    };
-    let report = execute_live_session(
-        values,
-        bundle_root,
-        persist_recognition,
-        RecordingMemoryLimit::default_limit(),
-        RecordingRetention::Selective,
-        None,
-        None,
-        None,
-        legacy_capture,
-        &stop,
-        &mut emit,
-    )?;
-    write_ndjson(&mut output, &report)?;
-    report.succeeded().then_some(()).ok_or_else(|| {
-        report
-            .failure_detail()
-            .unwrap_or("Gamescope live recognition session failed")
-            .to_owned()
-    })
-}
-
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) fn execute_live_session(
-    values: &[&OsStr],
+    catalog_root: &Path,
     bundle_root: &Path,
-    persist_recognition: bool,
+    session_id: &str,
+    build_sha256: &str,
+    catalog_sha256: &str,
     recording_memory_limit: RecordingMemoryLimit,
     recording_retention: RecordingRetention,
     canonical_recording_root: Option<&Path>,
-    session_id: Option<&str>,
-    expected_source_node_id: Option<u32>,
     runtime_capture: capture_live::RuntimeCaptureInput<'_>,
     stop: &std::sync::atomic::AtomicBool,
     emit: &mut impl FnMut(
         LiveSessionEmission,
     ) -> Result<capture_live::LiveEventProcessingTiming, String>,
-) -> Result<capture_live::GamescopeFieldObservationGateReport, String> {
-    let [
-        binding,
-        binding_digest,
-        generation,
-        diagnostic_root,
-        catalog_root,
-        run_id,
-        build_digest,
-        layout_digest,
-        catalog_digest,
-        recording,
-        recognition_artifact_root,
-    ] = values
-    else {
-        unreachable!("live session flag parser returns the exact value count");
-    };
-    let binding_digest = parse_cli_sha256(binding_digest, "binding SHA-256")?;
-    let generation = parse_capture_generation(generation)?;
+) -> Result<capture_live::CaptureSessionReport, String> {
+    let execution_context = crate::service::session::recognition::RecognitionExecutionContext::new(
+        session_id.to_owned(),
+        CanonicalLayout::sha256(),
+        catalog_sha256.to_owned(),
+        recognition_title::LIVE_MODEL_SHA256.to_owned(),
+        recognition_title::LIVE_RUNTIME_SHA256.to_owned(),
+    )
+    .ok_or_else(|| "recognition session context is invalid".to_owned())?;
     let descriptor = DiagnosticRunDescriptor {
-        run_id: parse_diagnostic_run_id(run_id)?,
+        run_id: execution_context.session_id.clone(),
         monotonic_start_ms: 0,
         resource: DiagnosticResource {
             program: "scorepeek",
             version: env!("CARGO_PKG_VERSION"),
-            build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
+            build_sha256: build_sha256.to_owned(),
         },
         binding: DiagnosticBinding {
-            capture_generation: generation.get(),
-            capture_profile_sha256: String::new(),
-            normalizer_sha256: String::new(),
-            canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
-            catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: recognition_title::LIVE_MODEL_SHA256.to_owned(),
-            runtime_sha256: recognition_title::LIVE_RUNTIME_SHA256.to_owned(),
+            canonical_layout_sha256: execution_context.canonical_layout_sha256.clone(),
+            catalog_sha256: execution_context.catalog_sha256.clone(),
+            model_sha256: execution_context.model_sha256.clone(),
+            runtime_sha256: execution_context.runtime_sha256.clone(),
             replay: None,
         },
     };
-    let policy = parse_diagnostic_recording_policy(recording)?;
-    let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
-    if session_id.is_none() {
-        emit(LiveSessionEmission {
-            public_binding: None,
-            value: serde_json::to_value(&diagnostic_preflight)
-                .map_err(|error| format!("live result serialization failed: {error}"))?,
-            authority_joint_evidence: None,
-            diagnostic_identity: None,
-            diagnostic_capture_fact: None,
-        })?;
-    }
-    let public_binding = descriptor.binding.clone();
+    let policy = DiagnosticPolicy {
+        enabled: false,
+        ..DiagnosticPolicy::default()
+    };
+    let resource_revisions = serde_json::json!({
+        "canonical_layout_sha256": descriptor.binding.canonical_layout_sha256,
+        "catalog_sha256": descriptor.binding.catalog_sha256,
+        "model_sha256": descriptor.binding.model_sha256,
+        "runtime_sha256": descriptor.binding.runtime_sha256,
+    });
     let report = capture_live::run_runtime_live_session(
-        capture_live::GamescopeFieldObservationGateConfig {
-            handoff: capture_live::GamescopeDiagnosticHandoffGateConfig {
-                binding_path: Path::new(binding),
-                expected_binding_sha256: &binding_digest,
-                capture_generation: generation,
-                descriptor,
-                policy,
-                duration_ms: 0,
-                diagnostic_root: Path::new(diagnostic_root),
-                diagnostic_directory_name: session_id.map(|_| "capture"),
-                expected_source_node_id,
-            },
-            catalog_root: Path::new(catalog_root),
+        capture_live::LiveCaptureSessionConfig {
+            execution_context,
+            descriptor,
+            diagnostic_policy: policy,
+            diagnostic_root: Path::new("/"),
+            diagnostic_directory_name: Some("capture"),
+            catalog_root,
             bundle_root,
-            recognition_artifact_root: optional_recognition_root(
-                persist_recognition,
-                Path::new(recognition_artifact_root),
-            ),
             canonical_recording_root,
-            recognition_artifact_retention:
-                recognition_artifact::RecognitionArtifactRetention::Complete,
             recording_memory_limit,
             recording_retention,
             runtime_capture,
@@ -1168,59 +954,32 @@ pub(super) fn execute_live_session(
         &mut |event| {
             let started = std::time::Instant::now();
             let diagnostic_identity = match event {
-                capture_live::GamescopeLiveSessionEvent::Started {
-                    capture_generation,
-                    capture_profile_sha256,
-                    normalizer_artifact_sha256,
-                    capture_profile_document,
-                    normalizer_document,
-                } => Some(serde_json::json!({
-                    "capture_generation": capture_generation,
-                    "capture_profile_sha256": capture_profile_sha256,
-                    "capture_profile": capture_profile_document,
-                    "normalizer_sha256": normalizer_artifact_sha256,
-                    "normalizer": normalizer_document,
-                })),
+                capture_live::CaptureSessionEvent::Started { source_evidence } => {
+                    Some(serde_json::json!({
+                        "session_id": session_id,
+                        "source": source_evidence,
+                        "resources": resource_revisions,
+                    }))
+                }
                 _ => None,
             };
             let diagnostic_capture_fact = match event {
-                capture_live::GamescopeLiveSessionEvent::CaptureDiagnostic { fact } => {
+                capture_live::CaptureSessionEvent::CaptureDiagnostic { fact } => {
                     Some(serde_json::to_value(fact).map_err(|error| {
                         format!("capture diagnostic serialization failed: {error}")
                     })?)
                 }
                 _ => None,
             };
-            let authority_joint_evidence = if session_id.is_some() {
-                match &event {
-                    capture_live::GamescopeLiveSessionEvent::Observation { output, .. } => {
-                        Some(output.joint_evidence().clone())
-                    }
-                    _ => None,
+            let authority_joint_evidence = match &event {
+                capture_live::CaptureSessionEvent::Observation { output, .. } => {
+                    Some(output.joint_evidence().clone())
                 }
-            } else {
-                None
-            };
-            let binding = match event {
-                capture_live::GamescopeLiveSessionEvent::Started {
-                    capture_profile_sha256,
-                    normalizer_artifact_sha256,
-                    ..
-                } => Some(crate::events::snapshot::Binding {
-                    capture_profile: capture_profile_sha256.to_owned(),
-                    normalizer: normalizer_artifact_sha256.to_owned(),
-                    canonical_layout: public_binding.canonical_layout_sha256.clone(),
-                    catalog: public_binding.catalog_sha256.clone(),
-                    model: public_binding.model_sha256.clone(),
-                    runtime: public_binding.runtime_sha256.clone(),
-                }),
                 _ => None,
             };
-            let value =
-                live_session_event_value(session_id, session_id.map(|_| generation.get()), event)?;
+            let value = live_session_event_value(Some(session_id), None, event)?;
             let serialization_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             let mut timing = emit(LiveSessionEmission {
-                public_binding: binding,
                 value,
                 authority_joint_evidence,
                 diagnostic_identity,

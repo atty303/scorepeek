@@ -1,15 +1,16 @@
-# Event API v4
+# Event API v5
 
 `scorepeek run` owns the stable Unix socket `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A connection
-receives one UTF-8 NDJSON `scorepeek-event-snapshot-v4` record followed by
-`scorepeek-event-v4` records. There is no request, handshake, subscription message, ACK, retained
+receives one UTF-8 NDJSON `scorepeek-event-snapshot-v5` record followed by
+`scorepeek-event-v5` records. There is no request, handshake, subscription message, ACK, retained
 event log, or second version-named socket.
 
 ## Envelope and identity
 
 Every live record contains `schema`, `invocation_id`, a gap-detecting public `sequence`, unique
 `event_id`, `emitted_unix_ms`, `emitted_monotonic_ms`, nullable `capture`, and `event`. Capture
-context contains the admitted `session_id`, `capture_generation`, and immutable binding digests.
+context contains only the admitted, nonempty `session_id`. A null `capture` means no capture
+session owns the event. Source and resource details belong to the runtime diagnostic stream.
 The result attempt identity is `(capture.session_id, state.result.attempt_id)`; no separate result ID
 or result-local revision exists. Every state transition has its own envelope event ID and sequence.
 
@@ -49,7 +50,7 @@ its corresponding live event and require every live `sequence` to equal `next_se
 and replace local state after a disconnect or gap. `score_store_changed` has no snapshot slot; reread
 the named chart from SQLite.
 
-Unknown additive v4 event kinds and fields may be ignored after envelope and sequence validation.
+Unknown additive v5 event kinds and fields may be ignored after envelope and sequence validation.
 Consumers must reject unknown schema versions. A process restart creates a new invocation and loses
 socket-only state/history; SQLite is the durable play-history authority.
 

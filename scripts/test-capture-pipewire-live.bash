@@ -78,20 +78,20 @@ scorepeek_pid=
 
 diagnostics=$(find "${test_root}/state/scorepeek/diagnostics" -name diagnostics.ndjson -type f -print -quit)
 test -n "${diagnostics}"
-grep -q '"capture_generation":1' "${diagnostics}"
-grep -q '"capture_generation":2' "${diagnostics}"
-grep -q '"capture_generation":3' "${diagnostics}"
-grep -q '"capture_generation":4' "${diagnostics}"
-grep -q '\\"width\\":1280' "${diagnostics}"
-grep -q '\\"width\\":1024' "${diagnostics}"
-grep -q '\\"width\\":640' "${diagnostics}"
-grep -q '\\"width\\":800' "${diagnostics}"
+test "$(grep -c '"operation":"capture_session_identity"' "${diagnostics}")" -ge 4
+grep -q '"backend":"pipewire"' "${diagnostics}"
+grep -q '"source_contract":{' "${diagnostics}"
+grep -q '"session_id":"[^\"]*-session-[1-9][0-9]*"' "${diagnostics}"
+grep -q '"width":1280' "${diagnostics}"
+grep -q '"width":1024' "${diagnostics}"
+grep -q '"width":640' "${diagnostics}"
+grep -q '"width":800' "${diagnostics}"
 grep -q 'source_contract_changed' "${diagnostics}"
 grep -Eq '"operation":"frame_normalization".*"status":"success"' "${diagnostics}"
 grep -q 'performance_summary' "${diagnostics}"
 if grep -q '"outcome":"error"' "${diagnostics}"; then
-  echo "capture generation ended with an error" >&2
+  echo "capture session ended with an error" >&2
   exit 1
 fi
 
-echo "generic PipeWire source disappearance, reappearance, same-node contract change, crop admission, and generation switch passed"
+echo "generic PipeWire source disappearance, reappearance, same-node contract change, crop admission, and session switch passed"

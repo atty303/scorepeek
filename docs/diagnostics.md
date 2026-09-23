@@ -10,8 +10,10 @@ observation records. Their canonical sequence and pixels live in the separate re
 The runtime emits `domain_summary` after every 256 core inputs and at session or watcher
 finish. The summary includes cumulative input, no-op, transition, and output counts,
 admitted frame and completed field counts, source sequence gaps, bounded screen and output-kind counts,
-and a small state snapshot; it does not repeat canonical pixels or tick metadata. Session
-start and finish records carry the relative canonical locator when recording is enabled.
+and a small state snapshot; it does not repeat canonical pixels or tick metadata.
+The summary includes count, sum, and maximum microseconds for completed field processing,
+end-to-end frame processing, and field queue wait. Missing timing values are excluded.
+Session start and finish records carry the relative canonical locator when recording is enabled.
 Session finish reports publication from the completed capture report;
 `recording_summary` reports retained frames, elided ticks, bytes, and publication
 status from the completed manifest. `runtime_run_summary` includes terminal recording
@@ -26,8 +28,8 @@ degrades diagnostics only: the run continues, the in-memory ring remains availab
 writing is not retried in that invocation.
 
 Capture lifecycle and error facts are written when they occur rather than being deferred until
-generation shutdown. Each backend also writes bounded rolling frame-timing summaries every 30
-seconds and at generation end with count, p50, p95, p99, maximum, and drop counters. Vulkan
+session shutdown. Each backend also writes bounded rolling frame-timing summaries every 30
+seconds and at session end with count, p50, p95, p99, maximum, and drop counters. Vulkan
 summaries separately retain request-to-present, producer submit, present-call, post-present
 producer-fence wait, consumer-readback, and total latency distributions. Producer-fence wait is
 zero when the copy fence completes before `vkQueuePresentKHR` returns, so the present-call and
@@ -35,11 +37,12 @@ producer-fence stages do not count the same interval twice. Summaries also retai
 busy-drop, and coalesced-drop counters plus the selected consumer queue family, flags, global
 priority, command-recording, and staging-map strategy. The `dropped` total contains producer
 busy and coalesced drops; eviction from the bounded 600-sample latency window is not a frame drop.
-Counters are present even before the first completed frame. Generation
-identity records contain both canonical capture/normalizer documents and their digests; public
-events continue to expose only the digests.
+Counters are present even before the first completed frame. The
+`capture_session_identity` record contains the actual source contract, memory type,
+stride, crop, normalization method, canonical output contract, and recognition resource
+revisions. Public events expose only the session ID.
 Capture diagnostic events carrying these stage distributions use the
-`scorepeek-capture-diagnostic-v2` schema.
+`scorepeek-capture-diagnostic-v3` schema.
 
 Catalog acquisition records `catalog_update` operations for URL resolution,
 conditional fetch, ZIP extraction/digest verification, and atomic activation.

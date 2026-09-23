@@ -561,7 +561,6 @@ pub struct RunEventReducer {
     attempt_started_ms: Option<u64>,
     attempt_phase_started_ms: Option<u64>,
     active_session_id: Option<String>,
-    capture_generation: Option<u64>,
     current_screen: Option<String>,
     raw_screen: Option<String>,
     resolver_now_ms: u64,
@@ -589,17 +588,11 @@ impl RunEventReducer {
         match &event.kind {
             RunEventKind::CanonicalSessionStarted { session_id } => {
                 self.active_session_id = Some(session_id.clone());
-                self.capture_generation = Some(0);
                 self.current_screen = None;
                 self.raw_screen = None;
             }
-            RunEventKind::SessionStarted {
-                session_id,
-                capture_generation,
-                ..
-            } => {
+            RunEventKind::SessionStarted { session_id, .. } => {
                 self.active_session_id.clone_from(session_id);
-                self.capture_generation = Some(*capture_generation);
                 self.current_screen = None;
                 self.raw_screen = None;
             }
@@ -619,7 +612,6 @@ impl RunEventReducer {
             RunEventKind::SessionFinished { .. }
             | RunEventKind::CanonicalSessionFinished { .. } => {
                 self.active_session_id = None;
-                self.capture_generation = None;
                 self.current_screen = None;
             }
             _ => {}
@@ -674,7 +666,6 @@ impl RunEventReducer {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::MusicSelectResolverChanged {
                 session_id: self.active_session_id.clone(),
-                capture_generation: self.capture_generation,
                 state,
             },
         })
@@ -892,7 +883,6 @@ mod tests {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some("session-1".to_owned()),
-                capture_generation: Some(1),
                 screen_episode_id: 7,
                 sequence: 11,
                 monotonic_end_ms: 1_100,

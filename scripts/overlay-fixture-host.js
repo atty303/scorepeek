@@ -145,11 +145,11 @@ controller.listen(controlSocket, () => {
   if (backend === "wayland") {
     feedServer = net.createServer((socket) => {
       socket.write(JSON.stringify({
-        schema: "scorepeek-event-snapshot-v4", invocation_id: "nested-wayland-fixture",
+        schema: "scorepeek-event-snapshot-v5", invocation_id: "nested-wayland-fixture",
         next_sequence: 1,
         status: { watcher: "session_active", capture: null, catalog: "ready", model: "ready",
           scores: null, recording: null, last_session_outcome: null },
-        result: { schema: "scorepeek-event-v4", invocation_id: "nested-wayland-fixture",
+        result: { schema: "scorepeek-event-v5", invocation_id: "nested-wayland-fixture",
           sequence: 0, event_id: "nested-wayland-fixture:0", emitted_monotonic_ms: 0,
           emitted_unix_ms: 1000, capture: null, event: "result_changed", source_sequence: 0,
           state: { status: "inactive" } },

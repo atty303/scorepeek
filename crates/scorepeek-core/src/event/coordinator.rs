@@ -207,13 +207,9 @@ mod tests {
             }),
             event(RunEventKind::SessionStarted {
                 session_id: Some("session-1".into()),
-                capture_generation: 1,
-                capture_profile_sha256: "a".repeat(64),
-                normalizer_artifact_sha256: "b".repeat(64),
             }),
             event(RunEventKind::ScreenChanged {
                 session_id: Some("session-1".into()),
-                capture_generation: Some(1),
                 screen_episode_id: 1,
                 sequence: 3,
                 monotonic_start_ms: 300,
@@ -228,19 +224,14 @@ mod tests {
             }),
             event(RunEventKind::SessionFinished {
                 session_id: "session-1".into(),
-                capture_generation: 1,
                 outcome: "complete".into(),
                 report: serde_json::Value::Null,
             }),
             event(RunEventKind::SessionStarted {
                 session_id: Some("session-2".into()),
-                capture_generation: 2,
-                capture_profile_sha256: "a".repeat(64),
-                normalizer_artifact_sha256: "b".repeat(64),
             }),
             event(RunEventKind::SessionFinished {
                 session_id: "session-2".into(),
-                capture_generation: 2,
                 outcome: "complete".into(),
                 report: serde_json::Value::Null,
             }),

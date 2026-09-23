@@ -1,9 +1,8 @@
 use std::fmt;
-use std::sync::Arc;
 
 use serde::Serialize;
 
-use super::{CaptureGeneration, UncalibratedFrame};
+use super::BgrxFrame;
 
 const CANONICAL_WIDTH: usize = 1_920;
 const CANONICAL_HEIGHT: usize = 1_080;
@@ -175,14 +174,13 @@ impl FractionalLinearGeometry {
     /// geometry's observed `BGRx` contract.
     pub fn normalize(
         &self,
-        frame: &UncalibratedFrame,
+        frame: BgrxFrame<'_>,
     ) -> Result<UnboundCanonicalFrame, UnboundNormalizationError> {
-        let contract = frame.contract();
-        if contract.width != self.observed_width || contract.height != self.observed_height {
+        if frame.width != self.observed_width || frame.height != self.observed_height {
             return Err(UnboundNormalizationError::ObservedContractMismatch);
         }
-        let stride = usize::try_from(frame.stride())
-            .map_err(|_| UnboundNormalizationError::StrideMismatch)?;
+        let stride =
+            usize::try_from(frame.stride).map_err(|_| UnboundNormalizationError::StrideMismatch)?;
         let observed_width = usize::try_from(self.observed_width)
             .map_err(|_| UnboundNormalizationError::InvalidGeometry)?;
         let observed_height = usize::try_from(self.observed_height)
@@ -196,11 +194,11 @@ impl FractionalLinearGeometry {
         let expected_bytes = stride
             .checked_mul(observed_height)
             .ok_or(UnboundNormalizationError::FrameLengthMismatch)?;
-        if frame.bytes().len() != expected_bytes {
+        if frame.pixels.len() != expected_bytes {
             return Err(UnboundNormalizationError::FrameLengthMismatch);
         }
         let pixels = normalize_bgrx(
-            frame.bytes(),
+            frame.pixels,
             stride,
             observed_width,
             observed_height,
@@ -209,8 +207,8 @@ impl FractionalLinearGeometry {
         );
         Ok(UnboundCanonicalFrame {
             pixels: pixels.into_boxed_slice(),
-            source_sequence: frame.sequence(),
-            received_monotonic_ns: frame.received_monotonic_ns(),
+            source_sequence: frame.source_sequence,
+            received_monotonic_ns: frame.received_monotonic_ns,
         })
     }
 
@@ -360,12 +358,9 @@ impl UnboundCanonicalFrame {
     }
 }
 
-/// Canonical RGB8 frame bound to one admitted capture generation, profile, and normalizer.
+/// One normalized RGB8 frame before session-level recognition admission.
 pub struct NormalizedCanonicalFrame {
     pixels: Box<[u8]>,
-    capture_generation: CaptureGeneration,
-    capture_profile_sha256: Arc<str>,
-    normalizer_artifact_sha256: Arc<str>,
     source_sequence: u64,
     received_monotonic_ns: u64,
 }
@@ -374,12 +369,6 @@ impl fmt::Debug for NormalizedCanonicalFrame {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("NormalizedCanonicalFrame")
-            .field("capture_generation", &self.capture_generation)
-            .field("capture_profile_sha256", &self.capture_profile_sha256)
-            .field(
-                "normalizer_artifact_sha256",
-                &self.normalizer_artifact_sha256,
-            )
             .field("source_sequence", &self.source_sequence)
             .field("received_monotonic_ns", &self.received_monotonic_ns)
             .field("byte_count", &self.pixels.len())
@@ -388,19 +377,11 @@ impl fmt::Debug for NormalizedCanonicalFrame {
 }
 
 impl NormalizedCanonicalFrame {
-    pub(super) fn bind(
-        frame: UnboundCanonicalFrame,
-        capture_generation: CaptureGeneration,
-        capture_profile_sha256: Arc<str>,
-        normalizer_artifact_sha256: Arc<str>,
-    ) -> Self {
+    pub(super) fn bind(frame: UnboundCanonicalFrame) -> Self {
         Self {
             source_sequence: frame.source_sequence,
             received_monotonic_ns: frame.received_monotonic_ns,
             pixels: frame.pixels,
-            capture_generation,
-            capture_profile_sha256,
-            normalizer_artifact_sha256,
         }
     }
 
@@ -412,21 +393,6 @@ impl NormalizedCanonicalFrame {
     #[must_use]
     pub fn into_pixels(self) -> Box<[u8]> {
         self.pixels
-    }
-
-    #[must_use]
-    pub const fn capture_generation(&self) -> CaptureGeneration {
-        self.capture_generation
-    }
-
-    #[must_use]
-    pub fn capture_profile_sha256(&self) -> &str {
-        &self.capture_profile_sha256
-    }
-
-    #[must_use]
-    pub fn normalizer_artifact_sha256(&self) -> &str {
-        &self.normalizer_artifact_sha256
     }
 
     #[must_use]
@@ -656,6 +622,7 @@ fn sampling_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::UncalibratedFrame;
     use crate::capture::UncalibratedVideoContract;
 
     fn rational(numerator: i64, denominator: u32) -> RationalCoordinate {
@@ -834,7 +801,7 @@ mod tests {
             11,
             bgrx,
         );
-        let normalized = geometry.normalize(&frame).unwrap();
+        let normalized = geometry.normalize(frame.bgrx()).unwrap();
         assert_eq!(normalized.pixels().len(), CANONICAL_BYTES);
         assert_eq!(&normalized.pixels()[..3], &[33, 22, 11]);
         assert_eq!(
@@ -856,7 +823,7 @@ mod tests {
             vec![0; 1_919 * 1_080 * 4],
         );
         assert_eq!(
-            geometry.normalize(&wrong_contract).unwrap_err(),
+            geometry.normalize(wrong_contract.bgrx()).unwrap_err(),
             UnboundNormalizationError::ObservedContractMismatch
         );
 
@@ -868,7 +835,7 @@ mod tests {
             vec![0; 1_920 * 1_080 * 4 - 1],
         );
         assert_eq!(
-            geometry.normalize(&short_frame).unwrap_err(),
+            geometry.normalize(short_frame.bgrx()).unwrap_err(),
             UnboundNormalizationError::FrameLengthMismatch
         );
     }

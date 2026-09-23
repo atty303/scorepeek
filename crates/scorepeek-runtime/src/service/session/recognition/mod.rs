@@ -5,23 +5,27 @@ use std::time::Instant;
 use crate::diagnostics::contract::{
     DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
-use scorepeek_core::frame::CanonicalLayout;
+use scorepeek_core::frame::{CanonicalFrameView, CanonicalLayout};
 use scorepeek_core::recognition::music_select::MusicSelectScreenRgb8Crops;
 use scorepeek_core::recognition::screen::{
     RecognitionError, ResultScreenRgb8Crops, ScreenClass, ScreenFieldObservationError,
     ScreenFieldObservations, ScreenPredicateObservation, ScreenRgb8Crops, TitleConfirmationState,
-    TitleScreenRgb8Crops, confirm_title_screen, inspect_canonical_rgb8, route_screen_rgb8_crops,
+    TitleScreenRgb8Crops, confirm_title_screen, inspect_canonical_frame, route_screen_rgb8_crops,
 };
 
 use self::field_observer::{
     BoundFieldObservation, FieldObserverFinishOutcome, FieldObserverFinishStatus,
     FieldObserverOfferError,
 };
-use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
+use crate::diagnostics::live::RecognitionDiagnosticRecorder;
 use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
 use crate::diagnostics::writer::DiagnosticFinishOutcome;
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 
+mod execution;
+mod frame;
+pub(crate) use execution::RecognitionExecutionContext;
+pub(crate) use frame::BoundCanonicalFrame;
 pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
@@ -42,8 +46,8 @@ pub(crate) enum FieldInputPolicy {
 
 /// One screen-predicate result that borrows its immutable live capture evidence.
 ///
-/// The result cannot outlive or detach from the profile- and generation-bearing frame that was
-/// inspected. It carries no accepted field or event authority.
+/// The result cannot outlive the canonical frame inspected for this session.
+/// It carries no accepted field or event authority.
 #[derive(Debug)]
 pub struct RecognitionObservation<'a> {
     frame: &'a BoundCanonicalFrame,
@@ -80,8 +84,9 @@ impl PreparedRecognitionFrame {
     /// # Errors
     /// Returns an error when the canonical pixels or embedded layouts are invalid.
     pub fn prepare_since(pixels: &[u8], started: Instant) -> Result<Self, RecognitionError> {
+        let frame = CanonicalFrameView::new(pixels)?;
         let classification_started = Instant::now();
-        let predicate = inspect_canonical_rgb8(pixels)?;
+        let predicate = inspect_canonical_frame(frame)?;
         let screen_classification_us = duration_us(classification_started.elapsed());
         let crop_started = Instant::now();
         let field_inputs = predicate
@@ -122,7 +127,7 @@ impl<'a> RecognitionObservation<'a> {
         Ok(Self {
             frame,
             canonical_layout_sha256: CanonicalLayout::sha256(),
-            predicate: inspect_canonical_rgb8(frame.pixels())?,
+            predicate: inspect_canonical_frame(CanonicalFrameView::new(frame.pixels())?)?,
         })
     }
 
@@ -243,11 +248,7 @@ pub struct BoundScreenRgb8Crops<'a> {
     crops: ScreenRgb8Crops,
 }
 
-#[derive(Debug)]
-struct RecognitionRunBinding {
-    run_id: String,
-    binding_sha256: String,
-}
+type RecognitionRunBinding = execution::RecognitionExecutionContext;
 
 /// A borrowed view of one opaque live screen-crop owner.
 #[derive(Clone, Copy, Debug)]
@@ -288,19 +289,20 @@ pub struct RecognitionTransition {
     pub next: RecognitionSession,
 }
 
-/// Application-owned recognition lifetime for one immutable diagnostic binding.
-///
-/// This is a resource boundary, not an inferred game session. A different capture generation or
-/// recognition input is rejected; `transition` records the explicit change, finishes the old run,
-/// and only then starts the replacement session.
+/// Recognition lifetime for one capture session and fixed resource selection.
+/// Frames from a different session are rejected before recognition.
 pub struct RecognitionSession {
     run_binding: Arc<RecognitionRunBinding>,
-    bridge: DiagnosticBridge,
+    bridge: RecognitionDiagnosticRecorder,
     last_sequence: Option<u64>,
     title_confirmation: TitleConfirmationState,
 }
 
 impl RecognitionSession {
+    pub(crate) fn session_id(&self) -> &str {
+        &self.run_binding.session_id
+    }
+
     fn confirm_title(&mut self, predicate: &mut ScreenPredicateObservation) {
         let (next, confirmed) = confirm_title_screen(self.title_confirmation, predicate.clone());
         self.title_confirmation = next;
@@ -316,14 +318,10 @@ impl RecognitionSession {
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
     ) -> Result<Self, RecognitionSessionError> {
-        let binding_sha256 = validate_descriptor(&descriptor)?;
-        let run_id = descriptor.run_id.clone();
-        let bridge = DiagnosticBridge::start(root, descriptor, policy);
+        let context = validate_descriptor(&descriptor)?;
+        let bridge = RecognitionDiagnosticRecorder::start(root, descriptor, policy);
         Ok(Self {
-            run_binding: Arc::new(RecognitionRunBinding {
-                run_id,
-                binding_sha256,
-            }),
+            run_binding: Arc::new(context),
             bridge,
             last_sequence: None,
             title_confirmation: TitleConfirmationState::default(),
@@ -336,18 +334,36 @@ impl RecognitionSession {
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
     ) -> Result<Self, RecognitionSessionError> {
-        let binding_sha256 = validate_descriptor(&descriptor)?;
-        let run_id = descriptor.run_id.clone();
-        let bridge = DiagnosticBridge::start_named(root, directory_name, descriptor, policy);
+        let context = validate_descriptor(&descriptor)?;
+        let bridge =
+            RecognitionDiagnosticRecorder::start_named(root, directory_name, descriptor, policy);
         Ok(Self {
-            run_binding: Arc::new(RecognitionRunBinding {
-                run_id,
-                binding_sha256,
-            }),
+            run_binding: Arc::new(context),
             bridge,
             last_sequence: None,
             title_confirmation: TitleConfirmationState::default(),
         })
+    }
+
+    pub(crate) fn start_with_execution_context(
+        root: &Path,
+        directory_name: Option<&str>,
+        context: RecognitionExecutionContext,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+    ) -> Self {
+        let bridge = match directory_name {
+            Some(name) => {
+                RecognitionDiagnosticRecorder::start_named(root, name, descriptor, policy)
+            }
+            None => RecognitionDiagnosticRecorder::start(root, descriptor, policy),
+        };
+        Self {
+            run_binding: Arc::new(context),
+            bridge,
+            last_sequence: None,
+            title_confirmation: TitleConfirmationState::default(),
+        }
     }
 
     /// Inspects one frame after the independent diagnostic sampler sees the same owner.
@@ -367,7 +383,7 @@ impl RecognitionSession {
         field_policy: FieldInputPolicy,
     ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
         let frame_started = Instant::now();
-        if !self.bridge.matches_frame(frame) {
+        if frame.session_id() != self.run_binding.session_id {
             return Err(RecognitionSessionError::FrameBindingMismatch);
         }
         self.last_sequence = Some(frame.sequence());
@@ -456,7 +472,7 @@ impl RecognitionSession {
         frame: &'a BoundCanonicalFrame,
         prepared: PreparedRecognitionFrame,
     ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
-        if !self.bridge.matches_frame(frame) {
+        if frame.session_id() != self.run_binding.session_id {
             return Err(RecognitionSessionError::FrameBindingMismatch);
         }
         if prepared.pixel_address != frame.pixels().as_ptr() as usize
@@ -535,10 +551,10 @@ impl RecognitionSession {
     where
         T: DiagnosticScreenFieldObservation,
     {
-        assert_eq!(observation.binding().run_id(), self.run_binding.run_id);
+        assert_eq!(observation.binding().run_id(), self.run_binding.session_id);
         assert_eq!(
             observation.binding().identity_sha256(),
-            self.run_binding.binding_sha256
+            self.run_binding.identity_sha256
         );
         self.bridge.record_field_observation_summary(
             observation.sequence(),
@@ -658,14 +674,14 @@ impl RecognitionSession {
         next_policy: DiagnosticPolicy,
         monotonic_ms: u64,
     ) -> Result<RecognitionTransition, RecognitionSessionError> {
-        let next_binding_sha256 = validate_descriptor(&next_descriptor)?;
-        if next_binding_sha256 == self.run_binding.binding_sha256 {
+        let next_context = validate_descriptor(&next_descriptor)?;
+        if next_context.identity_sha256 == self.run_binding.identity_sha256 {
             return Err(RecognitionSessionError::BindingUnchanged);
         }
         let binding_change_diagnostic = self.bridge.record_binding_change(
             self.last_sequence.unwrap_or(0),
             monotonic_ms,
-            next_binding_sha256,
+            next_context.identity_sha256,
         );
         let finished = self
             .bridge
@@ -685,15 +701,12 @@ impl RecognitionSession {
         policy: DiagnosticPolicy,
         supervisor: &std::sync::Mutex<std::sync::Weak<()>>,
     ) -> Result<Self, RecognitionSessionError> {
-        let binding_sha256 = validate_descriptor(&descriptor)?;
-        let run_id = descriptor.run_id.clone();
-        let bridge =
-            DiagnosticBridge::start_with_supervisor_for_test(root, descriptor, policy, supervisor);
+        let context = validate_descriptor(&descriptor)?;
+        let bridge = RecognitionDiagnosticRecorder::start_with_supervisor_for_test(
+            root, descriptor, policy, supervisor,
+        );
         Ok(Self {
-            run_binding: Arc::new(RecognitionRunBinding {
-                run_id,
-                binding_sha256,
-            }),
+            run_binding: Arc::new(context),
             bridge,
             last_sequence: None,
             title_confirmation: TitleConfirmationState::default(),
@@ -720,16 +733,12 @@ impl DiagnosticScreenFieldObservation for RegisteredScreenFieldObservation {
 
 fn validate_descriptor(
     descriptor: &DiagnosticRunDescriptor,
-) -> Result<String, RecognitionSessionError> {
+) -> Result<execution::RecognitionExecutionContext, RecognitionSessionError> {
     let binding = &descriptor.binding;
     if binding.canonical_layout_sha256 != CanonicalLayout::sha256() {
         return Err(RecognitionSessionError::CanonicalLayoutMismatch);
     }
-    if !descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION")) {
-        return Err(RecognitionSessionError::InvalidBinding);
-    }
-    binding
-        .identity_sha256()
+    execution::RecognitionExecutionContext::from_descriptor(descriptor)
         .ok_or(RecognitionSessionError::InvalidBinding)
 }
 
@@ -744,7 +753,7 @@ mod tests {
     use super::*;
     use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticResource};
 
-    fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
+    fn descriptor(run_id: &str, _generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
             run_id: run_id.to_owned(),
             monotonic_start_ms: 0,
@@ -754,9 +763,6 @@ mod tests {
                 build_sha256: "1".repeat(64),
             },
             binding: DiagnosticBinding {
-                capture_generation: generation,
-                capture_profile_sha256: "2".repeat(64),
-                normalizer_sha256: "3".repeat(64),
                 canonical_layout_sha256: CanonicalLayout::sha256(),
                 catalog_sha256: "5".repeat(64),
                 model_sha256: "6".repeat(64),
@@ -803,7 +809,7 @@ mod tests {
     #[test]
     fn diagnostic_opt_out_does_not_change_recognition() {
         let root = tempfile::tempdir().unwrap();
-        let frame = BoundCanonicalFrame::for_test(1, 1, 0);
+        let frame = BoundCanonicalFrame::for_test(1, 1, 0).for_test_session("disabled-session");
         let mut session = RecognitionSession::start(
             root.path(),
             descriptor("disabled-session", 1),
@@ -829,7 +835,7 @@ mod tests {
     #[test]
     fn frame_wall_timer_keeps_the_inspection_origin_until_output_finishes() {
         let root = tempfile::tempdir().unwrap();
-        let frame = BoundCanonicalFrame::for_test(1, 1, 0);
+        let frame = BoundCanonicalFrame::for_test(1, 1, 0).for_test_session("frame-wall-origin");
         let mut session = RecognitionSession::start(
             root.path(),
             descriptor("frame-wall-origin", 1),
@@ -854,7 +860,7 @@ mod tests {
             ..DiagnosticPolicy::default()
         };
 
-        let result_frame = solid_frame([200, 100, 20], 1);
+        let result_frame = solid_frame([200, 100, 20], 1).for_test_session("result-fields");
         let mut result_session =
             RecognitionSession::start(root.path(), descriptor("result-fields", 1), policy.clone())
                 .unwrap();
@@ -878,7 +884,7 @@ mod tests {
         assert_eq!(crops.current_score.roi, layout.result.current_score);
         assert_eq!(crops.title.pixels()[..3], [200, 100, 20]);
 
-        let music_frame = solid_frame([0, 180, 220], 1);
+        let music_frame = solid_frame([0, 180, 220], 1).for_test_session("music-fields");
         let mut music_session =
             RecognitionSession::start(root.path(), descriptor("music-fields", 1), policy).unwrap();
         let music = music_session.inspect(&music_frame).unwrap();
@@ -913,7 +919,7 @@ mod tests {
     #[test]
     fn prepared_replay_inspection_matches_the_direct_recognition_path() {
         let root = tempfile::tempdir().unwrap();
-        let frame = solid_frame([200, 100, 20], 7);
+        let frame = solid_frame([200, 100, 20], 7).for_test_session("direct-preparation");
         let policy = DiagnosticPolicy {
             enabled: false,
             ..DiagnosticPolicy::default()
@@ -932,7 +938,10 @@ mod tests {
         let mut prepared_session =
             RecognitionSession::start(root.path(), descriptor("parallel-preparation", 1), policy)
                 .unwrap();
-        let replayed = prepared_session.inspect_prepared(&frame, prepared).unwrap();
+        let replay_frame = frame.clone().for_test_session("parallel-preparation");
+        let replayed = prepared_session
+            .inspect_prepared(&replay_frame, prepared)
+            .unwrap();
         assert_eq!(replayed.observation.screen(), direct_screen);
         let replayed_crops = replayed.field_inputs.unwrap();
         match (direct_crops.crops(), replayed_crops.crops()) {
@@ -947,7 +956,8 @@ mod tests {
     fn prepared_replay_inspection_rejects_another_pixel_owner() {
         let root = tempfile::tempdir().unwrap();
         let prepared_frame = solid_frame([200, 100, 20], 7);
-        let another_frame = solid_frame([200, 100, 20], 8);
+        let another_frame =
+            solid_frame([200, 100, 20], 8).for_test_session("mismatched-preparation");
         let prepared = PreparedRecognitionFrame::prepare(prepared_frame.pixels()).unwrap();
         let mut session = RecognitionSession::start(
             root.path(),
@@ -1005,7 +1015,7 @@ mod tests {
             &supervisor,
         )
         .unwrap();
-        old.inspect(&BoundCanonicalFrame::for_test(1, 1, 0))
+        old.inspect(&BoundCanonicalFrame::for_test(1, 1, 0).for_test_session("old-session"))
             .unwrap();
         let first_fact = root.path().join("old-session/facts.ndjson");
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -1016,7 +1026,10 @@ mod tests {
         }
         assert!(first_fact.metadata().unwrap().len() > 0);
         let next_descriptor = descriptor("next-session", 2);
-        let expected_next_binding = next_descriptor.binding.identity_sha256().unwrap();
+        let expected_next_binding =
+            execution::RecognitionExecutionContext::from_descriptor(&next_descriptor)
+                .unwrap()
+                .identity_sha256;
         let transition = old
             .transition(
                 root.path(),
@@ -1071,7 +1084,7 @@ mod tests {
         assert!(matches!(
             session.transition(
                 root.path(),
-                descriptor("different-run", 1),
+                descriptor("same-binding", 1),
                 DiagnosticPolicy::default(),
                 0,
             ),

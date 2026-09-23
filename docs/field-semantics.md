@@ -32,8 +32,7 @@ be established, the field is `unknown`.
   Candidate metadata cannot corroborate itself. Raw OCR text is not a value.
 - A boolean needs calibrated positive and negative evidence. Failure to match
   the positive class is `unknown`, not `false`.
-- All screen-local evidence used by one event must have the same capture generation,
-  capture profile, normalizer, canonical layout, model/catalog binding, and
+- All screen-local evidence used by one event must have the same capture session, canonical layout, model/catalog binding, and
   temporal episode.
 
 PLAY presence scans the single measured BPM-outline area `x=260..1659, y=940..1079` without
@@ -121,7 +120,7 @@ the separately calibrated stricter title/context policy. The event preserves
 
 ## Temporal and change control
 
-- Stability uses distinct, fresh observations from one capture generation and
+- Stability uses distinct, fresh observations from one capture session and
   the versioned minimum dwell. A disconnected or stalled source cannot turn one
   old frame into temporal evidence.
 - RESULT panel-side state is cleared by positive screen exit, capture-session end, or a new
@@ -136,8 +135,8 @@ the separately calibrated stricter title/context policy. The event preserves
   music-selection candidate set may contextualize result song resolution.
   Confirmed non-state scenes, unrecognized frames, gameplay, result, and retry
   preserve it; a new stable selection replaces it. Confident title/session end,
-  a recording coverage gap, source reconnect, or any profile/normalizer/layout/
-  catalog/model/runtime binding change clears it. Recognition failure alone is
+  a recording coverage gap, source reconnect, or any layout/catalog/model/runtime
+  session binding change clears it. Recognition failure alone is
   not a coverage gap. The context does not infer mode, attempts, or play count.
 - Replay compares deterministic domain fields and issues. Transport event IDs
   and delivery wall time are excluded.

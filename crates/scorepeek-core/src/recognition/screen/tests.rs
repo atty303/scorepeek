@@ -51,15 +51,8 @@ fn paint_music_reference(pixels: &mut [u8]) {
     );
 }
 
-fn test_frame(pixels: Vec<u8>) -> CanonicalFrame {
-    CanonicalFrame {
-        pixels: pixels.into(),
-        source_pts_ms: 0,
-        decode_index: 0,
-        capture_profile_id: "0".repeat(64),
-        normalizer_artifact_sha256: "1".repeat(64),
-        frame_extraction_sha256: "2".repeat(64),
-    }
+fn test_frame(pixels: Vec<u8>) -> Vec<u8> {
+    pixels
 }
 
 fn paint_title_bbox(pixels: &mut [u8], filled: bool) {
@@ -285,8 +278,9 @@ fn crop_uses_canonical_row_major_coordinates() {
     pixels[offset..offset + 3].copy_from_slice(&[1, 2, 3]);
     let frame = test_frame(pixels);
     assert_eq!(
-        frame
-            .crop(Roi {
+        crate::frame::CanonicalFrameView::new(&frame)
+            .unwrap()
+            .crop_region(Roi {
                 x: 20,
                 y: 10,
                 width: 1,
@@ -686,7 +680,7 @@ fn result_presence_is_fail_closed() {
     let mut pixels = vec![0_u8; CANONICAL_BYTES];
     paint_result_presence(&mut pixels, &layout);
     let frame = test_frame(pixels);
-    let snapshot = inspect(&frame).unwrap();
+    let snapshot = inspect_canonical_rgb8(&frame).unwrap();
     assert_eq!(snapshot.screen, ScreenClass::Result);
     assert_eq!(snapshot.result_presence.warm_pixels, 3_000);
     assert_eq!(
@@ -704,16 +698,16 @@ fn result_presence_is_fail_closed() {
 
     let mut right = vec![0_u8; CANONICAL_BYTES];
     paint_result_presence_on(&mut right, &layout, ResultPanelSide::Right);
-    let right = inspect(&test_frame(right)).unwrap();
+    let right = inspect_canonical_rgb8(&test_frame(right)).unwrap();
     assert_eq!(right.screen, ScreenClass::Result);
     assert_eq!(
         right.result_presence.panel_side.known(),
         Some(ResultPanelSide::Right)
     );
 
-    let mut both = frame.pixels.to_vec();
+    let mut both = frame.clone();
     paint_result_presence_on(&mut both, &layout, ResultPanelSide::Right);
-    let both = inspect(&test_frame(both)).unwrap();
+    let both = inspect_canonical_rgb8(&test_frame(both)).unwrap();
     assert_eq!(both.screen, ScreenClass::Unknown);
     assert_eq!(
         both.result_presence.panel_side,
@@ -721,9 +715,12 @@ fn result_presence_is_fail_closed() {
     );
 
     let empty = test_frame(vec![0_u8; CANONICAL_BYTES]);
-    assert_eq!(inspect(&empty).unwrap().screen, ScreenClass::Unknown);
+    assert_eq!(
+        inspect_canonical_rgb8(&empty).unwrap().screen,
+        ScreenClass::Unknown
+    );
 
-    let mut ambiguous = frame.pixels.to_vec();
+    let mut ambiguous = frame.clone();
     for index in 0..layout.music_select.presence.cyan_header_pixels_min as usize {
         let x = index % 600;
         let y = index / 600;
@@ -743,7 +740,9 @@ fn result_presence_is_fail_closed() {
     }
     paint_music_reference(&mut ambiguous);
     assert_eq!(
-        inspect(&test_frame(ambiguous)).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(ambiguous))
+            .unwrap()
+            .screen,
         ScreenClass::Unknown
     );
 }
@@ -758,7 +757,7 @@ fn result_presence_does_not_depend_on_the_background_palette() {
         }
         paint_result_presence(&mut pixels, &layout);
         assert_eq!(
-            inspect(&test_frame(pixels)).unwrap().screen,
+            inspect_canonical_rgb8(&test_frame(pixels)).unwrap().screen,
             ScreenClass::Result
         );
     }
@@ -769,7 +768,7 @@ fn decide_transition_and_play_presence_are_exactly_one_fail_closed() {
     let layout = ScreenPathLayout::load().unwrap();
     let mut decide = vec![0_u8; CANONICAL_BYTES];
     paint_decide_transition_presence(&mut decide, &layout);
-    let decide = inspect(&test_frame(decide)).unwrap();
+    let decide = inspect_canonical_rgb8(&test_frame(decide)).unwrap();
     assert_eq!(decide.screen, ScreenClass::DecideTransition);
     assert_eq!(
         decide.decide_transition_presence.cyan_pixels,
@@ -782,7 +781,7 @@ fn decide_transition_and_play_presence_are_exactly_one_fail_closed() {
 
     let mut play = vec![0_u8; CANONICAL_BYTES];
     paint_play_presence(&mut play, &layout);
-    let play = inspect(&test_frame(play)).unwrap();
+    let play = inspect_canonical_rgb8(&test_frame(play)).unwrap();
     assert_eq!(play.screen, ScreenClass::Play);
     assert_eq!(play.play_presence.qualifying_candidates, 1);
     let outline = play
@@ -805,7 +804,9 @@ fn decide_transition_and_play_presence_are_exactly_one_fail_closed() {
         }
     }
     assert_eq!(
-        inspect(&test_frame(color_area_only)).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(color_area_only))
+            .unwrap()
+            .screen,
         ScreenClass::Unknown
     );
 
@@ -832,7 +833,9 @@ fn decide_transition_and_play_presence_are_exactly_one_fail_closed() {
         }
     }
     assert_eq!(
-        inspect(&test_frame(former_graph_panel)).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(former_graph_panel))
+            .unwrap()
+            .screen,
         ScreenClass::Unknown
     );
 
@@ -840,7 +843,7 @@ fn decide_transition_and_play_presence_are_exactly_one_fail_closed() {
     paint_decide_transition_presence(&mut overlap, &layout);
     paint_play_presence(&mut overlap, &layout);
     assert_eq!(
-        inspect(&test_frame(overlap)).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(overlap)).unwrap().screen,
         ScreenClass::Unknown
     );
 }
@@ -852,7 +855,7 @@ fn bpm_outline_accepts_all_measured_positions_and_rejects_solid_panels() {
         let mut pixels = vec![0_u8; CANONICAL_BYTES];
         paint_play_outline(&mut pixels, origin_x, 952);
         assert_eq!(
-            inspect(&test_frame(pixels)).unwrap().screen,
+            inspect_canonical_rgb8(&test_frame(pixels)).unwrap().screen,
             ScreenClass::Play
         );
 
@@ -864,7 +867,7 @@ fn bpm_outline_accepts_all_measured_positions_and_rejects_solid_panels() {
             }
         }
         assert_eq!(
-            inspect(&test_frame(solid)).unwrap().screen,
+            inspect_canonical_rgb8(&test_frame(solid)).unwrap().screen,
             ScreenClass::Unknown
         );
     }
@@ -880,7 +883,7 @@ fn bpm_outline_ignores_connected_interior_judge_pixels() {
             pixels[index..index + 3].copy_from_slice(&[20, 100, 150]);
         }
     }
-    let observation = inspect(&test_frame(pixels)).unwrap();
+    let observation = inspect_canonical_rgb8(&test_frame(pixels)).unwrap();
     assert_eq!(observation.screen, ScreenClass::Play);
     assert_eq!(observation.play_presence.qualifying_candidates, 1);
 }
@@ -890,7 +893,7 @@ fn bpm_outline_rejects_simultaneous_left_and_center_right_candidates() {
     let mut pixels = vec![0_u8; CANONICAL_BYTES];
     paint_play_outline(&mut pixels, 298, 952);
     paint_play_outline(&mut pixels, 866, 952);
-    let observation = inspect(&test_frame(pixels)).unwrap();
+    let observation = inspect_canonical_rgb8(&test_frame(pixels)).unwrap();
     assert_eq!(observation.screen, ScreenClass::Unknown);
     assert_eq!(observation.play_presence.qualifying_candidates, 2);
 }
@@ -900,7 +903,7 @@ fn bpm_outline_rejects_vertically_separated_candidates_at_the_same_center() {
     let mut pixels = vec![0_u8; CANONICAL_BYTES];
     paint_play_edge_pair(&mut pixels, 715, 940);
     paint_play_edge_pair(&mut pixels, 715, 1010);
-    let observation = inspect(&test_frame(pixels)).unwrap();
+    let observation = inspect_canonical_rgb8(&test_frame(pixels)).unwrap();
     assert_eq!(observation.screen, ScreenClass::Unknown);
     assert_eq!(observation.play_presence.qualifying_candidates, 2);
 }
@@ -911,7 +914,9 @@ fn bpm_outline_ignores_loading_and_variable_tempo_interior() {
     let mut loading = vec![0_u8; CANONICAL_BYTES];
     paint_play_presence(&mut loading, &layout);
     assert_eq!(
-        inspect(&test_frame(loading.clone())).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(loading.clone()))
+            .unwrap()
+            .screen,
         ScreenClass::Play
     );
 
@@ -928,7 +933,9 @@ fn bpm_outline_ignores_loading_and_variable_tempo_interior() {
         }
     }
     assert_eq!(
-        inspect(&test_frame(variable_tempo)).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(variable_tempo))
+            .unwrap()
+            .screen,
         ScreenClass::Play
     );
 }
@@ -952,7 +959,9 @@ fn music_select_presence_and_crops_are_fail_closed_and_layout_bound() {
         pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 180, 40]);
     }
     assert_eq!(
-        inspect(&test_frame(pixels.clone())).unwrap().screen,
+        inspect_canonical_rgb8(&test_frame(pixels.clone()))
+            .unwrap()
+            .screen,
         ScreenClass::Unknown
     );
     for index in 0..layout.music_select.presence.bright_label_pixels_min as usize {
@@ -967,7 +976,7 @@ fn music_select_presence_and_crops_are_fail_closed_and_layout_bound() {
         &mut mode_select,
         include_bytes!("../../../assets/screen-references-v1/mode-select.qoi"),
     );
-    let mode_snapshot = inspect(&test_frame(mode_select)).unwrap();
+    let mode_snapshot = inspect_canonical_rgb8(&test_frame(mode_select)).unwrap();
     assert_eq!(mode_snapshot.screen, ScreenClass::ModeSelect);
     assert!(mode_snapshot.music_select_presence.reference_evaluated);
     assert!(
@@ -980,7 +989,7 @@ fn music_select_presence_and_crops_are_fail_closed_and_layout_bound() {
     );
     paint_music_reference(&mut pixels);
     let frame = test_frame(pixels);
-    let snapshot = inspect(&frame).unwrap();
+    let snapshot = inspect_canonical_rgb8(&frame).unwrap();
     assert_eq!(
         snapshot.screen,
         ScreenClass::MusicSelect,

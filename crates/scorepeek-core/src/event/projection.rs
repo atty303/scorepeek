@@ -18,7 +18,6 @@ use super::{
 /// Returns an error when a typed observation cannot be represented by the run-event contract.
 pub fn run_event_from_field_observation(
     session_id: &str,
-    capture_generation: u64,
     screen_episode_id: u64,
     sequence: u64,
     monotonic_start_ms: u64,
@@ -76,7 +75,6 @@ pub fn run_event_from_field_observation(
         schema: RUN_EVENT_SCHEMA.to_owned(),
         kind: RunEventKind::FieldObservation {
             session_id: Some(session_id.to_owned()),
-            capture_generation: Some(capture_generation),
             screen_episode_id,
             sequence,
             monotonic_start_ms,
@@ -221,7 +219,6 @@ pub struct ProjectionCursor {
 pub fn diagnostic_run_event_value(event: &RunEvent) -> Result<Value, String> {
     let RunEventKind::FieldObservation {
         session_id,
-        capture_generation,
         screen_episode_id,
         sequence,
         monotonic_start_ms,
@@ -246,7 +243,6 @@ pub fn diagnostic_run_event_value(event: &RunEvent) -> Result<Value, String> {
         schema: event.schema.clone(),
         kind: RunEventKind::FieldObservation {
             session_id: session_id.clone(),
-            capture_generation: *capture_generation,
             screen_episode_id: *screen_episode_id,
             sequence: *sequence,
             monotonic_start_ms: *monotonic_start_ms,

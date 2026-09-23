@@ -1,7 +1,6 @@
 use super::*;
 
 pub(super) struct LiveSessionEmission {
-    pub(super) public_binding: Option<crate::events::snapshot::Binding>,
     pub(super) value: serde_json::Value,
     pub(super) authority_joint_evidence:
         Option<scorepeek_core::recognition::shared::JointEvidenceObservation>,
@@ -20,10 +19,6 @@ pub(super) fn run_event_from_live_emission(
         *joint_evidence = authority_joint_evidence;
     }
     Ok(event)
-}
-
-pub(super) fn optional_recognition_root(enabled: bool, root: &Path) -> Option<&Path> {
-    enabled.then_some(root)
 }
 
 pub(super) fn current_executable_sha256() -> Result<String, String> {
@@ -105,8 +100,8 @@ pub(super) fn prepare_private_directory(path: &Path) -> bool {
 )]
 pub(super) fn live_session_event_value(
     session_id: Option<&str>,
-    routine_generation: Option<u64>,
-    event: capture_live::GamescopeLiveSessionEvent<'_>,
+    _routine_generation: Option<u64>,
+    event: capture_live::CaptureSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
         RUN_EVENT_SCHEMA
@@ -114,28 +109,17 @@ pub(super) fn live_session_event_value(
         "scorepeek-live-session-event-v1"
     };
     let value = match event {
-        capture_live::GamescopeLiveSessionEvent::Started {
-            capture_generation,
-            capture_profile_sha256,
-            normalizer_artifact_sha256,
-            ..
-        } => {
+        capture_live::CaptureSessionEvent::Started { .. } => {
             let mut value = serde_json::json!({
                 "schema": schema,
                 "event": "session_started",
-                "capture_generation": capture_generation,
-                "capture_profile_sha256": capture_profile_sha256,
-                "normalizer_artifact_sha256": normalizer_artifact_sha256,
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
             }
-            if let Some(capture_generation) = routine_generation {
-                value["capture_generation"] = capture_generation.into();
-            }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::RecordingHealth { snapshot } => {
+        capture_live::CaptureSessionEvent::RecordingHealth { snapshot } => {
             let mut value = serde_json::json!({
                 "schema": schema,
                 "event": "recording_health_changed",
@@ -148,12 +132,9 @@ pub(super) fn live_session_event_value(
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
             }
-            if let Some(capture_generation) = routine_generation {
-                value["capture_generation"] = capture_generation.into();
-            }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::RecordingFinalizing => {
+        capture_live::CaptureSessionEvent::RecordingFinalizing => {
             let mut value = serde_json::json!({
                 "schema": schema,
                 "event": "recording_finalizing",
@@ -161,12 +142,9 @@ pub(super) fn live_session_event_value(
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
             }
-            if let Some(capture_generation) = routine_generation {
-                value["capture_generation"] = capture_generation.into();
-            }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::CaptureDiagnostic { fact } => {
+        capture_live::CaptureSessionEvent::CaptureDiagnostic { fact } => {
             let mut value = serde_json::json!({
                 "schema": CAPTURE_DIAGNOSTIC_SCHEMA,
                 "event": "capture_diagnostic",
@@ -175,12 +153,9 @@ pub(super) fn live_session_event_value(
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
             }
-            if let Some(capture_generation) = routine_generation {
-                value["capture_generation"] = capture_generation.into();
-            }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::RawScreenObserved {
+        capture_live::CaptureSessionEvent::RawScreenObserved {
             semantic_episode_id,
             sequence,
             monotonic_start_ms,
@@ -204,11 +179,10 @@ pub(super) fn live_session_event_value(
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
-                value["capture_generation"] = routine_generation.into();
             }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::SemanticScreenEpisode {
+        capture_live::CaptureSessionEvent::SemanticScreenEpisode {
             screen_episode_id,
             sequence,
             monotonic_end_ms,
@@ -226,11 +200,10 @@ pub(super) fn live_session_event_value(
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
-                value["capture_generation"] = routine_generation.into();
             }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::GameVersionIdentified {
+        capture_live::CaptureSessionEvent::GameVersionIdentified {
             source_sequence,
             version,
         } => {
@@ -242,11 +215,10 @@ pub(super) fn live_session_event_value(
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
-                value["capture_generation"] = routine_generation.into();
             }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::Observation {
+        capture_live::CaptureSessionEvent::Observation {
             screen_episode_id,
             sequence,
             monotonic_start_ms,
@@ -323,7 +295,6 @@ pub(super) fn live_session_event_value(
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
-                value["capture_generation"] = routine_generation.into();
             }
             value["song_resolution_presentation"] =
                 serde_json::to_value(song_resolution_presentation(observation)?)

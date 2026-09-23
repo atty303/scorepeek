@@ -14,31 +14,23 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use scorepeek::capture::acquire_gamescope_source;
 use scorepeek::capture::{
-    AdmittedFrameNormalizer, AuthoredGamescopeProfileBinding, CalibratedGamescopeLease,
-    CalibratedSourceFrameEvidence, CalibratedVulkanLease, CaptureDiagnosticDetail,
-    CaptureDiagnosticFact, CaptureDiagnosticOperation, CaptureDiagnosticSink,
-    CaptureDiagnosticStatus, CaptureErrorType, CaptureGeneration, EdgeCrop,
-    GamescopeProfileBinding, NormalizedCanonicalFrame, RuntimeCaptureBackend,
-    acquire_gamescope_source, acquire_pipewire_source, admit_gamescope_profile,
-    admit_runtime_profile, admit_vulkan_session, start_uncalibrated_gamescope_receiver,
+    AdmittedFrameNormalizer, CalibratedVulkanLease, CaptureDiagnosticDetail, CaptureDiagnosticFact,
+    CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType,
+    EdgeCrop, NormalizedCanonicalFrame, PipewireCaptureLease, RuntimeCaptureEvidence,
+    acquire_pipewire_source, admit_pipewire_source, admit_vulkan_session, start_pipewire_receiver,
 };
 use serde::Serialize;
-use sha2::{Digest as _, Sha256};
 
 use crate::canonical_source::CanonicalFrameSource;
 use crate::diagnostics::contract::{
     DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
     DiagnosticRunStatus,
 };
-use crate::diagnostics::live::{BoundCanonicalFrame, DiagnosticBridge};
-use crate::diagnostics::ring::DiagnosticEnqueueOutcome;
-use crate::recognition_artifact::{
-    RecognitionArtifactEnqueueOutcome, RecognitionArtifactFinishOutcome,
-    RecognitionArtifactFinishStatus, RecognitionArtifactRetention, RecognitionArtifactWorker,
-};
 use crate::recording::writer::{CanonicalRecordingCompleteness, CanonicalRecordingWorker};
-use crate::service::session::recognition::RecognitionSession;
+use crate::service::session::recognition::BoundCanonicalFrame;
 use crate::service::session::recognition::field_observer::{
     DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT, FieldObserverFinishStatus, FieldObserverOfferError,
 };
@@ -87,28 +79,6 @@ enum LifecycleGateErrorType {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum BindingAdmissionGateErrorType {
-    BindingUnavailable,
-    BindingInvalid,
-    CaptureFailed,
-    AdmissionRejected,
-    ShutdownFailed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum CanonicalFrameGateErrorType {
-    BindingUnavailable,
-    BindingInvalid,
-    CaptureFailed,
-    AdmissionRejected,
-    FrameUnavailable,
-    NormalizationFailed,
-    ShutdownFailed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 enum DiagnosticHandoffGateErrorType {
     BindingUnavailable,
     BindingInvalid,
@@ -145,7 +115,6 @@ enum FieldObservationGateErrorType {
     RecognitionFailed,
     FieldObservationFailed,
     FieldObservationUnavailable,
-    ResultObservationUnavailable,
     RecognitionArtifactIncomplete,
     ShutdownFailed,
     FieldObserverFinishFailed,
@@ -178,13 +147,9 @@ pub enum SemanticScreenEpisodePhase {
 }
 
 #[derive(Clone, Copy)]
-pub enum GamescopeLiveSessionEvent<'a> {
+pub enum CaptureSessionEvent<'a> {
     Started {
-        capture_generation: u64,
-        capture_profile_sha256: &'a str,
-        normalizer_artifact_sha256: &'a str,
-        capture_profile_document: Option<&'a str>,
-        normalizer_document: Option<&'a str>,
+        source_evidence: &'a RuntimeCaptureEvidence,
     },
     RecordingHealth {
         snapshot: crate::recording::writer::RecordingHealthSnapshot,
@@ -224,8 +189,8 @@ pub enum GamescopeLiveSessionEvent<'a> {
 
 pub use crate::service::session::recognition::LiveEventProcessingTiming;
 
-type LiveEventEmitter<'e> = dyn for<'a> FnMut(GamescopeLiveSessionEvent<'a>) -> Result<LiveEventProcessingTiming, String>
-    + 'e;
+type LiveEventEmitter<'e> =
+    dyn for<'a> FnMut(CaptureSessionEvent<'a>) -> Result<LiveEventProcessingTiming, String> + 'e;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct ProcessResourceSnapshot {
@@ -307,102 +272,11 @@ pub struct GamescopeLifecycleGateReport {
 }
 
 #[derive(Debug, Serialize)]
-pub struct GamescopeBindingAdmissionGateReport {
-    schema: &'static str,
-    status: LiveGateStatus,
-    error_type: Option<BindingAdmissionGateErrorType>,
-    capture_error_type: Option<CaptureErrorType>,
-    capture_profile_sha256: Option<String>,
-    normalizer_artifact_sha256: Option<String>,
-    diagnostic_facts: Vec<CaptureDiagnosticFact>,
-    dropped_diagnostic_facts: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GamescopeCanonicalFrameGateReport {
-    schema: &'static str,
-    status: LiveGateStatus,
-    error_type: Option<CanonicalFrameGateErrorType>,
-    capture_error_type: Option<CaptureErrorType>,
-    capture_generation: u64,
-    capture_profile_sha256: Option<String>,
-    normalizer_artifact_sha256: Option<String>,
-    source_sequence: Option<u64>,
-    canonical_rgb8_sha256: Option<String>,
-    diagnostic_facts: Vec<CaptureDiagnosticFact>,
-    dropped_diagnostic_facts: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GamescopeDiagnosticHandoffGateReport {
-    schema: &'static str,
-    status: LiveGateStatus,
-    error_type: Option<DiagnosticHandoffGateErrorType>,
-    capture_error_type: Option<CaptureErrorType>,
-    capture_generation: u64,
-    observed_frames: u64,
-    normalized_frames: u64,
-    first_sequence: Option<u64>,
-    last_sequence: Option<u64>,
-    enqueued_frames: u64,
-    skipped_cadence_frames: u64,
-    rejected_frames: u64,
-    disabled_frames: u64,
-    queue_full_frames: u64,
-    worker_unavailable_frames: u64,
-    diagnostic_completeness: Option<DiagnosticCompleteness>,
-    diagnostic_error_type: Option<DiagnosticErrorType>,
-    diagnostic_manifest_sha256: Option<String>,
-    capture_diagnostic_facts: Vec<CaptureDiagnosticFact>,
-    dropped_capture_diagnostic_facts: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GamescopeRecognitionHandoffGateReport {
-    schema: &'static str,
-    status: LiveGateStatus,
-    error_type: Option<DiagnosticHandoffGateErrorType>,
-    capture_error_type: Option<CaptureErrorType>,
-    capture_generation: u64,
-    observed_frames: u64,
-    normalized_frames: u64,
-    first_sequence: Option<u64>,
-    last_sequence: Option<u64>,
-    diagnostic_frame_enqueued: u64,
-    diagnostic_frame_skipped_cadence: u64,
-    diagnostic_frame_rejected: u64,
-    diagnostic_frame_disabled: u64,
-    diagnostic_frame_queue_full: u64,
-    diagnostic_frame_worker_unavailable: u64,
-    inspected_frames: u64,
-    title_frames: u64,
-    result_frames: u64,
-    music_select_frames: u64,
-    mode_select_frames: u64,
-    decide_transition_frames: u64,
-    play_frames: u64,
-    unknown_frames: u64,
-    recognition_failures: u64,
-    diagnostic_fact_enqueued: u64,
-    diagnostic_fact_skipped_cadence: u64,
-    diagnostic_fact_rejected: u64,
-    diagnostic_fact_disabled: u64,
-    diagnostic_fact_queue_full: u64,
-    diagnostic_fact_worker_unavailable: u64,
-    diagnostic_completeness: Option<DiagnosticCompleteness>,
-    diagnostic_error_type: Option<DiagnosticErrorType>,
-    diagnostic_manifest_sha256: Option<String>,
-    capture_diagnostic_facts: Vec<CaptureDiagnosticFact>,
-    dropped_capture_diagnostic_facts: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct GamescopeFieldObservationGateReport {
+pub struct CaptureSessionReport {
     schema: &'static str,
     status: LiveGateStatus,
     error_type: Option<FieldObservationGateErrorType>,
     capture_error_type: Option<CaptureErrorType>,
-    capture_generation: u64,
     observed_frames: u64,
     normalized_frames: u64,
     recognition_ticks: u64,
@@ -426,22 +300,6 @@ pub struct GamescopeFieldObservationGateReport {
     field_ready_failure: u64,
     candidate_sets: u64,
     scored_candidates: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result_observations: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_enqueued: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_queue_full: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_worker_unavailable: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_status: Option<RecognitionArtifactFinishStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_manifest_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_input_observations: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recognition_artifact_retained_observations: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     canonical_recording_completeness: Option<CanonicalRecordingCompleteness>,
     canonical_recording_manifest_published: bool,
@@ -480,31 +338,7 @@ impl GamescopeLifecycleGateReport {
     }
 }
 
-impl GamescopeBindingAdmissionGateReport {
-    pub const fn succeeded(&self) -> bool {
-        matches!(self.status, LiveGateStatus::Success)
-    }
-}
-
-impl GamescopeCanonicalFrameGateReport {
-    pub const fn succeeded(&self) -> bool {
-        matches!(self.status, LiveGateStatus::Success)
-    }
-}
-
-impl GamescopeDiagnosticHandoffGateReport {
-    pub const fn succeeded(&self) -> bool {
-        matches!(self.status, LiveGateStatus::Success)
-    }
-}
-
-impl GamescopeRecognitionHandoffGateReport {
-    pub const fn succeeded(&self) -> bool {
-        matches!(self.status, LiveGateStatus::Success)
-    }
-}
-
-impl GamescopeFieldObservationGateReport {
+impl CaptureSessionReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
     }
@@ -558,34 +392,6 @@ impl GamescopeFieldObservationGateReport {
 }
 
 #[derive(Clone, Copy, Default)]
-struct HandoffCounters {
-    observed_frames: u64,
-    normalized_frames: u64,
-    first_sequence: Option<u64>,
-    last_sequence: Option<u64>,
-    enqueued_frames: u64,
-    skipped_cadence_frames: u64,
-    rejected_frames: u64,
-    disabled_frames: u64,
-    queue_full_frames: u64,
-    worker_unavailable_frames: u64,
-}
-
-#[derive(Clone, Copy, Default)]
-struct RecognitionHandoffCounters {
-    inspected_frames: u64,
-    title_frames: u64,
-    result_frames: u64,
-    music_select_frames: u64,
-    mode_select_frames: u64,
-    decide_transition_frames: u64,
-    play_frames: u64,
-    unknown_frames: u64,
-    recognition_failures: u64,
-    fact_outcomes: EnqueueOutcomeCounters,
-}
-
-#[derive(Clone, Copy, Default)]
 struct FieldObservationCounters {
     observed_frames: u64,
     normalized_frames: u64,
@@ -611,64 +417,17 @@ struct FieldObservationCounters {
     field_ready_failure: u64,
     candidate_sets: u64,
     scored_candidates: u64,
-    result_observations: u64,
-    recognition_artifact_enqueued: u64,
-    recognition_artifact_queue_full: u64,
-    recognition_artifact_worker_unavailable: u64,
 }
 
-#[derive(Clone, Copy, Default)]
-struct EnqueueOutcomeCounters {
-    enqueued: u64,
-    skipped_cadence: u64,
-    rejected: u64,
-    disabled: u64,
-    queue_full: u64,
-    worker_unavailable: u64,
-}
-
-struct HandoffGateRun {
-    diagnostic: GamescopeDiagnosticHandoffGateReport,
-    recognition: RecognitionHandoffCounters,
-}
-
-enum HandoffSession {
-    Diagnostic(DiagnosticBridge),
-    Recognition(RecognitionSession),
-}
-
-impl HandoffSession {
-    fn finish(
-        self,
-        status: DiagnosticRunStatus,
-        monotonic_end_ms: u64,
-    ) -> crate::diagnostics::writer::DiagnosticFinishOutcome {
-        match self {
-            Self::Diagnostic(bridge) => bridge.finish(status, monotonic_end_ms),
-            Self::Recognition(session) => session.finish(status, monotonic_end_ms),
-        }
-    }
-}
-
-pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
-    pub binding_path: &'a std::path::Path,
-    pub expected_binding_sha256: &'a str,
-    pub capture_generation: CaptureGeneration,
+pub struct LiveCaptureSessionConfig<'a> {
+    pub execution_context: crate::service::session::recognition::RecognitionExecutionContext,
     pub descriptor: DiagnosticRunDescriptor,
-    pub policy: DiagnosticPolicy,
-    pub duration_ms: u64,
+    pub diagnostic_policy: DiagnosticPolicy,
     pub diagnostic_root: &'a std::path::Path,
     pub diagnostic_directory_name: Option<&'a str>,
-    pub expected_source_node_id: Option<u32>,
-}
-
-pub struct GamescopeFieldObservationGateConfig<'a> {
-    pub handoff: GamescopeDiagnosticHandoffGateConfig<'a>,
     pub catalog_root: &'a std::path::Path,
     pub bundle_root: &'a std::path::Path,
-    pub recognition_artifact_root: Option<&'a std::path::Path>,
     pub canonical_recording_root: Option<&'a std::path::Path>,
-    pub recognition_artifact_retention: RecognitionArtifactRetention,
     pub recording_memory_limit: crate::recording::policy::RecordingMemoryLimit,
     pub recording_retention: crate::recording::retention::RecordingRetention,
     pub runtime_capture: RuntimeCaptureInput<'a>,
@@ -684,134 +443,72 @@ pub enum RuntimeCaptureInput<'a> {
         session: Box<scorepeek::capture::vulkan::VulkanSession>,
         crop: EdgeCrop,
     },
-    #[cfg(test)]
-    LegacyGamescope {
-        binding_path: &'a std::path::Path,
-        expected_binding_sha256: &'a str,
-        expected_source_node_id: Option<u32>,
-    },
 }
 
-enum CaptureLease {
-    Pipewire(CalibratedGamescopeLease),
-    Vulkan(CalibratedVulkanLease),
-}
+type CaptureLease = Box<dyn ConnectedCaptureAdapter>;
 
-impl CaptureLease {
-    fn capture_profile_sha256(&self) -> &str {
-        match self {
-            Self::Pipewire(lease) => lease.capture_profile_sha256(),
-            Self::Vulkan(lease) => lease.capture_profile_sha256(),
-        }
-    }
-
-    fn normalizer_artifact_sha256(&self) -> &str {
-        match self {
-            Self::Pipewire(lease) => lease.normalizer_artifact_sha256(),
-            Self::Vulkan(lease) => lease.normalizer_artifact_sha256(),
-        }
-    }
-
-    fn take_latest_observed_frame(&mut self) -> Option<scorepeek::capture::ObservedFrame> {
-        match self {
-            Self::Pipewire(lease) => lease.take_latest_observed_frame(),
-            Self::Vulkan(lease) => lease.take_latest_observed_frame(),
-        }
-    }
-
-    fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
-        match self {
-            Self::Pipewire(lease) => lease.frame_normalizer(),
-            Self::Vulkan(lease) => lease.frame_normalizer(),
-        }
-    }
-
+trait ConnectedCaptureAdapter {
+    fn take_latest_observed_frame(&mut self) -> Option<scorepeek::capture::ObservedFrame>;
+    fn frame_normalizer(&self) -> AdmittedFrameNormalizer;
     fn record_worker_normalization(
         &mut self,
         source_sequence: u64,
         error_type: Option<CaptureErrorType>,
-        sink: &mut impl CaptureDiagnosticSink,
-    ) {
-        match self {
-            Self::Pipewire(lease) => {
-                lease.record_worker_normalization(source_sequence, error_type, sink);
-            }
-            Self::Vulkan(lease) => {
-                lease.record_worker_normalization(source_sequence, error_type, sink);
-            }
-        }
-    }
-
-    fn normalize_observed_frame_with_source(
-        &mut self,
-        observed: scorepeek::capture::ObservedFrame,
-        sink: &mut impl CaptureDiagnosticSink,
-    ) -> Result<
-        (NormalizedCanonicalFrame, CalibratedSourceFrameEvidence),
-        scorepeek::capture::CaptureError,
-    > {
-        match self {
-            Self::Pipewire(lease) => lease.normalize_observed_frame_with_source(observed, sink),
-            Self::Vulkan(lease) => lease.normalize_observed_frame_with_source(observed, sink),
-        }
-    }
-
+        sink: &mut BoundedDiagnosticSink,
+    );
     fn poll(
         &mut self,
         timeout: Duration,
-        sink: &mut impl CaptureDiagnosticSink,
-    ) -> Result<(), scorepeek::capture::CaptureError> {
-        match self {
-            Self::Pipewire(lease) => lease.poll(timeout, sink),
-            Self::Vulkan(lease) => lease.poll(timeout, sink),
-        }
-    }
-
+        sink: &mut BoundedDiagnosticSink,
+    ) -> Result<(), scorepeek::capture::CaptureError>;
     fn shutdown_with_elapsed(
-        self,
-        sink: &mut impl CaptureDiagnosticSink,
-    ) -> (Result<(), scorepeek::capture::CaptureError>, u64) {
-        match self {
-            Self::Pipewire(lease) => lease.shutdown_with_elapsed(sink),
-            Self::Vulkan(lease) => lease.shutdown_with_elapsed(sink),
-        }
-    }
-
+        self: Box<Self>,
+        sink: &mut BoundedDiagnosticSink,
+    ) -> (Result<(), scorepeek::capture::CaptureError>, u64);
     fn shutdown(
-        self,
-        sink: &mut impl CaptureDiagnosticSink,
+        self: Box<Self>,
+        sink: &mut BoundedDiagnosticSink,
     ) -> Result<(), scorepeek::capture::CaptureError> {
         self.shutdown_with_elapsed(sink).0
     }
 }
 
-impl HandoffCounters {
-    fn record_offer(&mut self, outcome: DiagnosticEnqueueOutcome) {
-        let counter = match outcome {
-            DiagnosticEnqueueOutcome::Enqueued => &mut self.enqueued_frames,
-            DiagnosticEnqueueOutcome::SkippedCadence => &mut self.skipped_cadence_frames,
-            DiagnosticEnqueueOutcome::Rejected => &mut self.rejected_frames,
-            DiagnosticEnqueueOutcome::Disabled => &mut self.disabled_frames,
-            DiagnosticEnqueueOutcome::QueueFull => &mut self.queue_full_frames,
-            DiagnosticEnqueueOutcome::WorkerUnavailable => &mut self.worker_unavailable_frames,
-        };
-        *counter = counter.saturating_add(1);
-    }
+macro_rules! impl_connected_capture_adapter {
+    ($lease:ty) => {
+        impl ConnectedCaptureAdapter for $lease {
+            fn take_latest_observed_frame(&mut self) -> Option<scorepeek::capture::ObservedFrame> {
+                self.take_latest_observed_frame()
+            }
+            fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
+                self.frame_normalizer()
+            }
+            fn record_worker_normalization(
+                &mut self,
+                source_sequence: u64,
+                error_type: Option<CaptureErrorType>,
+                sink: &mut BoundedDiagnosticSink,
+            ) {
+                self.record_worker_normalization(source_sequence, error_type, sink);
+            }
+            fn poll(
+                &mut self,
+                timeout: Duration,
+                sink: &mut BoundedDiagnosticSink,
+            ) -> Result<(), scorepeek::capture::CaptureError> {
+                self.poll(timeout, sink)
+            }
+            fn shutdown_with_elapsed(
+                self: Box<Self>,
+                sink: &mut BoundedDiagnosticSink,
+            ) -> (Result<(), scorepeek::capture::CaptureError>, u64) {
+                (*self).shutdown_with_elapsed(sink)
+            }
+        }
+    };
 }
 
-impl EnqueueOutcomeCounters {
-    fn record(&mut self, outcome: DiagnosticEnqueueOutcome) {
-        let counter = match outcome {
-            DiagnosticEnqueueOutcome::Enqueued => &mut self.enqueued,
-            DiagnosticEnqueueOutcome::SkippedCadence => &mut self.skipped_cadence,
-            DiagnosticEnqueueOutcome::Rejected => &mut self.rejected,
-            DiagnosticEnqueueOutcome::Disabled => &mut self.disabled,
-            DiagnosticEnqueueOutcome::QueueFull => &mut self.queue_full,
-            DiagnosticEnqueueOutcome::WorkerUnavailable => &mut self.worker_unavailable,
-        };
-        *counter = counter.saturating_add(1);
-    }
-}
+impl_connected_capture_adapter!(PipewireCaptureLease);
+impl_connected_capture_adapter!(CalibratedVulkanLease);
 
 #[derive(Clone, Default)]
 struct BoundedDiagnosticSink {
@@ -844,7 +541,7 @@ fn emit_capture_diagnostics(
     emit: &mut LiveEventEmitter<'_>,
 ) -> Result<(), FieldObservationGateErrorType> {
     for fact in sink.take_pending() {
-        emit(GamescopeLiveSessionEvent::CaptureDiagnostic { fact: &fact })
+        emit(CaptureSessionEvent::CaptureDiagnostic { fact: &fact })
             .map_err(|_| FieldObservationGateErrorType::ResultOutputFailed)?;
     }
     Ok(())
@@ -870,298 +567,19 @@ pub fn parse_consumer_interval_ms(value: &OsStr) -> Result<u64, String> {
     Ok(interval)
 }
 
-#[cfg(test)]
-pub fn run_gamescope_binding_admission_gate(
-    binding_path: &std::path::Path,
-    expected_binding_sha256: &str,
-) -> GamescopeBindingAdmissionGateReport {
-    let binding = match read_binding(binding_path, expected_binding_sha256) {
-        Ok(binding) => binding,
-        Err(error_type) => {
-            return binding_admission_report(error_type, None, BoundedDiagnosticSink::default());
-        }
-    };
-    let mut sink = BoundedDiagnosticSink::default();
-    let lease = match acquire_gamescope_source(DISCOVERY_TIMEOUT, &mut sink) {
-        Ok(lease) => lease,
-        Err(error) => {
-            return binding_admission_report(
-                BindingAdmissionGateErrorType::CaptureFailed,
-                Some(error.error_type()),
-                sink,
-            );
-        }
-    };
-    let receiver =
-        match start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                return binding_admission_report(
-                    BindingAdmissionGateErrorType::CaptureFailed,
-                    Some(error.error_type()),
-                    sink,
-                );
-            }
-        };
-    match admit_gamescope_profile(
-        receiver,
-        binding,
-        CaptureGeneration::new(1).expect("fixed nonzero capture generation"),
-        &mut sink,
-    ) {
-        Ok(lease) => {
-            let digests = (
-                lease.capture_profile_sha256().to_owned(),
-                lease.normalizer_artifact_sha256().to_owned(),
-            );
-            if let Err(error) = lease.shutdown(&mut sink) {
-                return binding_admission_report(
-                    BindingAdmissionGateErrorType::ShutdownFailed,
-                    Some(error.error_type()),
-                    sink,
-                );
-            }
-            GamescopeBindingAdmissionGateReport {
-                schema: "scorepeek-gamescope-binding-admission-gate-v1",
-                status: LiveGateStatus::Success,
-                error_type: None,
-                capture_error_type: None,
-                capture_profile_sha256: Some(digests.0),
-                normalizer_artifact_sha256: Some(digests.1),
-                diagnostic_facts: sink.facts,
-                dropped_diagnostic_facts: sink.dropped,
-            }
-        }
-        Err(failure) => {
-            let error_type = failure.error_type();
-            let _ = failure.shutdown(&mut sink);
-            binding_admission_report(
-                BindingAdmissionGateErrorType::AdmissionRejected,
-                Some(error_type),
-                sink,
-            )
-        }
-    }
-}
-
-#[cfg(test)]
-pub fn run_gamescope_canonical_frame_gate(
-    binding_path: &std::path::Path,
-    expected_binding_sha256: &str,
-    capture_generation: CaptureGeneration,
-) -> GamescopeCanonicalFrameGateReport {
-    let binding = match read_binding(binding_path, expected_binding_sha256) {
-        Ok(binding) => binding,
-        Err(BindingAdmissionGateErrorType::BindingUnavailable) => {
-            return canonical_frame_report(
-                CanonicalFrameGateErrorType::BindingUnavailable,
-                None,
-                capture_generation,
-                BoundedDiagnosticSink::default(),
-            );
-        }
-        Err(_) => {
-            return canonical_frame_report(
-                CanonicalFrameGateErrorType::BindingInvalid,
-                None,
-                capture_generation,
-                BoundedDiagnosticSink::default(),
-            );
-        }
-    };
-    let mut sink = BoundedDiagnosticSink::default();
-    let lease = match acquire_gamescope_source(DISCOVERY_TIMEOUT, &mut sink) {
-        Ok(lease) => lease,
-        Err(error) => {
-            return canonical_frame_report(
-                CanonicalFrameGateErrorType::CaptureFailed,
-                Some(error.error_type()),
-                capture_generation,
-                sink,
-            );
-        }
-    };
-    let receiver =
-        match start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                return canonical_frame_report(
-                    CanonicalFrameGateErrorType::CaptureFailed,
-                    Some(error.error_type()),
-                    capture_generation,
-                    sink,
-                );
-            }
-        };
-    let mut lease = match admit_gamescope_profile(receiver, binding, capture_generation, &mut sink)
-    {
-        Ok(lease) => lease,
-        Err(failure) => {
-            let error_type = failure.error_type();
-            let _ = failure.shutdown(&mut sink);
-            return canonical_frame_report(
-                CanonicalFrameGateErrorType::AdmissionRejected,
-                Some(error_type),
-                capture_generation,
-                sink,
-            );
-        }
-    };
-    let Some(observed) = lease.take_latest_observed_frame() else {
-        let _ = lease.shutdown(&mut sink);
-        return canonical_frame_report(
-            CanonicalFrameGateErrorType::FrameUnavailable,
-            None,
-            capture_generation,
-            sink,
-        );
-    };
-    let canonical = match lease.normalize_observed_frame(observed, &mut sink) {
-        Ok(frame) => frame,
-        Err(error) => {
-            let error_type = error.error_type();
-            let _ = lease.shutdown(&mut sink);
-            return canonical_frame_report(
-                CanonicalFrameGateErrorType::NormalizationFailed,
-                Some(error_type),
-                capture_generation,
-                sink,
-            );
-        }
-    };
-    let capture_profile_sha256 = canonical.capture_profile_sha256().to_owned();
-    let normalizer_artifact_sha256 = canonical.normalizer_artifact_sha256().to_owned();
-    let source_sequence = canonical.source_sequence();
-    let canonical_rgb8_sha256 = encode_sha256(canonical.pixels());
-    if let Err(error) = lease.shutdown(&mut sink) {
-        return canonical_frame_report(
-            CanonicalFrameGateErrorType::ShutdownFailed,
-            Some(error.error_type()),
-            capture_generation,
-            sink,
-        );
-    }
-    canonical_frame_success(
-        capture_generation,
-        capture_profile_sha256,
-        normalizer_artifact_sha256,
-        source_sequence,
-        canonical_rgb8_sha256,
-        sink,
-    )
-}
-
-#[cfg(test)]
-pub fn run_gamescope_diagnostic_handoff_gate(
-    config: GamescopeDiagnosticHandoffGateConfig<'_>,
-) -> GamescopeDiagnosticHandoffGateReport {
-    run_gamescope_handoff_gate(config, false).diagnostic
-}
-
-#[cfg(test)]
-pub fn run_gamescope_recognition_handoff_gate(
-    config: GamescopeDiagnosticHandoffGateConfig<'_>,
-) -> GamescopeRecognitionHandoffGateReport {
-    recognition_handoff_report(run_gamescope_handoff_gate(config, true))
-}
-
 #[path = "live/field_observation.rs"]
 mod field_observation;
 
-#[cfg(test)]
-pub(crate) use field_observation::run_gamescope_field_observation_gate;
 pub(crate) use field_observation::run_runtime_live_session;
 #[cfg(test)]
 use field_observation::{
     FieldObservationFinishOutcomes, field_observation_report, field_resource_error,
-    field_start_error, recognition_artifact_error, reconnectable_stop_reason,
-    result_evidence_error,
+    field_start_error, reconnectable_stop_reason,
 };
-
-#[path = "live/handoff.rs"]
-mod handoff;
-
-#[allow(
-    clippy::wildcard_imports,
-    reason = "handoff is an implementation partition shared with live capture child modules"
-)]
-use handoff::*;
 
 #[cfg(test)]
 #[path = "live/tests.rs"]
 mod tests;
-
-fn canonical_frame_report(
-    error_type: CanonicalFrameGateErrorType,
-    capture_error_type: Option<CaptureErrorType>,
-    capture_generation: CaptureGeneration,
-    sink: BoundedDiagnosticSink,
-) -> GamescopeCanonicalFrameGateReport {
-    GamescopeCanonicalFrameGateReport {
-        schema: "scorepeek-gamescope-canonical-frame-gate-v1",
-        status: LiveGateStatus::Error,
-        error_type: Some(error_type),
-        capture_error_type,
-        capture_generation: capture_generation.get(),
-        capture_profile_sha256: None,
-        normalizer_artifact_sha256: None,
-        source_sequence: None,
-        canonical_rgb8_sha256: None,
-        diagnostic_facts: sink.facts,
-        dropped_diagnostic_facts: sink.dropped,
-    }
-}
-
-fn encode_sha256(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(64);
-    for byte in Sha256::digest(bytes) {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
-}
-
-fn read_binding(
-    path: &std::path::Path,
-    expected_sha256: &str,
-) -> Result<GamescopeProfileBinding, BindingAdmissionGateErrorType> {
-    let file = File::open(path).map_err(|_| BindingAdmissionGateErrorType::BindingUnavailable)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| BindingAdmissionGateErrorType::BindingUnavailable)?;
-    let maximum_bytes = u64::try_from(MAX_BINDING_BYTES).unwrap_or(u64::MAX);
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum_bytes {
-        return Err(BindingAdmissionGateErrorType::BindingInvalid);
-    }
-    let capacity = usize::try_from(metadata.len())
-        .map_err(|_| BindingAdmissionGateErrorType::BindingInvalid)?;
-    let mut bytes = Vec::with_capacity(capacity);
-    file.take(maximum_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| BindingAdmissionGateErrorType::BindingUnavailable)?;
-    if u64::try_from(bytes.len()).ok() != Some(metadata.len()) {
-        return Err(BindingAdmissionGateErrorType::BindingInvalid);
-    }
-    GamescopeProfileBinding::parse(&bytes, expected_sha256)
-        .map_err(|_| BindingAdmissionGateErrorType::BindingInvalid)
-}
-
-fn binding_admission_report(
-    error_type: BindingAdmissionGateErrorType,
-    capture_error_type: Option<CaptureErrorType>,
-    sink: BoundedDiagnosticSink,
-) -> GamescopeBindingAdmissionGateReport {
-    GamescopeBindingAdmissionGateReport {
-        schema: "scorepeek-gamescope-binding-admission-gate-v1",
-        status: LiveGateStatus::Error,
-        error_type: Some(error_type),
-        capture_error_type,
-        capture_profile_sha256: None,
-        normalizer_artifact_sha256: None,
-        diagnostic_facts: sink.facts,
-        dropped_diagnostic_facts: sink.dropped,
-    }
-}
 
 #[path = "live/lifecycle_gate.rs"]
 mod lifecycle_gate;

@@ -14,7 +14,6 @@ pub struct RunSnapshot {
     pub watcher_state: String,
     pub session_count: u64,
     pub active_session_id: Option<String>,
-    pub capture_generation: Option<u64>,
     pub raw_screen: Option<String>,
     pub semantic_screen: Option<String>,
     pub recording_status: String,

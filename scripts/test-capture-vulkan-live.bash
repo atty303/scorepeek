@@ -96,9 +96,11 @@ grep -qi 'obs_vkcapture' "${test_root}/gamescope.log"
 for state_root in "${first_state}" "${second_state}"; do
   diagnostics=$(find "${state_root}/scorepeek/diagnostics" -name diagnostics.ndjson -type f -print -quit)
   test -n "${diagnostics}"
-  grep -q 'capture_generation_identity' "${diagnostics}"
-  grep -q '\\"backend\\":\\"vulkan_layer\\"' "${diagnostics}"
-  grep -q '\\"vulkan_source\\"' "${diagnostics}"
+  grep -q '"operation":"capture_session_identity"' "${diagnostics}"
+  grep -q '"backend":"vulkan_layer"' "${diagnostics}"
+  grep -q '"source_contract":{' "${diagnostics}"
+  grep -q '"vk_format":' "${diagnostics}"
+  grep -q '"session_id":"[^\"]*-session-[1-9][0-9]*"' "${diagnostics}"
   grep -q 'vulkan_performance_summary' "${diagnostics}"
   grep -Eq '"captures":[1-9][0-9]*.*"kind":"vulkan_performance_summary"' "${diagnostics}"
   grep -q '"consumer_readback_ns"' "${diagnostics}"
@@ -106,7 +108,7 @@ for state_root in "${first_state}" "${second_state}"; do
   grep -q '"consumer_commands_prerecorded":true' "${diagnostics}"
   grep -q '"consumer_staging_persistently_mapped":true' "${diagnostics}"
   if grep -q '"outcome":"error"' "${diagnostics}"; then
-    echo "Vulkan capture generation ended with an error" >&2
+    echo "Vulkan capture session ended with an error" >&2
     exit 1
   fi
 done

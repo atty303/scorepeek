@@ -202,53 +202,9 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::FrameMalformed => "PipeWire frame is malformed",
             CaptureErrorType::StreamLost => "PipeWire stream was lost",
             CaptureErrorType::ReceiverFailed => "capture receiver failed",
-            CaptureErrorType::ProfileSessionProvenanceMissing => {
-                "Gamescope session provenance is missing"
-            }
-            CaptureErrorType::ProfileEnvironmentMismatch => {
-                "Gamescope profile environment does not match the session"
-            }
-            CaptureErrorType::ProfileGamescopeVersionMismatch => {
-                "Gamescope profile version does not match the session"
-            }
-            CaptureErrorType::ProfileBackendMismatch => {
-                "Gamescope profile backend does not match the session"
-            }
-            CaptureErrorType::ProfileOutputDimensionsMismatch => {
-                "Gamescope profile output dimensions do not match the session"
-            }
-            CaptureErrorType::ProfileNestedDimensionsMismatch => {
-                "Gamescope profile nested dimensions do not match the session"
-            }
-            CaptureErrorType::ProfileNestedRefreshMismatch => {
-                "Gamescope profile nested refresh does not match the session"
-            }
-            CaptureErrorType::ProfileScalerMismatch => {
-                "Gamescope profile scaler does not match the session"
-            }
-            CaptureErrorType::ProfileFilterMismatch => {
-                "Gamescope profile filter does not match the session"
-            }
-            CaptureErrorType::ProfileVideoContractMismatch => {
-                "Gamescope profile video contract does not match the receiver"
-            }
-            CaptureErrorType::ProfileMemoryTypeMismatch => {
-                "Gamescope profile memory type does not match the receiver"
-            }
-            CaptureErrorType::ProfileStrideMismatch => {
-                "Gamescope profile stride does not match the receiver"
-            }
-            CaptureErrorType::FrameGenerationMismatch => {
-                "observed frame belongs to another capture generation"
-            }
+            CaptureErrorType::SourceContractIncomplete => "PipeWire source contract is incomplete",
             CaptureErrorType::FrameLeaseMismatch => {
                 "observed frame belongs to another admitted lease"
-            }
-            CaptureErrorType::FrameProfileMismatch => {
-                "observed frame belongs to another capture profile"
-            }
-            CaptureErrorType::FrameNormalizerMismatch => {
-                "observed frame is bound to another normalizer"
             }
             CaptureErrorType::FrameNormalizationFailed => "observed frame normalization failed",
         })
@@ -892,13 +848,6 @@ pub(crate) fn elapsed_ms(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::{CaptureGeneration, InvalidCaptureGeneration};
-
-    #[test]
-    fn capture_generation_is_explicit_and_nonzero() {
-        assert_eq!(CaptureGeneration::new(0), Err(InvalidCaptureGeneration));
-        assert_eq!(CaptureGeneration::new(9).unwrap().get(), 9);
-    }
 
     struct FakeRegistry(Result<RegistrySnapshot, RegistryFailure>);
 

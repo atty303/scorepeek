@@ -10,29 +10,11 @@ use std::io::{self, Write};
 use std::time::{Instant, SystemTime};
 
 pub(super) const MAX_RECORD_BYTES: usize = 1024 * 1024;
-pub(super) const EVENT_SCHEMA: &str = "scorepeek-event-v4";
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct Binding {
-    #[serde(rename = "capture_profile_sha256")]
-    pub capture_profile: String,
-    #[serde(rename = "normalizer_sha256")]
-    pub normalizer: String,
-    #[serde(rename = "canonical_layout_sha256")]
-    pub canonical_layout: String,
-    #[serde(rename = "catalog_sha256")]
-    pub catalog: String,
-    #[serde(rename = "model_sha256")]
-    pub model: String,
-    #[serde(rename = "runtime_sha256")]
-    pub runtime: String,
-}
+pub(super) const EVENT_SCHEMA: &str = "scorepeek-event-v5";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct CaptureContext {
-    session_id: Option<String>,
-    capture_generation: u64,
-    binding: Option<Binding>,
+    session_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -159,8 +141,6 @@ pub(super) struct PublicState {
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
-    pub(super) pending_binding: Option<Binding>,
-    #[serde(skip)]
     score_store_revision: u64,
 }
 
@@ -180,7 +160,7 @@ impl PublicState {
             },
         };
         Self {
-            schema: "scorepeek-event-snapshot-v4",
+            schema: "scorepeek-event-snapshot-v5",
             invocation_id,
             next_sequence: 1,
             status: Status {
@@ -198,7 +178,6 @@ impl PublicState {
             screen_state: None,
             game_version: None,
             started: Instant::now(),
-            pending_binding: None,
             score_store_revision: 0,
         }
     }
@@ -231,24 +210,10 @@ impl PublicState {
         Some(record)
     }
 
-    fn capture(
-        &self,
-        session_id: Option<&String>,
-        generation: Option<u64>,
-    ) -> Option<CaptureContext> {
-        generation.map(|capture_generation| CaptureContext {
-            session_id: session_id.cloned(),
-            capture_generation,
-            binding: self
-                .status
-                .capture
-                .as_ref()
-                .filter(|context| {
-                    context.session_id.as_ref() == session_id
-                        && context.capture_generation == capture_generation
-                })
-                .and_then(|context| context.binding.clone()),
-        })
+    fn capture(session_id: Option<&String>) -> Option<CaptureContext> {
+        session_id
+            .cloned()
+            .map(|session_id| CaptureContext { session_id })
     }
 
     fn event(&mut self, kind: EventKind, capture: Option<CaptureContext>) -> PublicRecord {
@@ -316,7 +281,6 @@ impl PublicState {
             screen,
             phase,
             screen_episode_id,
-            capture_generation,
             session_id,
             ..
         } = &event.kind
@@ -339,7 +303,7 @@ impl PublicState {
             };
             let screen_record = self.event(
                 EventKind::ScreenStateChanged { state },
-                self.capture(session_id.as_ref(), *capture_generation),
+                Self::capture(session_id.as_ref()),
             );
             self.retain(&screen_record);
             records.push(screen_record);
@@ -348,7 +312,6 @@ impl PublicState {
         let (kind, capture) = match &event.kind {
             RunEventKind::GameVersionChanged {
                 session_id,
-                capture_generation,
                 source_sequence,
                 version,
             } => (
@@ -356,11 +319,10 @@ impl PublicState {
                     source_sequence: *source_sequence,
                     version: version.clone(),
                 },
-                self.capture(Some(session_id), Some(*capture_generation)),
+                Self::capture(Some(session_id)),
             ),
             RunEventKind::ResultChanged {
                 session_id,
-                capture_generation,
                 source_sequence,
                 state,
             } => (
@@ -368,11 +330,10 @@ impl PublicState {
                     source_sequence: *source_sequence,
                     state: state.clone(),
                 },
-                self.capture(Some(session_id), Some(*capture_generation)),
+                Self::capture(Some(session_id)),
             ),
             RunEventKind::MusicSelectionChanged {
                 session_id,
-                capture_generation,
                 screen_episode_id,
                 source_sequence,
                 revision,
@@ -384,29 +345,24 @@ impl PublicState {
                     revision: *revision,
                     state: state.clone(),
                 },
-                self.capture(session_id.as_ref(), *capture_generation),
+                Self::capture(session_id.as_ref()),
             ),
             RunEventKind::MusicSelectBestObserved {
                 session_id,
-                capture_generation,
                 snapshot,
             } => (
                 EventKind::MusicSelectBestObserved {
                     snapshot: Some(Box::new(snapshot.clone())),
                 },
-                self.capture(Some(session_id), Some(*capture_generation)),
+                Self::capture(Some(session_id)),
             ),
-            RunEventKind::MusicSelectResolverChanged {
-                session_id,
-                capture_generation,
-                state,
-            } => {
+            RunEventKind::MusicSelectResolverChanged { session_id, state } => {
                 if state.snapshot.is_some() || self.music_select_best.is_none() {
                     return records;
                 }
                 (
                     EventKind::MusicSelectBestObserved { snapshot: None },
-                    self.capture(session_id.as_ref(), *capture_generation),
+                    Self::capture(session_id.as_ref()),
                 )
             }
             _ => match self.lifecycle(event) {
@@ -453,26 +409,14 @@ impl PublicState {
 
     fn lifecycle(&mut self, event: &RunEvent) -> Option<(EventKind, Option<CaptureContext>)> {
         let value = match &event.kind {
-            RunEventKind::SessionStarted {
-                session_id,
-                capture_generation,
-                ..
-            } => {
-                let binding = self.pending_binding.take();
-                let readiness = if binding.is_some() {
-                    Readiness::Ready
-                } else {
-                    Readiness::NotReady
-                };
+            RunEventKind::SessionStarted { session_id, .. } => {
                 self.status = Status {
                     watcher: WatcherStatus::SessionActive,
-                    capture: Some(CaptureContext {
-                        session_id: session_id.clone(),
-                        capture_generation: *capture_generation,
-                        binding,
-                    }),
-                    catalog: readiness,
-                    model: readiness,
+                    capture: session_id
+                        .clone()
+                        .map(|session_id| CaptureContext { session_id }),
+                    catalog: Readiness::Ready,
+                    model: Readiness::Ready,
                     scores: self.status.scores,
                     recording: self.status.recording.map(|_| Readiness::Ready),
                     last_session_outcome: None,
@@ -613,21 +557,7 @@ pub(super) mod tests {
     fn session() -> RunEvent {
         run(RunEventKind::SessionStarted {
             session_id: Some("session".into()),
-            capture_generation: 7,
-            capture_profile_sha256: "a".repeat(64),
-            normalizer_artifact_sha256: "b".repeat(64),
         })
-    }
-
-    fn binding() -> Binding {
-        Binding {
-            capture_profile: "a".repeat(64),
-            normalizer: "b".repeat(64),
-            canonical_layout: "c".repeat(64),
-            catalog: "d".repeat(64),
-            model: "e".repeat(64),
-            runtime: "f".repeat(64),
-        }
     }
 
     // Consumer model intentionally operates on the wire, independently of the producer reducer.
@@ -675,12 +605,10 @@ pub(super) mod tests {
     fn lifecycle_projection_matches_consumer_state_and_does_not_publish_reports() {
         let mut state = PublicState::new("run".into());
         let mut consumer = serde_json::to_value(&state).unwrap();
-        state.pending_binding = Some(binding());
         let events = [
             session(),
             run(RunEventKind::MusicSelectionChanged {
                 session_id: Some("session".into()),
-                capture_generation: Some(7),
                 screen_episode_id: 1,
                 source_sequence: 10,
                 revision: 1,
@@ -690,13 +618,11 @@ pub(super) mod tests {
             }),
             run(RunEventKind::GameVersionChanged {
                 session_id: "session".into(),
-                capture_generation: 7,
                 source_sequence: 12,
                 version: "P2D:J:B:A:2026080500".into(),
             }),
             run(RunEventKind::SessionFinished {
                 session_id: "session".into(),
-                capture_generation: 7,
                 outcome: "error".into(),
                 report: json!({ "raw_ocr": "MUST_NOT_APPEAR", "directory": "/private/path" }),
             }),
@@ -709,7 +635,7 @@ pub(super) mod tests {
             for event in state.project(&internal) {
                 let wire = serde_json::to_value(event).unwrap();
                 if wire["status"]["watcher"] == "session_active" {
-                    assert_eq!(wire["capture"]["binding"]["catalog_sha256"], "d".repeat(64));
+                    assert_eq!(wire["capture"], json!({ "session_id": "session" }));
                     assert_eq!(wire["status"]["model"], "ready");
                 }
                 fold(&mut consumer, &wire);
@@ -728,7 +654,6 @@ pub(super) mod tests {
         let mut state = PublicState::new("run".into());
         let raw = run(RunEventKind::RawScreenObserved {
             session_id: Some("session".into()),
-            capture_generation: Some(7),
             semantic_episode_id: Some(1),
             sequence: 9,
             monotonic_start_ms: 0,
@@ -806,7 +731,6 @@ pub(super) mod tests {
         let event = |phase| {
             run(RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some("session".into()),
-                capture_generation: Some(7),
                 screen_episode_id: 4,
                 sequence: 40,
                 monotonic_end_ms: 4_000,

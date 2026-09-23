@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::diagnostics::live::BoundCanonicalFrame;
+use crate::service::session::recognition::BoundCanonicalFrame;
 
 /// A source adapter that yields frames at the shared canonical recognition boundary.
 ///

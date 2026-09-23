@@ -12,9 +12,6 @@ pub struct DiagnosticResource {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DiagnosticBinding {
-    pub capture_generation: u64,
-    pub capture_profile_sha256: String,
-    pub normalizer_sha256: String,
     pub canonical_layout_sha256: String,
     pub catalog_sha256: String,
     pub model_sha256: String,
@@ -40,17 +37,14 @@ impl DiagnosticBinding {
 
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.capture_generation > 0
-            && [
-                &self.capture_profile_sha256,
-                &self.normalizer_sha256,
-                &self.canonical_layout_sha256,
-                &self.catalog_sha256,
-                &self.model_sha256,
-                &self.runtime_sha256,
-            ]
-            .into_iter()
-            .all(|value| valid_sha256(value))
+        [
+            &self.canonical_layout_sha256,
+            &self.catalog_sha256,
+            &self.model_sha256,
+            &self.runtime_sha256,
+        ]
+        .into_iter()
+        .all(|value| valid_sha256(value))
             && self.replay.as_ref().is_none_or(|replay| {
                 valid_sha256(&replay.request_sha256) && valid_sha256(&replay.extraction_sha256)
             })
@@ -115,9 +109,6 @@ mod tests {
 
     fn binding() -> DiagnosticBinding {
         DiagnosticBinding {
-            capture_generation: 1,
-            capture_profile_sha256: "1".repeat(64),
-            normalizer_sha256: "2".repeat(64),
             canonical_layout_sha256: "3".repeat(64),
             catalog_sha256: "4".repeat(64),
             model_sha256: "5".repeat(64),
@@ -127,11 +118,12 @@ mod tests {
     }
 
     #[test]
-    fn binding_identity_keeps_the_existing_canonical_contract() {
-        assert_eq!(
-            binding().identity_sha256().as_deref(),
-            Some("a1b472638f1ac5d8995ac59ebb426c0d8cddbadcf7464f63b04038f526ea8b04")
-        );
+    fn binding_identity_changes_with_resource_revision() {
+        let first = binding().identity_sha256().unwrap();
+        let mut changed = binding();
+        changed.catalog_sha256 = "7".repeat(64);
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, changed.identity_sha256().unwrap());
     }
 
     #[test]
@@ -148,7 +140,7 @@ mod tests {
         };
         assert!(descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION")));
         assert!(!descriptor.is_valid_for_version("different-product-version"));
-        descriptor.binding.capture_generation = 0;
+        descriptor.binding.catalog_sha256.clear();
         assert!(!descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION")));
         assert!(descriptor.binding.identity_sha256().is_none());
     }

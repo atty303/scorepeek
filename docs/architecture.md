@@ -10,9 +10,10 @@ and tests that implement them.
 flowchart LR
   PW["Exact PipeWire Video/Source"] --> RX["Bounded BGRx receiver"]
   VK["Injected Vulkan layer"] --> DM["One GPU-local DMA-BUF"]
-  DM --> RX
-  RX --> OF["Observed BGRx frame"]
-  RC["Admitted source contract and edge crop"] --> NM["Versioned normalizer"]
+  DM --> VRX["Vulkan readback"]
+  VRX --> OF["Minimal BGRx frame"]
+  RX --> OF
+  RC["Observed source contract and edge crop"] --> NM["Shared BGRx normalization"]
   OF --> NM
   NM --> CF["Canonical RGB8 1920x1080"]
   CF --> SE["10 Hz screen episodes"]
@@ -21,7 +22,7 @@ flowchart LR
   FO --> JR
   JR --> AR["Attempt and RESULT lifecycle"]
   SE --> AR
-  AR --> EV["Event API v4 projection"]
+  AR --> EV["Event API v5 projection"]
   EV --> SOCK["events.sock"]
   EV --> DB["SQLite score consumer"]
   SOCK --> OV["Wayland and OBS overlays"]
@@ -86,8 +87,8 @@ in the root configuration.
 
 The runtime does not start, stop, signal, or restart the operator's ordinary
 Gamescope, Steam, or game processes. It waits for exactly one eligible source,
-treats each producer lifetime as a distinct capture
-generation, and performs bounded ordered teardown on source loss or process
+treats each admitted producer lifetime as one capture
+session, and performs bounded ordered teardown on source loss or process
 termination.
 
 Every supported Linux x86-64 Scorepeek binary embeds a stripped explicit Vulkan layer and its
@@ -107,7 +108,7 @@ while Scorepeek is connected. Scorepeek requests at 10 Hz and imports one
 GPU-local DMA-BUF, then performs a fenced readback on an asynchronous worker.
 The consumer prefers a transfer-capable queue family without graphics capability, requests low
 global queue priority when the device supports it, reuses a pre-recorded command buffer, and keeps
-staging memory mapped for the generation lifetime. These choices keep consumer readback off the
+staging memory mapped for the session lifetime. These choices keep consumer readback off the
 game's graphics queue when the device exposes an eligible family; diagnostics record the admitted
 queue and separate producer, present-call, readback, and total latency distributions.
 The producer-fence stage measures only fence wait remaining after `vkQueuePresentKHR` returns, so
@@ -120,22 +121,23 @@ disconnect cleanup destroys it. The layer borrows an application-owned present f
 already attached and tracks its reset or destruction without taking ownership; externally shareable
 or imported fences fail capture because another handle can replace their payload. Otherwise the layer adds and
 owns the fence. A supported PipeWire contract change drains the current
-generation and readmits the same node as a new generation. Unsupported
+session and readmits the same node as a new session. Unsupported
 contracts, invalid crops, import failures, and other terminal capture failures
 finish diagnostics and terminate `scorepeek run` with an error.
 
-For every admitted generation, runtime creates a canonical capture-profile
-document from backend, selector, and actual source contract, plus a separate
-normalizer document from source dimensions, explicit per-edge crop, the fixed
-half-pixel linear sampler, and the canonical contract. Both documents and
-digests enter structured diagnostics. Canonical recording manifests carry only
+For every admitted session, runtime records source backend, actual source contract,
+memory type, stride, explicit edge crop, normalization method, canonical output
+contract, and recognition resource revisions in structured diagnostics. Canonical
+recording manifests carry only
 the canonical input and its integrity, completion, and game-version facts. Public
-events retain digests only. Invalid crop, format, memory, ambiguity, or source
+events carry the capture session ID only. Invalid crop, format, memory, ambiguity, or source
 contract fails closed; no backend or source fallback exists.
 
-Only the admitted generation normalizer may create a contiguous canonical RGB8
-1920x1080 frame. Capture generation, profile, normalizer, layout, catalog, and
-model identities remain bound through recognition and diagnostics.
+Only the admitted lease normalizer may create a contiguous canonical RGB8
+1920x1080 frame. The capture lease rejects frames from another lease by ownership token.
+Recognition accepts frames for its session ID and fixes layout, catalog, model, and
+runtime revisions for the worker lifetime. Core borrows canonical pixels; capture
+source evidence remains outside its recognition input.
 
 ## Recognition and temporal authority
 
@@ -173,13 +175,13 @@ applicability and acceptance rules are defined in
 
 ## Events and score persistence
 
-The public live interface is Event API v4 on
+The public live interface is Event API v5 on
 `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A client receives one current
 snapshot and then ordered NDJSON events. The public projection excludes raw
 OCR, candidates, recognition metrics, recording paths, pixels, and stored
 history. Its nullable session version becomes non-null only after identification and is not written
 to the SQLite score history. Reconnection restores current state, not every missed event. The wire
-contract and RESULT lifecycle are defined in [Event API v4](event-api.md).
+contract and RESULT lifecycle are defined in [Event API v5](event-api.md).
 
 The in-process `scorepeek-scores` consumer persists provisional, retracted,
 and confirmed RESULT transitions plus current MUSIC SELECT supplements in
@@ -248,11 +250,11 @@ approved repository artifact. See [private corpus](private-corpus.md).
 | Pages packaging, validation, and no-op selection | `scorepeek-catalog-publisher` and `.github/workflows/catalog-pages.yml` |
 | Client ZIP verification, content store, and activation | `scorepeek-resources` plus `scorepeek-runtime::resources::catalog` |
 | PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
-| Runtime source identity, edge crop, and canonical normalization | Versioned capture profile and normalizer documents |
+| Runtime source identity, edge crop, and canonical normalization | Capture admission and session-start diagnostics |
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek-core/src` |
 | OCR preprocessing, models, and thresholds | Registered text bundle and embedded numeric model artifacts |
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
-| Public live compatibility | Event API v4 typed projection |
+| Public live compatibility | Event API v5 typed projection |
 | Durable local score state | `scorepeek-scores` SQLite consumer |
 | Canvas/editor state and skin execution | Overlay crates and skin SDK |
 | Private replay evidence | Canonical recording and external private corpus |

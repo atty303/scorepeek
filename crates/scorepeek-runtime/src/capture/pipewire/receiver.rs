@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use super::contract::{UncalibratedFrame, UncalibratedMemoryType, UncalibratedVideoContract};
-#[cfg(test)]
-use super::lifecycle::{admit_gamescope_profile, classify_profile_admission};
+use super::super::source::{UncalibratedFrame, UncalibratedMemoryType, UncalibratedVideoContract};
 use ::pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
@@ -17,10 +15,9 @@ use pw::spa::param::video::{VideoFormat, VideoInfoRaw, VideoInterlaceMode};
 use pw::spa::pod::{Pod, Value};
 
 use super::super::{
-    AuthoredGamescopeProfileBinding, CaptureDiagnosticDetail, CaptureDiagnosticFact,
-    CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError,
-    CaptureErrorType, CaptureGeneration, EdgeCrop, GamescopeProfileBinding, ITERATION_SLICE,
-    NormalizedCanonicalFrame, UncalibratedPipewireSourceLease, elapsed_ms,
+    CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
+    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError, CaptureErrorType, EdgeCrop,
+    ITERATION_SLICE, NormalizedCanonicalFrame, UncalibratedPipewireSourceLease, elapsed_ms,
 };
 
 const MAX_WIDTH: u32 = 7_680;
@@ -544,16 +541,11 @@ fn quiesce_and_disconnect(
     }
 }
 
-/// A live Gamescope receiver admitted by one explicit session and immutable profile binding.
-///
-/// Only this admitted lease can attach its generation/profile/normalizer identities to an
-/// `ObservedFrame`, and only the same lease can apply the binding-selected normalizer to that frame.
-pub struct CalibratedGamescopeLease {
+/// A connected `PipeWire` producer with one immutable crop normalizer.
+/// Only this lease can normalize frames taken from its receiver.
+pub struct PipewireCaptureLease {
     pub(super) receiver: UncalibratedPipeWireReceiver,
-    pub(super) capture_profile_sha256: Arc<str>,
-    pub(super) normalizer_artifact_sha256: Arc<str>,
     pub(super) geometry: super::super::FractionalLinearGeometry,
-    pub(super) capture_generation: CaptureGeneration,
     pub(super) frame_domain: Arc<()>,
     pub(super) normalization_success_recorded: bool,
     pub(super) normalization_failure_recorded: bool,
@@ -562,10 +554,7 @@ pub struct CalibratedGamescopeLease {
 /// One admitted Vulkan-layer producer lifetime using the same canonical normalizer contract.
 pub struct CalibratedVulkanLease {
     session: super::super::vulkan::VulkanSession,
-    capture_profile_sha256: Arc<str>,
-    normalizer_artifact_sha256: Arc<str>,
     geometry: super::super::FractionalLinearGeometry,
-    capture_generation: CaptureGeneration,
     frame_domain: Arc<()>,
     diagnostic_sequence: u64,
     normalization_success_recorded: bool,
@@ -576,95 +565,39 @@ pub struct CalibratedVulkanLease {
 /// One raw receiver frame carrying the identities granted only by calibrated admission.
 pub struct ObservedFrame {
     frame: UncalibratedFrame,
-    capture_generation: CaptureGeneration,
-    capture_profile_sha256: Arc<str>,
-    normalizer_artifact_sha256: Arc<str>,
     frame_domain: Arc<()>,
 }
 
-/// Exact raw `BGRx` source bytes paired with a successfully normalized live frame.
-///
-/// The evidence remains outside recognition. It exists only so a retained diagnostic frame can
-/// replay the bound source-to-canonical transform without another game session.
-pub struct CalibratedSourceFrameEvidence {
-    frame: UncalibratedFrame,
-}
-
-/// Sendable immutable normalization authority for one admitted capture generation.
+/// Sendable immutable normalization authority for one connected capture lease.
 #[derive(Clone)]
 pub struct AdmittedFrameNormalizer {
     geometry: super::super::FractionalLinearGeometry,
-    capture_generation: CaptureGeneration,
-    capture_profile_sha256: Arc<str>,
-    normalizer_artifact_sha256: Arc<str>,
     frame_domain: Arc<()>,
 }
 
 impl AdmittedFrameNormalizer {
-    /// Normalizes one frame on a capture-owned worker without weakening generation identity.
+    /// Normalizes one frame on a capture-owned worker.
     ///
     /// # Errors
-    /// Returns a typed capture error when the frame is from another generation or cannot be
-    /// normalized under this generation's admitted geometry.
-    pub fn normalize_with_source(
+    /// Returns a typed capture error when the frame is from another lease or cannot be
+    /// normalized under this lease's admitted geometry.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "normalization consumes and drops raw source bytes"
+    )]
+    pub fn normalize(
         &self,
         observed: ObservedFrame,
-    ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
-        if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain)
-            || observed.capture_generation != self.capture_generation
-            || observed.capture_profile_sha256 != self.capture_profile_sha256
-            || observed.normalizer_artifact_sha256 != self.normalizer_artifact_sha256
-        {
+    ) -> Result<NormalizedCanonicalFrame, CaptureError> {
+        if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain) {
             return Err(CaptureError::without_source(
                 CaptureErrorType::FrameLeaseMismatch,
             ));
         }
-        let normalized = self.geometry.normalize(&observed.frame).map_err(|_| {
-            CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed)
-        })?;
-        Ok((
-            NormalizedCanonicalFrame::bind(
-                normalized,
-                self.capture_generation,
-                Arc::clone(&self.capture_profile_sha256),
-                Arc::clone(&self.normalizer_artifact_sha256),
-            ),
-            CalibratedSourceFrameEvidence {
-                frame: observed.frame,
-            },
-        ))
-    }
-}
-
-impl CalibratedSourceFrameEvidence {
-    #[must_use]
-    pub const fn contract(&self) -> UncalibratedVideoContract {
-        self.frame.contract()
-    }
-
-    #[must_use]
-    pub const fn memory_type(&self) -> UncalibratedMemoryType {
-        self.frame.memory_type()
-    }
-
-    #[must_use]
-    pub const fn stride(&self) -> u32 {
-        self.frame.stride()
-    }
-
-    #[must_use]
-    pub const fn source_sequence(&self) -> u64 {
-        self.frame.sequence()
-    }
-
-    #[must_use]
-    pub const fn received_monotonic_ns(&self) -> u64 {
-        self.frame.received_monotonic_ns()
-    }
-
-    #[must_use]
-    pub fn into_bytes(self) -> Box<[u8]> {
-        self.frame.bytes.into_boxed_slice()
+        self.geometry
+            .normalize(observed.frame.bgrx())
+            .map(NormalizedCanonicalFrame::bind)
+            .map_err(|_| CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed))
     }
 }
 
@@ -672,12 +605,6 @@ impl fmt::Debug for ObservedFrame {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ObservedFrame")
-            .field("capture_generation", &self.capture_generation)
-            .field("capture_profile_sha256", &self.capture_profile_sha256)
-            .field(
-                "normalizer_artifact_sha256",
-                &self.normalizer_artifact_sha256,
-            )
             .field("source_sequence", &self.frame.sequence())
             .field("received_monotonic_ns", &self.frame.received_monotonic_ns())
             .finish_non_exhaustive()
@@ -686,21 +613,6 @@ impl fmt::Debug for ObservedFrame {
 
 impl ObservedFrame {
     #[must_use]
-    pub const fn capture_generation(&self) -> CaptureGeneration {
-        self.capture_generation
-    }
-
-    #[must_use]
-    pub fn capture_profile_sha256(&self) -> &str {
-        &self.capture_profile_sha256
-    }
-
-    #[must_use]
-    pub fn normalizer_artifact_sha256(&self) -> &str {
-        &self.normalizer_artifact_sha256
-    }
-
-    #[must_use]
     pub const fn source_sequence(&self) -> u64 {
         self.frame.sequence()
     }
@@ -711,28 +623,19 @@ impl ObservedFrame {
     }
 }
 
-impl fmt::Debug for CalibratedGamescopeLease {
+impl fmt::Debug for PipewireCaptureLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("CalibratedGamescopeLease")
-            .field("capture_profile_sha256", &self.capture_profile_sha256)
-            .field(
-                "normalizer_artifact_sha256",
-                &self.normalizer_artifact_sha256,
-            )
-            .field("capture_generation", &self.capture_generation)
+            .debug_struct("PipewireCaptureLease")
             .finish_non_exhaustive()
     }
 }
 
-impl CalibratedGamescopeLease {
+impl PipewireCaptureLease {
     #[must_use]
     pub fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
         AdmittedFrameNormalizer {
             geometry: self.geometry,
-            capture_generation: self.capture_generation,
-            capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
-            normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
             frame_domain: Arc::clone(&self.frame_domain),
         }
     }
@@ -766,21 +669,6 @@ impl CalibratedGamescopeLease {
         );
     }
 
-    #[must_use]
-    pub fn capture_profile_sha256(&self) -> &str {
-        &self.capture_profile_sha256
-    }
-
-    #[must_use]
-    pub fn normalizer_artifact_sha256(&self) -> &str {
-        &self.normalizer_artifact_sha256
-    }
-
-    #[must_use]
-    pub const fn capture_generation(&self) -> CaptureGeneration {
-        self.capture_generation
-    }
-
     /// Takes the newest raw frame and binds it to this admitted capture lifetime.
     #[must_use]
     pub fn take_latest_observed_frame(&mut self) -> Option<ObservedFrame> {
@@ -788,9 +676,6 @@ impl CalibratedGamescopeLease {
             .take_latest_frame()
             .map(|frame| ObservedFrame {
                 frame,
-                capture_generation: self.capture_generation,
-                capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
-                normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
                 frame_domain: Arc::clone(&self.frame_domain),
             })
     }
@@ -801,8 +686,7 @@ impl CalibratedGamescopeLease {
     /// create per-frame diagnostic traffic.
     ///
     /// # Errors
-    /// Returns a stable typed error for generation/profile/normalizer mixing or normalization
-    /// failure. The observed frame is consumed and never enters recognition directly.
+    /// Returns a stable typed error for lease mixing or normalization failure. The observed frame is consumed and never enters recognition directly.
     pub fn normalize_observed_frame(
         &mut self,
         observed: ObservedFrame,
@@ -812,27 +696,6 @@ impl CalibratedGamescopeLease {
             .map(|(canonical, _)| canonical)
     }
 
-    /// Applies the immutable normalizer and returns the exact consumed source bytes as diagnostic
-    /// evidence alongside the canonical frame.
-    ///
-    /// # Errors
-    /// Returns the same typed errors as [`Self::normalize_observed_frame`].
-    pub fn normalize_observed_frame_with_source(
-        &mut self,
-        observed: ObservedFrame,
-        sink: &mut impl CaptureDiagnosticSink,
-    ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
-        self.normalize_observed_frame_inner(observed, sink)
-            .map(|(canonical, observed)| {
-                (
-                    canonical,
-                    CalibratedSourceFrameEvidence {
-                        frame: observed.frame,
-                    },
-                )
-            })
-    }
-
     fn normalize_observed_frame_inner(
         &mut self,
         observed: ObservedFrame,
@@ -840,29 +703,13 @@ impl CalibratedGamescopeLease {
     ) -> Result<(NormalizedCanonicalFrame, ObservedFrame), CaptureError> {
         let started_ms = self.receiver.elapsed_ms();
         let source_sequence = observed.source_sequence();
-        let result = if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain) {
-            Err(CaptureErrorType::FrameLeaseMismatch)
-        } else if observed.capture_generation != self.capture_generation {
-            Err(CaptureErrorType::FrameGenerationMismatch)
-        } else if observed.capture_profile_sha256 != self.capture_profile_sha256 {
-            Err(CaptureErrorType::FrameProfileMismatch)
-        } else if observed.normalizer_artifact_sha256 != self.normalizer_artifact_sha256 {
-            Err(CaptureErrorType::FrameNormalizerMismatch)
-        } else {
+        let result = if Arc::ptr_eq(&observed.frame_domain, &self.frame_domain) {
             self.geometry
-                .normalize(&observed.frame)
-                .map(|frame| {
-                    (
-                        NormalizedCanonicalFrame::bind(
-                            frame,
-                            self.capture_generation,
-                            Arc::clone(&observed.capture_profile_sha256),
-                            Arc::clone(&observed.normalizer_artifact_sha256),
-                        ),
-                        observed,
-                    )
-                })
+                .normalize(observed.frame.bgrx())
+                .map(|frame| (NormalizedCanonicalFrame::bind(frame), observed))
                 .map_err(|_| CaptureErrorType::FrameNormalizationFailed)
+        } else {
+            Err(CaptureErrorType::FrameLeaseMismatch)
         };
         let error_type = result.as_ref().err().copied();
         let should_record = if error_type.is_some() {
@@ -925,9 +772,6 @@ impl CalibratedVulkanLease {
     pub fn frame_normalizer(&self) -> AdmittedFrameNormalizer {
         AdmittedFrameNormalizer {
             geometry: self.geometry,
-            capture_generation: self.capture_generation,
-            capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
-            normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
             frame_domain: Arc::clone(&self.frame_domain),
         }
     }
@@ -963,16 +807,6 @@ impl CalibratedVulkanLease {
     }
 
     #[must_use]
-    pub fn capture_profile_sha256(&self) -> &str {
-        &self.capture_profile_sha256
-    }
-
-    #[must_use]
-    pub fn normalizer_artifact_sha256(&self) -> &str {
-        &self.normalizer_artifact_sha256
-    }
-
-    #[must_use]
     pub fn take_latest_observed_frame(&mut self) -> Option<ObservedFrame> {
         self.session.take_latest().map(|frame| {
             let contract = UncalibratedVideoContract {
@@ -999,46 +833,9 @@ impl CalibratedVulkanLease {
                     received_monotonic_ns: frame.received_monotonic_ns,
                     bytes: frame.bytes.into_vec(),
                 },
-                capture_generation: self.capture_generation,
-                capture_profile_sha256: Arc::clone(&self.capture_profile_sha256),
-                normalizer_artifact_sha256: Arc::clone(&self.normalizer_artifact_sha256),
                 frame_domain: Arc::clone(&self.frame_domain),
             }
         })
-    }
-
-    /// Normalizes one observed image under this generation's admitted Vulkan contract.
-    ///
-    /// # Errors
-    /// Returns a typed lease or normalization failure when the frame does not belong to this
-    /// generation or cannot satisfy the canonical frame contract.
-    pub fn normalize_observed_frame_with_source(
-        &mut self,
-        observed: ObservedFrame,
-        _sink: &mut impl CaptureDiagnosticSink,
-    ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
-        if !Arc::ptr_eq(&observed.frame_domain, &self.frame_domain)
-            || observed.capture_generation != self.capture_generation
-        {
-            return Err(CaptureError::without_source(
-                CaptureErrorType::FrameLeaseMismatch,
-            ));
-        }
-        let normalized = self.geometry.normalize(&observed.frame).map_err(|_| {
-            CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed)
-        })?;
-        let canonical = NormalizedCanonicalFrame::bind(
-            normalized,
-            self.capture_generation,
-            Arc::clone(&self.capture_profile_sha256),
-            Arc::clone(&self.normalizer_artifact_sha256),
-        );
-        Ok((
-            canonical,
-            CalibratedSourceFrameEvidence {
-                frame: observed.frame,
-            },
-        ))
     }
 
     /// Waits for worker progress and publishes a periodic bounded timing summary.
@@ -1184,59 +981,65 @@ const fn timing_distribution(
 pub fn admit_vulkan_session(
     session: super::super::vulkan::VulkanSession,
     crop: EdgeCrop,
-    capture_generation: CaptureGeneration,
     sink: &mut impl CaptureDiagnosticSink,
-) -> Result<(CalibratedVulkanLease, AuthoredGamescopeProfileBinding), CaptureError> {
+) -> Result<(CalibratedVulkanLease, super::super::RuntimeCaptureEvidence), CaptureError> {
     let source_contract = session.contract();
     let (width, height) = session.dimensions();
-    let video = UncalibratedVideoContract {
+    let planes = source_contract
+        .planes
+        .iter()
+        .take(source_contract.plane_count as usize)
+        .map(|plane| {
+            serde_json::json!({
+                "offset": plane.offset,
+                "size": plane.size,
+                "row_pitch": plane.row_pitch,
+                "array_pitch": plane.array_pitch,
+                "depth_pitch": plane.depth_pitch,
+            })
+        })
+        .collect::<Vec<_>>();
+    let image = serde_json::json!({
+        "width": width,
+        "height": height,
+        "vk_format": source_contract.vk_format,
+        "drm_fourcc": source_contract.drm_fourcc,
+        "modifier": source_contract.modifier,
+        "allocation_size": source_contract.allocation_size,
+        "plane_count": source_contract.plane_count,
+        "device_uuid": source_contract.device_uuid,
+        "planes": planes,
+    });
+    let (evidence, geometry) = super::super::RuntimeCaptureEvidence::new(
+        "vulkan_layer",
         width,
         height,
-        framerate_num: REQUESTED_FRAMERATE_NUM,
-        framerate_denom: REQUESTED_FRAMERATE_DENOM,
-        maximum_framerate_num: 0,
-        maximum_framerate_denom: 1,
-        pixel_aspect_num: 1,
-        pixel_aspect_denom: 1,
-        chroma_site: 0,
-        color_range: 0,
-        color_matrix: 0,
-        transfer_function: 0,
-        color_primaries: 0,
-    };
-    let authored = GamescopeProfileBinding::author_runtime_vulkan(
-        "fixed-user-runtime-socket".to_owned(),
-        video,
+        image,
+        UncalibratedMemoryType::DmaBuf,
         width.saturating_mul(4),
         crop,
-        source_contract,
     )
     .map_err(|_| CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed))?;
-    let binding = GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256)
-        .map_err(|_| CaptureError::without_source(CaptureErrorType::FrameNormalizationFailed))?;
     sink.record(CaptureDiagnosticFact {
         sequence: 1,
         monotonic_start_ms: 0,
         monotonic_end_ms: 0,
-        operation: CaptureDiagnosticOperation::ProfileBindingAdmission,
+        operation: CaptureDiagnosticOperation::SourceAdmission,
         status: CaptureDiagnosticStatus::Success,
         error_type: None,
-        detail: CaptureDiagnosticDetail::ProfileBindingAdmission,
+        detail: CaptureDiagnosticDetail::SourceAdmission,
     });
     Ok((
         CalibratedVulkanLease {
             session,
-            capture_profile_sha256: Arc::from(binding.capture_profile_sha256()),
-            normalizer_artifact_sha256: Arc::from(binding.normalizer_artifact_sha256()),
-            geometry: binding.geometry(),
-            capture_generation,
+            geometry,
             frame_domain: Arc::new(()),
             diagnostic_sequence: 2,
             normalization_success_recorded: false,
             normalization_failure_recorded: false,
             terminal_failure_recorded: false,
         },
-        authored,
+        evidence,
     ))
 }
 
@@ -1634,7 +1437,7 @@ fn receiver_fact_bounds(
 /// # Errors
 /// Returns a typed timeout or the first provider/stream terminal error. Failure cleanup still
 /// disconnects the stream before releasing the provider lease.
-pub fn start_uncalibrated_gamescope_receiver(
+pub fn start_pipewire_receiver(
     lease: UncalibratedPipewireSourceLease,
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
@@ -2054,9 +1857,7 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::{
-        FractionalRectangle, GamescopeProfileBindingAuthoringInput, RationalCoordinate,
-    };
+    use crate::capture::pipewire::lifecycle::admit_pipewire_source;
 
     fn video_info() -> VideoInfoRaw {
         let mut info = VideoInfoRaw::new();
@@ -2074,33 +1875,6 @@ mod tests {
         let info = video_info();
         state.negotiate(info);
         state
-    }
-
-    fn profile_binding() -> GamescopeProfileBinding {
-        let authored = GamescopeProfileBinding::author(GamescopeProfileBindingAuthoringInput {
-            calibration_evidence_sha256: "1".repeat(64),
-            environment_id: "test-machine".to_owned(),
-            gamescope_version: "3.16.19".to_owned(),
-            backend_id: "sdl".to_owned(),
-            output_width: 4,
-            output_height: 2,
-            nested_width: 4,
-            nested_height: 2,
-            nested_refresh_hz: 60,
-            scaler: "auto".to_owned(),
-            filter: "linear".to_owned(),
-            observed_video_contract: negotiated_state().contract.expect("contract"),
-            memory_type: UncalibratedMemoryType::MemoryPointer,
-            stride: 16,
-            geometry: FractionalRectangle::new(
-                RationalCoordinate::new(0, 1).unwrap(),
-                RationalCoordinate::new(0, 1).unwrap(),
-                RationalCoordinate::new(4, 1).unwrap(),
-                RationalCoordinate::new(2, 1).unwrap(),
-            ),
-        })
-        .unwrap();
-        GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap()
     }
 
     fn receiver_for_admission() -> UncalibratedPipeWireReceiver {
@@ -2369,130 +2143,18 @@ mod tests {
     }
 
     #[test]
-    fn profile_admission_requires_dimensions_and_current_byte_layout_only() {
-        let binding = profile_binding();
-        let mut state = negotiated_state();
-        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
-
-        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
-
-        let mut absent = ReceiverState::new(Instant::now());
-        assert_eq!(
-            classify_profile_admission(&binding, &absent),
-            Err(CaptureErrorType::ProfileVideoContractMismatch)
-        );
-        absent.contract = negotiated_state().contract;
-        assert_eq!(
-            classify_profile_admission(&binding, &absent),
-            Err(CaptureErrorType::ProfileMemoryTypeMismatch)
-        );
-        absent.memory_type = Some(UncalibratedMemoryType::MemoryPointer);
-        assert_eq!(
-            classify_profile_admission(&binding, &absent),
-            Err(CaptureErrorType::ProfileStrideMismatch)
-        );
-
-        let mut video_mismatch = state.contract.expect("contract");
-        video_mismatch.color_primaries = 1;
-        state.contract = Some(video_mismatch);
-        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
-        state.contract = Some(negotiated_state().contract.expect("contract"));
-        state.memory_type = Some(UncalibratedMemoryType::DmaBuf);
-        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
-        state.memory_type = Some(UncalibratedMemoryType::MemoryPointer);
-        state.stride = Some(20);
-        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
-        let mut dimension_mismatch = state.contract.expect("contract");
-        dimension_mismatch.width += 1;
-        state.contract = Some(dimension_mismatch);
-        assert_eq!(
-            classify_profile_admission(&binding, &state),
-            Err(CaptureErrorType::ProfileVideoContractMismatch)
-        );
-    }
-
-    #[test]
-    fn admission_records_one_value_free_result_and_retains_rejected_receiver() {
-        let binding = profile_binding();
-        let receiver = receiver_for_admission();
-        let mut facts = Facts::default();
-        let admitted = admit_gamescope_profile(
-            receiver,
-            binding,
-            CaptureGeneration::new(1).unwrap(),
-            &mut facts,
-        )
-        .unwrap();
-        assert_eq!(facts.0.len(), 3);
-        let acceptance = facts.0.last().expect("acceptance fact");
-        assert_eq!(acceptance.sequence, 5);
-        assert_eq!(
-            acceptance.operation,
-            CaptureDiagnosticOperation::ProfileBindingAdmission
-        );
-        assert_eq!(acceptance.status, CaptureDiagnosticStatus::Success);
-        assert_eq!(acceptance.error_type, None);
-        assert_eq!(
-            acceptance.detail,
-            CaptureDiagnosticDetail::ProfileBindingAdmission
-        );
-        admitted.shutdown(&mut ()).unwrap();
-
-        let receiver = receiver_for_admission();
-        receiver.state.borrow_mut().contract.as_mut().unwrap().width += 1;
-        let failure = admit_gamescope_profile(
-            receiver,
-            profile_binding(),
-            CaptureGeneration::new(1).unwrap(),
-            &mut facts,
-        )
-        .unwrap_err();
-        assert_eq!(
-            failure.error_type(),
-            CaptureErrorType::ProfileVideoContractMismatch
-        );
-        let rejection = facts.0.last().expect("rejection fact");
-        assert_eq!(
-            rejection.operation,
-            CaptureDiagnosticOperation::ProfileBindingAdmission
-        );
-        assert_eq!(rejection.status, CaptureDiagnosticStatus::Error);
-        assert_eq!(
-            rejection.error_type,
-            Some(CaptureErrorType::ProfileVideoContractMismatch)
-        );
-        assert_eq!(
-            rejection.detail,
-            CaptureDiagnosticDetail::ProfileBindingAdmission
-        );
-        failure.shutdown(&mut ()).unwrap();
-    }
-
-    #[test]
     fn admitted_lease_alone_binds_and_normalizes_observed_frames() {
-        let binding = profile_binding();
-        let expected_profile = binding.capture_profile_sha256().to_owned();
-        let expected_normalizer = binding.normalizer_artifact_sha256().to_owned();
         let receiver = receiver_for_admission();
         let mut facts = Facts::default();
-        let mut admitted = admit_gamescope_profile(
-            receiver,
-            binding,
-            CaptureGeneration::new(7).unwrap(),
-            &mut facts,
-        )
-        .unwrap();
+        let (mut admitted, evidence) =
+            admit_pipewire_source(receiver, EdgeCrop::default(), &mut facts).unwrap();
+        assert_eq!(evidence.source_contract["width"], 4);
+        assert_eq!(evidence.memory_type, UncalibratedMemoryType::MemoryPointer);
 
         let observed = admitted.take_latest_observed_frame().unwrap();
-        assert_eq!(observed.capture_generation().get(), 7);
-        assert_eq!(observed.capture_profile_sha256(), expected_profile);
-        assert_eq!(observed.normalizer_artifact_sha256(), expected_normalizer);
         let canonical = admitted
             .normalize_observed_frame(observed, &mut facts)
             .unwrap();
-        assert_eq!(canonical.capture_generation().get(), 7);
-        assert_eq!(canonical.capture_profile_sha256(), expected_profile);
-        assert_eq!(canonical.normalizer_artifact_sha256(), expected_normalizer);
         assert_eq!(canonical.source_sequence(), 1);
         assert_eq!(canonical.pixels().len(), 1_920 * 1_080 * 3);
         assert!(canonical.pixels().iter().all(|byte| *byte == 0));
@@ -2515,67 +2177,31 @@ mod tests {
             100_000_001,
         );
         let observed = admitted.take_latest_observed_frame().unwrap();
-        let fact_count = facts.0.len();
-        let (canonical, source) = admitted
-            .normalize_observed_frame_with_source(observed, &mut facts)
-            .unwrap();
+        let canonical = admitted.frame_normalizer().normalize(observed).unwrap();
         assert_eq!(canonical.source_sequence(), 2);
-        assert_eq!(source.source_sequence(), 2);
-        assert_eq!(source.contract().width, 4);
-        assert_eq!(source.stride(), 16);
-        assert_eq!(&*source.into_bytes(), &[0; 32]);
-        assert_eq!(facts.0.len(), fact_count);
         admitted.shutdown(&mut ()).unwrap();
     }
 
     #[test]
-    fn generation_profile_and_normalizer_mixing_fail_closed() {
-        let cases = [
-            CaptureErrorType::FrameLeaseMismatch,
-            CaptureErrorType::FrameGenerationMismatch,
-            CaptureErrorType::FrameProfileMismatch,
-            CaptureErrorType::FrameNormalizerMismatch,
-        ];
-        for expected in cases {
-            let binding = profile_binding();
-            let receiver = receiver_for_admission();
-            let mut source = Facts::default();
-            let mut admitted = admit_gamescope_profile(
-                receiver,
-                binding,
-                CaptureGeneration::new(1).unwrap(),
-                &mut source,
-            )
-            .unwrap();
-            let mut observed = admitted.take_latest_observed_frame().unwrap();
-            match expected {
-                CaptureErrorType::FrameLeaseMismatch => {
-                    observed.frame_domain = Arc::new(());
-                }
-                CaptureErrorType::FrameGenerationMismatch => {
-                    observed.capture_generation = CaptureGeneration::new(2).unwrap();
-                }
-                CaptureErrorType::FrameProfileMismatch => {
-                    observed.capture_profile_sha256 = Arc::from("f".repeat(64));
-                }
-                CaptureErrorType::FrameNormalizerMismatch => {
-                    observed.normalizer_artifact_sha256 = Arc::from("e".repeat(64));
-                }
-                _ => unreachable!(),
-            }
-            let error = admitted
-                .normalize_observed_frame(observed, &mut source)
-                .unwrap_err();
-            assert_eq!(error.error_type(), expected);
-            let fact = source.0.last().unwrap();
-            assert_eq!(
-                fact.operation,
-                CaptureDiagnosticOperation::FrameNormalization
-            );
-            assert_eq!(fact.status, CaptureDiagnosticStatus::Error);
-            assert_eq!(fact.error_type, Some(expected));
-            admitted.shutdown(&mut ()).unwrap();
-        }
+    fn another_lease_frame_fails_closed() {
+        let receiver = receiver_for_admission();
+        let mut source = Facts::default();
+        let (mut admitted, _) =
+            admit_pipewire_source(receiver, EdgeCrop::default(), &mut source).unwrap();
+        let mut observed = admitted.take_latest_observed_frame().unwrap();
+        observed.frame_domain = Arc::new(());
+        let error = admitted
+            .normalize_observed_frame(observed, &mut source)
+            .unwrap_err();
+        assert_eq!(error.error_type(), CaptureErrorType::FrameLeaseMismatch);
+        let fact = source.0.last().unwrap();
+        assert_eq!(
+            fact.operation,
+            CaptureDiagnosticOperation::FrameNormalization
+        );
+        assert_eq!(fact.status, CaptureDiagnosticStatus::Error);
+        assert_eq!(fact.error_type, Some(CaptureErrorType::FrameLeaseMismatch));
+        admitted.shutdown(&mut ()).unwrap();
     }
 
     #[test]

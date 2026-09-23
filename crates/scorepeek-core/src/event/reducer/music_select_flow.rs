@@ -9,12 +9,11 @@ impl RunEventReducer {
     pub(super) fn sync_music_selection(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         source_sequence: u64,
     ) -> Result<(), RunEventReductionError> {
         match self.music_select_resolver.selected() {
             Some(state) if self.active_music_selection.as_ref() != Some(&state) => {
-                self.publish_music_selection(session_id, capture_generation, source_sequence, state)
+                self.publish_music_selection(session_id, source_sequence, state)
             }
             None if matches!(
                 self.active_music_selection,
@@ -23,7 +22,6 @@ impl RunEventReducer {
             {
                 self.publish_music_selection(
                     session_id,
-                    capture_generation,
                     source_sequence,
                     MusicSelectionState::Unresolved {
                         reason: MusicSelectionUnresolvedReason::EvidenceUnresolved,
@@ -37,7 +35,6 @@ impl RunEventReducer {
     pub(super) fn publish_music_selection(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         source_sequence: u64,
         state: MusicSelectionState,
     ) -> Result<(), RunEventReductionError> {
@@ -49,7 +46,6 @@ impl RunEventReducer {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::MusicSelectionChanged {
                 session_id: session_id.cloned(),
-                capture_generation,
                 screen_episode_id: self.screen_episode_id,
                 source_sequence,
                 revision: self.music_selection_revision,
@@ -68,7 +64,6 @@ impl RunEventReducer {
     pub(super) fn reduce_music_select_observation(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         sequence: u64,
         monotonic_end_ms: u64,
         fields: &Value,
@@ -100,7 +95,6 @@ impl RunEventReducer {
                 schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
                 kind: RunEventKind::SelectionDifficultyChanged {
                     session_id: session_id.cloned(),
-                    capture_generation,
                     screen_episode_id: self.screen_episode_id,
                     source_sequence: sequence,
                     target: transition.target,
@@ -112,7 +106,6 @@ impl RunEventReducer {
         let current_summary = self.engine.selection_epochs.incumbent.summary();
         self.publish_resolver_transition(
             session_id,
-            capture_generation,
             sequence,
             ResolverScope::SelectionIncumbent,
             &current_summary,
@@ -122,7 +115,6 @@ impl RunEventReducer {
             let challenger_summary = self.engine.selection_epochs.successor.summary();
             self.publish_resolver_transition(
                 session_id,
-                capture_generation,
                 sequence,
                 ResolverScope::SelectionSuccessor,
                 &challenger_summary,
@@ -141,10 +133,9 @@ impl RunEventReducer {
             self.music_select_resolver
                 .best
                 .observe_frame(identity, best.values);
-            if let (Some(session), Some(generation)) = (session_id, capture_generation)
+            if let Some(session) = session_id
                 && let Some(snapshot) = self.music_select_resolver.best.publish_candidate(
                     session,
-                    generation,
                     sequence,
                     monotonic_end_ms,
                 )
@@ -153,13 +144,12 @@ impl RunEventReducer {
                     schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
                     kind: RunEventKind::MusicSelectBestObserved {
                         session_id: session.clone(),
-                        capture_generation: generation,
                         snapshot,
                     },
                 })?;
             }
         }
-        self.sync_music_selection(session_id, capture_generation, sequence)?;
+        self.sync_music_selection(session_id, sequence)?;
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
         self.refresh()
     }

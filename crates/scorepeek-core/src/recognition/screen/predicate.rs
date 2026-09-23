@@ -532,28 +532,6 @@ fn title_presence_evidence(
     })
 }
 
-/// Inspects one canonical frame without accepting an observed-frame representation.
-///
-/// # Errors
-/// Returns an error when the committed layout or its crop is invalid.
-pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, RecognitionError> {
-    let observation = inspect_canonical_rgb8(frame.pixels())?;
-    Ok(RecognitionSnapshot {
-        schema: "scorepeek-recognition-spike-v4".to_owned(),
-        canonical_frame_sha256: encode_sha256(frame.pixels()),
-        normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
-        frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
-        canonical_layout_sha256: CanonicalLayout::sha256(),
-        screen_path_layout_sha256: observation.screen_path_layout_sha256,
-        screen: observation.screen,
-        title_presence: observation.title_presence,
-        result_presence: observation.result_presence,
-        music_select_presence: observation.music_select_presence,
-        decide_transition_presence: observation.decide_transition_presence,
-        play_presence: observation.play_presence,
-    })
-}
-
 /// Applies only the embedded screen predicates to one fixed-contract canonical RGB8 slice.
 ///
 /// This pure primitive deliberately carries no capture, generation, normalizer, extraction, or
@@ -570,9 +548,19 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
 pub fn inspect_canonical_rgb8(
     pixels: &[u8],
 ) -> Result<ScreenPredicateObservation, RecognitionError> {
-    if pixels.len() != CANONICAL_BYTES {
-        return Err(RecognitionError::InvalidCanonicalFrame);
-    }
+    let frame = crate::frame::CanonicalFrameView::new(pixels)?;
+    inspect_canonical_frame(frame)
+}
+
+/// Inspects a frame already admitted to the fixed canonical RGB8 contract.
+///
+/// # Errors
+/// Returns an error when the committed layout or its crop is invalid.
+#[allow(clippy::too_many_lines)]
+pub fn inspect_canonical_frame(
+    frame: crate::frame::CanonicalFrameView<'_>,
+) -> Result<ScreenPredicateObservation, RecognitionError> {
+    let pixels = frame.pixels();
     let layout = CanonicalLayout::load()?;
     let screen_path_layout = ScreenPathLayout::load()?;
     let title_presence = title_presence_evidence(pixels, &screen_path_layout.title)?;

@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use crate::diagnostics::contract::DiagnosticRunDescriptor;
 #[cfg(test)]
 use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticReplayBinding};
-use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::recognition::screen::{ScreenClass, ScreenRgb8Crops};
 use scorepeek_resources::recognition::{
     RegisteredRecognitionResources, RegisteredResourceLoadError,
@@ -25,9 +24,6 @@ pub const DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT: Duration = Duration::from_secs(
 pub struct FieldObserverSessionBinding {
     run_id: String,
     identity_sha256: String,
-    capture_generation: u64,
-    capture_profile_sha256: String,
-    normalizer_sha256: String,
     canonical_layout_sha256: String,
     catalog_sha256: String,
     model_sha256: String,
@@ -43,11 +39,6 @@ impl FieldObserverSessionBinding {
     #[must_use]
     pub fn identity_sha256(&self) -> &str {
         &self.identity_sha256
-    }
-
-    #[must_use]
-    pub const fn capture_generation(&self) -> u64 {
-        self.capture_generation
     }
 
     #[must_use]
@@ -83,24 +74,15 @@ impl FieldObserverSessionBinding {
         )
     }
 
-    fn from_descriptor(descriptor: &DiagnosticRunDescriptor) -> Option<Self> {
-        if !descriptor.is_valid_for_version(env!("CARGO_PKG_VERSION"))
-            || descriptor.binding.canonical_layout_sha256 != CanonicalLayout::sha256()
-        {
-            return None;
+    fn from_context(context: &super::execution::RecognitionExecutionContext) -> Self {
+        Self {
+            run_id: context.session_id.clone(),
+            identity_sha256: context.identity_sha256.clone(),
+            canonical_layout_sha256: context.canonical_layout_sha256.clone(),
+            catalog_sha256: context.catalog_sha256.clone(),
+            model_sha256: context.model_sha256.clone(),
+            runtime_sha256: context.runtime_sha256.clone(),
         }
-        let identity_sha256 = descriptor.binding.identity_sha256()?;
-        Some(Self {
-            run_id: descriptor.run_id.clone(),
-            identity_sha256,
-            capture_generation: descriptor.binding.capture_generation,
-            capture_profile_sha256: descriptor.binding.capture_profile_sha256.clone(),
-            normalizer_sha256: descriptor.binding.normalizer_sha256.clone(),
-            canonical_layout_sha256: descriptor.binding.canonical_layout_sha256.clone(),
-            catalog_sha256: descriptor.binding.catalog_sha256.clone(),
-            model_sha256: descriptor.binding.model_sha256.clone(),
-            runtime_sha256: descriptor.binding.runtime_sha256.clone(),
-        })
     }
 }
 
@@ -431,8 +413,10 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         descriptor: &DiagnosticRunDescriptor,
         loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
     ) -> Result<Self, FieldObserverStartError<E>> {
+        let context = super::execution::RecognitionExecutionContext::from_descriptor(descriptor)
+            .ok_or(FieldObserverStartError::InvalidBinding)?;
         Self::start_inner(
-            descriptor,
+            &context,
             loader,
             DEFAULT_FIELD_OBSERVER_QUEUE_CAPACITY,
             Some(production_supervisor()),
@@ -444,7 +428,17 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
         capacity: usize,
     ) -> Result<Self, FieldObserverStartError<E>> {
-        Self::start_inner(descriptor, loader, capacity, Some(production_supervisor()))
+        let context = super::execution::RecognitionExecutionContext::from_descriptor(descriptor)
+            .ok_or(FieldObserverStartError::InvalidBinding)?;
+        Self::start_inner(&context, loader, capacity, Some(production_supervisor()))
+    }
+
+    pub(crate) fn start_with_execution_context<E>(
+        context: &super::execution::RecognitionExecutionContext,
+        loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
+        capacity: usize,
+    ) -> Result<Self, FieldObserverStartError<E>> {
+        Self::start_inner(context, loader, capacity, Some(production_supervisor()))
     }
 
     #[cfg(test)]
@@ -453,19 +447,18 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
         capacity: usize,
     ) -> Result<Self, FieldObserverStartError<E>> {
-        Self::start_inner(descriptor, loader, capacity, None)
+        let context = super::execution::RecognitionExecutionContext::from_descriptor(descriptor)
+            .ok_or(FieldObserverStartError::InvalidBinding)?;
+        Self::start_inner(&context, loader, capacity, None)
     }
 
     fn start_inner<E>(
-        descriptor: &DiagnosticRunDescriptor,
+        context: &super::execution::RecognitionExecutionContext,
         loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
         capacity: usize,
         supervisor: Option<&Mutex<Weak<()>>>,
     ) -> Result<Self, FieldObserverStartError<E>> {
-        let binding = Arc::new(
-            FieldObserverSessionBinding::from_descriptor(descriptor)
-                .ok_or(FieldObserverStartError::InvalidBinding)?,
-        );
+        let binding = Arc::new(FieldObserverSessionBinding::from_context(context));
         let maximum_outstanding = u8::try_from(capacity)
             .ok()
             .filter(|maximum| *maximum != 0)
@@ -553,11 +546,8 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
     ) -> Result<PendingFieldObservation<O::Output>, FieldObserverOfferError> {
         let frame = live.frame;
         let binding = &self.binding;
-        if live.run_binding.run_id != binding.run_id
-            || live.run_binding.binding_sha256 != binding.identity_sha256
-            || frame.capture_generation() != binding.capture_generation
-            || frame.capture_profile_sha256() != binding.capture_profile_sha256
-            || frame.normalizer_sha256() != binding.normalizer_sha256
+        if live.run_binding.session_id != binding.run_id
+            || live.run_binding.identity_sha256 != binding.identity_sha256
         {
             return Err(FieldObserverOfferError::BindingMismatch);
         }
@@ -905,10 +895,10 @@ mod tests {
 
     use super::*;
     use crate::diagnostics::contract::{DiagnosticPolicy, DiagnosticResource, DiagnosticRunStatus};
-    use crate::diagnostics::live::BoundCanonicalFrame;
+    use crate::service::session::recognition::BoundCanonicalFrame;
     use crate::service::session::recognition::RecognitionSession;
 
-    fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
+    fn descriptor(run_id: &str, _generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
             run_id: run_id.to_owned(),
             monotonic_start_ms: 0,
@@ -918,9 +908,6 @@ mod tests {
                 build_sha256: "1".repeat(64),
             },
             binding: DiagnosticBinding {
-                capture_generation: generation,
-                capture_profile_sha256: "2".repeat(64),
-                normalizer_sha256: "3".repeat(64),
                 canonical_layout_sha256: CanonicalLayout::sha256(),
                 catalog_sha256: "5".repeat(64),
                 model_sha256: "6".repeat(64),
@@ -1005,7 +992,7 @@ mod tests {
             },
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame = solid_frame([200, 100, 20], 1, 1).for_test_session("field-observer");
         let live = session.inspect(&frame).unwrap().field_inputs.unwrap();
         let pending = worker.try_observe(live).unwrap();
         let FieldObservationPoll::Ready(observation) = pending.wait(Duration::from_secs(1)) else {
@@ -1013,7 +1000,9 @@ mod tests {
         };
         assert_eq!(
             observation.binding().identity_sha256(),
-            descriptor.binding.identity_sha256().unwrap()
+            super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                .unwrap()
+                .identity_sha256
         );
         assert_eq!(observation.sequence(), 1);
         assert_eq!(observation.screen(), ScreenClass::Result);
@@ -1068,7 +1057,8 @@ mod tests {
             },
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame =
+            solid_frame([200, 100, 20], 1, 1).for_test_session("field-observer-disconnected");
         let pending = worker
             .try_observe(session.inspect(&frame).unwrap().field_inputs.unwrap())
             .unwrap();
@@ -1125,7 +1115,7 @@ mod tests {
             },
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 9);
+        let frame = solid_frame([200, 100, 20], 1, 9).for_test_session("complete-field-output");
         let live = session.inspect(&frame).unwrap().field_inputs.unwrap();
         let pending = worker.try_observe(live).unwrap();
         let FieldObservationPoll::Ready(observation) = pending.wait(Duration::from_secs(1)) else {
@@ -1204,7 +1194,7 @@ mod tests {
             },
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame = solid_frame([200, 100, 20], 1, 1).for_test_session("frame-binding");
         let live = session.inspect(&frame).unwrap().field_inputs.unwrap();
         assert!(matches!(
             worker.try_observe(live),
@@ -1212,16 +1202,19 @@ mod tests {
         ));
 
         let second_root = tempfile::tempdir().unwrap();
+        let mut changed_resources = descriptor("worker-binding", 2);
+        changed_resources.binding.catalog_sha256 = "8".repeat(64);
         let mut different_binding_session = RecognitionSession::start(
             second_root.path(),
-            descriptor("worker-binding", 2),
+            changed_resources,
             DiagnosticPolicy {
                 enabled: false,
                 ..DiagnosticPolicy::default()
             },
         )
         .unwrap();
-        let different_binding_frame = solid_frame([200, 100, 20], 2, 1);
+        let different_binding_frame =
+            solid_frame([200, 100, 20], 2, 1).for_test_session("worker-binding");
         let different_binding_live = different_binding_session
             .inspect(&different_binding_frame)
             .unwrap()
@@ -1297,7 +1290,7 @@ mod tests {
             },
         )
         .unwrap();
-        let first_frame = solid_frame([200, 100, 20], 1, 1);
+        let first_frame = solid_frame([200, 100, 20], 1, 1).for_test_session("bounded-observer");
         let first = worker
             .try_observe(session.inspect(&first_frame).unwrap().field_inputs.unwrap())
             .unwrap();
@@ -1305,7 +1298,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
         drop(first);
-        let second_frame = solid_frame([200, 100, 20], 1, 2);
+        let second_frame = solid_frame([200, 100, 20], 1, 2).for_test_session("bounded-observer");
         let second = worker
             .try_observe(
                 session
@@ -1316,7 +1309,7 @@ mod tests {
             )
             .unwrap();
         drop(second);
-        let third_frame = solid_frame([200, 100, 20], 1, 3);
+        let third_frame = solid_frame([200, 100, 20], 1, 3).for_test_session("bounded-observer");
         assert!(matches!(
             worker.try_observe(session.inspect(&third_frame).unwrap().field_inputs.unwrap()),
             Err(FieldObserverOfferError::QueueFull)
@@ -1354,11 +1347,13 @@ mod tests {
             },
         )
         .unwrap();
-        let first_frame = solid_frame([200, 100, 20], 1, 1);
+        let first_frame =
+            solid_frame([200, 100, 20], 1, 1).for_test_session("outstanding-observer");
         let first = worker
             .try_observe(session.inspect(&first_frame).unwrap().field_inputs.unwrap())
             .unwrap();
-        let second_frame = solid_frame([200, 100, 20], 1, 2);
+        let second_frame =
+            solid_frame([200, 100, 20], 1, 2).for_test_session("outstanding-observer");
         assert!(matches!(
             worker.try_observe(
                 session
@@ -1374,7 +1369,8 @@ mod tests {
             FieldObservationPoll::Ready(_)
         ));
 
-        let third_frame = solid_frame([200, 100, 20], 1, 3);
+        let third_frame =
+            solid_frame([200, 100, 20], 1, 3).for_test_session("outstanding-observer");
         let unconsumed = worker
             .try_observe(session.inspect(&third_frame).unwrap().field_inputs.unwrap())
             .unwrap();
@@ -1429,7 +1425,8 @@ mod tests {
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let release_for_loader = Arc::clone(&release);
         let worker = FieldObserverWorker::start_inner(
-            &descriptor,
+            &super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                .unwrap(),
             move |_| {
                 Ok::<_, ()>(TeardownBlockingObserver {
                     started: started_sender,
@@ -1448,7 +1445,8 @@ mod tests {
 
         let loads = AtomicUsize::new(0);
         let unavailable = FieldObserverWorker::start_inner(
-            &descriptor,
+            &super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                .unwrap(),
             |_| {
                 loads.fetch_add(1, Ordering::Relaxed);
                 Ok::<_, ()>(NoopObserver)
@@ -1473,7 +1471,8 @@ mod tests {
         );
 
         let replacement = FieldObserverWorker::start_inner(
-            &descriptor,
+            &super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                .unwrap(),
             |_| Ok::<_, ()>(NoopObserver),
             1,
             Some(&supervisor),
@@ -1494,7 +1493,8 @@ mod tests {
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let release_for_loader = Arc::clone(&release);
         let worker = FieldObserverWorker::start_inner(
-            &descriptor,
+            &super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                .unwrap(),
             move |_| {
                 Ok::<_, ()>(TeardownBlockingObserver {
                     started: started_sender,
@@ -1516,7 +1516,8 @@ mod tests {
             .unwrap();
         assert!(matches!(
             FieldObserverWorker::start_inner(
-                &descriptor,
+                &super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                    .unwrap(),
                 |_| Ok::<_, ()>(NoopObserver),
                 1,
                 Some(&supervisor),
@@ -1543,7 +1544,8 @@ mod tests {
             thread::yield_now();
         }
         let replacement = FieldObserverWorker::start_inner(
-            &descriptor,
+            &super::super::execution::RecognitionExecutionContext::from_descriptor(&descriptor)
+                .unwrap(),
             |_| Ok::<_, ()>(NoopObserver),
             1,
             Some(&supervisor),
@@ -1584,7 +1586,7 @@ mod tests {
             },
         )
         .unwrap();
-        let frame = solid_frame([200, 100, 20], 1, 1);
+        let frame = solid_frame([200, 100, 20], 1, 1).for_test_session("observer-timeout");
         let pending = worker
             .try_observe(session.inspect(&frame).unwrap().field_inputs.unwrap())
             .unwrap();
@@ -1729,9 +1731,9 @@ mod tests {
             },
         )
         .unwrap();
-        let first = solid_frame([200, 100, 20], 1, 1);
-        let second = solid_frame([200, 100, 20], 1, 2);
-        let third = solid_frame([200, 100, 20], 1, 3);
+        let first = solid_frame([200, 100, 20], 1, 1).for_test_session("pipelined-prefetch");
+        let second = solid_frame([200, 100, 20], 1, 2).for_test_session("pipelined-prefetch");
+        let third = solid_frame([200, 100, 20], 1, 3).for_test_session("pipelined-prefetch");
         let first = worker
             .try_observe(session.inspect(&first).unwrap().field_inputs.unwrap())
             .unwrap();
@@ -1824,8 +1826,10 @@ mod tests {
             },
         )
         .unwrap();
-        let first_frame = solid_frame([200, 100, 20], 1, 1);
-        let second_frame = solid_frame([200, 100, 20], 1, 2);
+        let first_frame =
+            solid_frame([200, 100, 20], 1, 1).for_test_session("parallel-outer-observer");
+        let second_frame =
+            solid_frame([200, 100, 20], 1, 2).for_test_session("parallel-outer-observer");
         let first = worker
             .try_observe(session.inspect(&first_frame).unwrap().field_inputs.unwrap())
             .unwrap();

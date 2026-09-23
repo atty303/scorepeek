@@ -341,7 +341,6 @@ pub struct MusicSelectBestSnapshot {
     pub layout: String,
     pub observation_id: String,
     pub session_id: String,
-    pub capture_generation: u64,
     pub screen_episode_id: u64,
     pub selection_interval: u64,
     pub source_sequence: u64,
@@ -498,7 +497,6 @@ impl MusicSelectResolverState {
     pub fn publish_candidate(
         &mut self,
         session_id: &str,
-        capture_generation: u64,
         source_sequence: u64,
         observed_monotonic_ms: u64,
     ) -> Option<MusicSelectBestSnapshot> {
@@ -525,15 +523,14 @@ impl MusicSelectResolverState {
             _ => None,
         };
         let snapshot = MusicSelectBestSnapshot {
-            contract: "scorepeek-music-select-best-snapshot-v3".to_owned(),
+            contract: "scorepeek-music-select-best-snapshot-v4".to_owned(),
             source: "music_select".to_owned(),
             layout: "scorepeek-music-select-best-layout-v1".to_owned(),
             observation_id: format!(
-                "{session_id}:{capture_generation}:{}:{}:{}",
+                "{session_id}:{}:{}:{}",
                 self.screen_episode_id, self.selection_interval, self.revision
             ),
             session_id: session_id.to_owned(),
-            capture_generation,
             screen_episode_id: self.screen_episode_id,
             selection_interval: self.selection_interval,
             source_sequence,
@@ -585,12 +582,12 @@ mod tests {
             ..MusicSelectResolverState::default()
         };
         state.observe(selected(Difficulty::Hyper), values(1500));
-        assert!(state.publish_candidate("session", 1, 1, 100).is_none());
+        assert!(state.publish_candidate("session", 1, 100).is_none());
         state.observe(selected(Difficulty::Hyper), values(1500));
-        let first = state.publish_candidate("session", 1, 2, 200).unwrap();
+        let first = state.publish_candidate("session", 2, 200).unwrap();
         assert_eq!(first.derived_dj_rank.as_deref(), Some("A"));
         assert_eq!(state.output, BestOutputState::Partial);
-        assert!(state.publish_candidate("session", 1, 3, 300).is_none());
+        assert!(state.publish_candidate("session", 3, 300).is_none());
         state.observe(selected(Difficulty::Another), values(1600));
         assert!(state.snapshot.is_none());
         assert_eq!(state.score.consecutive, 1);
@@ -599,7 +596,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }
-        let revisit = state.publish_candidate("session", 1, 6, 600).unwrap();
+        let revisit = state.publish_candidate("session", 6, 600).unwrap();
         assert_ne!(first.observation_id, revisit.observation_id);
         assert_eq!(first.values, revisit.values);
     }
@@ -610,7 +607,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }
-        let first = state.publish_candidate("session", 1, 2, 200).unwrap();
+        let first = state.publish_candidate("session", 2, 200).unwrap();
         state.observe(
             selected(Difficulty::Hyper),
             MusicSelectBestValues::default(),
@@ -618,7 +615,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }
-        assert!(state.publish_candidate("session", 1, 5, 500).is_none());
+        assert!(state.publish_candidate("session", 5, 500).is_none());
         assert_eq!(state.snapshot.as_ref(), Some(&first));
     }
 
@@ -631,7 +628,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }
-        let first = state.publish_candidate("session", 1, 2, 200).unwrap();
+        let first = state.publish_candidate("session", 2, 200).unwrap();
         for reason in [
             SelectIdentityStatus::AwaitingDifficulty,
             SelectIdentityStatus::AwaitingPlayType,
@@ -641,11 +638,11 @@ mod tests {
             assert_eq!(state.selection_interval, first.selection_interval);
             assert_eq!(state.snapshot.as_ref(), Some(&first));
             assert_eq!(state.score.consecutive, 0);
-            assert!(state.publish_candidate("session", 1, 3, 300).is_none());
+            assert!(state.publish_candidate("session", 3, 300).is_none());
             state.observe(selected(Difficulty::Hyper), values(1500));
-            assert!(state.publish_candidate("session", 1, 4, 400).is_none());
+            assert!(state.publish_candidate("session", 4, 400).is_none());
             state.observe(selected(Difficulty::Hyper), values(1500));
-            assert!(state.publish_candidate("session", 1, 5, 500).is_none());
+            assert!(state.publish_candidate("session", 5, 500).is_none());
         }
         state.observe_frame(
             SelectFrameIdentity::Conflicting(SelectIdentityStatus::CurrentFrameConflict),
@@ -655,7 +652,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }
-        let revisit = state.publish_candidate("session", 1, 8, 800).unwrap();
+        let revisit = state.publish_candidate("session", 8, 800).unwrap();
         assert_eq!(revisit.revision, 1);
         assert_ne!(revisit.selection_interval, first.selection_interval);
     }
@@ -666,7 +663,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(1500));
         }
-        assert!(state.publish_candidate("session", 1, 2, 200).is_some());
+        assert!(state.publish_candidate("session", 2, 200).is_some());
         state.observe(
             selected(Difficulty::Hyper),
             MusicSelectBestValues::default(),
@@ -677,7 +674,7 @@ mod tests {
         for _ in 0..2 {
             state.observe(selected(Difficulty::Hyper), values(2001));
         }
-        let partial = state.publish_candidate("session", 1, 5, 500).unwrap();
+        let partial = state.publish_candidate("session", 5, 500).unwrap();
         assert_eq!(partial.values.score, BestValue::Unknown);
         assert_eq!(
             partial.values.clear_type,

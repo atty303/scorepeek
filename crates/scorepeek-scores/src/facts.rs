@@ -238,7 +238,7 @@ pub(super) fn prepare<'a>(
         Event::MusicSelectBestObserved {
             snapshot: Some(snapshot),
         } => {
-            if snapshot.contract != "scorepeek-music-select-best-snapshot-v3" {
+            if snapshot.contract != "scorepeek-music-select-best-snapshot-v4" {
                 return Err(Error::UnsupportedContract);
             }
             let _ = snapshot.chart.play_side;

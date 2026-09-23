@@ -74,12 +74,10 @@ pub enum RunEventKind {
     },
     MusicSelectBestObserved {
         session_id: String,
-        capture_generation: u64,
         snapshot: MusicSelectBestSnapshot,
     },
     MusicSelectResolverChanged {
         session_id: Option<String>,
-        capture_generation: Option<u64>,
         state: MusicSelectResolverState,
     },
     WatcherStarted {
@@ -92,15 +90,10 @@ pub enum RunEventKind {
     SessionStarted {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        capture_generation: u64,
-        capture_profile_sha256: String,
-        normalizer_artifact_sha256: String,
     },
     RecordingHealthChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         state: String,
         memory_limit_bytes: u64,
         memory_used_bytes: u64,
@@ -110,8 +103,6 @@ pub enum RunEventKind {
     RecordingFinalizing {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
     },
     RecordingCompleted {
         session_id: String,
@@ -119,15 +110,12 @@ pub enum RunEventKind {
     },
     GameVersionChanged {
         session_id: String,
-        capture_generation: u64,
         source_sequence: u64,
         version: String,
     },
     RawScreenObserved {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         semantic_episode_id: Option<u64>,
         sequence: u64,
@@ -144,8 +132,6 @@ pub enum RunEventKind {
     SemanticScreenEpisodeChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         screen_episode_id: u64,
         sequence: u64,
         monotonic_end_ms: u64,
@@ -155,8 +141,6 @@ pub enum RunEventKind {
     ScreenChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         #[serde(default)]
         screen_episode_id: u64,
         sequence: u64,
@@ -174,8 +158,6 @@ pub enum RunEventKind {
     FieldObservation {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         #[serde(default)]
         screen_episode_id: u64,
         sequence: u64,
@@ -201,15 +183,12 @@ pub enum RunEventKind {
     },
     ResultChanged {
         session_id: String,
-        capture_generation: u64,
         source_sequence: u64,
         state: ResultState,
     },
     ResultPanelSideChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         screen_episode_id: u64,
         source_sequence: u64,
         state: ResultPanelSideEpisodeState,
@@ -218,8 +197,6 @@ pub enum RunEventKind {
     ResultSelectContextMismatch {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         screen_episode_id: u64,
         source_sequence: u64,
         select_play_side: PlaySide,
@@ -228,8 +205,6 @@ pub enum RunEventKind {
     MusicSelectionChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         screen_episode_id: u64,
         source_sequence: u64,
         revision: u64,
@@ -238,8 +213,6 @@ pub enum RunEventKind {
     TemporalResultChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         source_sequence: Option<u64>,
         transitions: Vec<TemporalFieldTransition>,
@@ -250,8 +223,6 @@ pub enum RunEventKind {
     TemporalMusicSelectChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         source_sequence: Option<u64>,
         reasons: Vec<MusicSelectTemporalTransitionReason>,
@@ -264,8 +235,6 @@ pub enum RunEventKind {
     NumericResultChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         source_sequence: u64,
         state: NumericResultTemporalState,
         reason: NumericResultTransitionReason,
@@ -276,15 +245,12 @@ pub enum RunEventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         source_sequence: Option<u64>,
         state: PlayAttemptState,
     },
     ResolverStateChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         screen_episode_id: u64,
         source_sequence: u64,
         scope: ResolverScope,
@@ -318,8 +284,6 @@ pub enum RunEventKind {
     SelectionDifficultyChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        capture_generation: Option<u64>,
         screen_episode_id: u64,
         source_sequence: u64,
         target: SelectionDifficultyTarget,
@@ -329,7 +293,6 @@ pub enum RunEventKind {
     },
     SessionFinished {
         session_id: String,
-        capture_generation: u64,
         outcome: String,
         report: Value,
     },

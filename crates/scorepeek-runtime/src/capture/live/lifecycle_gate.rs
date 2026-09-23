@@ -48,21 +48,20 @@ pub fn run_gamescope_live_gate_with_interval(
             );
         }
     };
-    let mut receiver =
-        match start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink) {
-            Ok(receiver) => receiver,
-            Err(error) => {
-                return report(
-                    duration_ms,
-                    consumer_interval_ms,
-                    consumed_frames,
-                    first_sequence,
-                    last_sequence,
-                    Some(error.error_type()),
-                    sink,
-                );
-            }
-        };
+    let mut receiver = match start_pipewire_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink) {
+        Ok(receiver) => receiver,
+        Err(error) => {
+            return report(
+                duration_ms,
+                consumer_interval_ms,
+                consumed_frames,
+                first_sequence,
+                last_sequence,
+                Some(error.error_type()),
+                sink,
+            );
+        }
+    };
 
     consume_latest(
         &mut receiver,

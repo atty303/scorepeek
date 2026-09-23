@@ -14,23 +14,14 @@ impl RunEventReducer {
             RunEventKind::CanonicalSessionStarted { session_id } => {
                 self.reset_session();
                 self.publish_one(event)?;
-                self.publish_result_state(session_id.clone(), 0, 0, ResultState::Inactive)?;
+                self.publish_result_state(session_id.clone(), 0, ResultState::Inactive)?;
                 Ok(())
             }
-            RunEventKind::SessionStarted {
-                session_id,
-                capture_generation,
-                ..
-            } => {
+            RunEventKind::SessionStarted { session_id, .. } => {
                 self.reset_session();
                 self.publish_one(event)?;
                 if let Some(session_id) = session_id.clone() {
-                    self.publish_result_state(
-                        session_id,
-                        *capture_generation,
-                        0,
-                        ResultState::Inactive,
-                    )?;
+                    self.publish_result_state(session_id, 0, ResultState::Inactive)?;
                 }
                 Ok(())
             }
@@ -38,7 +29,6 @@ impl RunEventReducer {
             RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
             RunEventKind::RawScreenObserved {
                 session_id,
-                capture_generation,
                 semantic_episode_id,
                 sequence,
                 monotonic_end_ms,
@@ -57,7 +47,6 @@ impl RunEventReducer {
                 {
                     self.observe_result_panel_side(
                         session_id.as_ref(),
-                        *capture_generation,
                         episode_id,
                         *sequence,
                         side,
@@ -100,7 +89,6 @@ impl RunEventReducer {
     pub(super) fn observe_result_panel_side(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         episode_id: u64,
         sequence: u64,
         side: ResultPanelSide,
@@ -113,7 +101,6 @@ impl RunEventReducer {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResultPanelSideChanged {
                 session_id: session_id.cloned(),
-                capture_generation,
                 screen_episode_id: episode_id,
                 source_sequence: sequence,
                 state,
@@ -121,12 +108,10 @@ impl RunEventReducer {
             },
         })?;
         if reason == ResultPanelSideTransitionReason::Conflict
-            && let (Some(session_id), Some(capture_generation)) =
-                (session_id.cloned(), capture_generation)
+            && let Some(session_id) = session_id.cloned()
         {
             self.withdraw_result_provisional(
                 session_id,
-                capture_generation,
                 sequence,
                 ResultRetractionReason::PanelSideConflict,
             )?;
@@ -140,7 +125,6 @@ impl RunEventReducer {
     ) -> Result<(), RunEventReductionError> {
         let RunEventKind::SemanticScreenEpisodeChanged {
             session_id,
-            capture_generation,
             screen_episode_id,
             sequence,
             monotonic_end_ms,
@@ -168,7 +152,6 @@ impl RunEventReducer {
                     schema: event.schema.clone(),
                     kind: RunEventKind::ScreenChanged {
                         session_id: session_id.clone(),
-                        capture_generation: *capture_generation,
                         screen_episode_id: *screen_episode_id,
                         sequence: *sequence,
                         monotonic_start_ms: *monotonic_end_ms,
@@ -203,7 +186,6 @@ impl RunEventReducer {
                     self.engine.retained_select = self.engine.selection_epochs.handoff();
                     self.publish_music_selection(
                         session_id.as_ref(),
-                        *capture_generation,
                         *sequence,
                         MusicSelectionState::Unresolved {
                             reason: MusicSelectionUnresolvedReason::EpisodeEnded,
@@ -211,11 +193,7 @@ impl RunEventReducer {
                     )?;
                     self.music_selection_episode_active = false;
                 } else if screen == "result" {
-                    self.finalize_result_attempt(
-                        session_id.clone(),
-                        *capture_generation,
-                        *sequence,
-                    )?;
+                    self.finalize_result_attempt(session_id.clone(), *sequence)?;
                     self.result_panel_side.clear();
                     self.result_select_context_detached = false;
                 }
@@ -245,12 +223,7 @@ impl RunEventReducer {
         event: &RunEvent,
     ) -> Result<(), RunEventReductionError> {
         if let Some(state) = self.engine.play_attempt.finish_session() {
-            self.publish_play_attempt_update(
-                self.active_session_id.clone(),
-                self.capture_generation,
-                None,
-                state,
-            )?;
+            self.publish_play_attempt_update(self.active_session_id.clone(), None, state)?;
         }
         self.effects.push(RunReducerEffect::FinishScores);
         self.publish_one(event)
@@ -262,7 +235,6 @@ impl RunEventReducer {
     ) -> Result<(), RunEventReductionError> {
         let RunEventKind::FieldObservation {
             session_id,
-            capture_generation,
             screen_episode_id,
             sequence,
             monotonic_end_ms,
@@ -289,7 +261,6 @@ impl RunEventReducer {
             if let Some(side) = panel_side {
                 self.observe_result_panel_side(
                     session_id.as_ref(),
-                    *capture_generation,
                     *screen_episode_id,
                     *sequence,
                     side,
@@ -302,7 +273,6 @@ impl RunEventReducer {
         match screen.as_str() {
             "result" => self.reduce_result_observation(
                 session_id.as_ref(),
-                *capture_generation,
                 *sequence,
                 *monotonic_end_ms,
                 fields,
@@ -312,7 +282,6 @@ impl RunEventReducer {
             ),
             "music_select" => self.reduce_music_select_observation(
                 session_id.as_ref(),
-                *capture_generation,
                 *sequence,
                 *monotonic_end_ms,
                 fields,
@@ -369,7 +338,6 @@ impl RunEventReducer {
     pub(super) fn publish_resolver_transition(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         source_sequence: u64,
         scope: ResolverScope,
         summary: &HypothesisSummary,
@@ -392,7 +360,6 @@ impl RunEventReducer {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResolverStateChanged {
                 session_id: session_id.cloned(),
-                capture_generation,
                 screen_episode_id: self.screen_episode_id,
                 source_sequence,
                 scope,
@@ -433,7 +400,6 @@ impl RunEventReducer {
     ) -> Result<(), RunEventReductionError> {
         let RunEventKind::ScreenChanged {
             session_id,
-            capture_generation,
             screen_episode_id,
             sequence,
             monotonic_end_ms,
@@ -447,7 +413,6 @@ impl RunEventReducer {
         if screen != "music_select" && self.music_selection_episode_active {
             self.publish_music_selection(
                 session_id.as_ref(),
-                *capture_generation,
                 *sequence,
                 MusicSelectionState::Unresolved {
                     reason: MusicSelectionUnresolvedReason::EpisodeEnded,
@@ -516,7 +481,6 @@ impl RunEventReducer {
                 schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
                 kind: RunEventKind::SelectionDifficultyChanged {
                     session_id: session_id.clone(),
-                    capture_generation: *capture_generation,
                     screen_episode_id: *screen_episode_id,
                     source_sequence: *sequence,
                     target,
@@ -539,7 +503,6 @@ impl RunEventReducer {
         {
             self.publish_resolver_transition(
                 session_id.as_ref(),
-                *capture_generation,
                 *sequence,
                 scope,
                 &unresolved,
@@ -553,7 +516,6 @@ impl RunEventReducer {
             ] {
                 self.publish_resolver_transition(
                     session_id.as_ref(),
-                    *capture_generation,
                     *sequence,
                     scope,
                     &unresolved,
@@ -567,34 +529,18 @@ impl RunEventReducer {
                 .play_attempt
                 .observe_screen(attempt_screen, *sequence)
         {
-            self.publish_play_attempt_update(
-                session_id.clone(),
-                *capture_generation,
-                Some(*sequence),
-                state,
-            )?;
+            self.publish_play_attempt_update(session_id.clone(), Some(*sequence), state)?;
         }
         if screen == "play"
-            && let (Some(session_id), Some(capture_generation)) =
-                (session_id.clone(), *capture_generation)
+            && let Some(session_id) = session_id.clone()
         {
             self.active_provisional_result = None;
-            self.publish_result_state(
-                session_id,
-                capture_generation,
-                *sequence,
-                ResultState::Inactive,
-            )?;
+            self.publish_result_state(session_id, *sequence, ResultState::Inactive)?;
         }
         if let Some(state) = selection_screen_attempt_update {
             self.attempt_started_ms = None;
             self.attempt_phase_started_ms = None;
-            self.publish_play_attempt_update(
-                session_id.clone(),
-                *capture_generation,
-                Some(*sequence),
-                state,
-            )?;
+            self.publish_play_attempt_update(session_id.clone(), Some(*sequence), state)?;
         }
         if screen != "result" {
             self.result_panel_side.clear();
@@ -611,14 +557,10 @@ impl RunEventReducer {
         &mut self,
         event: &RunEvent,
     ) -> Result<(), RunEventReductionError> {
-        let (session_id, capture_generation) = match &event.kind {
-            RunEventKind::SessionFinished {
-                session_id,
-                capture_generation,
-                ..
-            } => (session_id, *capture_generation),
-            RunEventKind::CanonicalSessionFinished { session_id } => (session_id, 0),
-            _ => unreachable!("session-finished dispatcher preserves event kind"),
+        let (RunEventKind::SessionFinished { session_id, .. }
+        | RunEventKind::CanonicalSessionFinished { session_id }) = &event.kind
+        else {
+            unreachable!("session-finished dispatcher preserves event kind")
         };
         if self.music_selection_episode_active {
             let source_sequence = self
@@ -627,7 +569,6 @@ impl RunEventReducer {
                 .unwrap_or_default();
             self.publish_music_selection(
                 Some(session_id),
-                Some(capture_generation),
                 source_sequence,
                 MusicSelectionState::Unresolved {
                     reason: MusicSelectionUnresolvedReason::EpisodeEnded,
@@ -639,12 +580,7 @@ impl RunEventReducer {
         self.result_select_context_detached = false;
         self.publish_one(event)?;
         if let Some(state) = self.engine.play_attempt.finish_session() {
-            self.publish_play_attempt_update(
-                Some(session_id.clone()),
-                Some(capture_generation),
-                None,
-                state,
-            )?;
+            self.publish_play_attempt_update(Some(session_id.clone()), None, state)?;
         }
         Ok(())
     }
@@ -652,7 +588,6 @@ impl RunEventReducer {
     pub(super) fn publish_play_attempt_update(
         &mut self,
         session_id: Option<String>,
-        capture_generation: Option<u64>,
         source_sequence: Option<u64>,
         state: PlayAttemptState,
     ) -> Result<(), RunEventReductionError> {
@@ -660,13 +595,12 @@ impl RunEventReducer {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::PlayAttemptChanged {
                 session_id: session_id.clone(),
-                capture_generation,
                 source_sequence,
                 state,
             },
         })?;
         if let Some(sequence) = source_sequence {
-            self.try_emit_result(session_id, capture_generation, sequence)?;
+            self.try_emit_result(session_id, sequence)?;
         }
         Ok(())
     }
@@ -674,7 +608,6 @@ impl RunEventReducer {
     pub(super) fn finalize_result_attempt(
         &mut self,
         session_id: Option<String>,
-        capture_generation: Option<u64>,
         sequence: u64,
     ) -> Result<(), RunEventReductionError> {
         self.result_episode_finalizing = true;
@@ -698,20 +631,14 @@ impl RunEventReducer {
             .play_attempt
             .resolve_result_with_reason(rejection)
         {
-            self.publish_play_attempt_update(
-                session_id.clone(),
-                capture_generation,
-                Some(sequence),
-                state,
-            )?;
+            self.publish_play_attempt_update(session_id.clone(), Some(sequence), state)?;
         }
-        self.try_emit_result(session_id.clone(), capture_generation, sequence)?;
+        self.try_emit_result(session_id.clone(), sequence)?;
         if self.engine.play_attempt.accepted_result().is_none()
-            && let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation)
+            && let Some(session_id) = session_id
         {
             self.withdraw_result_provisional(
                 session_id,
-                capture_generation,
                 sequence,
                 ResultRetractionReason::AttemptRejected,
             )?;

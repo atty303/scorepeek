@@ -2,16 +2,13 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{DirBuilder, File};
-#[cfg(test)]
-use std::io::BufWriter;
 use std::io::{self, Read as _};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::diagnostics::contract::{
-    DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRetention,
-    DiagnosticRunDescriptor,
+    DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRunDescriptor,
 };
 use crate::{
     capture_live,
@@ -27,7 +24,6 @@ use crate::{
     inventory::{doctor as inventory, vulkan_layer},
     platform::signal as live_control,
     platform::state as local_profiles,
-    recognition_artifact,
     recording::{
         policy::{DEFAULT_RECORDING_MEMORY_MIB, RecordingMemoryLimit},
         retention::RecordingRetention,
@@ -109,7 +105,7 @@ macro_rules! eprintln {
     }};
 }
 
-const CAPTURE_DIAGNOSTIC_SCHEMA: &str = "scorepeek-capture-diagnostic-v2";
+const CAPTURE_DIAGNOSTIC_SCHEMA: &str = "scorepeek-capture-diagnostic-v3";
 const INTERRUPTED_ERROR: &str = "__scorepeek_interrupted__";
 const TERMINATED_ERROR: &str = "__scorepeek_terminated__";
 
@@ -621,78 +617,6 @@ fn new_run_id() -> String {
     )
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-fn try_capture_commands(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
-    try_capture_result_recognition(args, bundle)
-        .or_else(|| try_capture_field_observation(args, bundle))
-        .or_else(|| try_capture_recognition_handoff(args))
-        .or_else(|| try_capture_diagnostic_handoff(args))
-        .or_else(|| try_capture_canonical_frame(args))
-        .or_else(|| try_capture_binding_admission(args))
-        .or_else(|| try_capture_live_gate(args))
-}
-
-#[cfg(test)]
-const CAPTURE_HANDOFF_FLAGS: &[&str] = &[
-    "--binding",
-    "--binding-sha256",
-    "--capture-generation",
-    "--duration-ms",
-    "--diagnostic-root",
-    "--run-id",
-    "--build-sha256",
-    "--canonical-layout-sha256",
-    "--catalog-sha256",
-    "--recording",
-];
-
-#[cfg(test)]
-const CAPTURE_FIELD_OBSERVATION_FLAGS: &[&str] = &[
-    "--binding",
-    "--binding-sha256",
-    "--capture-generation",
-    "--duration-ms",
-    "--diagnostic-root",
-    "--catalog-store",
-    "--run-id",
-    "--build-sha256",
-    "--canonical-layout-sha256",
-    "--catalog-sha256",
-    "--recording",
-];
-
-#[cfg(test)]
-const CAPTURE_RESULT_RECOGNITION_FLAGS: &[&str] = &[
-    "--binding",
-    "--binding-sha256",
-    "--capture-generation",
-    "--duration-ms",
-    "--diagnostic-root",
-    "--catalog-store",
-    "--run-id",
-    "--build-sha256",
-    "--canonical-layout-sha256",
-    "--catalog-sha256",
-    "--recording",
-    "--recognition-artifact",
-];
-
-#[cfg(test)]
-const LIVE_SESSION_FLAGS: &[&str] = &[
-    "--binding",
-    "--binding-sha256",
-    "--capture-generation",
-    "--diagnostic-root",
-    "--catalog-store",
-    "--run-id",
-    "--build-sha256",
-    "--canonical-layout-sha256",
-    "--catalog-sha256",
-    "--recording",
-    "--recognition-artifact",
-];
-
 #[path = "application/live_event.rs"]
 mod live_event;
 
@@ -720,15 +644,6 @@ fn write_ndjson(output: &mut impl io::Write, value: &impl Serialize) -> Result<(
         .and_then(|()| output.flush())
         .map_err(|error| format!("live result output failed: {error}"))
 }
-
-#[path = "application/capture_tools.rs"]
-mod capture_tools;
-
-#[allow(
-    clippy::wildcard_imports,
-    reason = "capture_tools is an implementation partition shared with application tests"
-)]
-use capture_tools::*;
 
 #[path = "application/inventory_tools.rs"]
 mod inventory_tools;

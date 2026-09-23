@@ -80,7 +80,6 @@ fn conflicting_result_panel_side_detaches_retained_select_context() {
     reducer
         .reduce_result_observation(
             Some(&session),
-            Some(1),
             3,
             300,
             &json!({}),

@@ -72,7 +72,6 @@ const RESULT_HISTORY_CAPACITY: usize = 32;
 struct ResultHistoryEntry {
     ordinal: u64,
     session_id: String,
-    capture_generation: u64,
     source_sequence: u64,
     song: Option<SongPresentation>,
     result: ResultDomainEvent,
@@ -83,14 +82,12 @@ pub struct RunViewState {
     #[serde(skip)]
     pub(super) public: event_api::PublicState,
     invocation_id: String,
-    profile_sha256: String,
     recording: &'static str,
     watcher_state: String,
     scores_summary: Option<String>,
     channel_start_failure: Option<String>,
     session_count: u64,
     active_session_id: Option<String>,
-    capture_generation: Option<u64>,
     current_screen: Option<String>,
     raw_screen: Option<String>,
     #[serde(skip)]
@@ -126,7 +123,7 @@ pub struct RunViewState {
 }
 
 impl RunViewState {
-    fn new(invocation_id: String, profile_sha256: String, recording_enabled: bool) -> Self {
+    fn new(invocation_id: String, recording_enabled: bool) -> Self {
         let mut public = event_api::PublicState::new(invocation_id.clone());
         if recording_enabled {
             public.enable_recording();
@@ -134,7 +131,6 @@ impl RunViewState {
         Self {
             public,
             invocation_id,
-            profile_sha256,
             recording: if recording_enabled {
                 "enabled"
             } else {
@@ -146,7 +142,6 @@ impl RunViewState {
             channel_start_failure: None,
             session_count: 0,
             active_session_id: None,
-            capture_generation: None,
             current_screen: None,
             raw_screen: None,
             latest_observation: None,
@@ -185,15 +180,10 @@ impl RunViewState {
                 self.music_select = state.clone();
             }
             RunEventKind::WatcherStarted { .. } => "starting".clone_into(&mut self.watcher_state),
-            RunEventKind::SessionStarted {
-                session_id,
-                capture_generation,
-                ..
-            } => {
+            RunEventKind::SessionStarted { session_id, .. } => {
                 "session_active".clone_into(&mut self.watcher_state);
                 self.session_count = self.session_count.saturating_add(1);
                 self.active_session_id.clone_from(session_id);
-                self.capture_generation = Some(*capture_generation);
                 self.current_screen = None;
                 self.music_select = MusicSelectResolverState::default();
                 self.raw_screen = None;
@@ -289,7 +279,6 @@ impl RunViewState {
             }
             RunEventKind::ResultChanged {
                 session_id,
-                capture_generation,
                 source_sequence,
                 state,
             } => match state {
@@ -302,7 +291,6 @@ impl RunViewState {
                     self.latest_provisional_result = Some(ResultHistoryEntry {
                         ordinal: self.result_count.saturating_add(1),
                         session_id: session_id.clone(),
-                        capture_generation: *capture_generation,
                         source_sequence: *source_sequence,
                         song: song
                             .as_ref()
@@ -316,7 +304,6 @@ impl RunViewState {
                     self.latest_provisional_result = Some(ResultHistoryEntry {
                         ordinal: self.result_count.saturating_add(1),
                         session_id: session_id.clone(),
-                        capture_generation: *capture_generation,
                         source_sequence: *source_sequence,
                         song: song.clone(),
                         result: result.as_ref().clone(),
@@ -333,7 +320,6 @@ impl RunViewState {
                     self.result_history.push_back(ResultHistoryEntry {
                         ordinal: self.result_count,
                         session_id: session_id.clone(),
-                        capture_generation: *capture_generation,
                         source_sequence: *source_sequence,
                         song: song.clone(),
                         result: result.as_ref().clone(),
@@ -345,7 +331,6 @@ impl RunViewState {
             } => {
                 "session_finished".clone_into(&mut self.watcher_state);
                 self.active_session_id = None;
-                self.capture_generation = None;
                 self.current_screen = None;
                 self.music_select = MusicSelectResolverState::default();
                 self.raw_screen = None;
@@ -358,7 +343,6 @@ impl RunViewState {
             RunEventKind::WatcherStopped { .. } => {
                 "stopped".clone_into(&mut self.watcher_state);
                 self.active_session_id = None;
-                self.capture_generation = None;
                 self.current_screen = None;
                 self.music_select = MusicSelectResolverState::default();
                 self.raw_screen = None;
@@ -464,6 +448,26 @@ struct TraceCounters {
     last_source_sequence: Option<u64>,
     screen_counts: [u64; 7],
     output_kinds: BTreeMap<&'static str, u64>,
+    field_total_timing: TimingAccumulator,
+    field_end_to_end_timing: TimingAccumulator,
+    field_queue_wait_timing: TimingAccumulator,
+}
+
+#[derive(Default)]
+struct TimingAccumulator {
+    count: u64,
+    total_us: u64,
+    max_us: u64,
+}
+
+impl TimingAccumulator {
+    fn observe(&mut self, value: &Value) {
+        if let Some(micros) = value.as_u64() {
+            self.count = self.count.saturating_add(1);
+            self.total_us = self.total_us.saturating_add(micros);
+            self.max_us = self.max_us.max(micros);
+        }
+    }
 }
 
 impl TraceCounters {
@@ -483,9 +487,17 @@ impl TraceCounters {
                 }
                 self.last_source_sequence = Some(*sequence);
             }
-            RunEventKind::FieldObservation { .. } => {
+            RunEventKind::FieldObservation {
+                processing_timing, ..
+            } => {
                 self.completed_field_observations =
                     self.completed_field_observations.saturating_add(1);
+                self.field_total_timing
+                    .observe(&processing_timing["frame_total_us"]);
+                self.field_end_to_end_timing
+                    .observe(&processing_timing["frame_end_to_end_wall_us"]);
+                self.field_queue_wait_timing
+                    .observe(&processing_timing["field_queue_wait_us"]);
             }
             _ => {}
         }
@@ -511,13 +523,7 @@ fn annotate_session_start(
     event: &RunEvent,
     recording_enabled: bool,
 ) {
-    if let RunEventKind::SessionStarted {
-        capture_generation,
-        capture_profile_sha256,
-        normalizer_artifact_sha256,
-        ..
-    } = &event.kind
-    {
+    if let RunEventKind::SessionStarted { .. } = &event.kind {
         object.insert(
             "canonical_frame_contract".to_owned(),
             scorepeek_core::frame::CANONICAL_FRAME_CONTRACT_ID.into(),
@@ -529,9 +535,6 @@ fn annotate_session_start(
         object.insert(
             "runtime_config".to_owned(),
             json!({
-                "capture_generation": capture_generation,
-                "capture_profile_sha256": capture_profile_sha256,
-                "normalizer_artifact_sha256": normalizer_artifact_sha256,
                 "recording_enabled": recording_enabled,
             }),
         );
@@ -636,13 +639,11 @@ impl RoutineOutput {
     /// Panics only if the internal constructor loses diagnostics that this entry point supplied.
     pub fn start(
         invocation_id: String,
-        profile_sha256: String,
         recording_enabled: bool,
         diagnostics: RunDiagnostics,
     ) -> Result<Self, RoutineOutputStartError> {
         let state = Arc::new(Mutex::new(RunViewState::new(
             invocation_id,
-            profile_sha256,
             recording_enabled,
         )));
         let channel = EventChannel::start(Arc::clone(&state));
@@ -698,32 +699,24 @@ impl RoutineOutput {
 
     #[must_use]
     #[cfg(test)]
-    pub fn start_headless(invocation_id: String, profile_sha256: String) -> Self {
-        Self::start_headless_inner(invocation_id, profile_sha256, None)
+    pub fn start_headless(invocation_id: String, _profile_sha256: String) -> Self {
+        Self::start_headless_inner(invocation_id, None)
     }
 
     #[must_use]
     #[cfg(test)]
     pub fn start_headless_with_diagnostics(
         invocation_id: String,
-        profile_sha256: String,
+        _profile_sha256: String,
         diagnostics: RunDiagnostics,
     ) -> Self {
-        Self::start_headless_inner(invocation_id, profile_sha256, Some(diagnostics))
+        Self::start_headless_inner(invocation_id, Some(diagnostics))
     }
 
     #[cfg(test)]
-    fn start_headless_inner(
-        invocation_id: String,
-        profile_sha256: String,
-        diagnostics: Option<RunDiagnostics>,
-    ) -> Self {
+    fn start_headless_inner(invocation_id: String, diagnostics: Option<RunDiagnostics>) -> Self {
         Self {
-            state: Arc::new(Mutex::new(RunViewState::new(
-                invocation_id,
-                profile_sha256,
-                false,
-            ))),
+            state: Arc::new(Mutex::new(RunViewState::new(invocation_id, false))),
             channel: None,
             scores: None,
             publish_frontend_snapshots: false,
@@ -819,12 +812,6 @@ impl RoutineOutput {
 
     pub fn scores_health(&self) -> Option<crate::scores::Health> {
         self.scores.as_ref().map(crate::scores::Worker::health)
-    }
-
-    pub fn bind_public_session(&mut self, binding: event_api::Binding) {
-        if let Ok(mut state) = self.state.lock() {
-            state.public.pending_binding = Some(binding);
-        }
     }
 
     pub fn publish(&mut self, event: &RunEvent) -> Result<(), String> {
@@ -969,6 +956,23 @@ impl RoutineOutput {
             "core_errors": self.trace_counters.core_errors,
             "admitted_frames": self.trace_counters.admitted_frames,
             "completed_field_observations": self.trace_counters.completed_field_observations,
+            "recognition_field_timing_us": {
+                "frame_total": {
+                    "count": self.trace_counters.field_total_timing.count,
+                    "sum": self.trace_counters.field_total_timing.total_us,
+                    "max": self.trace_counters.field_total_timing.max_us,
+                },
+                "frame_end_to_end": {
+                    "count": self.trace_counters.field_end_to_end_timing.count,
+                    "sum": self.trace_counters.field_end_to_end_timing.total_us,
+                    "max": self.trace_counters.field_end_to_end_timing.max_us,
+                },
+                "field_queue_wait": {
+                    "count": self.trace_counters.field_queue_wait_timing.count,
+                    "sum": self.trace_counters.field_queue_wait_timing.total_us,
+                    "max": self.trace_counters.field_queue_wait_timing.max_us,
+                },
+            },
             "source_sequence_gaps": self.trace_counters.source_sequence_gaps,
             "screen_counts": {
                 "title": self.trace_counters.screen_counts[0],
@@ -1008,7 +1012,6 @@ impl RoutineOutput {
     fn reduce_music_select_observation(
         &mut self,
         session_id: Option<&String>,
-        capture_generation: Option<u64>,
         sequence: u64,
         monotonic_end_ms: u64,
         fields: &Value,
@@ -1019,7 +1022,6 @@ impl RoutineOutput {
             schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::FieldObservation {
                 session_id: session_id.cloned(),
-                capture_generation,
                 screen_episode_id: self.core_reducer.state().snapshot().screen_episode_id,
                 sequence,
                 monotonic_start_ms: monotonic_end_ms,
@@ -1157,7 +1159,6 @@ impl RoutineOutput {
         &mut self,
         state_name: &str,
         session_id: Option<&str>,
-        generation: Option<u64>,
         message: &str,
     ) -> Result<(), String> {
         let diagnostic_sink = self.diagnostics.as_ref().map(RunDiagnostics::sink);
@@ -1168,7 +1169,6 @@ impl RoutineOutput {
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             state_name.clone_into(&mut state.watcher_state);
             state.active_session_id = session_id.map(ToOwned::to_owned);
-            state.capture_generation = generation;
             message.clone_into(&mut state.message);
             let mut projected = state.public.clone();
             let events = projected
@@ -1258,7 +1258,6 @@ impl RoutineOutput {
                 watcher_state: state.watcher_state.clone(),
                 session_count: state.session_count,
                 active_session_id: state.active_session_id.clone(),
-                capture_generation: state.capture_generation,
                 raw_screen: state.raw_screen.clone(),
                 semantic_screen: state.current_screen.clone(),
                 recording_status: state.status_recording.to_owned(),
@@ -1393,13 +1392,10 @@ impl Drop for RoutineOutput {
 fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
     let channel = health.value();
     format!(
-        "scorepeek: state={} sessions={} session={} generation={} channel={} clients={} dropped={} disconnected={} message={} {}{}",
+        "scorepeek: state={} sessions={} session={} channel={} clients={} dropped={} disconnected={} message={} {}{}",
         state.watcher_state,
         state.session_count,
         state.active_session_id.as_deref().unwrap_or("-"),
-        state
-            .capture_generation
-            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
         channel["status"].as_str().unwrap_or("degraded"),
         channel["connected_clients"].as_u64().unwrap_or(0),
         channel["dropped_events"].as_u64().unwrap_or(0),

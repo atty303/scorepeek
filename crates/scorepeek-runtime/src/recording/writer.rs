@@ -27,9 +27,9 @@ use scorepeek_core::recognition::screen::ScreenClass;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::diagnostics::live::BoundCanonicalFrame;
 use crate::recording::policy::RecordingMemoryLimit;
 use crate::recording::retention::RecordingRetention;
+use crate::service::session::recognition::BoundCanonicalFrame;
 
 const WINDOW_FRAMES: usize = 10;
 const SEGMENT_FRAMES: usize = 600;

@@ -852,9 +852,6 @@ mod tests {
                 build_sha256: "1".repeat(64),
             },
             binding: DiagnosticBinding {
-                capture_generation: 1,
-                capture_profile_sha256: "2".repeat(64),
-                normalizer_sha256: "3".repeat(64),
                 canonical_layout_sha256: "4".repeat(64),
                 catalog_sha256: "5".repeat(64),
                 model_sha256: "6".repeat(64),

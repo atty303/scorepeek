@@ -6,9 +6,9 @@ use serde_json::Value;
 use super::error::Error;
 use super::facts::PlaySide;
 
-pub const EVENT_SCHEMA: &str = "scorepeek-event-v4";
+pub const EVENT_SCHEMA: &str = "scorepeek-event-v5";
 
-pub(super) fn validate_v4_envelope(raw: &Value) -> Result<(), Error> {
+pub(super) fn validate_v5_envelope(raw: &Value) -> Result<(), Error> {
     let object = raw.as_object().ok_or(Error::UnsupportedContract)?;
     for key in [
         "schema",
@@ -39,34 +39,16 @@ pub(super) fn validate_v4_envelope(raw: &Value) -> Result<(), Error> {
         return Ok(());
     }
     let capture = capture.as_object().ok_or(Error::UnsupportedContract)?;
-    if capture
-        .get("session_id")
-        .is_none_or(|value| !(value.is_null() || value.is_string()))
-        || capture
-            .get("capture_generation")
-            .and_then(Value::as_u64)
-            .is_none()
+    if capture.len() == 1
+        && capture
+            .get("session_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
     {
-        return Err(Error::UnsupportedContract);
+        Ok(())
+    } else {
+        Err(Error::UnsupportedContract)
     }
-    let binding = capture.get("binding").ok_or(Error::UnsupportedContract)?;
-    if binding.is_null() {
-        return Ok(());
-    }
-    let binding = binding.as_object().ok_or(Error::UnsupportedContract)?;
-    for key in [
-        "capture_profile_sha256",
-        "normalizer_sha256",
-        "canonical_layout_sha256",
-        "catalog_sha256",
-        "model_sha256",
-        "runtime_sha256",
-    ] {
-        if binding.get(key).and_then(Value::as_str).is_none() {
-            return Err(Error::UnsupportedContract);
-        }
-    }
-    Ok(())
 }
 #[derive(Deserialize)]
 pub(super) struct Envelope {

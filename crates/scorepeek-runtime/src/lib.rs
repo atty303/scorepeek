@@ -20,7 +20,6 @@ pub mod scores;
 )]
 mod service;
 pub(crate) use capture::live as capture_live;
-pub(crate) use recording::artifact as recognition_artifact;
 pub(crate) use recording::source as canonical_source;
 pub use service::ServiceHandle;
 

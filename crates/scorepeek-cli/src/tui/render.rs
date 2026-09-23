@@ -8,12 +8,10 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 #[must_use]
 pub fn plain_status_line(run: &RunSnapshot) -> String {
     format!(
-        "scorepeek: state={} sessions={} session={} generation={} channel={} clients={} dropped={} disconnected={} message={} {}{}",
+        "scorepeek: state={} sessions={} session={} channel={} clients={} dropped={} disconnected={} message={} {}{}",
         run.watcher_state,
         run.session_count,
         run.active_session_id.as_deref().unwrap_or("-"),
-        run.capture_generation
-            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
         run.event_stream_status,
         run.connected_clients,
         run.dropped_events,
@@ -86,12 +84,10 @@ fn watcher_lines(run: &RunSnapshot) -> Vec<Line<'static>> {
                 Style::default().fg(watcher_color(run)),
             ),
             Span::raw(format!(
-                "  raw={} semantic={}  sessions={} gen={}",
+                "  raw={} semantic={}  sessions={}",
                 run.raw_screen.as_deref().unwrap_or("-"),
                 run.semantic_screen.as_deref().unwrap_or("-"),
                 run.session_count,
-                run.capture_generation
-                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
             )),
         ]),
         Line::from(format!(
@@ -141,10 +137,8 @@ fn result_lines(run: &RunSnapshot) -> Vec<Line<'static>> {
             Span::raw(format!("  confirmed={}", run.result_count)),
         ]),
         Line::from(format!(
-            "session={} generation={}",
+            "session={}",
             run.active_session_id.as_deref().unwrap_or("-"),
-            run.capture_generation
-                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
         )),
     ]
 }
@@ -157,10 +151,8 @@ fn music_select_lines(run: &RunSnapshot) -> Vec<Line<'static>> {
             run.semantic_screen.as_deref().unwrap_or("-"),
         )),
         Line::from(format!(
-            "session={} generation={}",
+            "session={}",
             run.active_session_id.as_deref().unwrap_or("-"),
-            run.capture_generation
-                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
         )),
         Line::from(format!(
             "latest={} results={}",
@@ -262,7 +254,6 @@ mod tests {
             watcher_state: "session_active".to_owned(),
             session_count: 2,
             active_session_id: Some("session-2".to_owned()),
-            capture_generation: Some(3),
             raw_screen: Some("result".to_owned()),
             semantic_screen: Some("result".to_owned()),
             recording_status: "active".to_owned(),

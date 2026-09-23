@@ -13,9 +13,10 @@ use scorepeek_core::event::coordinator::{CoordinatorError, CoordinatorPolicy, Do
 use scorepeek_core::event::{
     RUN_EVENT_SCHEMA, RunEvent, RunEventKind, RunReducerEffect, run_event_from_field_observation,
 };
+use scorepeek_core::frame::{CANONICAL_BYTES, CanonicalFrameView};
 use scorepeek_core::recognition::screen::{
     ScreenClass, ScreenPredicateObservation, TitleConfirmationState, confirm_title_screen,
-    inspect_canonical_rgb8, route_screen_rgb8_crops,
+    inspect_canonical_frame, route_screen_rgb8_crops,
 };
 use scorepeek_core::session::episode::RawScreenState;
 use scorepeek_core::session::timeline::{TimelineAction, TimelineDriver};
@@ -29,7 +30,7 @@ use scorepeek_core::recognition::registered_field::{
 use scorepeek_core::recognition::screen::ScreenRgb8Crops;
 use scorepeek_core::recognition::text_observer_pool::RecognitionExecutionMode;
 
-const FRAME_BYTES: usize = 1920 * 1080 * 3;
+const FRAME_BYTES: usize = CANONICAL_BYTES;
 
 #[derive(Debug)]
 pub enum ReplayError {
@@ -200,7 +201,9 @@ fn inspect_batch(frames: Vec<Option<Vec<u8>>>) -> Result<Vec<Option<InspectedFra
             .map(|frame| {
                 frame.map(|pixels| {
                     scope.spawn(move || {
-                        let observation = inspect_canonical_rgb8(&pixels).map_err(|_| {
+                        let frame = CanonicalFrameView::new(&pixels)
+                            .map_err(|_| ReplayError::Invalid("canonical frame length failed"))?;
+                        let observation = inspect_canonical_frame(frame).map_err(|_| {
                             ReplayError::Invalid("canonical frame inspection failed")
                         })?;
                         Ok((pixels, observation))
@@ -242,7 +245,6 @@ fn raw_input(
 ) -> RunEvent {
     let kind = RunEventKind::RawScreenObserved {
         session_id: Some(session_id.to_owned()),
-        capture_generation: Some(0),
         semantic_episode_id,
         sequence: tick.sequence,
         monotonic_start_ms: tick.source_timestamp_ms,
@@ -297,7 +299,6 @@ fn apply_timeline_actions(
                 report,
                 RunEventKind::SemanticScreenEpisodeChanged {
                     session_id: Some(session_id.to_owned()),
-                    capture_generation: Some(0),
                     screen_episode_id: episode.id,
                     sequence,
                     monotonic_end_ms: timestamp_ms,
@@ -564,7 +565,6 @@ fn replay_recording_observed(
                 ))?;
                 let field_event = run_event_from_field_observation(
                     &recording.manifest.session_id,
-                    0,
                     episode,
                     tick.sequence,
                     tick.source_timestamp_ms,
