@@ -1,6 +1,5 @@
 //! Semantic replay from verified canonical input, without runtime diagnostic artifacts.
 
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -36,6 +35,7 @@ pub enum ReplayError {
     Coordinator(CoordinatorError),
     Resource(String),
     Field(String),
+    Oracle(String),
     Invalid(&'static str),
 }
 impl From<std::io::Error> for ReplayError {
@@ -71,7 +71,6 @@ pub struct ReplayReport {
     pub elided_inputs: u64,
     pub transitions: Vec<ExpectedTransition>,
     pub domain_outputs: u64,
-    pub domain_event_sha256: String,
     pub domain_event_count: u64,
 }
 
@@ -95,39 +94,33 @@ pub struct ReplayProgress {
     pub elapsed: Duration,
 }
 
+pub(crate) trait ReplayObserver {
+    fn validate(&mut self, _ticks: &[CanonicalTick]) -> Result<(), ReplayError> {
+        Ok(())
+    }
+    fn screen(&mut self, _sequence: u64, _screen: ScreenClass) -> Result<(), ReplayError> {
+        Ok(())
+    }
+    fn event(&mut self, _event: &RunEvent) -> Result<(), ReplayError> {
+        Ok(())
+    }
+}
+
+impl ReplayObserver for () {}
+
 fn consume_outputs(
     report: &mut ReplayReport,
-    digest: &mut Sha256,
-    input_sequence: u64,
     outputs: &[RunReducerEffect],
+    observer: &mut dyn ReplayObserver,
 ) -> Result<(), ReplayError> {
     report.domain_outputs += outputs.len() as u64;
     for output in outputs {
         if let RunReducerEffect::Event(event) = output {
-            let encoded = semantic_event_bytes(event)?;
-            digest.update(input_sequence.to_le_bytes());
-            digest.update((encoded.len() as u64).to_le_bytes());
-            digest.update(encoded);
+            observer.event(event)?;
             report.domain_event_count += 1;
         }
     }
     Ok(())
-}
-
-fn semantic_event_bytes(event: &RunEvent) -> Result<Vec<u8>, ReplayError> {
-    let mut stable = event.clone();
-    if let RunEventKind::FieldObservation {
-        processing_timing,
-        numeric_batch,
-        ..
-    } = &mut stable.kind
-    {
-        *processing_timing = serde_json::Value::Null;
-        if let Some(serde_json::Value::Object(batch)) = numeric_batch {
-            batch.remove("elapsed_us");
-        }
-    }
-    Ok(serde_json::to_vec(&stable)?)
 }
 
 struct SegmentDecoder {
@@ -264,32 +257,32 @@ fn apply_event(
     coordinator: &mut DomainCoordinator,
     next_sequence: &mut u64,
     report: &mut ReplayReport,
-    digest: &mut Sha256,
     kind: RunEventKind,
+    observer: &mut dyn ReplayObserver,
 ) -> Result<(), ReplayError> {
     let event = RunEvent {
         schema: RUN_EVENT_SCHEMA.into(),
         kind,
     };
     let output = coordinator.step(*next_sequence, &event)?;
-    consume_outputs(report, digest, *next_sequence, output.effects())?;
+    consume_outputs(report, output.effects(), observer)?;
     *next_sequence += 1;
     Ok(())
 }
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the ordered timeline action retains explicit coordinator and digest state"
+    reason = "the ordered timeline action retains explicit coordinator and sequence state"
 )]
 fn apply_timeline_actions(
     coordinator: &mut DomainCoordinator,
     next_sequence: &mut u64,
     report: &mut ReplayReport,
-    digest: &mut Sha256,
     actions: Vec<TimelineAction>,
     sequence: u64,
     timestamp_ms: u64,
     session_id: &str,
+    observer: &mut dyn ReplayObserver,
 ) -> Result<(), ReplayError> {
     for action in actions {
         if let TimelineAction::Semantic { episode, phase } = action {
@@ -297,7 +290,6 @@ fn apply_timeline_actions(
                 coordinator,
                 next_sequence,
                 report,
-                digest,
                 RunEventKind::SemanticScreenEpisodeChanged {
                     session_id: Some(session_id.to_owned()),
                     capture_generation: Some(0),
@@ -307,6 +299,7 @@ fn apply_timeline_actions(
                     screen: screen_name(episode.screen).into(),
                     phase,
                 },
+                observer,
             )?;
         }
     }
@@ -330,13 +323,22 @@ pub fn replay_recording(root: &Path) -> Result<ReplayReport, ReplayError> {
 ///
 /// # Errors
 /// Rejects changed recording bytes, undecodable frames, or core transition failures.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one sequential pass consumes and verifies each canonical input"
-)]
 pub fn replay_recording_with_progress(
     root: &Path,
     on_progress: &(dyn Fn(&ReplayProgress) + Sync),
+) -> Result<ReplayReport, ReplayError> {
+    replay_recording_observed(root, on_progress, &mut ())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::similar_names,
+    reason = "one ordered pass consumes bounded frame batches and reviewed observations"
+)]
+fn replay_recording_observed(
+    root: &Path,
+    on_progress: &(dyn Fn(&ReplayProgress) + Sync),
+    observer: &mut dyn ReplayObserver,
 ) -> Result<ReplayReport, ReplayError> {
     let started = Instant::now();
     on_progress(&ReplayProgress {
@@ -363,6 +365,7 @@ pub fn replay_recording_with_progress(
             elapsed: started.elapsed(),
         });
     })?;
+    observer.validate(&recording.ticks)?;
     let total_retained_frames = recording
         .manifest
         .segments
@@ -391,19 +394,17 @@ pub fn replay_recording_with_progress(
         elided_inputs: 0,
         transitions: Vec::new(),
         domain_outputs: 0,
-        domain_event_sha256: String::new(),
         domain_event_count: 0,
     };
-    let mut domain_digest = Sha256::new();
     let mut core_sequence = 1_u64;
     apply_event(
         &mut coordinator,
         &mut core_sequence,
         &mut report,
-        &mut domain_digest,
         RunEventKind::CanonicalSessionStarted {
             session_id: recording.manifest.session_id.clone(),
         },
+        observer,
     )?;
     coordinator.step_canonical_game_version(core_sequence, &recording.manifest.game_version)?;
     core_sequence += 1;
@@ -513,6 +514,7 @@ pub fn replay_recording_with_progress(
                 report.elided_inputs += 1;
             }
             let screen = observed.as_ref().map_or(tick.screen, |value| value.screen);
+            observer.screen(tick.sequence, screen)?;
             let changed = previous != Some(screen);
             if changed {
                 report.transitions.push(ExpectedTransition {
@@ -533,22 +535,17 @@ pub fn replay_recording_with_progress(
                 &recording.manifest.session_id,
             );
             let output = coordinator.step(core_sequence, &input)?;
-            consume_outputs(
-                &mut report,
-                &mut domain_digest,
-                core_sequence,
-                output.effects(),
-            )?;
+            consume_outputs(&mut report, output.effects(), observer)?;
             core_sequence += 1;
             apply_timeline_actions(
                 &mut coordinator,
                 &mut core_sequence,
                 &mut report,
-                &mut domain_digest,
                 step.actions,
                 tick.sequence,
                 tick.source_timestamp_ms,
                 &recording.manifest.session_id,
+                observer,
             )?;
             if let Some(response) = prepared.field_response {
                 let field_output = response.join().map_err(ReplayError::Field)?;
@@ -566,12 +563,7 @@ pub fn replay_recording_with_progress(
                 )
                 .map_err(ReplayError::Field)?;
                 let output = coordinator.step(core_sequence, &field_event)?;
-                consume_outputs(
-                    &mut report,
-                    &mut domain_digest,
-                    core_sequence,
-                    output.effects(),
-                )?;
+                consume_outputs(&mut report, output.effects(), observer)?;
                 core_sequence += 1;
             }
             report.inputs += 1;
@@ -589,32 +581,27 @@ pub fn replay_recording_with_progress(
             &mut coordinator,
             &mut core_sequence,
             &mut report,
-            &mut domain_digest,
             timeline.finish(),
             last.sequence,
             last.source_timestamp_ms,
             &recording.manifest.session_id,
+            observer,
         )?;
     }
     apply_event(
         &mut coordinator,
         &mut core_sequence,
         &mut report,
-        &mut domain_digest,
         RunEventKind::CanonicalSessionFinished {
             session_id: recording.manifest.session_id.clone(),
         },
+        observer,
     )?;
     if let Some(decoder) = decoder.take() {
         decoder.finish()?;
     }
     if segment_index != recording.manifest.segments.len() {
         return Err(ReplayError::Invalid("unused canonical segment"));
-    }
-    for byte in domain_digest.finalize() {
-        use std::fmt::Write as _;
-        write!(&mut report.domain_event_sha256, "{byte:02x}")
-            .expect("writing to String cannot fail");
     }
     publish_progress(ReplayPhase::Complete, &report, segment_index);
     Ok(report)
@@ -678,21 +665,23 @@ fn replay_active_session(
     if label.session_sha256 != digest || label.disposition != LabelDisposition::Include {
         return Err(ReplayError::Invalid("active label binding differs"));
     }
-    let report = replay_recording_with_progress(&session_root, on_progress)?;
+    if label.schema != "scorepeek-private-canonical-regression-label-v2" {
+        return Err(ReplayError::Invalid("active reviewed label schema differs"));
+    }
+    let mut oracle = crate::oracle::OracleObserver::new(&label.episodes, &label.negative_frames);
+    let report = replay_recording_observed(&session_root, on_progress, &mut oracle)?;
+    oracle.finish()?;
     if report.inputs != descriptor.tick_count {
         return Err(ReplayError::Invalid(
             "replayed input count differs from session",
         ));
     }
-    if report.transitions != label.transitions {
-        return Err(ReplayError::Invalid("semantic regression oracle differs"));
-    }
-    if report.domain_event_count != label.domain_event_count
-        || report.domain_event_sha256 != label.domain_event_sha256
+    if label
+        .transitions
+        .as_ref()
+        .is_some_and(|expected| report.transitions != *expected)
     {
-        return Err(ReplayError::Invalid(
-            "domain event regression oracle differs",
-        ));
+        return Err(ReplayError::Invalid("semantic regression oracle differs"));
     }
     Ok(report)
 }
@@ -702,7 +691,6 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sha2::{Digest, Sha256};
-
     fn digest(path: &Path) -> String {
         let bytes = fs::read(path).unwrap();
         let mut hex = String::with_capacity(64);
@@ -814,12 +802,12 @@ mod tests {
         assert!(store::active_sessions(&store_root).is_err());
         let label_path = root.path().join("labels.json");
         let label = RegressionLabel {
-            schema: "scorepeek-private-canonical-regression-label-v1".into(),
+            schema: "scorepeek-private-canonical-regression-label-v2".into(),
             session_sha256: imported.session_sha256.clone(),
             disposition: LabelDisposition::Include,
-            transitions: report.transitions.clone(),
-            domain_event_sha256: report.domain_event_sha256.clone(),
-            domain_event_count: report.domain_event_count,
+            episodes: Vec::new(),
+            negative_frames: Vec::new(),
+            transitions: Some(report.transitions.clone()),
         };
         fs::write(&label_path, serde_json::to_vec(&label).unwrap()).unwrap();
         store::review_apply(&store_root, &imported.draft, &label_path).unwrap();
@@ -838,7 +826,7 @@ mod tests {
             source_manifest
         );
         let mut wrong = label.clone();
-        wrong.transitions[0].screen = ScreenClass::Result;
+        wrong.transitions.as_mut().unwrap()[0].screen = ScreenClass::Result;
         fs::write(
             store_root
                 .join("sessions")
@@ -848,42 +836,6 @@ mod tests {
         )
         .unwrap();
         assert!(replay_active(&store_root).is_err());
-
-        let mut wrong_digest = label.clone();
-        wrong_digest.domain_event_sha256 = "0".repeat(64);
-        fs::write(
-            store_root
-                .join("sessions")
-                .join(&imported.session_sha256)
-                .join("label.json"),
-            serde_json::to_vec(&wrong_digest).unwrap(),
-        )
-        .unwrap();
-        assert!(matches!(
-            replay_active(&store_root),
-            Err(ReplayError::Invalid(
-                "domain event regression oracle differs"
-            ))
-        ));
-
-        let invalid_source = root.path().join("invalid-episode");
-        synthetic_recording(&invalid_source);
-        let tick_path = invalid_source.join("canonical-ticks.ndjson");
-        let mut ticks = fs::read_to_string(&tick_path).unwrap();
-        ticks = ticks.replacen("\"semantic_episode_id\":1", "\"semantic_episode_id\":2", 1);
-        fs::write(&tick_path, ticks).unwrap();
-        let mut manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(invalid_source.join("canonical-manifest.json")).unwrap(),
-        )
-        .unwrap();
-        manifest["tick_index"]["sha256"] = digest(&tick_path).into();
-        manifest["tick_index"]["bytes"] = fs::metadata(&tick_path).unwrap().len().into();
-        fs::write(
-            invalid_source.join("canonical-manifest.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(replay_recording(&invalid_source).unwrap(), report);
     }
 
     #[test]
@@ -929,12 +881,12 @@ mod tests {
             let report = replay_recording(&source).unwrap();
             let imported = store::import_recording(&store_root, &source).unwrap();
             let label = RegressionLabel {
-                schema: "scorepeek-private-canonical-regression-label-v1".into(),
+                schema: "scorepeek-private-canonical-regression-label-v2".into(),
                 session_sha256: imported.session_sha256.clone(),
                 disposition: LabelDisposition::Include,
-                transitions: report.transitions.clone(),
-                domain_event_sha256: report.domain_event_sha256.clone(),
-                domain_event_count: report.domain_event_count,
+                episodes: Vec::new(),
+                negative_frames: Vec::new(),
+                transitions: Some(report.transitions.clone()),
             };
             let label_path = root.path().join(format!("labels-{index}.json"));
             fs::write(&label_path, serde_json::to_vec(&label).unwrap()).unwrap();

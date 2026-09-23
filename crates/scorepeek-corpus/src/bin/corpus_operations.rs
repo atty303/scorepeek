@@ -45,10 +45,18 @@ enum ReviewCommand {
         #[arg(long)]
         draft: PathBuf,
         #[arg(long)]
-        labels: PathBuf,
+        labels: Option<PathBuf>,
+        #[arg(long)]
+        legacy_store: Option<PathBuf>,
+        #[arg(long)]
+        legacy_session_sha256: Option<String>,
     },
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one operations entry point validates mutually exclusive import and review sources"
+)]
 fn run() -> Result<(), String> {
     match Arguments::parse().command {
         Command::Import {
@@ -143,11 +151,35 @@ fn run() -> Result<(), String> {
                     store,
                     draft,
                     labels,
+                    legacy_store,
+                    legacy_session_sha256,
                 },
-        } => {
-            scorepeek_corpus::store::review_apply(&store, &draft, &labels)
-                .map_err(|error| format!("review apply failed: {error:?}"))?;
-        }
+        } => match (labels, legacy_store, legacy_session_sha256) {
+            (Some(labels), None, None) => {
+                scorepeek_corpus::store::review_apply(&store, &draft, &labels)
+                    .map_err(|error| format!("review apply failed: {error:?}"))?;
+            }
+            (None, Some(old_store), Some(old_sha)) => {
+                let new_draft: scorepeek_corpus::store::ReviewDraft = serde_json::from_slice(
+                    &std::fs::read(&draft).map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+                let label = scorepeek_corpus::migration_legacy::migrate_reviewed_label(
+                    &old_store,
+                    &old_sha,
+                    &new_draft.session_sha256,
+                    &store.join("sessions").join(&new_draft.session_sha256),
+                )
+                .map_err(|error| format!("reviewed label migration failed: {error:?}"))?;
+                scorepeek_corpus::store::review_apply_label(&store, &draft, &label)
+                    .map_err(|error| format!("review apply failed: {error:?}"))?;
+            }
+            _ => {
+                return Err(
+                    "provide --labels or both --legacy-store and --legacy-session-sha256".into(),
+                );
+            }
+        },
     }
     Ok(())
 }

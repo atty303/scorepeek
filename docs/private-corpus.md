@@ -71,18 +71,16 @@ mise run corpus:operations -- import --store /absolute/new-private-corpus --v2-s
 
 The import command prints the session digest and review draft path. The
 operator edits a separate regression label document and applies it in a second
-operation. `review apply` checks the stored draft and session binding; only
-`include` publishes the session to `active.json`. Applied labels are immutable.
-The current label schema is `scorepeek-private-canonical-regression-label-v1`
-with `session_sha256`, `disposition` (`include` or `exclude`), and ordered
-`transitions` entries containing input `sequence` and `screen`, plus
-`domain_event_count` and `domain_event_sha256` from the ordered core event output.
-The digest binds each serialized event to its coordinator input sequence without
-keeping session-wide event copies in memory. OCR queue and inference durations
-are excluded from this semantic digest; recognized values and domain outputs
-remain included.
-The same explicit read-only replay target can print a report for one recording
-when authoring a reviewed label:
+operation. `review apply` checks the stored draft, canonical sequences, reviewed
+result values, and session binding; only `include` publishes the session to
+`active.json`. Applied labels are immutable. The current label schema is
+`scorepeek-private-canonical-regression-label-v2`. Each reviewed episode binds
+stable RESULT frames, SELECT/DECIDE/PLAY/RESULT spans, an attempt outcome, song
+and chart identity, score, judgments, supplemental values, and play options.
+Negative frame sequences may be reviewed as UNKNOWN. An optional screen
+transition oracle can be supplied; there is no core event digest in the label.
+The same explicit read-only replay target can inspect one recording while
+authoring a reviewed label:
 
 ```text
 cargo test --locked -p scorepeek-corpus --test full_replay -- --recording /absolute/private-corpus/sessions/SESSION_SHA256
@@ -90,6 +88,20 @@ cargo test --locked -p scorepeek-corpus --test full_replay -- --recording /absol
 
 ```text
 mise run corpus:operations -- review apply --store /absolute/private-corpus --draft /absolute/private-corpus/sessions/SESSION_SHA256/SESSION_SHA256.review.json --labels /absolute/reviewed-label.json
+```
+
+An already reviewed v6 label in the old active suite can instead be moved
+without reconstructing expected scores from current replay output. The removable
+corpus migration reader verifies the old active suite, content-addressed label,
+old capture session, and matching session-local ID before applying the original
+reviewed episodes to the imported v5 recording. It also matches each old
+retained frame's segment digest and sequence to the imported recording. Replay
+checks confirmed RESULT payloads and requires each source sequence to follow its
+reviewed RESULT start and precede the next reviewed RESULT start. Confirmation
+may occur after the RESULT screen ends. The old store stays read-only:
+
+```text
+mise run corpus:operations -- review apply --store /absolute/new-private-corpus --draft /absolute/new-private-corpus/sessions/SESSION_SHA256/SESSION_SHA256.review.json --legacy-store /absolute/old-private-corpus --legacy-session-sha256 OLD_SESSION_SHA256
 ```
 
 No real recording, player data, model bytes, catalog generation, or complete
@@ -102,8 +114,8 @@ new active generation.
 
 The repository-created synthetic recording test exercises canonical reading,
 segment decoding, the recorded game-version state, current screen predicates,
-semantic episode chronology, ordered core coordinator inputs, bounded output, oracle
-comparison, and failure. It runs under ordinary `cargo test --locked --workspace`
+semantic episode chronology, ordered core coordinator inputs, bounded output,
+reviewed oracle comparison, and failure. It runs under ordinary `cargo test --locked --workspace`
 and needs no private data. A full active generation runs only through the named
 custom Cargo test. Its exit status is nonzero for invalid input or oracle
 mismatch.

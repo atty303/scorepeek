@@ -229,8 +229,11 @@ copies its verified segments into a local generation, and activates a regression
 session only after a separate review apply operation. Its replay reads canonical
 input, supplies canonical session start and finish boundaries plus the recorded
 game-version state, and uses the core coordinator without a runtime crate or
-diagnostic stream. Result and Music Select field replay selects the current
-source-registered catalog and OCR model into an isolated temporary store.
+diagnostic stream. Reviewed labels bind episode spans and stable screen anchors;
+replay compares SELECT state and ordered confirmed RESULT values, including
+score and judgments, directly with that reviewed truth. Result and Music Select
+field replay selects the current source-registered catalog and OCR model into an
+isolated temporary store.
 Real frames, complete labels, generated catalogs, text-model bytes,
 player data, and credentials stay outside Git. The registered v3 numeric ONNX is the explicitly
 approved repository artifact. See [private corpus](private-corpus.md).

@@ -4,6 +4,7 @@ extern crate self as scorepeek_corpus;
 
 pub mod canonical;
 pub mod migration_legacy;
+pub mod oracle;
 pub mod replay;
 mod resources;
 pub mod store;

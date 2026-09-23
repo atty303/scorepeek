@@ -11,7 +11,7 @@ use crate::canonical::{self, RecordingError};
 
 const SESSION_SCHEMA: &str = "scorepeek-private-canonical-session-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-canonical-review-draft-v1";
-const LABEL_SCHEMA: &str = "scorepeek-private-canonical-regression-label-v1";
+const LABEL_SCHEMA: &str = "scorepeek-private-canonical-regression-label-v2";
 const GENERATION_SCHEMA: &str = "scorepeek-private-canonical-generation-v1";
 const MAX_DOCUMENT: u64 = 16 * 1024 * 1024;
 
@@ -78,10 +78,10 @@ pub struct RegressionLabel {
     pub schema: String,
     pub session_sha256: String,
     pub disposition: LabelDisposition,
-    pub transitions: Vec<ExpectedTransition>,
-    /// Digest of the ordered core domain events, including their input sequence.
-    pub domain_event_sha256: String,
-    pub domain_event_count: u64,
+    pub episodes: Vec<crate::oracle::RegressionEpisode>,
+    pub negative_frames: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transitions: Option<Vec<ExpectedTransition>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -337,29 +337,35 @@ pub fn import_recording(store: &Path, source: &Path) -> Result<ImportSummary, St
 /// # Errors
 /// Rejects a draft or label mismatch without changing the active suite.
 pub fn review_apply(store: &Path, draft_path: &Path, labels_path: &Path) -> Result<(), StoreError> {
+    let label: RegressionLabel = serde_json::from_slice(&read_document(labels_path)?)?;
+    review_apply_label(store, draft_path, &label)
+}
+
+/// Publishes an already reviewed label, including one converted by the removable legacy reader.
+///
+/// # Errors
+/// Rejects an invalid reviewed oracle or changed session without publishing an active generation.
+pub fn review_apply_label(
+    store: &Path,
+    draft_path: &Path,
+    label: &RegressionLabel,
+) -> Result<(), StoreError> {
     let _lock = WriterLock::acquire(store)?;
     let draft: ReviewDraft = serde_json::from_slice(&read_document(draft_path)?)?;
-    let label: RegressionLabel = serde_json::from_slice(&read_document(labels_path)?)?;
     if draft.schema != DRAFT_SCHEMA
         || label.schema != LABEL_SCHEMA
         || label.session_sha256 != draft.session_sha256
         || !load_generation(&store.join("imported.json"))?
             .sessions
             .contains(&draft.session_sha256)
-        || label
-            .transitions
-            .windows(2)
-            .any(|pair| pair[0].sequence >= pair[1].sequence)
-        || label
-            .transitions
-            .iter()
-            .any(|transition| !draft.input_sequences.contains(&transition.sequence))
-        || (label.disposition == LabelDisposition::Include && label.transitions.is_empty())
-        || label.domain_event_sha256.len() != 64
-        || !label
-            .domain_event_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || label.transitions.as_ref().is_some_and(|transitions| {
+            transitions
+                .windows(2)
+                .any(|pair| pair[0].sequence >= pair[1].sequence)
+                || transitions
+                    .iter()
+                    .any(|item| !draft.input_sequences.contains(&item.sequence))
+        })
     {
         return Err(StoreError::Invalid(
             "review label does not match imported draft",
@@ -382,6 +388,19 @@ pub fn review_apply(store: &Path, draft_path: &Path, labels_path: &Path) -> Resu
         || recording.manifest.tick_count != session.tick_count
     {
         return Err(StoreError::Invalid("review recording binding differs"));
+    }
+    crate::oracle::validate_label(&label.episodes, &label.negative_frames, &recording.ticks)
+        .map_err(StoreError::Invalid)?;
+    if label.disposition == LabelDisposition::Include
+        && label.episodes.is_empty()
+        && recording
+            .ticks
+            .iter()
+            .any(|tick| tick.screen == scorepeek_core::recognition::screen::ScreenClass::Result)
+    {
+        return Err(StoreError::Invalid(
+            "included RESULT recording has no reviewed episodes",
+        ));
     }
     let label_bytes = canonical_json(&label)?;
     let label_path = session_dir.join("label.json");

@@ -16,6 +16,8 @@ const V4_RECORDING: &str = "scorepeek-canonical-session-recording-v4";
 const V2_RECORDING: &str = "scorepeek-canonical-session-recording-v2";
 const V4_SESSION: &str = "scorepeek-private-capture-session-v4";
 const V5_RECORDING: &str = "scorepeek-canonical-session-recording-v5";
+const V6_LABEL: &str = "scorepeek-private-session-regression-label-v6";
+const V2_LABEL: &str = "scorepeek-private-canonical-regression-label-v2";
 const FRAME_CONTRACT: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const MAX_DOCUMENT: u64 = 16 * 1024 * 1024;
 const MAX_TICKS: usize = 250_000;
@@ -28,6 +30,164 @@ pub enum MigrationError {
     Recording(crate::canonical::RecordingError),
     Invalid(&'static str),
     MissingObject(String),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyActiveSuite {
+    schema: String,
+    generation_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySuite {
+    schema: String,
+    previous_generation_sha256: Option<String>,
+    entries: Vec<LegacySuiteEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacySuiteEntry {
+    session_sha256: String,
+    label_sha256: String,
+}
+
+/// Converts one label that is included in the old active suite, preserving its reviewed truth.
+/// The old store is read-only and no current runtime schema is needed.
+///
+/// # Errors
+/// Rejects a missing active binding, changed content-addressed bytes, or a mismatched session.
+pub fn migrate_reviewed_label(
+    old_store: &Path,
+    old_session_sha256: &str,
+    new_session_sha256: &str,
+    new_recording_root: &Path,
+) -> Result<crate::store::RegressionLabel, MigrationError> {
+    if !is_sha256(old_session_sha256) || !is_sha256(new_session_sha256) {
+        return Err(MigrationError::Invalid(
+            "reviewed label session digest is invalid",
+        ));
+    }
+    let old_path = old_store
+        .join("sessions")
+        .join(format!("{old_session_sha256}.json"));
+    if digest_file(&old_path)?.0 != old_session_sha256 {
+        return Err(MigrationError::Invalid(
+            "old reviewed session digest differs",
+        ));
+    }
+    let old_session: V4Session = serde_json::from_slice(&read_document(&old_path)?)?;
+    let new_manifest: V5BindingManifest = serde_json::from_slice(&read_document(
+        &new_recording_root.join("canonical-manifest.json"),
+    )?)?;
+    if !new_manifest.valid()
+        || old_session.schema != V4_SESSION
+        || old_session.source_session_id != new_manifest.session_id
+        || !reviewed_frames_match_recording(&old_session, &new_manifest, new_recording_root)?
+    {
+        return Err(MigrationError::Invalid("reviewed session identity differs"));
+    }
+    let active: LegacyActiveSuite =
+        serde_json::from_slice(&read_document(&old_store.join("active-suite.json"))?)?;
+    if active.schema != "scorepeek-private-regression-suite-active-v1"
+        || !is_sha256(&active.generation_sha256)
+    {
+        return Err(MigrationError::Invalid("old active suite is invalid"));
+    }
+    let suite_path = old_store
+        .join("suites")
+        .join(format!("{}.json", active.generation_sha256));
+    if digest_file(&suite_path)?.0 != active.generation_sha256 {
+        return Err(MigrationError::Invalid("old active suite digest differs"));
+    }
+    let suite: LegacySuite = serde_json::from_slice(&read_document(&suite_path)?)?;
+    if suite.schema != "scorepeek-private-regression-suite-v1" || suite.entries.len() > 1024 {
+        return Err(MigrationError::Invalid("old suite contract differs"));
+    }
+    let _ = suite.previous_generation_sha256;
+    let matches = suite
+        .entries
+        .iter()
+        .filter(|entry| entry.session_sha256 == old_session_sha256)
+        .collect::<Vec<_>>();
+    let [entry] = matches.as_slice() else {
+        return Err(MigrationError::Invalid(
+            "old session is not uniquely active",
+        ));
+    };
+    if !is_sha256(&entry.label_sha256) {
+        return Err(MigrationError::Invalid("old label digest is invalid"));
+    }
+    let label_path = old_store
+        .join("labels")
+        .join(format!("{}.json", entry.label_sha256));
+    if digest_file(&label_path)?.0 != entry.label_sha256 {
+        return Err(MigrationError::Invalid("old reviewed label digest differs"));
+    }
+    let mut value: Value = serde_json::from_slice(&read_document(&label_path)?)?;
+    if value.get("schema").and_then(Value::as_str) != Some(V6_LABEL)
+        || value.get("session_sha256").and_then(Value::as_str) != Some(old_session_sha256)
+        || value.get("disposition").and_then(Value::as_str) != Some("include")
+    {
+        return Err(MigrationError::Invalid(
+            "old reviewed label binding differs",
+        ));
+    }
+    value["schema"] = json!(V2_LABEL);
+    value["session_sha256"] = json!(new_session_sha256);
+    let label: crate::store::RegressionLabel = serde_json::from_value(value)?;
+    Ok(label)
+}
+
+fn reviewed_frames_match_recording(
+    old_session: &V4Session,
+    new_manifest: &V5BindingManifest,
+    new_recording_root: &Path,
+) -> Result<bool, MigrationError> {
+    let frames = &old_session.canonical_frames;
+    let mut cursor: usize = 0;
+    for segment in &new_manifest.segments {
+        let Ok(count) = usize::try_from(segment.frames) else {
+            return Ok(false);
+        };
+        let Some(group) = frames.get(cursor..cursor.saturating_add(count)) else {
+            return Ok(false);
+        };
+        if group.first().map(|frame| frame.sequence) != Some(segment.first_sequence)
+            || group.last().map(|frame| frame.sequence) != Some(segment.last_sequence)
+            || group
+                .iter()
+                .any(|frame| frame.artifact_sha256 != segment.sha256)
+            || group
+                .windows(2)
+                .any(|pair| pair[0].sequence >= pair[1].sequence)
+        {
+            return Ok(false);
+        }
+        cursor += count;
+    }
+    if cursor != frames.len() {
+        return Ok(false);
+    }
+    let index_path = new_recording_root.join(&new_manifest.tick_index.path);
+    let (sha256, bytes) = digest_file(&index_path)?;
+    if sha256 != new_manifest.tick_index.sha256 || bytes != new_manifest.tick_index.bytes {
+        return Ok(false);
+    }
+    let mut reviewed = frames.iter();
+    let mut tick_count = 0_u64;
+    for line in BufReader::new(File::open(index_path)?).lines() {
+        let tick: V5BindingTick = serde_json::from_str(&line?)?;
+        tick_count += 1;
+        if tick.disposition.kind == "retained"
+            && reviewed.next().map(|frame| frame.sequence) != Some(tick.sequence)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(tick_count == new_manifest.tick_count && reviewed.next().is_none())
 }
 
 impl From<std::io::Error> for MigrationError {
@@ -85,6 +245,77 @@ struct V4Artifact {
     source_path: String,
     sha256: String,
     bytes: u64,
+}
+
+// Local v5 binding view: legacy migration does not import compatibility into core.
+#[derive(Deserialize)]
+struct V5BindingManifest {
+    schema: String,
+    frame_contract: String,
+    session_id: String,
+    shape: Value,
+    tick_index: V5BindingIndex,
+    tick_count: u64,
+    segments: Vec<V5BindingSegment>,
+    completeness: String,
+    completeness_reasons: Vec<Value>,
+}
+
+impl V5BindingManifest {
+    fn valid(&self) -> bool {
+        self.schema == V5_RECORDING
+            && self.frame_contract == FRAME_CONTRACT
+            && self.shape == json!({"width":1920,"height":1080,"pixel_format":"rgb8"})
+            && self.completeness == "complete"
+            && self.completeness_reasons.is_empty()
+            && self.tick_count > 0
+            && self.tick_count <= MAX_TICKS as u64
+            && self.tick_count == self.tick_index.count
+            && self.tick_index.path == "canonical-ticks.ndjson"
+            && is_sha256(&self.tick_index.sha256)
+            && self.tick_index.bytes > 0
+            && !self.segments.is_empty()
+            && self.segments.len() <= MAX_SEGMENTS
+            && self.segments.iter().enumerate().all(|(index, segment)| {
+                segment.path == format!("segment-{index:04}.mkv")
+                    && segment.frames > 0
+                    && segment.frames <= 600
+                    && segment.first_sequence <= segment.last_sequence
+                    && is_sha256(&segment.sha256)
+            })
+            && self
+                .segments
+                .windows(2)
+                .all(|pair| pair[0].last_sequence < pair[1].first_sequence)
+    }
+}
+
+#[derive(Deserialize)]
+struct V5BindingIndex {
+    path: String,
+    sha256: String,
+    bytes: u64,
+    count: u64,
+}
+
+#[derive(Deserialize)]
+struct V5BindingSegment {
+    path: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    frames: u64,
+    sha256: String,
+}
+
+#[derive(Deserialize)]
+struct V5BindingTick {
+    sequence: u64,
+    disposition: V5BindingDisposition,
+}
+
+#[derive(Deserialize)]
+struct V5BindingDisposition {
+    kind: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -622,6 +853,102 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reviewed_label_migration_requires_active_content_binding_and_keeps_source_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path();
+        let new_recording = old.join("new-recording");
+        fs::create_dir(&new_recording).unwrap();
+        let segment_sha = "b".repeat(64);
+        let tick_index = serde_json::to_vec(&json!({
+            "sequence":1,"source_sequence":1,"source_timestamp_ms":100,
+            "screen":"result","semantic_episode_id":1,
+            "disposition":{"kind":"retained"}
+        }))
+        .unwrap();
+        let tick_index = [tick_index, b"\n".to_vec()].concat();
+        fs::write(new_recording.join("canonical-ticks.ndjson"), &tick_index).unwrap();
+        fs::write(
+            new_recording.join("canonical-manifest.json"),
+            serde_json::to_vec(&json!({
+                "schema":V5_RECORDING, "frame_contract":FRAME_CONTRACT,
+                "session_id":"synthetic-session",
+                "shape":{"width":1920,"height":1080,"pixel_format":"rgb8"},
+                "tick_index":{"path":"canonical-ticks.ndjson",
+                    "sha256":crate::resources::sha256(&tick_index),"bytes":tick_index.len(),"count":1},
+                "tick_count":1,
+                "segments":[{"path":"segment-0000.mkv","first_sequence":1,"last_sequence":1,
+                    "frames":1,"bytes":1,"sha256":segment_sha}],
+                "completeness":"complete","completeness_reasons":[],
+                "game_version":{"status":"not_observed"}
+            })).unwrap(),
+        ).unwrap();
+        for directory in ["sessions", "labels", "suites"] {
+            fs::create_dir(old.join(directory)).unwrap();
+        }
+        let session = serde_json::to_vec(&json!({
+            "schema":V4_SESSION, "source_session_id":"synthetic-session",
+            "completeness":"complete", "game_version":{"status":"not_observed"},
+            "canonical_frames":[{"sequence":1,"artifact_sha256":segment_sha}], "artifacts":[]
+        }))
+        .unwrap();
+        let session_sha = crate::resources::sha256(&session);
+        fs::write(
+            old.join("sessions").join(format!("{session_sha}.json")),
+            &session,
+        )
+        .unwrap();
+        let label = serde_json::to_vec(&json!({
+            "schema":V6_LABEL, "session_sha256":session_sha,
+            "disposition":"include", "episodes":[], "negative_frames":[]
+        }))
+        .unwrap();
+        let label_sha = crate::resources::sha256(&label);
+        fs::write(old.join("labels").join(format!("{label_sha}.json")), &label).unwrap();
+        let suite = serde_json::to_vec(&json!({
+            "schema":"scorepeek-private-regression-suite-v1",
+            "previous_generation_sha256":null,
+            "entries":[{"session_sha256":session_sha,"label_sha256":label_sha}]
+        }))
+        .unwrap();
+        let suite_sha = crate::resources::sha256(&suite);
+        fs::write(old.join("suites").join(format!("{suite_sha}.json")), &suite).unwrap();
+        fs::write(
+            old.join("active-suite.json"),
+            serde_json::to_vec(&json!({
+                "schema":"scorepeek-private-regression-suite-active-v1",
+                "generation_sha256":suite_sha
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let new_sha = "a".repeat(64);
+        let migrated = migrate_reviewed_label(old, &session_sha, &new_sha, &new_recording).unwrap();
+        assert_eq!(migrated.session_sha256, new_sha);
+        assert_eq!(migrated.schema, V2_LABEL);
+        assert!(migrated.episodes.is_empty());
+        let manifest_path = new_recording.join("canonical-manifest.json");
+        let mut wrong: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let original_manifest = wrong.clone();
+        wrong["segments"][0]["sha256"] = json!("d".repeat(64));
+        fs::write(&manifest_path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(migrate_reviewed_label(old, &session_sha, &new_sha, &new_recording).is_err());
+        let changed_index =
+            String::from_utf8(tick_index)
+                .unwrap()
+                .replacen("\"sequence\":1", "\"sequence\":2", 1);
+        fs::write(new_recording.join("canonical-ticks.ndjson"), &changed_index).unwrap();
+        let mut wrong = original_manifest;
+        wrong["tick_index"]["sha256"] = json!(crate::resources::sha256(changed_index.as_bytes()));
+        wrong["tick_index"]["bytes"] = json!(changed_index.len());
+        fs::write(&manifest_path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(migrate_reviewed_label(old, &session_sha, &new_sha, &new_recording).is_err());
+        assert_eq!(
+            fs::read(old.join("labels").join(format!("{label_sha}.json"))).unwrap(),
+            label
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "exercises source and imported-store v4 migration with one fixture"
@@ -840,8 +1167,8 @@ mod tests {
         migrate_imported_v2_session(&store, &session_sha, None, &destination).unwrap();
         let converted = crate::canonical::read_complete(&destination).unwrap();
         assert_eq!(
-            converted.manifest.game_version,
-            scorepeek_core::game_version::GameVersionState::NotObserved
+            serde_json::to_value(&converted.manifest.game_version).unwrap(),
+            json!({"status":"not_observed"})
         );
         assert_eq!(converted.manifest.tick_count, 1);
         assert_eq!(fs::read(&session).unwrap(), original_session);
