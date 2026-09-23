@@ -20,18 +20,6 @@ moves the selected canvas. Coordinates and layout rectangles are logical CSS pix
 are the logical output size multiplied by `scale` and rounded up; the manifest records both sizes.
 This path is intended for visual diagnosis and does not save overlay configuration.
 
-For a bounded live Wayland check, run the production editor against an isolated empty config. The
-second argument is the lifetime in seconds. This route discovers compositor outputs, opens the
-empty-workspace editor automatically, and persists only to the supplied path:
-
-```text
-mise run overlay:visual:wayland -- /tmp/scorepeek-wayland-visual.toml 60
-```
-
-When compositor nesting is part of the test, launch this task inside the nested compositor's own
-`WAYLAND_DISPLAY`; record that display and the compositor process independently from the parent
-desktop session.
-
 The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz. An
 external fixture starts the production private Wayland role with one status canvas on each output
 under an isolated home and XDG state. The harness injects a pointer drag through Scroll IPC,

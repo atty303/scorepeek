@@ -99,11 +99,6 @@ run = "scripts/build-release-binary.bash"
 description = "Check the bilingual landing page structure and local assets"
 run = "scripts/check-site.bash"
 
-[tasks."site:browser:test"]
-description = "Test the bilingual landing page in pinned Chromium"
-depends = ["overlay:web:browser:install"]
-run = "scripts/test-site-browser.bash"
-
 [tasks."overlay:web:check"]
 description = "Type-check the shared browser UI without bundling assets"
 run = "cargo check --locked -p scorepeek-overlay-web-client --target wasm32-unknown-unknown"
@@ -140,37 +135,6 @@ outputs = [
   "target/dx/scorepeek-overlay-web-client/release/web/public/index.html",
 ]
 
-[tasks."overlay:web:test"]
-description = "Test the production browser route, embedded assets, and child lifecycle"
-depends = ["overlay:web:browser:test"]
-run = "mise run overlay:web:embedded:test"
-
-[tasks."overlay:web:embedded:test"]
-description = "Test the embedded browser assets and child lifecycle"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run overlay:web:embedded:unit:test
-exec mise run overlay:web:embedded:integration:test
-'''
-
-[tasks."overlay:web:embedded:unit:test"]
-description = "Test embedded browser UI and overlay library assets"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-cargo nextest run --locked -p scorepeek-overlay-web-client
-cargo nextest run --locked -p scorepeek-overlay --lib
-cargo nextest run --locked -p scorepeek-overlay-wayland --lib
-exec cargo nextest run --locked -p scorepeek-overlay-web-host --lib
-'''
-
-[tasks."overlay:web:embedded:integration:test"]
-description = "Test embedded browser assets in the scorepeek process"
-depends = ["overlay:web:bundle"]
-run = "cargo nextest run --locked -p scorepeek-cli --test overlay"
-
 [tasks."overlay:web:browser:install"]
 description = "Install the headless Chromium revision pinned by the repository Playwright tool"
 run = "playwright install --only-shell chromium"
@@ -179,19 +143,6 @@ run = "playwright install --only-shell chromium"
 description = "Build the production scorepeek binary with the current embedded bundle"
 depends = ["overlay:web:bundle"]
 run = "cargo build --locked -p scorepeek-cli --bin scorepeek"
-
-[tasks."overlay:web:browser:test"]
-description = "Test the production browser editor and canvas replicas in pinned Chromium"
-depends = [
-  "overlay:web:browser:server:build",
-  "overlay:skins:build",
-  "overlay:web:browser:install",
-]
-run = "scripts/test-overlay-browser.bash"
-
-[tasks."overlay:wayland:build:check"]
-description = "Build and test the standalone Wayland shell without host development metadata"
-run = "cargo nextest run --locked -p scorepeek-overlay-wayland-handles --lib"
 
 [tasks."overlay:skins:build"]
 description = "Build repository skin ZIP packages without installing them"
@@ -218,11 +169,6 @@ description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario wi
 depends = ["overlay:web:bundle"]
 run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay-wayland --features visual-native --bin visual_native -- "$@"'
 
-[tasks."overlay:visual:wayland"]
-description = "Open the production Wayland editor with an isolated empty config for a bounded live check"
-depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
-run = 'scripts/visual-wayland.bash "$@"'
-
 [tasks."overlay:visual:wayland:nested"]
 description = "Run the production multi-output editor in a bounded headless nested Scroll scenario"
 depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
@@ -232,23 +178,6 @@ run = "scripts/test-overlay-wayland-nested.bash"
 description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
 depends = ["overlay:web:browser:server:build", "overlay:skins:build"]
 run = 'scripts/visual-obs.bash "$@"'
-
-[tasks."overlay:test:live"]
-description = "Explicit live overlay run; supply capture selection and a dedicated scores database"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-case " $* " in
-  *" --scores-db "*) ;;
-  *) echo 'Supply --scores-db with a dedicated verification instance.' >&2; exit 2 ;;
-esac
-case " $* " in
-  *" --capture "*) ;;
-  *) echo 'Supply --capture pipewire or --capture vulkan-layer and its required selector.' >&2; exit 2 ;;
-esac
-exec cargo run --locked -p scorepeek-cli -- run --overlay-wayland --overlay-obs "$@"
-'''
 
 [tasks.fix]
 description = "Fix the repository or selected files"
@@ -277,11 +206,6 @@ mise run overlay:web:browser:install
 scripts/test-overlay-browser.bash
 '''
 
-[tasks.doctor]
-description = "Print the local target inventory as versioned JSON"
-depends = ["overlay:web:bundle"]
-run = "cargo run --locked --quiet -p scorepeek-cli -- doctor --format json"
-
 [tasks."capture:vulkan:build"]
 description = "Build the Scorepeek Vulkan capture layer with pinned Zig"
 run = "zig build --build-file native/vulkan-capture/build.zig --cache-dir target/vulkan-capture-cache --global-cache-dir target/vulkan-capture-global-cache --release=fast -Dtarget=x86_64-linux-gnu -Dcpu=baseline --prefix target/vulkan-capture"
@@ -301,26 +225,6 @@ readelf -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulka
 readelf -h target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq 'Machine:.*X86-64'
 ! objdump -d target/vulkan-capture/share/scorepeek/vulkan-layer/libscorepeek_vulkan_capture.so | grep -Eq '%[yz]mm|[[:space:]]v[a-z][a-z0-9]+'
 '''
-
-[tasks."capture:vulkan:test"]
-description = "Verify the layer artifact and targeted Rust protocol/import contracts"
-depends = ["overlay:web:bundle"]
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-mise run capture:vulkan:artifact:check
-cargo nextest run --locked -p scorepeek-vulkan-capture
-cargo nextest run --locked -p scorepeek-runtime capture::vulkan
-cargo nextest run --locked -p scorepeek-runtime vulkan_layer
-'''
-
-[tasks."capture:pipewire:test:live"]
-description = "Verify generic PipeWire BGRx source lifetimes against the user session"
-run = "scripts/test-capture-pipewire-live.bash"
-
-[tasks."capture:vulkan:test:live"]
-description = "Verify Vulkan capture with Gamescope, vkcube, obs-vkcapture, and reconnection"
-run = "scripts/test-capture-vulkan-live.bash"
 
 [tasks."native:verify"]
 description = "Verify the pinned PipeWire SDK and host native build prerequisites"

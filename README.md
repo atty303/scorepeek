@@ -78,7 +78,7 @@ and the browser overlay test in fail-fast order. The browser test launches the
 production `scorepeek` private OBS role with temporary HOME and XDG directories.
 CI runs nextest with `--no-fail-fast` to report every Rust test failure in one run;
 local `mise run test` retains nextest's default fail-fast behavior.
-Private corpus replay, corpus import and review, skin preview generation, the
-site browser test, native visual rendering, and nested Wayland require their
+Private corpus replay, corpus import and review, skin preview generation,
+native visual rendering, and nested Wayland require their
 separate opt-in mise tasks. See [private corpus](docs/private-corpus.md) and
 [overlay visual debugging](docs/overlay-visual-debugging.md).
