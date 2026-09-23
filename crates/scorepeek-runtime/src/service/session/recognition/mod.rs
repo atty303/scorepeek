@@ -9,8 +9,8 @@ use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::recognition::music_select::MusicSelectScreenRgb8Crops;
 use scorepeek_core::recognition::screen::{
     RecognitionError, ResultScreenRgb8Crops, ScreenClass, ScreenFieldObservationError,
-    ScreenFieldObservations, ScreenPredicateObservation, ScreenRgb8Crops, TitleScreenRgb8Crops,
-    inspect_canonical_rgb8, route_screen_rgb8_crops,
+    ScreenFieldObservations, ScreenPredicateObservation, ScreenRgb8Crops, TitleConfirmationState,
+    TitleScreenRgb8Crops, confirm_title_screen, inspect_canonical_rgb8, route_screen_rgb8_crops,
 };
 
 use self::field_observer::{
@@ -26,7 +26,7 @@ mod candidate_execution;
 pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
-mod text_observer_pool;
+use scorepeek_core::recognition::text_observer_pool;
 pub(crate) use text_observer_pool::RecognitionExecutionMode;
 
 fn duration_us(duration: std::time::Duration) -> u64 {
@@ -298,33 +298,14 @@ pub struct RecognitionSession {
     run_binding: Arc<RecognitionRunBinding>,
     bridge: DiagnosticBridge,
     last_sequence: Option<u64>,
-    title_confirmation: TitleConfirmation,
-}
-
-const TITLE_CONFIRMATION_FRAMES: u8 = 10;
-
-#[derive(Debug, Default)]
-struct TitleConfirmation {
-    candidate_frames: u8,
-}
-
-impl TitleConfirmation {
-    fn observe(&mut self, candidate: bool) -> bool {
-        if candidate {
-            self.candidate_frames = self.candidate_frames.saturating_add(1);
-        } else {
-            self.candidate_frames = 0;
-        }
-        self.candidate_frames >= TITLE_CONFIRMATION_FRAMES
-    }
+    title_confirmation: TitleConfirmationState,
 }
 
 impl RecognitionSession {
     fn confirm_title(&mut self, predicate: &mut ScreenPredicateObservation) {
-        let candidate = predicate.title_presence.qualifies;
-        if self.title_confirmation.observe(candidate) {
-            predicate.screen = ScreenClass::Title;
-        }
+        let (next, confirmed) = confirm_title_screen(self.title_confirmation, predicate.clone());
+        self.title_confirmation = next;
+        *predicate = confirmed;
     }
 
     /// Starts a source-bound session only for the embedded canonical layout.
@@ -346,7 +327,7 @@ impl RecognitionSession {
             }),
             bridge,
             last_sequence: None,
-            title_confirmation: TitleConfirmation::default(),
+            title_confirmation: TitleConfirmationState::default(),
         })
     }
 
@@ -366,7 +347,7 @@ impl RecognitionSession {
             }),
             bridge,
             last_sequence: None,
-            title_confirmation: TitleConfirmation::default(),
+            title_confirmation: TitleConfirmationState::default(),
         })
     }
 
@@ -716,7 +697,7 @@ impl RecognitionSession {
             }),
             bridge,
             last_sequence: None,
-            title_confirmation: TitleConfirmation::default(),
+            title_confirmation: TitleConfirmationState::default(),
         })
     }
 }
@@ -763,21 +744,6 @@ mod tests {
 
     use super::*;
     use crate::diagnostics::contract::{DiagnosticBinding, DiagnosticResource};
-
-    #[test]
-    fn title_confirmation_starts_at_the_tenth_consecutive_candidate() {
-        let mut confirmation = TitleConfirmation::default();
-        for _ in 0..9 {
-            assert!(!confirmation.observe(true));
-        }
-        assert!(confirmation.observe(true));
-        assert!(confirmation.observe(true));
-        assert!(!confirmation.observe(false));
-        for _ in 0..9 {
-            assert!(!confirmation.observe(true));
-        }
-        assert!(confirmation.observe(true));
-    }
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {

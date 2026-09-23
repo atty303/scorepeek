@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use scorepeek_core::model::registry::{LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256};
@@ -64,12 +64,33 @@ pub(crate) fn sha256(bytes: &[u8]) -> String {
     encoded
 }
 
-/// Loads only the catalog URL and OCR model files registered in this source tree. The caller
-/// owns the temporary root until the recognition session is finished.
+/// Repository-selected bytes shared by independent offline OCR workers.
+#[derive(Clone)]
+pub(crate) struct PreparedRegisteredResources {
+    catalog_root: PathBuf,
+    model_root: PathBuf,
+    catalog_sha256: String,
+}
+
+impl PreparedRegisteredResources {
+    pub(crate) fn load_observer_resources(&self) -> Result<RegisteredRecognitionResources, String> {
+        RegisteredRecognitionResources::load(
+            &self.catalog_root,
+            &self.model_root,
+            &self.catalog_sha256,
+            LIVE_MODEL_SHA256,
+            LIVE_RUNTIME_SHA256,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+/// Acquires only the catalog URL and OCR model files registered in this source tree. The caller
+/// owns the temporary root until all recognition workers have stopped.
 ///
 /// # Errors
 /// Returns the failing download, integrity, catalog activation, or registered resource error.
-pub(crate) fn load_registered(root: &Path) -> Result<RegisteredRecognitionResources, String> {
+pub(crate) fn prepare_registered(root: &Path) -> Result<PreparedRegisteredResources, String> {
     let agent = agent();
     let artifact = root.join("catalog.zip");
     let catalog_bytes = download(&agent, CATALOG_URL, MAX_ARTIFACT_BYTES)?;
@@ -92,12 +113,9 @@ pub(crate) fn load_registered(root: &Path) -> Result<RegisteredRecognitionResour
         fs::write(model_root.join(&file.filename), bytes).map_err(|error| error.to_string())?;
     }
     verify_registered_live_model_bundle(&model_root).map_err(|error| error.to_string())?;
-    RegisteredRecognitionResources::load(
-        &catalog_root,
-        &model_root,
-        &extracted.manifest.sqlite_sha256,
-        LIVE_MODEL_SHA256,
-        LIVE_RUNTIME_SHA256,
-    )
-    .map_err(|error| error.to_string())
+    Ok(PreparedRegisteredResources {
+        catalog_root,
+        model_root,
+        catalog_sha256: extracted.manifest.sqlite_sha256,
+    })
 }

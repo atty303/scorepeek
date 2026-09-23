@@ -72,7 +72,7 @@ fn sha256_file(path: &Path) -> Result<(String, u64), RecordingError> {
     Ok((hex, bytes))
 }
 
-fn decoded_frames(path: &Path, maximum: u64) -> Result<u64, RecordingError> {
+fn probe_segment(path: &Path) -> Result<(), RecordingError> {
     let probe = Command::new("ffprobe")
         .args([
             "-v",
@@ -80,7 +80,7 @@ fn decoded_frames(path: &Path, maximum: u64) -> Result<u64, RecordingError> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_name,width,height",
+            "stream=codec_name,profile,width,height,pix_fmt",
             "-of",
             "json",
         ])
@@ -94,11 +94,19 @@ fn decoded_frames(path: &Path, maximum: u64) -> Result<u64, RecordingError> {
     let stream = streams
         .pointer("/streams/0")
         .ok_or(RecordingError::Invalid("canonical video stream missing"))?;
-    if stream["codec_name"] != "ffv1" || stream["width"] != 1920 || stream["height"] != 1080 {
+    let supported_codec = stream["codec_name"] == "ffv1"
+        || (stream["codec_name"] == "h264"
+            && stream["profile"] == "High 4:4:4 Predictive"
+            && stream["pix_fmt"] == "gbrp");
+    if !supported_codec || stream["width"] != 1920 || stream["height"] != 1080 {
         return Err(RecordingError::Invalid(
             "canonical segment video contract differs",
         ));
     }
+    Ok(())
+}
+
+fn decoded_frames(path: &Path, maximum: u64) -> Result<u64, RecordingError> {
     let mut child = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(path)
@@ -145,6 +153,23 @@ fn decoded_frames(path: &Path, maximum: u64) -> Result<u64, RecordingError> {
 /// # Errors
 /// Rejects absent, changed, malformed, incomplete, or undecodable canonical artifacts.
 pub fn read_complete(root: &Path) -> Result<ValidatedRecording, RecordingError> {
+    read_recording(root, true, None)
+}
+
+/// Replay decodes every retained frame itself, so it verifies the byte contract here and
+/// checks decoded frame count while consuming the segment rather than decoding it twice.
+pub(crate) fn read_for_replay(
+    root: &Path,
+    on_verified_segment: &dyn Fn(usize, usize),
+) -> Result<ValidatedRecording, RecordingError> {
+    read_recording(root, false, Some(on_verified_segment))
+}
+
+fn read_recording(
+    root: &Path,
+    verify_decoded_frames: bool,
+    on_verified_segment: Option<&dyn Fn(usize, usize)>,
+) -> Result<ValidatedRecording, RecordingError> {
     if !root.symlink_metadata()?.file_type().is_dir() {
         return Err(RecordingError::Invalid("recording root is not a directory"));
     }
@@ -198,7 +223,7 @@ pub fn read_complete(root: &Path) -> Result<ValidatedRecording, RecordingError> 
         return Err(RecordingError::Invalid("canonical tick count differs"));
     }
     let mut cursor = 0_usize;
-    for segment in &manifest.segments {
+    for (index, segment) in manifest.segments.iter().enumerate() {
         let count = usize::try_from(segment.frames)
             .map_err(|_| RecordingError::Invalid("segment frame count exceeds platform"))?;
         let end = cursor
@@ -220,13 +245,19 @@ pub fn read_complete(root: &Path) -> Result<ValidatedRecording, RecordingError> 
                 "canonical segment integrity differs",
             ));
         }
-        if decoded_frames(&path, segment.frames)? != segment.frames {
-            return Err(RecordingError::Invalid("decoded frame count differs"));
+        probe_segment(&path)?;
+        if verify_decoded_frames {
+            if decoded_frames(&path, segment.frames)? != segment.frames {
+                return Err(RecordingError::Invalid("decoded frame count differs"));
+            }
+            if sha256_file(&path)?.0 != segment.sha256 {
+                return Err(RecordingError::Invalid(
+                    "canonical segment changed during decode",
+                ));
+            }
         }
-        if sha256_file(&path)?.0 != segment.sha256 {
-            return Err(RecordingError::Invalid(
-                "canonical segment changed during decode",
-            ));
+        if let Some(notify) = on_verified_segment {
+            notify(index + 1, manifest.segments.len());
         }
         cursor = end;
     }
@@ -259,7 +290,9 @@ mod tests {
                 "-frames:v",
                 "1",
                 "-c:v",
-                "ffv1",
+                "libx264rgb",
+                "-crf",
+                "0",
                 "-pix_fmt",
                 "bgr0",
             ])

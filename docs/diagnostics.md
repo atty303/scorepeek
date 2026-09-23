@@ -67,6 +67,9 @@ remains 128 MiB and is bounded independently of canonical segment storage.
 
 The runtime trace omits individual no-op core steps. A terminal summary also carries
 the completed capture report's busy, rejected, failed and dropped worker counters.
+These counters describe runtime admission of whole frames. Core owns the bounded OCR
+queue and worker pool within an admitted frame; its completion order cannot reorder
+domain commits, and its internal scheduling is not a canonical input or corpus oracle.
 The `session_finished` record reports recording publication as `disabled`, `published`,
 `partial`, or `failed`.
 

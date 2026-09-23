@@ -44,9 +44,11 @@ rendering; the runtime publishes only typed frontend snapshots and does not depe
 The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX
 embedded in the binary, and one explicitly selected capture backend before admitting recognition
-work. The live text observer worker pool and parallel catalog scoring scheduler belong to
-runtime; core supplies OCR field, pure catalog scoring, and domain projection types. Corpus
-replay uses sequential catalog scoring with the same core scoring rules. Python is restricted to
+work. Core owns the bounded PP-OCR worker pool, ORT sessions, field observation primitives,
+pure catalog scoring, and domain projection types. Runtime owns whole-frame admission,
+capture cadence, busy skips, and diagnostic transport. Corpus replay uses the same core OCR
+worker implementation and catalog scoring rules with repository-registered resources.
+OCR completion order does not set domain commit order. Python is restricted to
 reproducible offline OCR preparation, training, and export tooling.
 
 Catalog generation is not part of the distributed CLI. The separate

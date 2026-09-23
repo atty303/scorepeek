@@ -3,6 +3,8 @@
 A corpus input is one completed canonical recording directory. It contains
 `canonical-manifest.json`, `canonical-ticks.ndjson`, and the declared lossless
 Matroska segments. The manifest uses `scorepeek-canonical-session-recording-v5`.
+The reader accepts the runtime's lossless `libx264rgb -crf 0` H.264 stream and
+FFV1 synthetic segments at the fixed frame shape.
 The canonical frame contract is contiguous RGB8 at 1920x1080. Each tick carries
 its input sequence, source sequence and timestamp, screen observation, semantic
 episode ID, and either a retained frame or a typed elision. The manifest carries
@@ -32,7 +34,7 @@ Import does not activate a regression oracle.
 mise run corpus:operations -- import --store /absolute/private-corpus --recording /absolute/recording/canonical
 ```
 
-The removable `migration_v4` module reads a v4 canonical recording directory
+The removable `migration_legacy` module reads a v4 canonical recording directory
 and its matching `scorepeek-private-capture-session-v4` document. It verifies
 canonical artifact digests and retained-frame bindings from that document,
 converts into a new v5 recording, and imports that recording. Neither v4 input
@@ -49,11 +51,22 @@ If the old store kept segment objects remotely, first place those exact object
 bytes in a separate read-only directory named by SHA-256 and pass it as
 `--v4-objects`. Missing or changed objects fail before the new corpus
 generation is published. This compatibility reader is confined to the
-removable corpus `migration_v4` module; it does not modify the old store or
+removable corpus `migration_legacy` module; it does not modify the old store or
 make runtime support v4.
 
 ```text
 mise run corpus:operations -- import --store /absolute/new-private-corpus --v4-store /absolute/old-private-corpus --v4-session-sha256 SESSION_SHA256 --v4-objects /absolute/v4-object-mirror
+```
+
+Some v4 capture sessions bind an older v2 canonical recording under
+`recognition/` instead of the v4 canonical artifact kinds. The same removable
+module verifies the old session and its v2 manifest, tick index, and segment
+bindings, then converts the canonical input to v5. The v4 session supplies the
+recorded game-version state. The old store and optional object mirror remain
+read-only; the capture profile and runtime diagnostic trace are not inputs.
+
+```text
+mise run corpus:operations -- import --store /absolute/new-private-corpus --v2-store /absolute/old-private-corpus --v2-session-sha256 SESSION_SHA256 --v2-objects /absolute/v2-object-mirror
 ```
 
 The import command prints the session digest and review draft path. The
@@ -65,7 +78,9 @@ with `session_sha256`, `disposition` (`include` or `exclude`), and ordered
 `transitions` entries containing input `sequence` and `screen`, plus
 `domain_event_count` and `domain_event_sha256` from the ordered core event output.
 The digest binds each serialized event to its coordinator input sequence without
-keeping session-wide event copies in memory.
+keeping session-wide event copies in memory. OCR queue and inference durations
+are excluded from this semantic digest; recognized values and domain outputs
+remain included.
 The same explicit read-only replay target can print a report for one recording
 when authoring a reviewed label:
 
@@ -98,7 +113,15 @@ registered catalog and model files into an isolated temporary store on first
 field observation. It does not select resources from the recording, an
 arbitrary local path, or active XDG state. A resource or field-observation
 failure is a replay failure. The private full replay is an explicit operator
-gate and has not been run with private data in this repository change.
+gate.
+Replay inspects at most eight frames in parallel per session and runs at most
+four active sessions concurrently. Core owns the bounded field and PP-OCR pools;
+corpus supplies resolved registered resources and consumes their results. Each
+session still submits canonical inputs,
+field observations, and core outputs in input order; reports retain suite order.
+The explicit replay test prints progress to stderr while verifying segments and
+about every 15 seconds during frame processing. Each line shows the recording,
+phase, processed and total inputs, retained frames, segments, and elapsed time.
 
 ```text
 mise run corpus:test -- --store /absolute/private-corpus

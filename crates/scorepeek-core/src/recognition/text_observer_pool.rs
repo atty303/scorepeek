@@ -1,14 +1,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use scorepeek_core::recognition::screen::{Rgb8Crop, ScreenTextField};
-use scorepeek_core::recognition::title::{
+use crate::recognition::screen::{Rgb8Crop, ScreenTextField};
+use crate::recognition::title::{
     DynamicTextObservation, OnnxParityError, RegisteredDynamicTitleRuntime,
 };
 
 const MAX_TEXT_FIELDS_PER_FRAME: usize = 7;
+const QUEUED_JOBS_PER_WORKER: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecognitionExecutionMode {
@@ -73,7 +74,7 @@ pub struct TextRecognitionResult {
 }
 
 pub struct RegisteredTextRecognitionSession {
-    senders: Vec<Sender<TextWorkerMessage>>,
+    senders: Vec<SyncSender<TextWorkerMessage>>,
     workers: Vec<JoinHandle<()>>,
     available_parallelism: usize,
     worker_count: usize,
@@ -114,10 +115,10 @@ impl RegisteredTextRecognitionSession {
         }
         runtimes.push(first_runtime);
 
-        let mut senders: Vec<Sender<TextWorkerMessage>> = Vec::with_capacity(worker_count);
+        let mut senders: Vec<SyncSender<TextWorkerMessage>> = Vec::with_capacity(worker_count);
         let mut workers: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
         for (index, mut runtime) in runtimes.into_iter().enumerate() {
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver) = mpsc::sync_channel(QUEUED_JOBS_PER_WORKER);
             let worker = match thread::Builder::new()
                 .name(format!("scorepeek-text-observer-{index}"))
                 .spawn(move || run_text_worker(index, &mut runtime, &receiver))
@@ -279,6 +280,49 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn completed_in_order(reverse_completion: bool, worker_count: usize) -> Vec<ScreenTextField> {
+        let fields = [ScreenTextField::ResultTitle, ScreenTextField::ResultArtist];
+        let (first_sender, first_receiver) = mpsc::channel();
+        let (second_sender, second_receiver) = mpsc::channel();
+        let send = |sender: Sender<TextJobResult>, field, worker_id| {
+            sender
+                .send(TextJobResult {
+                    worker_id,
+                    field,
+                    observation: Ok(DynamicTextObservation::default()),
+                    completed_after_dispatch_us: 1,
+                    queue_wait_us: 0,
+                    inference_us: 1,
+                })
+                .expect("test receiver remains available");
+        };
+        if reverse_completion {
+            send(second_sender, fields[1], 1 % worker_count);
+            send(first_sender, fields[0], 0);
+        } else {
+            send(first_sender, fields[0], 0);
+            send(second_sender, fields[1], 1 % worker_count);
+        }
+        PendingTextRecognition {
+            pending: vec![(fields[0], first_receiver), (fields[1], second_receiver)],
+        }
+        .join()
+        .expect("both observations are present")
+        .observations
+        .into_iter()
+        .map(|(field, _)| field)
+        .collect()
+    }
+
+    #[test]
+    fn completion_order_and_worker_assignment_do_not_change_field_order() {
+        let expected = completed_in_order(false, 1);
+        for workers in [1, 2, 4] {
+            assert_eq!(completed_in_order(false, workers), expected);
+            assert_eq!(completed_in_order(true, workers), expected);
+        }
+    }
 
     #[test]
     fn worker_count_follows_bounded_execution_policy() {

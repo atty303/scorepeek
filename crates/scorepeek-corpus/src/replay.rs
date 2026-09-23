@@ -5,6 +5,8 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use scorepeek_core::canonical_recording::{CanonicalTick, TickDisposition};
 use scorepeek_core::event::coordinator::{CoordinatorError, CoordinatorPolicy, DomainCoordinator};
@@ -12,15 +14,16 @@ use scorepeek_core::event::{
     RUN_EVENT_SCHEMA, RunEvent, RunEventKind, RunReducerEffect, run_event_from_field_observation,
 };
 use scorepeek_core::recognition::screen::{
-    ScreenClass, ScreenPredicateObservation, inspect_canonical_rgb8, route_screen_rgb8_crops,
+    ScreenClass, ScreenPredicateObservation, TitleConfirmationState, confirm_title_screen,
+    inspect_canonical_rgb8, route_screen_rgb8_crops,
 };
 use scorepeek_core::session::episode::RawScreenState;
 use scorepeek_core::session::timeline::{TimelineAction, TimelineDriver};
 
 use crate::canonical::{self, RecordingError};
-use crate::field::RegisteredFieldObserver;
 use crate::resources;
 use crate::store::{self, ExpectedTransition, LabelDisposition, RegressionLabel, StoreError};
+use scorepeek_core::recognition::registered_field::{PendingFieldRecognition, RegisteredFieldPool};
 
 const FRAME_BYTES: usize = 1920 * 1080 * 3;
 
@@ -72,6 +75,26 @@ pub struct ReplayReport {
     pub domain_event_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayPhase {
+    Validating,
+    Processing,
+    Complete,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReplayProgress {
+    pub recording: std::path::PathBuf,
+    pub phase: ReplayPhase,
+    pub processed_inputs: u64,
+    pub total_inputs: u64,
+    pub retained_frames: u64,
+    pub total_retained_frames: u64,
+    pub segments_seen: usize,
+    pub total_segments: usize,
+    pub elapsed: Duration,
+}
+
 fn consume_outputs(
     report: &mut ReplayReport,
     digest: &mut Sha256,
@@ -81,7 +104,7 @@ fn consume_outputs(
     report.domain_outputs += outputs.len() as u64;
     for output in outputs {
         if let RunReducerEffect::Event(event) = output {
-            let encoded = serde_json::to_vec(event)?;
+            let encoded = semantic_event_bytes(event)?;
             digest.update(input_sequence.to_le_bytes());
             digest.update((encoded.len() as u64).to_le_bytes());
             digest.update(encoded);
@@ -89,6 +112,22 @@ fn consume_outputs(
         }
     }
     Ok(())
+}
+
+fn semantic_event_bytes(event: &RunEvent) -> Result<Vec<u8>, ReplayError> {
+    let mut stable = event.clone();
+    if let RunEventKind::FieldObservation {
+        processing_timing,
+        numeric_batch,
+        ..
+    } = &mut stable.kind
+    {
+        *processing_timing = serde_json::Value::Null;
+        if let Some(serde_json::Value::Object(batch)) = numeric_batch {
+            batch.remove("elapsed_us");
+        }
+    }
+    Ok(serde_json::to_vec(&stable)?)
 }
 
 struct SegmentDecoder {
@@ -148,6 +187,42 @@ impl Drop for SegmentDecoder {
     }
 }
 
+const PREPROCESS_BATCH: usize = 8;
+type InspectedFrame = (Vec<u8>, ScreenPredicateObservation);
+
+struct PreparedInput {
+    observed: Option<ScreenPredicateObservation>,
+    field_response: Option<PendingFieldRecognition>,
+}
+
+fn inspect_batch(frames: Vec<Option<Vec<u8>>>) -> Result<Vec<Option<InspectedFrame>>, ReplayError> {
+    thread::scope(|scope| {
+        let pending = frames
+            .into_iter()
+            .map(|frame| {
+                frame.map(|pixels| {
+                    scope.spawn(move || {
+                        let observation = inspect_canonical_rgb8(&pixels).map_err(|_| {
+                            ReplayError::Invalid("canonical frame inspection failed")
+                        })?;
+                        Ok((pixels, observation))
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        pending
+            .into_iter()
+            .map(|job| {
+                job.map(|job| {
+                    job.join()
+                        .map_err(|_| ReplayError::Invalid("canonical frame inspector panicked"))?
+                })
+                .transpose()
+            })
+            .collect()
+    })
+}
+
 fn screen_name(screen: ScreenClass) -> &'static str {
     match screen {
         ScreenClass::Title => "title",
@@ -162,21 +237,22 @@ fn screen_name(screen: ScreenClass) -> &'static str {
 
 fn raw_input(
     tick: &CanonicalTick,
+    screen: ScreenClass,
+    semantic_episode_id: Option<u64>,
     observed: Option<&ScreenPredicateObservation>,
     session_id: &str,
 ) -> RunEvent {
     let kind = RunEventKind::RawScreenObserved {
         session_id: Some(session_id.to_owned()),
         capture_generation: Some(0),
-        semantic_episode_id: tick.semantic_episode_id,
+        semantic_episode_id,
         sequence: tick.sequence,
         monotonic_start_ms: tick.source_timestamp_ms,
         monotonic_end_ms: tick.source_timestamp_ms,
-        screen: screen_name(tick.screen).into(),
+        screen: screen_name(screen).into(),
         result_presence: observed.map(|value| value.result_presence),
         play_presence: observed.map(|value| value.play_presence),
-        unknown_reason: (tick.screen == ScreenClass::Unknown)
-            .then(|| "predicate_not_matched".into()),
+        unknown_reason: (screen == ScreenClass::Unknown).then(|| "predicate_not_matched".into()),
     };
     RunEvent {
         schema: RUN_EVENT_SCHEMA.into(),
@@ -238,7 +314,7 @@ fn apply_timeline_actions(
 }
 
 /// Replays one complete recording through the same core domain coordinator used by live events.
-/// Each frame is decoded, inspected, and released before the next input.
+/// A bounded frame batch is inspected in parallel and consumed in input order.
 ///
 /// # Errors
 /// Rejects changed recording bytes, undecodable frames, or core transition failures.
@@ -247,7 +323,67 @@ fn apply_timeline_actions(
     reason = "one sequential pass consumes and verifies each canonical input"
 )]
 pub fn replay_recording(root: &Path) -> Result<ReplayReport, ReplayError> {
-    let recording = canonical::read_complete(root)?;
+    replay_recording_with_progress(root, &|_| {})
+}
+
+/// Replays one recording and reports bounded progress without retaining diagnostic events.
+///
+/// # Errors
+/// Rejects changed recording bytes, undecodable frames, or core transition failures.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential pass consumes and verifies each canonical input"
+)]
+pub fn replay_recording_with_progress(
+    root: &Path,
+    on_progress: &(dyn Fn(&ReplayProgress) + Sync),
+) -> Result<ReplayReport, ReplayError> {
+    let started = Instant::now();
+    on_progress(&ReplayProgress {
+        recording: root.to_path_buf(),
+        phase: ReplayPhase::Validating,
+        processed_inputs: 0,
+        total_inputs: 0,
+        retained_frames: 0,
+        total_retained_frames: 0,
+        segments_seen: 0,
+        total_segments: 0,
+        elapsed: started.elapsed(),
+    });
+    let recording = canonical::read_for_replay(root, &|verified, total| {
+        on_progress(&ReplayProgress {
+            recording: root.to_path_buf(),
+            phase: ReplayPhase::Validating,
+            processed_inputs: 0,
+            total_inputs: 0,
+            retained_frames: 0,
+            total_retained_frames: 0,
+            segments_seen: verified,
+            total_segments: total,
+            elapsed: started.elapsed(),
+        });
+    })?;
+    let total_retained_frames = recording
+        .manifest
+        .segments
+        .iter()
+        .map(|segment| segment.frames)
+        .sum();
+    let total_segments = recording.manifest.segments.len();
+    let mut last_progress = Instant::now();
+    let publish_progress = |phase, report: &ReplayReport, segments_seen| {
+        on_progress(&ReplayProgress {
+            recording: root.to_path_buf(),
+            phase,
+            processed_inputs: report.inputs,
+            total_inputs: recording.manifest.tick_count,
+            retained_frames: report.retained_frames,
+            total_retained_frames,
+            segments_seen,
+            total_segments,
+            elapsed: started.elapsed(),
+        });
+    };
     let mut coordinator = DomainCoordinator::new(CoordinatorPolicy::default())?;
     let mut report = ReplayReport {
         inputs: 0,
@@ -272,133 +408,131 @@ pub fn replay_recording(root: &Path) -> Result<ReplayReport, ReplayError> {
     coordinator.step_canonical_game_version(core_sequence, &recording.manifest.game_version)?;
     core_sequence += 1;
     let mut segment_index = 0_usize;
+    publish_progress(ReplayPhase::Processing, &report, segment_index);
     let mut decoder: Option<SegmentDecoder> = None;
     let mut previous = None;
     let mut timeline = TimelineDriver::default();
+    let mut title_confirmation = TitleConfirmationState::default();
     let mut resource_root = None;
-    let mut field_observer: Option<RegisteredFieldObserver> = None;
-    for tick in &recording.ticks {
-        if matches!(tick.screen, ScreenClass::Result | ScreenClass::MusicSelect)
-            && tick.disposition != TickDisposition::Retained
-        {
-            return Err(ReplayError::Invalid("field screen lacks retained pixels"));
-        }
-        let (observed, field_output) = if tick.disposition == TickDisposition::Retained {
-            if decoder
-                .as_ref()
-                .is_none_or(|current| current.remaining == 0)
+    let mut field_pool: Option<RegisteredFieldPool> = None;
+    for ticks in recording.ticks.chunks(PREPROCESS_BATCH) {
+        let mut frames = Vec::with_capacity(ticks.len());
+        for tick in ticks {
+            if matches!(tick.screen, ScreenClass::Result | ScreenClass::MusicSelect)
+                && tick.disposition != TickDisposition::Retained
             {
-                if let Some(previous_decoder) = decoder.take() {
-                    previous_decoder.finish()?;
+                return Err(ReplayError::Invalid("field screen lacks retained pixels"));
+            }
+            if tick.disposition == TickDisposition::Retained {
+                if decoder
+                    .as_ref()
+                    .is_none_or(|current| current.remaining == 0)
+                {
+                    if let Some(previous_decoder) = decoder.take() {
+                        previous_decoder.finish()?;
+                    }
+                    let segment = recording
+                        .manifest
+                        .segments
+                        .get(segment_index)
+                        .ok_or(ReplayError::Invalid("retained frame has no segment"))?;
+                    decoder = Some(SegmentDecoder::start(
+                        &root.join(&segment.path),
+                        segment.frames,
+                    )?);
+                    segment_index += 1;
                 }
-                let segment = recording
-                    .manifest
-                    .segments
-                    .get(segment_index)
-                    .ok_or(ReplayError::Invalid("retained frame has no segment"))?;
-                decoder = Some(SegmentDecoder::start(
-                    &root.join(&segment.path),
-                    segment.frames,
-                )?);
-                segment_index += 1;
-            }
-            let pixels = decoder
-                .as_mut()
-                .ok_or(ReplayError::Invalid("decoder unavailable"))?
-                .frame()?;
-            let inspected = inspect_canonical_rgb8(&pixels)
-                .map_err(|_| ReplayError::Invalid("canonical frame inspection failed"))?;
-            report.retained_frames += 1;
-            if inspected.screen != tick.screen {
-                return Err(ReplayError::Invalid(
-                    "recorded screen and current predicate differ",
+                frames.push(Some(
+                    decoder
+                        .as_mut()
+                        .ok_or(ReplayError::Invalid("decoder unavailable"))?
+                        .frame()?,
                 ));
+            } else {
+                frames.push(None);
             }
-            let field_output =
-                if matches!(tick.screen, ScreenClass::Result | ScreenClass::MusicSelect) {
+        }
+        let mut prepared_inputs = Vec::with_capacity(ticks.len());
+        for prepared in inspect_batch(frames)? {
+            if let Some((pixels, inspected)) = prepared {
+                let (next_title_confirmation, inspected) =
+                    confirm_title_screen(title_confirmation, inspected);
+                title_confirmation = next_title_confirmation;
+                let field_response = if matches!(
+                    inspected.screen,
+                    ScreenClass::Result | ScreenClass::MusicSelect
+                ) {
                     let route = inspected.crop_route().ok_or(ReplayError::Invalid(
                         "field screen has no registered crop route",
                     ))?;
                     let crops = route_screen_rgb8_crops(&pixels, route).map_err(|error| {
                         ReplayError::Field(format!("crop routing failed: {error:?}"))
                     })?;
-                    if field_observer.is_none() {
+                    if field_pool.is_none() {
                         let root = tempfile::tempdir()?;
-                        let resources = resources::load_registered(root.path())
+                        let resources = resources::prepare_registered(root.path())
                             .map_err(ReplayError::Resource)?;
-                        field_observer = Some(
-                            RegisteredFieldObserver::new(resources)
-                                .map_err(ReplayError::Resource)?,
+                        let registered = resources
+                            .load_observer_resources()
+                            .map_err(ReplayError::Resource)?;
+                        let (catalog, title_runtime) = registered.into_catalog_and_title_runtime();
+                        field_pool = Some(
+                            RegisteredFieldPool::start(&catalog, title_runtime)
+                                .map_err(ReplayError::Field)?,
                         );
                         resource_root = Some(root);
                     }
                     Some(
-                        field_observer
+                        field_pool
                             .as_mut()
-                            .ok_or(ReplayError::Invalid("field observer is unavailable"))?
-                            .observe(&crops)
+                            .ok_or(ReplayError::Invalid(
+                                "field observer workers are unavailable",
+                            ))?
+                            .submit(crops)
                             .map_err(ReplayError::Field)?,
                     )
                 } else {
                     None
                 };
-            (Some(inspected), field_output)
-        } else {
-            report.elided_inputs += 1;
-            (None, None)
-        };
-        let screen = tick.screen;
-        let changed = previous != Some(screen);
-        if changed {
-            report.transitions.push(ExpectedTransition {
-                sequence: tick.sequence,
-                screen,
-            });
+                prepared_inputs.push(PreparedInput {
+                    observed: Some(inspected),
+                    field_response,
+                });
+            } else {
+                prepared_inputs.push(PreparedInput {
+                    observed: None,
+                    field_response: None,
+                });
+            }
         }
-        let step = timeline.observe(
-            RawScreenState::from(screen),
-            tick.sequence,
-            tick.source_timestamp_ms,
-        );
-        if step.active_episode_id != tick.semantic_episode_id {
-            return Err(ReplayError::Invalid(
-                "recorded semantic episode differs from current timeline",
-            ));
-        }
-        let input = raw_input(tick, observed.as_ref(), &recording.manifest.session_id);
-        let output = coordinator.step(core_sequence, &input)?;
-        consume_outputs(
-            &mut report,
-            &mut domain_digest,
-            core_sequence,
-            output.effects(),
-        )?;
-        core_sequence += 1;
-        apply_timeline_actions(
-            &mut coordinator,
-            &mut core_sequence,
-            &mut report,
-            &mut domain_digest,
-            step.actions,
-            tick.sequence,
-            tick.source_timestamp_ms,
-            &recording.manifest.session_id,
-        )?;
-        if let Some(field_output) = field_output {
-            let episode = step.active_episode_id.ok_or(ReplayError::Invalid(
-                "field observation has no semantic episode",
-            ))?;
-            let field_event = run_event_from_field_observation(
-                &recording.manifest.session_id,
-                0,
-                episode,
+        for (tick, prepared) in ticks.iter().zip(prepared_inputs) {
+            let observed = prepared.observed;
+            if observed.is_some() {
+                report.retained_frames += 1;
+            } else {
+                report.elided_inputs += 1;
+            }
+            let screen = observed.as_ref().map_or(tick.screen, |value| value.screen);
+            let changed = previous != Some(screen);
+            if changed {
+                report.transitions.push(ExpectedTransition {
+                    sequence: tick.sequence,
+                    screen,
+                });
+            }
+            let step = timeline.observe(
+                RawScreenState::from(screen),
                 tick.sequence,
                 tick.source_timestamp_ms,
-                tick.source_timestamp_ms,
-                &field_output,
-            )
-            .map_err(ReplayError::Field)?;
-            let output = coordinator.step(core_sequence, &field_event)?;
+            );
+            let input = raw_input(
+                tick,
+                screen,
+                step.active_episode_id,
+                observed.as_ref(),
+                &recording.manifest.session_id,
+            );
+            let output = coordinator.step(core_sequence, &input)?;
             consume_outputs(
                 &mut report,
                 &mut domain_digest,
@@ -406,11 +540,49 @@ pub fn replay_recording(root: &Path) -> Result<ReplayReport, ReplayError> {
                 output.effects(),
             )?;
             core_sequence += 1;
+            apply_timeline_actions(
+                &mut coordinator,
+                &mut core_sequence,
+                &mut report,
+                &mut domain_digest,
+                step.actions,
+                tick.sequence,
+                tick.source_timestamp_ms,
+                &recording.manifest.session_id,
+            )?;
+            if let Some(response) = prepared.field_response {
+                let field_output = response.join().map_err(ReplayError::Field)?;
+                let episode = step.active_episode_id.ok_or(ReplayError::Invalid(
+                    "field observation has no semantic episode",
+                ))?;
+                let field_event = run_event_from_field_observation(
+                    &recording.manifest.session_id,
+                    0,
+                    episode,
+                    tick.sequence,
+                    tick.source_timestamp_ms,
+                    tick.source_timestamp_ms,
+                    &field_output,
+                )
+                .map_err(ReplayError::Field)?;
+                let output = coordinator.step(core_sequence, &field_event)?;
+                consume_outputs(
+                    &mut report,
+                    &mut domain_digest,
+                    core_sequence,
+                    output.effects(),
+                )?;
+                core_sequence += 1;
+            }
+            report.inputs += 1;
+            previous = Some(screen);
         }
-        report.inputs += 1;
-        previous = Some(screen);
+        if last_progress.elapsed() >= Duration::from_secs(15) {
+            publish_progress(ReplayPhase::Processing, &report, segment_index);
+            last_progress = Instant::now();
+        }
     }
-    drop(field_observer);
+    drop(field_pool);
     drop(resource_root);
     if let Some(last) = recording.ticks.last() {
         apply_timeline_actions(
@@ -444,6 +616,7 @@ pub fn replay_recording(root: &Path) -> Result<ReplayReport, ReplayError> {
         write!(&mut report.domain_event_sha256, "{byte:02x}")
             .expect("writing to String cannot fail");
     }
+    publish_progress(ReplayPhase::Complete, &report, segment_index);
     Ok(report)
 }
 
@@ -452,38 +625,76 @@ pub fn replay_recording(root: &Path) -> Result<ReplayReport, ReplayError> {
 /// # Errors
 /// Rejects an absent suite, invalid labels, or any semantic mismatch.
 pub fn replay_active(store_root: &Path) -> Result<Vec<ReplayReport>, ReplayError> {
+    replay_active_with_progress(store_root, &|_| {})
+}
+
+/// Replays the active generation while reporting per-session progress from bounded workers.
+///
+/// # Errors
+/// Rejects an absent suite, invalid labels, or any semantic mismatch.
+pub fn replay_active_with_progress(
+    store_root: &Path,
+    on_progress: &(dyn Fn(&ReplayProgress) + Sync),
+) -> Result<Vec<ReplayReport>, ReplayError> {
     let sessions = store::active_sessions(store_root)?;
-    let mut reports = Vec::new();
-    for digest in sessions {
-        let session_root = store_root.join("sessions").join(&digest);
-        let descriptor = store::verify_session_descriptor(&session_root, &digest)?;
-        let bytes = fs::read(session_root.join("label.json"))?;
-        if bytes.len() > 16 * 1024 * 1024 {
-            return Err(ReplayError::Invalid("label exceeds bound"));
-        }
-        let label: RegressionLabel = serde_json::from_slice(&bytes)?;
-        if label.session_sha256 != digest || label.disposition != LabelDisposition::Include {
-            return Err(ReplayError::Invalid("active label binding differs"));
-        }
-        let report = replay_recording(&session_root)?;
-        if report.inputs != descriptor.tick_count {
-            return Err(ReplayError::Invalid(
-                "replayed input count differs from session",
-            ));
-        }
-        if report.transitions != label.transitions {
-            return Err(ReplayError::Invalid("semantic regression oracle differs"));
-        }
-        if report.domain_event_count != label.domain_event_count
-            || report.domain_event_sha256 != label.domain_event_sha256
-        {
-            return Err(ReplayError::Invalid(
-                "domain event regression oracle differs",
-            ));
-        }
-        reports.push(report);
+    let workers = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .div_ceil(4)
+        .clamp(1, 4);
+    let mut reports = Vec::with_capacity(sessions.len());
+    for batch in sessions.chunks(workers) {
+        let completed = thread::scope(|scope| {
+            let pending = batch
+                .iter()
+                .map(|digest| {
+                    scope.spawn(move || replay_active_session(store_root, digest, on_progress))
+                })
+                .collect::<Vec<_>>();
+            pending
+                .into_iter()
+                .map(|job| {
+                    job.join()
+                        .map_err(|_| ReplayError::Invalid("corpus replay worker panicked"))?
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        reports.extend(completed);
     }
     Ok(reports)
+}
+
+fn replay_active_session(
+    store_root: &Path,
+    digest: &str,
+    on_progress: &(dyn Fn(&ReplayProgress) + Sync),
+) -> Result<ReplayReport, ReplayError> {
+    let session_root = store_root.join("sessions").join(digest);
+    let descriptor = store::verify_session_descriptor(&session_root, digest)?;
+    let bytes = fs::read(session_root.join("label.json"))?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err(ReplayError::Invalid("label exceeds bound"));
+    }
+    let label: RegressionLabel = serde_json::from_slice(&bytes)?;
+    if label.session_sha256 != digest || label.disposition != LabelDisposition::Include {
+        return Err(ReplayError::Invalid("active label binding differs"));
+    }
+    let report = replay_recording_with_progress(&session_root, on_progress)?;
+    if report.inputs != descriptor.tick_count {
+        return Err(ReplayError::Invalid(
+            "replayed input count differs from session",
+        ));
+    }
+    if report.transitions != label.transitions {
+        return Err(ReplayError::Invalid("semantic regression oracle differs"));
+    }
+    if report.domain_event_count != label.domain_event_count
+        || report.domain_event_sha256 != label.domain_event_sha256
+    {
+        return Err(ReplayError::Invalid(
+            "domain event regression oracle differs",
+        ));
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -562,13 +773,27 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture exercises replay, review, and failure"
+    )]
     fn synthetic_input_state_outputs_review_oracle_and_failure() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         let store_root = root.path().join("store");
         synthetic_recording(&source);
         let source_manifest = fs::read(source.join("canonical-manifest.json")).unwrap();
-        let report = replay_recording(&source).unwrap();
+        let progress = std::sync::Mutex::new(Vec::new());
+        let report = replay_recording_with_progress(&source, &|update| {
+            progress
+                .lock()
+                .unwrap()
+                .push((update.phase, update.processed_inputs));
+        })
+        .unwrap();
+        let progress = progress.into_inner().unwrap();
+        assert_eq!(progress.first(), Some(&(ReplayPhase::Validating, 0)));
+        assert_eq!(progress.last(), Some(&(ReplayPhase::Complete, 3)));
         assert_eq!(report.inputs, 3);
         assert_eq!(report.retained_frames, 2);
         assert_eq!(report.elided_inputs, 1);
@@ -658,16 +883,11 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        assert!(matches!(
-            replay_recording(&invalid_source),
-            Err(ReplayError::Invalid(
-                "recorded semantic episode differs from current timeline"
-            ))
-        ));
+        assert_eq!(replay_recording(&invalid_source).unwrap(), report);
     }
 
     #[test]
-    fn recorded_field_screen_must_match_current_pixels_before_resource_load() {
+    fn retained_pixels_determine_current_screen_instead_of_recorded_metadata() {
         let root = tempfile::tempdir().unwrap();
         let field_source = root.path().join("field-recognition");
         synthetic_recording(&field_source);
@@ -689,11 +909,39 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        assert!(matches!(
-            replay_recording(&field_source),
-            Err(ReplayError::Invalid(
-                "recorded screen and current predicate differ"
-            ))
-        ));
+        let report = replay_recording(&field_source).unwrap();
+        assert_eq!(report.transitions[0].screen, ScreenClass::Unknown);
+    }
+
+    #[test]
+    fn active_sessions_replay_in_suite_order_with_bounded_parallelism() {
+        let root = tempfile::tempdir().unwrap();
+        let store_root = root.path().join("store");
+        let mut expected = std::collections::BTreeMap::new();
+        for index in 0..2 {
+            let source = root.path().join(format!("source-{index}"));
+            synthetic_recording(&source);
+            let manifest_path = source.join("canonical-manifest.json");
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["session_id"] = format!("synthetic-{index}").into();
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            let report = replay_recording(&source).unwrap();
+            let imported = store::import_recording(&store_root, &source).unwrap();
+            let label = RegressionLabel {
+                schema: "scorepeek-private-canonical-regression-label-v1".into(),
+                session_sha256: imported.session_sha256.clone(),
+                disposition: LabelDisposition::Include,
+                transitions: report.transitions.clone(),
+                domain_event_sha256: report.domain_event_sha256.clone(),
+                domain_event_count: report.domain_event_count,
+            };
+            let label_path = root.path().join(format!("labels-{index}.json"));
+            fs::write(&label_path, serde_json::to_vec(&label).unwrap()).unwrap();
+            store::review_apply(&store_root, &imported.draft, &label_path).unwrap();
+            expected.insert(imported.session_sha256, report);
+        }
+        let observed = replay_active(&store_root).unwrap();
+        assert_eq!(observed, expected.into_values().collect::<Vec<_>>());
     }
 }

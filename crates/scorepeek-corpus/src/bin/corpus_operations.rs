@@ -24,6 +24,12 @@ enum Command {
         v4_session_sha256: Option<String>,
         #[arg(long)]
         v4_objects: Option<PathBuf>,
+        #[arg(long)]
+        v2_store: Option<PathBuf>,
+        #[arg(long)]
+        v2_session_sha256: Option<String>,
+        #[arg(long)]
+        v2_objects: Option<PathBuf>,
     },
     Review {
         #[command(subcommand)]
@@ -52,7 +58,42 @@ fn run() -> Result<(), String> {
             v4_store,
             v4_session_sha256,
             v4_objects,
+            v2_store,
+            v2_session_sha256,
+            v2_objects,
         } => {
+            if v2_store.is_some() || v2_session_sha256.is_some() || v2_objects.is_some() {
+                let (Some(old_store), Some(digest)) =
+                    (v2_store.as_ref(), v2_session_sha256.as_ref())
+                else {
+                    return Err("v2 migration requires --v2-store and --v2-session-sha256".into());
+                };
+                if recording.is_some()
+                    || v4_session.is_some()
+                    || v4_store.is_some()
+                    || v4_session_sha256.is_some()
+                    || v4_objects.is_some()
+                {
+                    return Err("choose one canonical recording or legacy session".into());
+                }
+                let staging = tempfile::tempdir().map_err(|error| error.to_string())?;
+                let path = staging.path().join("converted-recording");
+                scorepeek_corpus::migration_legacy::migrate_imported_v2_session(
+                    old_store,
+                    digest,
+                    v2_objects.as_deref(),
+                    &path,
+                )
+                .map_err(|error| format!("v2 migration failed: {error:?}"))?;
+                let summary = scorepeek_corpus::store::import_recording(&store, &path)
+                    .map_err(|error| format!("canonical import failed: {error:?}"))?;
+                println!(
+                    "session_sha256={}\nreview_draft={}",
+                    summary.session_sha256,
+                    summary.draft.display()
+                );
+                return Ok(());
+            }
             let converted = match (
                 recording.as_ref(),
                 v4_session.as_ref(),
@@ -62,14 +103,16 @@ fn run() -> Result<(), String> {
                 (Some(recording), Some(session), None, None) if v4_objects.is_none() => {
                     let staging = tempfile::tempdir().map_err(|error| error.to_string())?;
                     let path = staging.path().join("converted-recording");
-                    scorepeek_corpus::migration_v4::migrate_recording(recording, session, &path)
-                        .map_err(|error| format!("v4 migration failed: {error:?}"))?;
+                    scorepeek_corpus::migration_legacy::migrate_recording(
+                        recording, session, &path,
+                    )
+                    .map_err(|error| format!("v4 migration failed: {error:?}"))?;
                     Some((staging, path))
                 }
                 (None, None, Some(old_store), Some(digest)) => {
                     let staging = tempfile::tempdir().map_err(|error| error.to_string())?;
                     let path = staging.path().join("converted-recording");
-                    scorepeek_corpus::migration_v4::migrate_imported_session(
+                    scorepeek_corpus::migration_legacy::migrate_imported_session(
                         old_store,
                         digest,
                         v4_objects.as_deref(),

@@ -1,6 +1,6 @@
-//! Removable reader for the private v4 canonical artifact. No live crate owns v4 compatibility.
+//! Removable readers for private v2/v4 canonical artifacts. No live crate owns compatibility.
 //!
-//! The operator supplies the v4 recording directory and its v4 capture-session document.
+//! The operator supplies a v2 or v4 recording and its v4 capture-session document.
 //! The source remains read-only; the converted v5 recording is published in a new directory.
 
 use std::fmt::Write as _;
@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const V4_RECORDING: &str = "scorepeek-canonical-session-recording-v4";
+const V2_RECORDING: &str = "scorepeek-canonical-session-recording-v2";
 const V4_SESSION: &str = "scorepeek-private-capture-session-v4";
 const V5_RECORDING: &str = "scorepeek-canonical-session-recording-v5";
 const FRAME_CONTRACT: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
@@ -24,6 +25,7 @@ const MAX_SEGMENTS: usize = 20_000;
 pub enum MigrationError {
     Io(std::io::Error),
     Json(serde_json::Error),
+    Recording(crate::canonical::RecordingError),
     Invalid(&'static str),
     MissingObject(String),
 }
@@ -47,7 +49,8 @@ struct V4Manifest {
     tick_count: usize,
     segments: Vec<V4Segment>,
     completeness_reasons: Vec<String>,
-    game_version: Value,
+    game_version: Option<Value>,
+    tick_index_sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +60,7 @@ struct V4Segment {
     last_sequence: u64,
     frames: usize,
     bytes: u64,
+    encoded_sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -194,9 +198,81 @@ pub fn migrate_imported_session(
     object_mirror: Option<&Path>,
     destination: &Path,
 ) -> Result<(), MigrationError> {
+    migrate_imported_with_kind(
+        old_store,
+        session_sha256,
+        object_mirror,
+        destination,
+        LegacyKind::V4,
+    )
+}
+
+/// Reconstructs the v2 canonical recording embedded in an imported v4 capture session.
+/// All v2 decoding and schema adaptation stays in this removable corpus migration module.
+///
+/// # Errors
+/// Rejects a missing or changed old object, incomplete v2 recording, or invalid conversion.
+pub fn migrate_imported_v2_session(
+    old_store: &Path,
+    session_sha256: &str,
+    object_mirror: Option<&Path>,
+    destination: &Path,
+) -> Result<(), MigrationError> {
+    migrate_imported_with_kind(
+        old_store,
+        session_sha256,
+        object_mirror,
+        destination,
+        LegacyKind::V2,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum LegacyKind {
+    V2,
+    V4,
+}
+
+impl LegacyKind {
+    const fn manifest_schema(self) -> &'static str {
+        match self {
+            Self::V2 => V2_RECORDING,
+            Self::V4 => V4_RECORDING,
+        }
+    }
+
+    const fn manifest_artifact_kind(self) -> &'static str {
+        match self {
+            Self::V2 => "recognition",
+            Self::V4 => "canonical_manifest",
+        }
+    }
+
+    const fn tick_artifact_kind(self) -> &'static str {
+        match self {
+            Self::V2 => "recognition",
+            Self::V4 => "canonical_tick_index",
+        }
+    }
+
+    const fn segment_artifact_kind(self) -> &'static str {
+        match self {
+            Self::V2 => "recognition",
+            Self::V4 => "canonical_video_segment",
+        }
+    }
+}
+
+fn migrate_imported_with_kind(
+    old_store: &Path,
+    session_sha256: &str,
+    object_mirror: Option<&Path>,
+    destination: &Path,
+    kind: LegacyKind,
+) -> Result<(), MigrationError> {
     if !is_sha256(session_sha256) || destination.exists() {
         return Err(MigrationError::Invalid(
-            "v4 import migration request is invalid",
+            "legacy import migration request is invalid",
         ));
     }
     let session_path = old_store
@@ -215,12 +291,12 @@ pub fn migrate_imported_session(
     fs::create_dir(&recording)?;
     for (kind, source_path, filename) in [
         (
-            "canonical_manifest",
+            kind.manifest_artifact_kind(),
             "recognition/canonical-manifest.json",
             "canonical-manifest.json",
         ),
         (
-            "canonical_tick_index",
+            kind.tick_artifact_kind(),
             "recognition/canonical-ticks.ndjson",
             "canonical-ticks.ndjson",
         ),
@@ -234,7 +310,7 @@ pub fn migrate_imported_session(
     }
     let manifest: V4Manifest =
         serde_json::from_slice(&read_document(&recording.join("canonical-manifest.json"))?)?;
-    if manifest.schema != V4_RECORDING || manifest.segments.len() > MAX_SEGMENTS {
+    if manifest.schema != kind.manifest_schema() || manifest.segments.len() > MAX_SEGMENTS {
         return Err(MigrationError::Invalid("v4 imported manifest is invalid"));
     }
     for (index, segment) in manifest.segments.iter().enumerate() {
@@ -246,7 +322,7 @@ pub fn migrate_imported_session(
             object_mirror,
             one_artifact(
                 &session,
-                "canonical_video_segment",
+                kind.segment_artifact_kind(),
                 &format!("recognition/{}", segment.path),
             )?,
             &recording.join(&segment.path),
@@ -346,17 +422,19 @@ pub fn migrate_recording(
         &source_recording.join("canonical-manifest.json"),
     )?)?;
     let session: V4Session = serde_json::from_slice(&read_document(source_session)?)?;
-    if manifest.schema != V4_RECORDING
+    let v2 = manifest.schema == V2_RECORDING;
+    if (!v2 && manifest.schema != V4_RECORDING)
         || session.schema != V4_SESSION
         || session.completeness != "complete"
-        || session.game_version != manifest.game_version
+        || (v2 && manifest.game_version.is_some())
+        || (!v2 && manifest.game_version.as_ref() != Some(&session.game_version))
         || manifest.completeness != "complete"
         || !manifest.completeness_reasons.is_empty()
         || manifest.tick_count == 0
         || manifest.tick_count > MAX_TICKS
         || manifest.segments.is_empty()
         || manifest.segments.len() > MAX_SEGMENTS
-        || !valid_version(&manifest.game_version)
+        || !valid_version(&session.game_version)
         || session.source_session_id.is_empty()
         || session.source_session_id.len() > 128
         || !session
@@ -368,23 +446,41 @@ pub fn migrate_recording(
             "v4 recording or session contract is invalid",
         ));
     }
+    let manifest_kind = if v2 {
+        "recognition"
+    } else {
+        "canonical_manifest"
+    };
+    let tick_kind = if v2 {
+        "recognition"
+    } else {
+        "canonical_tick_index"
+    };
+    let segment_kind = if v2 {
+        "recognition"
+    } else {
+        "canonical_video_segment"
+    };
     verify_v4_artifact(
         &session,
-        "canonical_manifest",
+        manifest_kind,
         "recognition/canonical-manifest.json",
         &source_recording.join("canonical-manifest.json"),
     )?;
     let verified_tick_sha256 = verify_v4_artifact(
         &session,
-        "canonical_tick_index",
+        tick_kind,
         "recognition/canonical-ticks.ndjson",
         &source_recording.join("canonical-ticks.ndjson"),
     )?;
+    if v2 && manifest.tick_index_sha256.as_deref() != Some(&verified_tick_sha256) {
+        return Err(MigrationError::Invalid("v2 tick index digest differs"));
+    }
     let parent = destination
         .parent()
         .ok_or(MigrationError::Invalid("destination has no parent"))?;
     let staging = tempfile::Builder::new()
-        .prefix(".scorepeek-v4-migration-")
+        .prefix(".scorepeek-legacy-migration-")
         .tempdir_in(parent)?;
     let staging_path = staging.keep();
     let staging = Staging(staging_path);
@@ -455,14 +551,14 @@ pub fn migrate_recording(
         }
         let source = source_recording.join(&segment.path);
         let (sha256, bytes) = digest_file(&source)?;
-        if bytes != segment.bytes {
+        if bytes != segment.bytes || (v2 && segment.encoded_sha256.as_deref() != Some(&sha256)) {
             return Err(MigrationError::Invalid("v4 segment byte count differs"));
         }
         let declared = session
             .artifacts
             .iter()
             .filter(|artifact| {
-                artifact.kind == "canonical_video_segment"
+                artifact.kind == segment_kind
                     && artifact.source_path == format!("recognition/{}", segment.path)
             })
             .collect::<Vec<_>>();
@@ -510,14 +606,13 @@ pub fn migrate_recording(
         "segments":segments,
         "completeness":"complete",
         "completeness_reasons":[],
-        "game_version":manifest.game_version,
+        "game_version":session.game_version,
     });
     let mut output = File::create(staging.0.join("canonical-manifest.json"))?;
     serde_json::to_writer_pretty(&mut output, &converted)?;
     output.write_all(b"\n")?;
     output.sync_all()?;
-    crate::canonical::read_complete(&staging.0)
-        .map_err(|_| MigrationError::Invalid("converted v4 recording failed v5 verification"))?;
+    crate::canonical::read_complete(&staging.0).map_err(MigrationError::Recording)?;
     fs::rename(&staging.0, destination)?;
     Ok(())
 }
@@ -658,6 +753,99 @@ mod tests {
         let rejected = root.path().join("rejected-recording");
         assert!(migrate_recording(&source, &mismatched, &rejected).is_err());
         assert!(!rejected.exists());
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one synthetic v2 store exercises the removable conversion and immutable source"
+    )]
+    fn converts_v2_recording_bound_to_a_v4_session() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("old-store");
+        fs::create_dir_all(store.join("sessions")).unwrap();
+        fs::create_dir(store.join("objects")).unwrap();
+        let video = root.path().join("segment-0000.mkv");
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1920x1080:r=1",
+                "-frames:v",
+                "1",
+                "-c:v",
+                "libx264rgb",
+                "-crf",
+                "0",
+                "-pix_fmt",
+                "bgr0",
+            ])
+            .arg(&video)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let ticks = root.path().join("canonical-ticks.ndjson");
+        fs::write(&ticks, b"{\"sequence\":1,\"source_sequence\":7,\"monotonic_ms\":90,\"screen\":\"unknown\",\"semantic_episode_id\":null,\"disposition\":\"retained\"}\n").unwrap();
+        let (video_sha, video_bytes) = digest_file(&video).unwrap();
+        let (tick_sha, tick_bytes) = digest_file(&ticks).unwrap();
+        let manifest = root.path().join("canonical-manifest.json");
+        fs::write(
+            &manifest,
+            serde_json::to_vec(&json!({
+                "schema":V2_RECORDING,"completeness":"complete","tick_count":1,
+                "tick_index_sha256":tick_sha,"completeness_reasons":[],
+                "segments":[{"path":"segment-0000.mkv","first_sequence":1,
+                    "last_sequence":1,"frames":1,"bytes":video_bytes,
+                    "encoded_sha256":video_sha,"raw_rgb24_sha256":"0".repeat(64)}],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let artifact = |source_path: &str, path: &Path| {
+            let (sha256, bytes) = digest_file(path).unwrap();
+            json!({"kind":"recognition","source_path":source_path,"sha256":sha256,"bytes":bytes})
+        };
+        let session = root.path().join("session.json");
+        fs::write(
+            &session,
+            serde_json::to_vec(&json!({
+                "schema":V4_SESSION,"source_session_id":"session-1","completeness":"complete",
+                "game_version":{"status":"not_observed"},
+                "canonical_frames":[{"sequence":1,"artifact_sha256":video_sha}],
+                "artifacts":[
+                    artifact("recognition/canonical-manifest.json",&manifest),
+                    artifact("recognition/canonical-ticks.ndjson",&ticks),
+                    artifact("recognition/segment-0000.mkv",&video),
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let session_sha = digest_file(&session).unwrap().0;
+        let original_session = fs::read(&session).unwrap();
+        fs::copy(
+            &session,
+            store.join("sessions").join(format!("{session_sha}.json")),
+        )
+        .unwrap();
+        for path in [&manifest, &ticks, &video] {
+            let digest = digest_file(path).unwrap().0;
+            fs::copy(path, store.join("objects").join(digest)).unwrap();
+        }
+        let destination = root.path().join("converted");
+        migrate_imported_v2_session(&store, &session_sha, None, &destination).unwrap();
+        let converted = crate::canonical::read_complete(&destination).unwrap();
+        assert_eq!(
+            converted.manifest.game_version,
+            scorepeek_core::game_version::GameVersionState::NotObserved
+        );
+        assert_eq!(converted.manifest.tick_count, 1);
+        assert_eq!(fs::read(&session).unwrap(), original_session);
+        assert_eq!(tick_bytes, fs::metadata(&ticks).unwrap().len());
     }
 
     #[test]

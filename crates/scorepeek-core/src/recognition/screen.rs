@@ -437,6 +437,32 @@ pub struct ScreenPredicateObservation {
     pub play_presence: PlayPresenceEvidence,
 }
 
+/// Explicit semantic state for the ten consecutive title candidates required by live and replay.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TitleConfirmationState {
+    candidate_frames: u8,
+}
+
+/// Applies one canonical screen observation to the previous title state.
+///
+/// The title predicate is deliberately separate from the competing screen predicates, so the
+/// confirmed title must be applied after single-frame inspection in both live and replay paths.
+#[must_use]
+pub fn confirm_title_screen(
+    previous: TitleConfirmationState,
+    mut observation: ScreenPredicateObservation,
+) -> (TitleConfirmationState, ScreenPredicateObservation) {
+    let candidate_frames = if observation.title_presence.qualifies {
+        previous.candidate_frames.saturating_add(1)
+    } else {
+        0
+    };
+    if candidate_frames >= 10 {
+        observation.screen = ScreenClass::Title;
+    }
+    (TitleConfirmationState { candidate_frames }, observation)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(in crate::recognition) struct IntegratedContextLayout {

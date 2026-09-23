@@ -1,5 +1,38 @@
 use super::*;
 
+#[test]
+fn title_confirmation_is_an_explicit_ten_candidate_transition() {
+    let pixels = vec![0; CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3];
+    let mut candidate = inspect_canonical_rgb8(&pixels).unwrap();
+    candidate.title_presence.qualifies = true;
+    let mut state = TitleConfirmationState::default();
+    for _ in 0..9 {
+        let (next, observed) = confirm_title_screen(state, candidate.clone());
+        assert_eq!(observed.screen, ScreenClass::Unknown);
+        state = next;
+    }
+    let (next, observed) = confirm_title_screen(state, candidate.clone());
+    assert_eq!(observed.screen, ScreenClass::Title);
+    state = next;
+    let (next, observed) = confirm_title_screen(state, candidate.clone());
+    assert_eq!(observed.screen, ScreenClass::Title);
+    state = next;
+    let mut absent = candidate.clone();
+    absent.title_presence.qualifies = false;
+    let (next, observed) = confirm_title_screen(state, absent);
+    assert_eq!(observed.screen, ScreenClass::Unknown);
+    state = next;
+    for _ in 0..9 {
+        let (next, observed) = confirm_title_screen(state, candidate.clone());
+        assert_eq!(observed.screen, ScreenClass::Unknown);
+        state = next;
+    }
+    assert_eq!(
+        confirm_title_screen(state, candidate).1.screen,
+        ScreenClass::Title
+    );
+}
+
 fn paint_screen_reference(pixels: &mut [u8], encoded: &[u8]) {
     let (header, reference) = qoi::decode_to_vec(encoded).unwrap();
     assert_eq!((header.width, header.height), (410, 60));
