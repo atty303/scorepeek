@@ -1,0 +1,64 @@
+Task: Unify live and corpus field recognition in a core-owned engine
+Anchor: 17e3b5fe4e689049bb6fced6653a10b3a53e4d9b
+Base: 2051350fbfd11d5e7e758dfd82c8b29a6984ef5a
+Branch: codex/canonical-corpus-target-refactor
+Commits: 17e3b5fe4e689049bb6fced6653a10b3a53e4d9b moves bounded text and numeric OCR workers, field assembly, prefetch, and ordered candidate scoring into core
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; independent review
+Conditions: no push or deployment; no tools/ocr, Cargo profile, private data, or live user state changes; read-only active corpus replay
+## Evidence
+mise run test passed, including Clippy, Cargo tests, Vulkan checks, and browser E2E 3/3.
+Explicit active private corpus replay completed 7/7 with exit status 0 and progress output; active.json mtime unchanged.
+Independent review of fixed diff SHA256 1085739317603301fa2f7219f344b2e84876f0fd95118c0b0da311823cc303a1 found no actionable issues.
+Authority: user request; current source, tests, README, architecture and domain references; repository AGENTS.md
+## Transcript
+- U1: /var/home/atty/src/atty303/scorepeekで、live runtimeとcorpus replayのfield認識経路を、coreが所有する共通の認識engineへ統合してください。現在runtimeに残る文字・数値OCRの投入、worker管理、field観測の組み立て、候補照合の並列schedulerをcoreへ移し、両経路が同じ実装を使用するようにしてください。
+    
+    - 同じcanonical inputとresolved immutable resourcesから、liveとcorpusが同じ意味的なfield観測を得る。
+    - OCR worker数や完了順をdomain semanticsから切り離す。
+    - liveの先行投入と並列処理、corpusのsession並列replayを維持する。
+    - liveとcorpusが同じcore認識engineのAPIを使用し、runtimeとcorpusに独立したOCR schedulingやResult／Music Select field組み立てが残らない。
+    - coreがsessionに束縛されないboundedな文字OCR・数値OCR worker群を所有する。各sessionのdomain state、catalog binding、入力順は独立する。
+    - liveは一つのadmitted frameに必要な並列性を確保し、corpusはより大きい共通poolで最大4件のsession並列replayを維持する。worker総数とqueue容量はboundedである。
+    - liveのOCR先行投入、文字・数値OCRの並列実行、候補照合のboundedな並列実行を維持する。候補の評価結果とdomain commitはworker完了順に依存しない。
+    - core queueの混雑は投入済みjobへのbackpressureとして扱い、silent dropやdomain結果の推測を行わない。runtimeのframe admissionとbusy skipはruntimeに残る。
+    - 同じ入力列について、live用とcorpus用のworker数や完了順を変えても、処理時間などの運用値を除いたtyped field観測、next domain state、domain output列が一致するtestがある。
+    - 通常のmise run testがpassする。利用可能な既存active private corpusの明示replayでは7件すべてpassする。期待値不一致があれば、oracleを緩めず原因を調べる。
+    - core内の共通engineへ、現在liveにある先行投入と並列認識を移す。
+      - 理由: liveの処理特性を保ちながら、liveとcorpusの認識実装を一本化するため。
+      - 主な棄却案: 現在の単純なcore field poolへliveを直接接続し、先行投入をなくす案は、liveの遅延とbusy skip率を変え得るため棄却。
+    - OCR worker poolはsession非依存とし、coreだけが管理する。corpusはpoolを大きくしてsession並列性を確保し、liveは一つのframeに必要な並列性を使う。
+      - 理由: sessionごとのORT sessionとworkerの重複を抑え、OCRを単純な並列実行として扱うため。
+      - 主な棄却案: replay sessionごとに独立したpoolを作る案は、並列session数に応じてworkerとmodel memoryが増えるため棄却。
+    - core内では文字OCRと数値OCRに別々のbounded worker群を設け、共通engineが投入と結果の順序を管理する。
+      - 理由: 異なるmodel sessionを全workerへ複製せず、両OCRを並列に動かすため。
+      - 主な棄却案: 一つの異種job queueの全workerに両modelを載せる案は、不要なmodel sessionを増やすため棄却。
+    - catalog候補照合の既存bounded並列schedulerもcoreへ移し、結果順を固定する。
+      - 理由: liveの処理特性を維持し、認識実行をruntimeへ残さないため。
+      - 主な棄却案: liveも候補照合を逐次化する案は、照合時間の回帰を生み得るため棄却。
+    - coreのOCR queueが満杯なら、投入済みjobは空きを待つ。
+      - 理由: 混雑だけを理由に認識結果を失わず、runtimeのframe admission／busy skipとcore内部の負荷を分離するため。
+      - 主な棄却案: 満杯時に即座にcapacity errorとしてframeを失敗させる案は棄却。
+    - runtimeはcapture cadence、whole-frame admission、busy skip、I/O、runtime diagnostics、recordingを所有し続ける。runtimeにOCR worker pool、数値OCR worker、候補照合schedulerを残さない。
+    - coreにはlive capture lifecycle、XDG path discovery、network acquisition、recording／FFmpeg I/O、runtime diagnostic transport、public event socketを持ち込まない。coreへ渡すcatalogとmodelは解決済みのimmutable resourcesとする。
+    - corpusはruntime crateとruntime diagnostic schemaに依存しない。OCR workerを模倣または再実装しない。
+    - corpus replayのTITLEは録画時のtyped game-version stateを使い、TITLE OCRを再実行しない。liveのTITLE OCRは共通core engineの対象とする。
+    - worker完了順、queue内順序、worker数、処理時間をdomain semanticsまたはcorpus oracleに含めない。各sessionのdomain commitはcanonical input／admission sequence順にする。
+    - 確定RESULT eventとreview済み期待値の照合を維持する。stable RESULT各frameのOCR値照合は成功条件へ追加しない。event digestは復活させない。
+    - tools/ocr、Cargo dev/test profile、private corpus data、live user stateを変更しない。production binaryへtest専用behaviorや新しいdev CLIを追加しない。
+    - private corpusの再migration、label再生成、store schema変更。
+    - OCR modelの再学習・export・parity評価。
+    - live Bazzite、Gamescope、OBS、GPUでの実行確認。
+    - deployment、release、push。
+    - 現在のlive field observerが保持する先行投入、数値OCR、候補照合、処理時間の計測を、coreの共通APIから表現できること。実装前にcall graphと型を確認する。
+    - session非依存のpoolに対して、session固有のcatalog bindingとdomain stateを混入させずにfield結果を返せること。現在のresource loadingとmodel sessionの所有関係を確認する。
+    - 現在のruntime field workerのうちwhole-frame admissionに必要な処理とOCR実行のためだけの処理を分離できること。実装前にworker lifecycleとfailure pathを確認する。
+    - 既存active private corpusが読み取り可能で、7件の明示replayを実行できること。
+    - 実装前に現行liveとcorpusのResult、Music Select、TITLEのfield観測、error、処理時間、候補照合をvariantごとに対応付け、意味差分を確認する。
+    - coreのAPIはboundedなsubmitと明示的なcompletion待ちを提供し、callerに内部workerの管理を要求しない。session全体のinput／outputを蓄積しない。
+    - field認識の意味結果とworker ID・待ち時間などのperformance metadataを区別する。runtime diagnosticsに必要な運用値は保持しつつ、worker構成がdomain出力へ影響しないようにする。
+    - worker停止、model初期化失敗、内部channel切断はtyped failureにし、該当するdomain transition前のstateを維持する。混雑時の待機はsilent dropにしない。
+    - liveとcorpusの共通APIを使うconformance test、異なるworker完了順のtest、bounded capacity／teardownのtestを追加する。
+    - living documentationのcore／runtime／corpus境界を実装に合わせて更新する。
+    - mise run test後、既存active private corpusをread-onlyで明示replayし、7件の結果と途中経過を確認する。private dataやlive user stateを変更しない。
+    
+  - A: Mapped live and corpus recognition variants and failure paths, moved shared engine and bounded OCR workers to core, kept runtime admission and corpus session isolation, added conformance tests and living documentation, validated mise run test and read-only private replay 7/7, obtained independent review, and committed locally.
