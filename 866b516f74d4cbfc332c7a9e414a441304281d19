@@ -1,0 +1,76 @@
+Task: Migrate scorepeek Rust tests to cargo-nextest and preserve explicit corpus replay
+Anchor: 866b516f74d4cbfc332c7a9e414a441304281d19
+Base: 2dfd23cff822f942726ea1457e8698bce1a9c81f
+Branch: main
+Commits: 866b516 migrates normal Rust test tasks to nextest and moves private replay to corpus_operations replay
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review; Git task evidence and data handling references
+Conditions: local commit only; no private corpus execution, deployment, release, push, or external service changes
+## Evidence
+mise run test passed: nextest 795/795 Rust tests, Vulkan artifact check, browser overlay 3/3; operations-bin Clippy passed.
+Both explicit corpus:test flags reached replay and returned nonzero on nonexistent absolute inputs; relative input returned code 2.
+Warm one-run comparison: cargo test --locked --workspace 34.11s and cargo nextest run --locked --workspace 25.41s, both exit 0.
+Independent review of exact diff SHA256 409f261c439596d0ca83c9662e3956583ad0ab2a821bb646c77382ca51a106fc found a pre-existing distribution overlay binary-selection gap in tests/overlay.rs; out of requested test-content scope.
+Authority: user implementation request and benchmark follow-up; current repository source, tests, documentation, and AGENTS.md
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の通常の Rust テストを cargo-nextest に移行し、リポジトリ内の `cargo test` 呼び出しを廃止してください。私有コーパス replay は `corpus_operations` のサブコマンドへ移してください。
+    
+    ## 目的
+    
+    - ローカルと CI の通常の Rust テストを nextest で並列実行する。
+    - 私有コーパス replay の明示実行と既存の `mise run corpus:test` の使い方を維持する。
+    
+    ## 成功条件
+    
+    - `mise run test`、CI、個別の Rust テスト task、配布物検証で使う通常のテストが nextest で実行される。
+    - リポジトリ内の実行可能な task・script・現行ドキュメントから `cargo test` の呼び出しがなくなる。
+    - `mise run corpus:test -- --store ABSOLUTE_PATH` と `mise run corpus:test -- --recording ABSOLUTE_PATH` が、`corpus_operations` の replay サブコマンドを通じて従来どおり明示実行できる。
+    - 通常の `mise run test` と CI は私有コーパス replay を実行せず、私有データを要求しない。
+    - nextest の並列実行が有効で、再試行などの追加ポリシーは設定しない。移行後の完全な `mise run test` が通る。
+    
+    ## 決定事項
+    
+    - 通常の Rust テスト経路をすべて nextest に移行する。
+      - 理由: ローカル、個別 task、CI で実行方式を揃えるため。
+      - 主な棄却案: workspace テストだけの移行。個別 task に `cargo test` が残るため。
+    - nextest の標準の並列実行を使い、再試行・タイムアウト・並列数の独自設定は今回追加しない。
+      - 理由: 並列実行を有効にしつつ、実行器以外のテスト判定を変えないため。
+      - 主な棄却案: 移行と同時に nextest 固有のポリシーを導入する案。必要性を実測で判断できるため。
+    - 私有コーパス replay は `corpus_operations` のサブコマンドにする。
+      - 理由: `cargo test` を廃止し、既存の明示実行用 bin 構成にまとめるため。
+      - 主な棄却案: nextest 用の専用テストハーネス、または独立した replay bin。今回選んだ bin 構成より対象が増えるため。
+    
+    ## 制約
+    
+    - `mise run test` を完全な再現可能検証の入口として維持する。
+    - 私有コーパスの実データを通常のテスト、CI、コミットに含めない。
+    - 既存の未コミット変更を調査して保護し、この作業で上書き・破棄しない。
+    - デプロイ、リリース、push、外部サービスの変更は行わない。
+    - 適用される AGENTS.md とリポジトリの開発・検証規則に従う。
+    
+    ## 対象外
+    
+    - テスト内容や認識・replay の意味契約の変更。
+    - 私有コーパスを使う実 replay の自動実行。
+    - nextest の再試行、独自タイムアウト、独自並列数、CI 分割の導入。
+    
+    ## 未検証の前提
+    
+    - 選定する cargo-nextest の固定版が、リポジトリの Rust toolchain、mise の tool 管理、および CI 環境で利用できること。実装前に公式資料と環境で確認すること。
+    - nextest のプロセス単位の並列実行で既存テストが安定して動くこと。移行後の完全な検証で確認すること。
+    
+    ## 実装時の指示
+    
+    - このpromptと適用guidanceにないauthorityを推測で拡張しないこと。
+    - 前提の崩壊により主要contract、scope、authorityまたは外部影響を変える必要がある場合は停止し、根拠、影響および代替案を示して確認すること。
+    - 現行の `mise run corpus:test` の引数と終了状態を維持し、ドキュメントの直接 `cargo test --test full_replay` 例も新しい明示実行コマンドへ更新すること。
+    - 通常のテストで使う synthetic replay の検証範囲を維持すること。
+    - 変更後、適用guidanceに従って検証し、最終報告の直前に `mise run build` を一度実行すること。
+  - A: Inspected clean tree, guidance, docs, and all Rust test paths; pinned and installed nextest 0.9.145; changed tasks, corpus CLI, lockfile, and docs; full mise run test passed and independent review examined fixed diff.
+- U2:
+    cargo testと実行時間の違いも計測しておいて
+  - A: Measured each workspace command once on warm build state (34.11s versus 25.41s); checked corpus CLI failure paths and operations-bin Clippy; committed locally without push.
