@@ -341,11 +341,7 @@ pub fn review_apply(store: &Path, draft_path: &Path, labels_path: &Path) -> Resu
     review_apply_label(store, draft_path, &label)
 }
 
-/// Publishes an already reviewed label, including one converted by the removable legacy reader.
-///
-/// # Errors
-/// Rejects an invalid reviewed oracle or changed session without publishing an active generation.
-pub fn review_apply_label(
+fn review_apply_label(
     store: &Path,
     draft_path: &Path,
     label: &RegressionLabel,
