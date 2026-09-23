@@ -1,0 +1,23 @@
+Task: Remove completed legacy private corpus migration
+Anchor: 2dfd23cff822f942726ea1457e8698bce1a9c81f
+Base: 17e3b5fe4e689049bb6fced6653a10b3a53e4d9b
+Branch: codex/canonical-corpus-target-refactor
+Commits: 2dfd23cff822f942726ea1457e8698bce1a9c81f removes v2/v4 migration reader, legacy CLI options, and obsolete documentation
+Guidance: repository AGENTS.md; develop-repository; review; data handling and failure-oracle references
+Conditions: no private data changes, push, deployment, or live state operations; current active corpus has seven reviewed sessions
+## Evidence
+Read-only comparison found seven current v5 recording manifests and seven v2 labels; all old reviewed label payloads matched after schema and session binding conversion.
+Prior explicit private replay completed 7/7 on the shared core engine; this deletion did not change replay code.
+mise run test passed including browser E2E 3/3; operations bin built, canonical help checked, legacy option rejected.
+Independent review of fixed diff SHA256 b69bb0393316facb1b7f48b032556ea84d6fb77609c22028f9d9104acd63b24f found no actionable issue.
+Authority: current user requests; repository source, tests, and living documentation; repository AGENTS.md
+## Transcript
+- U1: private corpusの状態は安定しているか？ 今回の修正がactiveになっているか？
+    
+  - A: Checked local commit and built binary, active generation pointer and seven session paths; distinguished local activation from undeployed target machines.
+- U2: labelなども最新の状態になっていて、migrationを削除しても大丈夫な状態に安定しているか？
+    
+  - A: Compared all seven v2 reviewed labels with content-addressed old v6 labels and verified complete expected result fields, current recording schemas, and replay independence from migration.
+- U3: migrationを削除して
+    
+  - A: Removed corpus-only migration module and legacy CLI routes, retained canonical import/review/replay, updated living docs, ran full validation and operations CLI checks, obtained independent review, and committed locally.
