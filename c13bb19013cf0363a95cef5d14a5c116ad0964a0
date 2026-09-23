@@ -1,0 +1,97 @@
+Task: Consolidate root mise builds and verify the embedded Vulkan layer
+Anchor: c13bb19013cf0363a95cef5d14a5c116ad0964a0
+Base: 0beb649001edb000e3ce923b15b742b26c3e7a57
+Branch: codex/capture-canonical-session-refactor
+Commits: c13bb19013cf0363a95cef5d14a5c116ad0964a0 refactor(build): verify embedded Vulkan layer artifact
+Guidance: repository AGENTS.md; dig; develop-repository; review; Git task evidence
+Conditions: durable local build/test configuration and living documentation only; no tools/ocr changes, product API changes, live target install, deploy, release, push, or new dependencies
+## Evidence
+- Initial tree clean at 0beb649; code and remote notes fetched; mise tasks validate passed with 18 tasks; targeted embedded layer artifact check passed and temporary XDG root was removed.
+- mise run fix -- mise.toml formatted the task, mise run check passed, mise run test passed 758 Rust tests and 3 browser tests; stale development path and task-name search found no references.
+- Exact reviewed diff SHA256 49b4176592c5e57f44ebedbcceaeeb3a4437c0316b36bbbc5ccb21039db5a85b matched the staged commit candidate; independent read-only reviewer found no actionable issues.
+Authority: user implementation request and confirmed dig choices; repository AGENTS.md; committed source and living references
+## Transcript
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) おなじくmise tasksも棚卸しする
+  - A: Started a read-only dig inventory; inspected root and tools/ocr mise tasks and asked whether offline OCR tasks are in scope.
+- U2: b
+  - A: Limited the inventory to twenty root tasks and compared duplicate CLI build entrypoints.
+- U3: a
+  - A: Agreed to replace overlay:web:browser:server:build dependencies with build.
+- U4: a
+  - A: Agreed to keep corpus:test separate from state-changing corpus:operations.
+- U5: b
+  - A: Investigated native and Vulkan gates, then examined the standalone Zig task and its parent artifact check.
+- U6: zig buildか？
+  - A: Explained that capture:vulkan:build runs Zig directly to create the development layer layout.
+- U7: build.rsが正規経路か？こっちは何に使っている？
+  - A: Confirmed build.rs is the canonical embedded layer build path and that direct Zig task supports a separate development layout and artifact check; asked whether to retain it.
+- U8: b
+  - A: Agreed to remove the separate development layer layout and redirect artifact validation to the embedded payload.
+- U9: 親taskを明示してくれ
+  - A: Traced CLI vulkan-layer install into a temporary XDG directory and asked whether native:verify remains.
+- U10: a
+  - A: Identified test as the direct parent of native:verify and kept that distinct SDK provenance check.
+- U11: a
+  - A: Kept capture:vulkan:artifact:check as a named child of test while changing it to inspect the embedded layer.
+- U12: b
+  - A: Agreed to remove the development-only VK_LAYER_PATH instructions and keep ordinary installation guidance.
+- U13: a
+  - A: Confirmed the final root-task scope and produced a self-contained implementation prompt.
+- U14: # 実装依頼
+    
+    ## 依頼
+    scorepeek リポジトリのルート `mise` タスクを、合意した範囲で整理してください。同じ実行ファイルを作るタスクを統合し、Vulkan layer の成果物検査を配布バイナリに埋め込まれる layer に向けてください。参照元と現行ドキュメントも更新してください。
+    
+    ## 目的
+    - 重複したビルド入口を減らす。
+    - Vulkan layer の検査対象を、正規の製品ビルドで生成される成果物に一致させる。
+    
+    ## 成功条件
+    - `overlay:web:browser:server:build` が削除され、スキンプレビュー生成、nested Wayland、OBS 視覚確認の各タスクが `build` に依存する。
+    - `capture:vulkan:build` が削除される。
+    - `capture:vulkan:artifact:check` が、通常ビルドの実行ファイルに埋め込まれた layer の manifest と ELF を検査する。既存の manifest 一致、アーキテクチャ、動的依存、strip、命令セットの検査条件を維持する。
+    - 成果物検査は一時的な XDG データ領域だけを変更し、通常の利用者領域へ layer をインストールしない。
+    - 開発用 `target/vulkan-capture` とその `VK_LAYER_PATH` 起動手順への現行参照がなくなる。
+    - 残すタスクの依存関係が有効で、所定のチェック、通常テスト、最終ビルドが成功する。
+    
+    ## 決定事項
+    - `overlay:web:browser:server:build` を `build` に統合する。
+      - 理由: `scorepeek-cli` の bin は一つで、両タスクは web bundle を前提に同じ実行ファイルを作る。
+      - 主な棄却案: ブラウザ関連の依存名として専用タスクを残す案。同じ成果物への入口が重複する。
+    - 開発用の単独 Zig ビルドを廃止し、配布バイナリに埋め込まれる layer を `capture:vulkan:artifact:check` で検査する。
+      - 理由: `scorepeek-runtime/build.rs` が製品への埋め込みを行う正規ビルド経路であり、別の出力先で作った layer の検査だけでは配布成果物を直接確認できない。
+      - 主な棄却案: Zig コマンドを成果物検査タスクに移すだけの案。別ビルド経路が残る。
+    - `capture:vulkan:artifact:check` を `test` の子タスクとして残す。
+      - 理由: 通常の Rust テストとは異なる成果物条件を検査し、単独で再実行する価値がある。
+      - 主な棄却案: 検査処理を `test` に直接含める案。
+    - `native:verify` を `test` の子タスクとして残す。
+      - 理由: 固定 SDK とホスト側ライブラリの経路分離を検査し、ビルド成功だけでは分からない依存の取り違えを検出する。
+      - 主な棄却案: 通常のビルド・テスト結果だけに委ねる案。
+    - `corpus:test` を `corpus:operations` と分けて残す。
+      - 理由: 読み取り専用の再生検証と、import・review apply を含む操作の入口を区別できる。
+      - 主な棄却案: `corpus:operations -- replay` に統一する案。
+    - 開発専用の layer 起動手順は削除し、通常の `vulkan-layer install` 手順を残す。
+      - 理由: 単独ビルドの出力先を廃止するため。
+      - 主な棄却案: 一時的な XDG 領域を使う新しい開発専用手順を設ける案。今回の棚卸しでは維持しない。
+    
+    ## 制約
+    - 対象はルート `mise.toml` のタスクと直接関係する現行ドキュメントに限る。`tools/ocr/mise.toml` は変更しない。
+    - `check`、`fix`、`test`、`build`、`release:build`、サイト検査、スキン生成、native・OBS・nested Wayland の視覚確認、corpus 操作は維持する。
+    - 製品の Vulkan layer インストール機能と埋め込み形式は変更しない。
+    - 新しい依存、デプロイ、リリース、push、通常の利用者領域や実機環境への layer インストールは行わない。
+    
+    ## 対象外
+    - OCR オフラインタスクの棚卸し。
+    - Vulkan capture の実行時動作やプロトコルの変更。
+    - nested Wayland を CI または通常テストに追加すること。
+    
+    ## 未検証の前提
+    - 実装開始時点の作業ツリー、タスク間の参照、ドキュメントの参照が設計時の調査結果から変わっていないこと。
+    - 通常ビルドの実行ファイルから、一時的な XDG データ領域へ埋め込み layer を配置して検査できること。実装時に実行結果で確認する。
+    
+    ## 実装時の指示
+    - `capture:vulkan:artifact:check` の直接の親は `test`。検査前に正規ビルドの実行ファイルが現在のソースから作られるようにする。
+    - 隔離した `XDG_DATA_HOME` で既存の `scorepeek vulkan-layer install` を使い、配置された manifest とライブラリに対して既存の成果物条件を検査する。agent が作った一時領域は終了時に削除する。
+    - `native/vulkan-capture/README.md` の単独ビルドと開発専用 `VK_LAYER_PATH` の記述を、残る実際の操作に合わせて整理する。
+    - 固定されたリリース action が必須とする `release:build` は残す。
+  - A: Confirmed clean Git state and references, updated mise dependencies and artifact check to isolate the CLI installer, revised docs, ran targeted artifact check, mise check and 758 Rust plus 3 browser tests, obtained independent review with no findings, and committed c13bb19.
