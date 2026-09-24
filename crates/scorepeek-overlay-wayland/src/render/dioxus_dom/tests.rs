@@ -545,7 +545,9 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         ),
     ] {
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        session.click(".canvas-select").unwrap();
+        session
+            .click(".canvas-select .navigator-item-select")
+            .unwrap();
         let prior = offset(&session);
         let point = point_in_navigator(&session, selector);
         axis(&mut session, point, [0.0, delta]);
@@ -556,7 +558,9 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         );
     }
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-    session.click(".canvas-select").unwrap();
+    session
+        .click(".canvas-select .navigator-item-select")
+        .unwrap();
     let before = offset(&session);
     let canvas_point = {
         let inner = session.document.inner.borrow();
@@ -673,7 +677,7 @@ fn blitz_adapter_preserves_browser_interaction_identity_across_empty_vdom_diff()
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .click(".canvas-select[*|data-canvas-id='wayland-status'] .navigator-item-select")
         .unwrap();
     session.click(".editor-number-field").unwrap();
     let focus_before = session
@@ -2227,7 +2231,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 assert!(
                     inner
                         .query_selector(&format!(
-                            ".scorepeek-skin-scope .overlay-canvas[data-canvas-id='{}']",
+                            ".scorepeek-skin-scope .overlay-canvas[*|data-canvas-id='{}']",
                             canvas.id
                         ))
                         .unwrap()
@@ -2236,7 +2240,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 );
                 assert!(
                     inner
-                        .query_selector(&format!(".editor-canvas[data-canvas='{}']", canvas.id))
+                        .query_selector(&format!(".editor-canvas[*|data-canvas='{}']", canvas.id))
                         .unwrap()
                         .is_some(),
                     "every projected canvas must own one editor hit root"
@@ -2246,7 +2250,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                     assert!(
                                 inner
                                     .query_selector(&format!(
-                                        ".editor-canvas[data-canvas='{}'] .editor-widget-hit[data-widget='{}']",
+                                        ".editor-canvas[*|data-canvas='{}'] .editor-widget-hit[*|data-widget='{}']",
                                         canvas.id, widget.id
                                     ))
                                     .unwrap()
@@ -2436,17 +2440,17 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     fake.click_stage(
         &mut authority,
         "WL-1",
-        ".editor-output-picker .list-picker-option[data-index='1']",
+        ".editor-output-picker .list-picker-option[*|data-index='1']",
     )
     .unwrap();
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-2"));
     fake.scroll_stage(&mut authority, "WL-2", ".navigator-scroll", -800.0)
         .unwrap();
-    fake.click_stage(&mut authority, "WL-2", ".workspace-output-option[data-output='WL-2'] > .navigator-item-line > .navigator-item-select").unwrap();
+    fake.click_stage(&mut authority, "WL-2", ".workspace-output-option[*|data-output='WL-2'] > .navigator-item-line > .navigator-item-select").unwrap();
     fake.click_stage(
             &mut authority,
             "WL-2",
-            ".canvas-select[data-canvas-id='wayland-selection'] > .navigator-item-line > .navigator-item-select",
+            ".canvas-select[*|data-canvas-id='wayland-selection'] > .navigator-item-line > .navigator-item-select",
         )
         .unwrap();
     fake.click_stage(
@@ -2458,7 +2462,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     fake.click_stage(
         &mut authority,
         "WL-2",
-        ".editor-output-picker .list-picker-option[data-index='0']",
+        ".editor-output-picker .list-picker-option[*|data-index='0']",
     )
     .unwrap();
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-1"));
@@ -2496,7 +2500,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             &mut authority,
             &drag_output,
             &format!(
-                ".editor-canvas[data-canvas='{dragged_canvas}'] .editor-widget-hit[data-widget='{dragged_widget}']"
+                ".editor-canvas[*|data-canvas='{dragged_canvas}'] .editor-widget-hit[*|data-widget='{dragged_widget}']"
             ),
             [64.0, 40.0],
         )
@@ -2772,7 +2776,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     fake.drag_stage(
         &mut authority,
         "WL-2",
-        &format!(".editor-canvas[data-canvas='{dragged_canvas}'] .editor-widget-hit[data-widget='{dragged_widget}'] .resize-handle.se"),
+        &format!(".editor-canvas[*|data-canvas='{dragged_canvas}'] .editor-widget-hit[*|data-widget='{dragged_widget}'] .resize-handle.se"),
         [20.0, 20.0],
     ).unwrap();
     let widget_size_after = {
@@ -2799,7 +2803,9 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     fake.drag_stage(
         &mut authority,
         "WL-2",
-        &format!(".editor-canvas[data-canvas='{dragged_canvas}'] .resize-handle.canvas-resize.se"),
+        &format!(
+            ".editor-canvas[*|data-canvas='{dragged_canvas}'] .resize-handle.canvas-resize.se"
+        ),
         [20.0, 20.0],
     )
     .unwrap();
@@ -2819,7 +2825,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     fake.click_stage(
         &mut authority,
         "WL-1",
-        ".widget-picker .list-picker-option[data-index='5']",
+        ".widget-picker .list-picker-option[*|data-index='5']",
     )
     .unwrap();
     assert_eq!(
@@ -3016,8 +3022,12 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         fake.scroll_stage(&mut authority, "WL-1", ".inspector-scroll", -2_000.0)
             .unwrap();
     }
-    fake.click_stage(&mut authority, "WL-1", ".output-option[data-output='WL-2']")
-        .unwrap();
+    fake.click_stage(
+        &mut authority,
+        "WL-1",
+        ".output-option[*|data-output='WL-2']",
+    )
+    .unwrap();
     assert_converged(&fake, &authority);
     assert_eq!(
         fake.stages
@@ -3665,11 +3675,11 @@ fn visual_debug_surface_contains_every_visible_canvas_in_one_stage_projection() 
         .focus(".screen-picker .list-picker-trigger")
         .unwrap();
     session
-        .click(".screen-picker .list-picker-option[data-index='4']")
+        .click(".screen-picker .list-picker-option[*|data-index='4']")
         .unwrap();
     session.scroll(".navigator-scroll", 0.0, -2000.0).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-result']")
+        .click(".canvas-select[*|data-canvas-id='wayland-result'] .navigator-item-select")
         .unwrap();
 
     let (expected_canvases, expected_widgets) = match &*session.projection.borrow() {
@@ -3721,7 +3731,7 @@ fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .click(".canvas-select[*|data-canvas-id='wayland-status'] .navigator-item-select")
         .unwrap();
     session
         .authority
@@ -3880,7 +3890,7 @@ fn native_keyboard_edits_the_focused_dioxus_number_field() {
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .click(".canvas-select[*|data-canvas-id='wayland-status'] .navigator-item-select")
         .unwrap();
     session.click(".editor-number-field").unwrap();
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::SelectAll);
@@ -3907,13 +3917,13 @@ fn native_keyboard_uses_the_shared_title_input_contract() {
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .click(".canvas-select[*|data-canvas-id='wayland-status'] .navigator-item-select")
         .unwrap();
     session
         .click(".widget-picker .list-picker-trigger")
         .unwrap();
     session
-        .click(".widget-picker .list-picker-option[data-index='5']")
+        .click(".widget-picker .list-picker-option[*|data-index='5']")
         .unwrap();
     session.click(".empty-title-input").unwrap();
     session.click("#editor-title-input").unwrap();
@@ -3948,13 +3958,13 @@ fn native_ime_batch_uses_browser_order_and_shared_composition_state() {
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .click(".canvas-select[*|data-canvas-id='wayland-status'] .navigator-item-select")
         .unwrap();
     session
         .click(".widget-picker .list-picker-trigger")
         .unwrap();
     session
-        .click(".widget-picker .list-picker-option[data-index='5']")
+        .click(".widget-picker .list-picker-option[*|data-index='5']")
         .unwrap();
     session.click(".empty-title-input").unwrap();
     session.focus("#editor-title-input").unwrap();
@@ -4009,7 +4019,7 @@ fn native_ime_targets_the_focused_shared_text_control() {
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
     session
-        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .click(".canvas-select[*|data-canvas-id='wayland-status'] .navigator-item-select")
         .unwrap();
     session.click(".editor-text-field").unwrap();
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::SelectAll);
@@ -4093,7 +4103,7 @@ fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state(
         )
         .unwrap();
     session
-        .click(".widget-row[data-widget-id='status']")
+        .click(".widget-row[*|data-widget-id='status']")
         .unwrap();
     assert_eq!(
         session.authority.session().selected_widget.as_deref(),

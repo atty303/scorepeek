@@ -226,8 +226,11 @@ pub(crate) fn restore_focused_selection(
     document: &mut dioxus_native_dom::DioxusDocument,
     snapshot: &FocusedSelection,
 ) {
-    let selector = format!("[id='{}']", snapshot.field_key);
-    let Ok(Some(node)) = document.inner.borrow().query_selector(&selector) else {
+    let Some(node) = document
+        .inner
+        .borrow()
+        .get_element_by_id(&snapshot.field_key)
+    else {
         return;
     };
     document.inner.borrow_mut().set_focus_to(node);
