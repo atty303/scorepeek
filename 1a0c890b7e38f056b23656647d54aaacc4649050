@@ -1,0 +1,15 @@
+Task: Add a forced reinstall option to scorepeek skin install
+Anchor: 1a0c890b7e38f056b23656647d54aaacc4649050
+Base: 358ebb5257bc9848d20c09763ce431e95b8bda9b
+Branch: main
+Commits: 1a0c890b7e38f056b23656647d54aaacc4649050
+Guidance: latest user request; repository AGENTS.md; investigate-problem; develop-repository; design-program-observability applicability review; independent review
+Conditions: durable local CLI and skin-store change; isolated test data only; no target skin installation, deployment, or push
+## Evidence
+Baseline isolated run: install original result-aurora ZIP returned installed; install changed ZIP with the same ID and release returned unchanged; stored wasm bytes stayed old.
+Final reviewed diff SHA256 cff0a2c3bec62414d732f5f7a699a3b12a7ec7eb729668edb8e2a6acff8ad532. First review identified a Clippy failure in a serialization helper; after replacement with an optional force field, a fresh full review found no actionable issue.
+Final targeted CLI integration test passed; frontend API legacy-shape test passed; mise run check passed; mise run test passed 757 Rust and 3 Playwright browser tests. Existing package validation, property compatibility, atomic rename, and directory sync remain on the forced path.
+Authority: latest user request, repository AGENTS.md, committed source and living documentation
+## Transcript
+- U1: skin installに--forceを追加して。skin versionが変わっていないのでinstallできない
+  - A: Investigated same-release no-op in the installed skin store, reproduced it in isolated storage, implemented and documented --force across CLI, frontend command, runtime dispatch, and store, verified the actual replaced ZIP bytes and legacy command shape, resolved a Clippy failure, obtained fresh independent review, ran repository checks and tests, and committed locally.
