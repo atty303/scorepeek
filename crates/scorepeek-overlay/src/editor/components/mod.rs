@@ -427,10 +427,6 @@ pub struct NumberFieldProps {
     pub value: i32,
     pub minimum: i32,
     pub maximum: i32,
-    #[props(default = 4)]
-    pub step: i32,
-    #[props(default)]
-    pub allow_maximum_off_grid: bool,
     #[props(default)]
     pub disabled: bool,
     pub draft: Option<super::EditorFieldDraft>,
@@ -444,12 +440,10 @@ pub fn NumberField(props: NumberFieldProps) -> Element {
         .draft
         .as_ref()
         .map_or_else(|| props.value.to_string(), |draft| draft.text.clone());
-    let valid = displayed.parse::<i32>().ok().is_some_and(|value| {
-        props.minimum <= value
-            && value <= props.maximum
-            && ((value - props.minimum).rem_euclid(props.step) == 0
-                || props.allow_maximum_off_grid && value == props.maximum)
-    });
+    let valid = displayed
+        .parse::<i32>()
+        .ok()
+        .is_some_and(|value| props.minimum <= value && value <= props.maximum);
     let commit = Callback::new({
         let props = props.clone();
         move |()| {
@@ -481,11 +475,7 @@ pub fn NumberField(props: NumberFieldProps) -> Element {
                 oninput: move |event| {
                     let text = event.value();
                     let parsed = text.parse::<i32>().ok().filter(|value| {
-                        input_props.minimum <= *value
-                            && *value <= input_props.maximum
-                            && ((*value - input_props.minimum).rem_euclid(input_props.step) == 0
-                                || input_props.allow_maximum_off_grid
-                                    && *value == input_props.maximum)
+                        input_props.minimum <= *value && *value <= input_props.maximum
                     });
                     input_props.onstate.call(super::EditorAction::UpdateFieldDraft(
                         input_props.field_key.clone(), text, parsed.is_some(),
@@ -496,7 +486,7 @@ pub fn NumberField(props: NumberFieldProps) -> Element {
                 onblur: move |_| commit.call(()),
                 onkeydown: move |event| if event.key() == Key::Enter && !event.is_composing() { commit.call(()) },
             }
-            if !valid { small { role: "alert", "{props.minimum}–{props.maximum}, {props.step}px grid or output edge" } }
+            if !valid { small { role: "alert", "Enter an integer from {props.minimum} to {props.maximum}" } }
         }
     }
 }

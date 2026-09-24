@@ -143,7 +143,14 @@ buffer and UI; it does not establish compositor keyboard focus or real IME candi
 Native and OBS render the shared Dioxus `EditorPanel`, `EditorSurface`, `EditorCanvas`,
 `ResizeHandles` and `PlacementPreview` components in `scorepeek-overlay`. The shared
 `editor::model::EditorSession` owns selection, settings, placement and gesture transitions, including
-four-corner resize, aspect ratios and canvas bounds. `Button` owns text alignment,
+four-corner resize, aspect ratios and preview bounds. Persisted geometry allows negative positions,
+offscreen canvases, widgets outside their canvas and values off the 4px grid. Canvas dimensions
+must be 32–8192 logical pixels and widget dimensions 16–8192 logical pixels; an assigned output
+name remains required even when that output is disconnected. Objects and Inspector remain available
+for a fully offscreen canvas, and Inspector accepts integer coordinates without viewport or canvas
+bounds. An uncommitted invalid field blocks Save. Pointer movement and resize retain 4px snapping:
+widgets stay within their canvas where possible, while canvases may cross the viewport edge but
+must retain a visible area after a pointer gesture. `Button` owns text alignment,
 sizing, selected/disabled state and tone; parent CSS owns placement and spacing.
 
 The native adapter retains pressed buttons across motion/release, translates Wayland

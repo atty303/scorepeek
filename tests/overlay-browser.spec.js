@@ -66,7 +66,7 @@ test("repeated asset version mismatch stops after one automatic reload", async (
 });
 
 test("editor replicas reconnect and follow drag, stale delivery, scroll, and lifecycle", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const pageErrors = [];
   const replicaLifecycle = [];
   const skinWasmRequests = [];
@@ -211,7 +211,7 @@ test("editor replicas reconnect and follow drag, stale delivery, scroll, and lif
   for (const field of ["x", "y"]) {
     const input = page.locator(`[id='canvas-2:status-1:${field}']`);
     await input.fill("0");
-    await input.blur();
+    await input.press("Enter");
     await expect.poll(async () => (await secondWidget.boundingBox())[field]).toBe(0);
   }
   await page.getByRole("button", { name: "Canvas 2", exact: true }).click();
@@ -509,6 +509,46 @@ test("editor replicas reconnect and follow drag, stale delivery, scroll, and lif
   await expect.poll(() => stageConnections.length).toBe(stageConnectionsBeforeReload + 1);
   stageConnections.at(-1).release();
   await expect(frame.locator(".canvas-background-art")).toBeVisible();
+  await expect(page.locator(".editor-panel")).toHaveCount(0);
+
+  await page.locator("#stage").click({ button: "right", position: { x: 10, y: 10 } });
+  await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
+  for (const [field, value] of [["x", "2001"], ["y", "-101"], ["width", "701"]]) {
+    const input = page.locator(`[id='canvas-1:${field}']`);
+    await expect(input).toBeVisible({ timeout: 3000 });
+    await input.fill(value);
+    await input.blur();
+    await expect(input).toHaveValue(value);
+  }
+  await expect(page.getByRole("button", { name: "Save & Close", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Save & Close", exact: true }).click();
+  await expect(page.locator(".editor-panel")).toHaveCount(0);
+
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.reload();
+  await expect.poll(() => stageConnections.length).toBe(stageConnectionsBeforeReload + 2);
+  stageConnections.at(-1).release();
+  await page.locator("#stage").click({ button: "right", position: { x: 10, y: 10 } });
+  await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
+  const offscreenX = page.locator("[id='canvas-1:x']");
+  await expect(offscreenX).toHaveValue("2001");
+  await expect(page.locator("[id='canvas-1:y']")).toHaveValue("-101");
+  await offscreenX.fill("-7");
+  await offscreenX.press("Enter");
+  const offscreenWidth = page.locator("[id='canvas-1:width']");
+  await offscreenWidth.fill("31");
+  await expect(page.locator(".save-action")).toBeDisabled();
+  await offscreenWidth.fill("701");
+  await offscreenWidth.press("Enter");
+  await page.locator(".canvas-select[data-canvas-id='canvas-1'] .widget-row .navigator-item-select").first().click();
+  const offscreenWidgetX = page.locator(".object-inspector input[id^='canvas-1:'][id$=':x']");
+  await expect(offscreenWidgetX).toBeVisible();
+  await offscreenWidgetX.fill("-19");
+  await offscreenWidgetX.press("Enter");
+  await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
+  await expect(offscreenX).toHaveValue("-7");
+  await expect(page.getByRole("button", { name: "Save & Close", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Save & Close", exact: true }).click();
   await expect(page.locator(".editor-panel")).toHaveCount(0);
   expect(delayedCanvasMessages).toBeGreaterThan(0);
   expect(pageErrors).toEqual([]);

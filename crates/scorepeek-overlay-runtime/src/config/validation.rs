@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use scorepeek_overlay::geometry::MAX_DIMENSION;
 use scorepeek_overlay::{AspectRatio, Backend};
 
 use super::PENDING_WAYLAND_OUTPUT_ID;
@@ -59,8 +60,12 @@ fn validate_canvas(
     if canvas.output.is_empty() || canvas.output == PENDING_WAYLAND_OUTPUT_ID {
         return Err("output must be assigned".into());
     }
-    if canvas.width < 32 || canvas.height < 32 {
-        return Err("canvas dimensions must be at least 32x32".into());
+    if !(32..=MAX_DIMENSION).contains(&canvas.width)
+        || !(32..=MAX_DIMENSION).contains(&canvas.height)
+    {
+        return Err(format!(
+            "canvas dimensions must be between 32 and {MAX_DIMENSION}"
+        ));
     }
     if canvas.opacity_percent == 0 || canvas.opacity_percent > 100 {
         return Err("canvas opacity_percent must be between 1 and 100".into());
@@ -78,16 +83,11 @@ fn validate_canvas(
                 widget.id
             ));
         }
-        if widget.width < 16 || widget.height < 16 {
-            return Err(format!("widget {} must be at least 16x16", widget.id));
-        }
-        if widget.x % 4 != 0
-            || widget.y % 4 != 0
-            || !widget.width.is_multiple_of(4)
-            || !widget.height.is_multiple_of(4)
+        if !(16..=MAX_DIMENSION).contains(&widget.width)
+            || !(16..=MAX_DIMENSION).contains(&widget.height)
         {
             return Err(format!(
-                "widget {} position and dimensions must align to the 4px grid",
+                "widget {} dimensions must be between 16 and {MAX_DIMENSION}",
                 widget.id
             ));
         }
@@ -105,4 +105,36 @@ fn validate_canvas(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_geometry_allows_offscreen_and_non_grid_values_but_bounds_dimensions() {
+        let skin = "dev.example.skin".parse().unwrap();
+        let mut canvas = super::super::empty_canvas("canvas-1".into(), Backend::Obs, skin);
+        canvas.x = -101;
+        canvas.y = 20_001;
+        canvas.width = MAX_DIMENSION;
+        canvas.height = 33;
+        canvas.widgets.push(super::super::layout::Widget {
+            id: "widget-1".into(),
+            kind: scorepeek_overlay::WidgetKind::Empty,
+            x: -29,
+            y: 33_333,
+            width: 17,
+            height: 16,
+            settings: scorepeek_overlay::WidgetSettings::default(),
+            skin_properties: std::collections::BTreeMap::default(),
+        });
+        assert!(validate_canvases(&[canvas.clone()]).1.is_empty());
+
+        canvas.width = MAX_DIMENSION + 1;
+        assert!(!validate_canvases(&[canvas.clone()]).1.is_empty());
+        canvas.width = MAX_DIMENSION;
+        canvas.widgets[0].height = MAX_DIMENSION + 1;
+        assert!(!validate_canvases(&[canvas]).1.is_empty());
+    }
 }

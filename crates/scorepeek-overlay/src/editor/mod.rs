@@ -244,78 +244,24 @@ pub struct EditorView {
 }
 
 #[must_use]
-pub fn document_valid(canvases: &[CanvasPresentation], outputs: &[EditorOutput]) -> bool {
+pub fn document_valid(canvases: &[CanvasPresentation]) -> bool {
     let mut names = std::collections::BTreeSet::new();
     canvases.iter().all(|canvas| {
-        let output_size = canvas.output.as_ref().and_then(|name| {
-            outputs
-                .iter()
-                .find(|output| &output.name == name)
-                .map(|output| output.logical_size)
-        });
-        let right = u32::try_from(canvas.x)
-            .ok()
-            .and_then(|x| x.checked_add(canvas.width));
-        let bottom = u32::try_from(canvas.y)
-            .ok()
-            .and_then(|y| y.checked_add(canvas.height));
-        let canvas_grid_valid = canvas.x >= 0
-            && canvas.y >= 0
-            && canvas.x % 4 == 0
-            && canvas.y % 4 == 0
-            && canvas.width >= 32
-            && canvas.height >= 32
-            && (canvas.width.is_multiple_of(4)
-                || output_size
-                    .flatten()
-                    .is_some_and(|[width, _]| right == Some(width)))
-            && (canvas.height.is_multiple_of(4)
-                || output_size
-                    .flatten()
-                    .is_some_and(|[_, height]| bottom == Some(height)));
-        let output_valid = output_size.is_some_and(|size| {
-            size.is_none_or(|[width, height]| {
-                right.is_some_and(|right| right <= width)
-                    && bottom.is_some_and(|bottom| bottom <= height)
-            })
-        });
+        let dimensions_valid = (32..=crate::geometry::MAX_DIMENSION).contains(&canvas.width)
+            && (32..=crate::geometry::MAX_DIMENSION).contains(&canvas.height);
         let widgets_valid = canvas.widgets.iter().all(|widget| {
-            widget.x >= 0
-                && widget.y >= 0
-                && widget.x % 4 == 0
-                && widget.y % 4 == 0
-                && widget.width >= 16
-                && widget.height >= 16
-                && widget.width.is_multiple_of(4)
-                && widget.height.is_multiple_of(4)
-                && u32::try_from(widget.x).ok().is_some_and(|x| {
-                    x.checked_add(widget.width)
-                        .is_some_and(|right| right <= canvas.width)
-                })
-                && u32::try_from(widget.y).ok().is_some_and(|y| {
-                    y.checked_add(widget.height)
-                        .is_some_and(|bottom| bottom <= canvas.height)
-                })
+            (16..=crate::geometry::MAX_DIMENSION).contains(&widget.width)
+                && (16..=crate::geometry::MAX_DIMENSION).contains(&widget.height)
         });
         !canvas.name.trim().is_empty()
             && names.insert(canvas.name.clone())
-            && canvas_grid_valid
-            && output_valid
+            && canvas
+                .output
+                .as_ref()
+                .is_some_and(|output| !output.is_empty())
+            && dimensions_valid
             && widgets_valid
     })
-}
-
-#[must_use]
-pub fn canvas_geometry_bounds(canvas: &CanvasPresentation, outputs: &[EditorOutput]) -> [u32; 2] {
-    canvas
-        .output
-        .as_ref()
-        .and_then(|name| outputs.iter().find(|output| &output.name == name))
-        .and_then(|output| output.logical_size)
-        .unwrap_or([
-            u32::try_from(canvas.x.max(0)).unwrap_or_default() + canvas.width,
-            u32::try_from(canvas.y.max(0)).unwrap_or_default() + canvas.height,
-        ])
 }
 
 #[component]
@@ -579,7 +525,7 @@ pub fn Inspector(
                     if let Some(canvas) = canvas {
                         if let Some(widget) = canvas.widgets.iter().find(|widget| view.selected_widget.as_deref() == Some(widget.id.as_str())) {
                             div { key: "{canvas.id}:{widget.id}",
-                                {editor_accordion(format!("widget:{}:{}:geometry", canvas.id, widget.id), "Geometry", &view, onaction, geometry_fields(GeometrySpec { rect: [widget.x, widget.y, i32::try_from(widget.width).unwrap_or(i32::MAX), i32::try_from(widget.height).unwrap_or(i32::MAX)], bounds: [canvas.width, canvas.height], minimum: [16, 16], key: &format!("{}:{}", canvas.id, widget.id), widget: true, readonly: view.access.readonly }, &view, onaction))}
+                                {editor_accordion(format!("widget:{}:{}:geometry", canvas.id, widget.id), "Geometry", &view, onaction, geometry_fields(GeometrySpec { rect: [widget.x, widget.y, i32::try_from(widget.width).unwrap_or(i32::MAX), i32::try_from(widget.height).unwrap_or(i32::MAX)], key: &format!("{}:{}", canvas.id, widget.id), widget: true, readonly: view.access.readonly }, &view, onaction))}
                                 {editor_accordion(format!("widget:{}:{}:settings", canvas.id, widget.id), "Widget settings", &view, onaction, widget_settings(widget, &view, title.clone(), onaction))}
                                 if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { if let Some(properties) = skin.widget_properties.get(widget.kind.name()).or_else(|| skin.widget_properties.get("*")) { {editor_accordion(format!("widget:{}:{}:style", canvas.id, widget.id), "Style", &view, onaction, property_controls(properties, &widget.skin_properties, &format!("{}:{}",canvas.id,widget.id), false, &view, onaction))} } }
                             }
@@ -654,8 +600,6 @@ pub(crate) fn widget_label(widget: &WidgetLayout, widgets: &[WidgetLayout]) -> S
 #[derive(Clone, Copy)]
 struct GeometrySpec<'a> {
     rect: [i32; 4],
-    bounds: [u32; 2],
-    minimum: [u32; 2],
     key: &'a str,
     widget: bool,
     readonly: bool,
@@ -667,16 +611,8 @@ fn geometry_fields(
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let [x, y, width, height] = spec.rect;
-    let width_u32 = u32::try_from(width).unwrap_or_default();
-    let height_u32 = u32::try_from(height).unwrap_or_default();
-    let maximum_x = i32::try_from(spec.bounds[0].saturating_sub(width_u32)).unwrap_or(i32::MAX);
-    let maximum_y = i32::try_from(spec.bounds[1].saturating_sub(height_u32)).unwrap_or(i32::MAX);
-    let maximum_width =
-        i32::try_from(spec.bounds[0].saturating_sub(u32::try_from(x).unwrap_or_default()))
-            .unwrap_or(i32::MAX);
-    let maximum_height =
-        i32::try_from(spec.bounds[1].saturating_sub(u32::try_from(y).unwrap_or_default()))
-            .unwrap_or(i32::MAX);
+    let minimum = if spec.widget { 16 } else { 32 };
+    let maximum = i32::try_from(crate::geometry::MAX_DIMENSION).unwrap_or(i32::MAX);
     let commit = move |field| {
         if spec.widget {
             EditorFieldCommit::WidgetGeometry(field)
@@ -685,10 +621,10 @@ fn geometry_fields(
         }
     };
     rsx! { div { class: "geometry-grid",
-        NumberField { field_key: format!("{}:x", spec.key), label: "X", value: x, minimum: 0, maximum: maximum_x, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:x", spec.key)).cloned(), commit: commit(GeometryField::X), onstate:onaction }
-        NumberField { field_key: format!("{}:y", spec.key), label: "Y", value: y, minimum: 0, maximum: maximum_y, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:y", spec.key)).cloned(), commit: commit(GeometryField::Y), onstate:onaction }
-        NumberField { field_key: format!("{}:width", spec.key), label: "Width", value: width, minimum: i32::try_from(spec.minimum[0]).unwrap_or(16), maximum: maximum_width, allow_maximum_off_grid: !spec.widget, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:width", spec.key)).cloned(), commit: commit(GeometryField::Width), onstate:onaction }
-        NumberField { field_key: format!("{}:height", spec.key), label: "Height", value: height, minimum: i32::try_from(spec.minimum[1]).unwrap_or(16), maximum: maximum_height, allow_maximum_off_grid: !spec.widget, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:height", spec.key)).cloned(), commit: commit(GeometryField::Height), onstate:onaction }
+        NumberField { field_key: format!("{}:x", spec.key), label: "X", value: x, minimum: i32::MIN, maximum: i32::MAX, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:x", spec.key)).cloned(), commit: commit(GeometryField::X), onstate:onaction }
+        NumberField { field_key: format!("{}:y", spec.key), label: "Y", value: y, minimum: i32::MIN, maximum: i32::MAX, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:y", spec.key)).cloned(), commit: commit(GeometryField::Y), onstate:onaction }
+        NumberField { field_key: format!("{}:width", spec.key), label: "Width", value: width, minimum, maximum, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:width", spec.key)).cloned(), commit: commit(GeometryField::Width), onstate:onaction }
+        NumberField { field_key: format!("{}:height", spec.key), label: "Height", value: height, minimum, maximum, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:height", spec.key)).cloned(), commit: commit(GeometryField::Height), onstate:onaction }
     } }
 }
 
@@ -703,16 +639,9 @@ fn canvas_inspector(
         .filter(|candidate| candidate.id != canvas.id)
         .map(|candidate| candidate.name.clone())
         .collect::<Vec<_>>();
-    let bounds = canvas_geometry_bounds(canvas, &view.outputs);
-    let child_min = canvas.widgets.iter().fold([32, 32], |minimum, widget| {
-        [
-            minimum[0].max(u32::try_from(widget.x).unwrap_or_default() + widget.width),
-            minimum[1].max(u32::try_from(widget.y).unwrap_or_default() + widget.height),
-        ]
-    });
     rsx! {
         {editor_accordion(format!("canvas:{}:identity", canvas.id), "Identity", view, onaction, rsx! { TextField { field_key: format!("{}:name", canvas.id), label: format!("Name · {}", canvas.id), value: canvas.name.clone(), disallowed, disabled: view.access.readonly, update_on_input: true, draft:view.chrome.field_drafts.get(&format!("{}:name", canvas.id)).cloned(), onchange: move |value| onaction.call(EditorAction::CanvasName(value)), onstate:onaction } })}
-        {editor_accordion(format!("canvas:{}:geometry", canvas.id), "Geometry", view, onaction, rsx! { {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], bounds, minimum: child_min, key: &canvas.id, widget: false, readonly: view.access.readonly }, view, onaction)} div { class: "geometry-action", Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } } })}
+        {editor_accordion(format!("canvas:{}:geometry", canvas.id), "Geometry", view, onaction, rsx! { {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], key: &canvas.id, widget: false, readonly: view.access.readonly }, view, onaction)} div { class: "geometry-action", Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } } })}
         {editor_accordion(format!("canvas:{}:visibility", canvas.id), "Visibility", view, onaction, rsx! { div { class: "visibility-actions", Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleAll), "All" } Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleNone), "None" } } {visibility_toggles(&canvas.id, canvas.show_on.as_deref(), view.access.readonly, onaction)} })}
         {editor_accordion(format!("canvas:{}:appearance", canvas.id), "Appearance", view, onaction, rsx! { {skin_picker(view, canvas.skin, false, onaction)} div { class: "control-heading", "Opacity" } SegmentedControl { class: "opacity-control", label: "Canvas opacity", for value in [25, 50, 75, 100] { Button { class: "opacity-option", selected: canvas.opacity_percent == value, disabled: view.access.readonly, "data-value": value, onclick: move |_| onaction.call(EditorAction::Opacity(value)), "{value}%" } } } if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { {property_controls(&skin.canvas_properties, &canvas.skin_properties, &canvas.id, true, view, onaction)} } })}
         {editor_accordion(format!("canvas:{}:output", canvas.id), "Output", view, onaction, rsx! { div { class: "output-list", for output in view.outputs.iter() { Button { class: "output-option", layout: ButtonLayout::Row, selected: canvas.output.as_deref() == Some(output.name.as_str()), disabled: view.access.readonly, "data-output": "{output.name}", onclick: { let output = output.name.clone(); move |_| onaction.call(EditorAction::Output(output.clone())) }, strong { "{output.name}" } } } } })}

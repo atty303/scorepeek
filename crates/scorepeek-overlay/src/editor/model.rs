@@ -633,7 +633,7 @@ impl EditorSession {
     }
     #[must_use]
     pub fn document_valid(&self) -> bool {
-        crate::editor::document_valid(&self.draft, &self.outputs) && !self.active_field_invalid()
+        crate::editor::document_valid(&self.draft) && !self.active_field_invalid()
     }
     fn active_field_invalid(&self) -> bool {
         let Some(canvas) = self.current() else {
@@ -922,8 +922,7 @@ impl EditorSession {
             EditorFieldCommit::CanvasGeometry(field) => {
                 let value = draft.text.parse().ok()?;
                 let mut canvas = self.current()?.clone();
-                let bounds = crate::editor::canvas_geometry_bounds(&canvas, &self.outputs);
-                apply_canvas_geometry(&mut canvas, *field, value, bounds);
+                apply_canvas_geometry(&mut canvas, *field, value);
                 (canvas_geometry_value(&canvas, *field) == value)
                     .then_some(EditorAction::CanvasGeometry(*field, value))
             }
@@ -935,7 +934,7 @@ impl EditorSession {
                     .iter()
                     .find(|widget| Some(&widget.id) == self.selected_widget.as_ref())?
                     .clone();
-                apply_widget_geometry(&mut widget, *field, value, [canvas.width, canvas.height]);
+                apply_widget_geometry(&mut widget, *field, value);
                 (widget_geometry_value(&widget, *field) == value)
                     .then_some(EditorAction::WidgetGeometry(*field, value))
             }
@@ -1067,7 +1066,6 @@ impl EditorSession {
     #[allow(clippy::too_many_lines)]
     fn apply_settings(&mut self, action: &EditorAction) {
         let skins = self.skins.clone();
-        let outputs = self.outputs.clone();
         let output_sizes = self
             .outputs
             .iter()
@@ -1147,8 +1145,8 @@ impl EditorSession {
                     output: self.active_output.clone(),
                     x: 0,
                     y: 0,
-                    width: self.viewport[0],
-                    height: self.viewport[1],
+                    width: self.viewport[0].clamp(32, crate::geometry::MAX_DIMENSION),
+                    height: self.viewport[1].clamp(32, crate::geometry::MAX_DIMENSION),
                     widgets: vec![],
                 });
                 self.selected_canvas = Some(id);
@@ -1215,8 +1213,14 @@ impl EditorSession {
                                 .as_ref()
                                 .and_then(|output| output_sizes.get(output))
                             {
-                                canvas.width = canvas.width.min(grid(size[0])).max(32);
-                                canvas.height = canvas.height.min(grid(size[1])).max(32);
+                                canvas.width = canvas
+                                    .width
+                                    .min(grid(size[0]))
+                                    .clamp(32, crate::geometry::MAX_DIMENSION);
+                                canvas.height = canvas
+                                    .height
+                                    .min(grid(size[1]))
+                                    .clamp(32, crate::geometry::MAX_DIMENSION);
                                 canvas.x = canvas.x.clamp(
                                     0,
                                     i32::try_from(size[0].saturating_sub(canvas.width))
@@ -1230,8 +1234,7 @@ impl EditorSession {
                             }
                         }
                         EditorAction::CanvasGeometry(field, value) => {
-                            let bounds = crate::editor::canvas_geometry_bounds(canvas, &outputs);
-                            apply_canvas_geometry(canvas, *field, *value, bounds);
+                            apply_canvas_geometry(canvas, *field, *value);
                         }
                         EditorAction::DeleteWidget => {
                             canvas
@@ -1262,12 +1265,7 @@ impl EditorSession {
                                             .insert(key.clone(), property.effective(Some(value)));
                                     }
                                 } else if let EditorAction::WidgetGeometry(field, value) = action {
-                                    apply_widget_geometry(
-                                        widget,
-                                        *field,
-                                        *value,
-                                        [canvas.width, canvas.height],
-                                    );
+                                    apply_widget_geometry(widget, *field, *value);
                                 } else {
                                     apply_widget_action(
                                         widget,
@@ -1309,8 +1307,12 @@ impl EditorSession {
         else {
             return false;
         };
-        let width = grid(width.min(canvas.width));
-        let height = grid(height.min(canvas.height));
+        let width = grid(width.min(canvas.width).min(crate::geometry::MAX_DIMENSION));
+        let height = grid(
+            height
+                .min(canvas.height)
+                .min(crate::geometry::MAX_DIMENSION),
+        );
         let id = next_widget_id(kind, &canvas.widgets);
         canvas.widgets.push(WidgetLayout {
             id: id.clone(),
@@ -1356,16 +1358,16 @@ impl EditorSession {
         else {
             return false;
         };
-        let width = width.min(canvas.width);
-        let height = height.min(canvas.height);
+        let width = width.min(canvas.width).min(crate::geometry::MAX_DIMENSION);
+        let height = height
+            .min(canvas.height)
+            .min(crate::geometry::MAX_DIMENSION);
         let id = next_widget_id(kind, &canvas.widgets);
         canvas.widgets.push(WidgetLayout {
             id: id.clone(),
             kind,
-            x: snap(point[0] - canvas.x)
-                .clamp(0, i32::try_from(canvas.width - width).unwrap_or(i32::MAX)),
-            y: snap(point[1] - canvas.y)
-                .clamp(0, i32::try_from(canvas.height - height).unwrap_or(i32::MAX)),
+            x: placement_axis(point[0], canvas.x, canvas.width - width),
+            y: placement_axis(point[1], canvas.y, canvas.height - height),
             width,
             height,
             settings: WidgetSettings::default(),
@@ -1455,7 +1457,10 @@ impl EditorSession {
         else {
             return;
         };
-        let delta = [point[0] - drag.start[0], point[1] - drag.start[1]];
+        let delta = [
+            point[0].saturating_sub(drag.start[0]),
+            point[1].saturating_sub(drag.start[1]),
+        ];
         if let Some(id) = &drag.widget {
             let Some(old) = original.widgets.iter().find(|widget| &widget.id == id) else {
                 return;
@@ -1485,13 +1490,13 @@ impl EditorSession {
             widget.width = u32::try_from(rect[2]).unwrap_or_default();
             widget.height = u32::try_from(rect[3]).unwrap_or_default();
         } else {
-            let min = canvas.widgets.iter().fold([32, 32], |m, widget| {
-                [
-                    m[0].max(u32::try_from(widget.x).unwrap_or_default() + widget.width),
-                    m[1].max(u32::try_from(widget.y).unwrap_or_default() + widget.height),
-                ]
-            });
-            let rect = resize(
+            let viewport = original
+                .output
+                .as_ref()
+                .and_then(|name| self.outputs.iter().find(|output| &output.name == name))
+                .and_then(|output| output.logical_size)
+                .unwrap_or(self.viewport);
+            let rect = resize_canvas(
                 [
                     original.x,
                     original.y,
@@ -1500,9 +1505,8 @@ impl EditorSession {
                 ],
                 delta,
                 drag.corner.as_deref(),
-                crate::editor::canvas_geometry_bounds(original, &self.outputs),
-                min,
-                AspectRatio::Free,
+                viewport,
+                [32, 32],
             );
             canvas.x = rect[0];
             canvas.y = rect[1];
@@ -1529,62 +1533,19 @@ fn select_canvas_preview(canvas: &CanvasPresentation, preview: &mut ScreenKind) 
     }
 }
 
-fn apply_canvas_geometry(
-    canvas: &mut CanvasPresentation,
-    field: GeometryField,
-    value: i32,
-    bounds: [u32; 2],
-) {
-    if value < 0 {
-        return;
-    }
-    let Ok(value_u32) = u32::try_from(value) else {
-        return;
-    };
-    let child_min = canvas.widgets.iter().fold([32, 32], |minimum, widget| {
-        [
-            minimum[0].max(u32::try_from(widget.x).unwrap_or_default() + widget.width),
-            minimum[1].max(u32::try_from(widget.y).unwrap_or_default() + widget.height),
-        ]
-    });
+fn apply_canvas_geometry(canvas: &mut CanvasPresentation, field: GeometryField, value: i32) {
     match field {
-        GeometryField::X
-            if value % 4 == 0 && value_u32.saturating_add(canvas.width) <= bounds[0] =>
-        {
-            canvas.x = value;
-        }
-        GeometryField::Y
-            if value % 4 == 0 && value_u32.saturating_add(canvas.height) <= bounds[1] =>
-        {
-            canvas.y = value;
-        }
+        GeometryField::X => canvas.x = value,
+        GeometryField::Y => canvas.y = value,
         GeometryField::Width
-            if value_u32 >= child_min[0]
-                && u32::try_from(canvas.x)
-                    .unwrap_or(u32::MAX)
-                    .saturating_add(value_u32)
-                    <= bounds[0] =>
+            if value >= 32 && value.unsigned_abs() <= crate::geometry::MAX_DIMENSION =>
         {
-            let right = u32::try_from(canvas.x)
-                .unwrap_or(u32::MAX)
-                .saturating_add(value_u32);
-            if value % 4 == 0 || right == bounds[0] {
-                canvas.width = value_u32;
-            }
+            canvas.width = value.unsigned_abs();
         }
         GeometryField::Height
-            if value_u32 >= child_min[1]
-                && u32::try_from(canvas.y)
-                    .unwrap_or(u32::MAX)
-                    .saturating_add(value_u32)
-                    <= bounds[1] =>
+            if value >= 32 && value.unsigned_abs() <= crate::geometry::MAX_DIMENSION =>
         {
-            let bottom = u32::try_from(canvas.y)
-                .unwrap_or(u32::MAX)
-                .saturating_add(value_u32);
-            if value % 4 == 0 || bottom == bounds[1] {
-                canvas.height = value_u32;
-            }
+            canvas.height = value.unsigned_abs();
         }
         _ => {}
     }
@@ -1599,42 +1560,19 @@ fn canvas_geometry_value(canvas: &CanvasPresentation, field: GeometryField) -> i
     }
 }
 
-fn apply_widget_geometry(
-    widget: &mut WidgetLayout,
-    field: GeometryField,
-    value: i32,
-    bounds: [u32; 2],
-) {
-    if value < 0 || value % 4 != 0 {
-        return;
-    }
-    let Ok(value_u32) = u32::try_from(value) else {
-        return;
-    };
+fn apply_widget_geometry(widget: &mut WidgetLayout, field: GeometryField, value: i32) {
     match field {
-        GeometryField::X if value_u32.saturating_add(widget.width) <= bounds[0] => {
-            widget.x = value;
-        }
-        GeometryField::Y if value_u32.saturating_add(widget.height) <= bounds[1] => {
-            widget.y = value;
-        }
+        GeometryField::X => widget.x = value,
+        GeometryField::Y => widget.y = value,
         GeometryField::Width
-            if value_u32 >= 16
-                && u32::try_from(widget.x)
-                    .unwrap_or(u32::MAX)
-                    .saturating_add(value_u32)
-                    <= bounds[0] =>
+            if value >= 16 && value.unsigned_abs() <= crate::geometry::MAX_DIMENSION =>
         {
-            widget.width = value_u32;
+            widget.width = value.unsigned_abs();
         }
         GeometryField::Height
-            if value_u32 >= 16
-                && u32::try_from(widget.y)
-                    .unwrap_or(u32::MAX)
-                    .saturating_add(value_u32)
-                    <= bounds[1] =>
+            if value >= 16 && value.unsigned_abs() <= crate::geometry::MAX_DIMENSION =>
         {
-            widget.height = value_u32;
+            widget.height = value.unsigned_abs();
         }
         _ => {}
     }
@@ -1657,6 +1595,121 @@ fn snap(value: i32) -> i32 {
 fn dimension(value: u32) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
 }
+fn snap_i64(value: i64) -> i64 {
+    value.saturating_add(2).div_euclid(4).saturating_mul(4)
+}
+
+fn placement_axis(point: i32, canvas: i32, maximum: u32) -> i32 {
+    i32::try_from(snap_i64(i64::from(point) - i64::from(canvas)).clamp(0, i64::from(maximum)))
+        .unwrap_or(i32::MAX)
+}
+
+fn aspect_ratio(aspect: AspectRatio) -> Option<[u32; 2]> {
+    match aspect {
+        AspectRatio::Free => None,
+        AspectRatio::Wide => Some([16, 9]),
+        AspectRatio::Standard => Some([4, 3]),
+        AspectRatio::Current(ratio) => Some(ratio),
+    }
+}
+
+fn clamp_snapped(value: i64, minimum: i64, maximum: i64) -> i64 {
+    let first_grid = (minimum + 3).div_euclid(4) * 4;
+    let last_grid = maximum.div_euclid(4) * 4;
+    if first_grid <= last_grid {
+        snap_i64(value).clamp(first_grid, last_grid)
+    } else {
+        value.clamp(minimum, maximum)
+    }
+}
+
+fn visible_axis_position(position: i64, extent: i64, viewport: u32) -> i64 {
+    let minimum = (1 - extent).max(i64::from(i32::MIN));
+    let maximum = (i64::from(viewport) - 1).min(i64::from(i32::MAX));
+    clamp_snapped(position, minimum, maximum)
+}
+
+fn resize_canvas_axis(
+    start: i64,
+    extent: i64,
+    delta: i64,
+    leading: bool,
+    trailing: bool,
+    viewport: u32,
+    minimum: u32,
+) -> (i64, i64) {
+    let end = start + extent;
+    let min_extent = i64::from(minimum);
+    let max_extent = i64::from(crate::geometry::MAX_DIMENSION);
+    if leading {
+        let moved = snap_i64(start.saturating_add(delta));
+        let first = (end - max_extent).max(i64::from(i32::MIN));
+        let last = (end - min_extent).min(i64::from(viewport) - 1);
+        let new_start = if first <= last {
+            clamp_snapped(moved, first, last)
+        } else {
+            start
+        };
+        (new_start, end - new_start)
+    } else if trailing {
+        let moved = snap_i64(end.saturating_add(delta));
+        let first = (start + min_extent).max(1);
+        let last = (start + max_extent).min(i64::from(i32::MAX));
+        let new_end = if first <= last {
+            clamp_snapped(moved, first, last)
+        } else {
+            end
+        };
+        (start, new_end - start)
+    } else {
+        (start, extent)
+    }
+}
+
+fn resize_canvas(
+    old: [i32; 4],
+    delta: [i32; 2],
+    corner: Option<&str>,
+    viewport: [u32; 2],
+    min: [u32; 2],
+) -> [i32; 4] {
+    let [x, y, width, height] = old.map(i64::from);
+    let [dx, dy] = delta.map(i64::from);
+    let ([new_x, new_width], [new_y, new_height]) = if let Some(corner) = corner {
+        let x = resize_canvas_axis(
+            x,
+            width,
+            dx,
+            corner.contains('w'),
+            corner.contains('e'),
+            viewport[0],
+            min[0],
+        );
+        let y = resize_canvas_axis(
+            y,
+            height,
+            dy,
+            corner.contains('n'),
+            corner.contains('s'),
+            viewport[1],
+            min[1],
+        );
+        ([x.0, x.1], [y.0, y.1])
+    } else {
+        (
+            [
+                visible_axis_position(x.saturating_add(dx), width, viewport[0]),
+                width,
+            ],
+            [
+                visible_axis_position(y.saturating_add(dy), height, viewport[1]),
+                height,
+            ],
+        )
+    };
+    [new_x, new_y, new_width, new_height]
+        .map(|value| i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX }))
+}
 #[must_use]
 pub fn resize(
     old: [i32; 4],
@@ -1669,8 +1722,10 @@ pub fn resize(
     let [x, y, w, h] = old;
     let Some(corner) = corner else {
         return [
-            snap(x.saturating_add(delta[0])).clamp(0, (dimension(grid(bounds[0])) - w).max(0)),
-            snap(y.saturating_add(delta[1])).clamp(0, (dimension(grid(bounds[1])) - h).max(0)),
+            snap(x.saturating_add(delta[0]))
+                .clamp(0, dimension(grid(bounds[0])).saturating_sub(w).max(0)),
+            snap(y.saturating_add(delta[1]))
+                .clamp(0, dimension(grid(bounds[1])).saturating_sub(h).max(0)),
             w,
             h,
         ];
@@ -1688,68 +1743,77 @@ pub fn resize(
         y
     };
     let mut right = if west {
-        x + w
+        x.saturating_add(w)
     } else {
-        snap((x + w).saturating_add(delta[0]))
+        snap(x.saturating_add(w).saturating_add(delta[0]))
     };
     let mut bottom = if north {
-        y + h
+        y.saturating_add(h)
     } else {
-        snap((y + h).saturating_add(delta[1]))
+        snap(y.saturating_add(h).saturating_add(delta[1]))
     };
-    left = left.clamp(0, (right - dimension(min[0])).max(0));
-    top = top.clamp(0, (bottom - dimension(min[1])).max(0));
+    left = left.clamp(0, right.saturating_sub(dimension(min[0])).max(0));
+    top = top.clamp(0, bottom.saturating_sub(dimension(min[1])).max(0));
     right = right
-        .max(left + dimension(min[0]))
-        .min(dimension(grid(bounds[0])).max(left + dimension(min[0])));
+        .max(left.saturating_add(dimension(min[0])))
+        .min(dimension(grid(bounds[0])).max(left.saturating_add(dimension(min[0]))));
     bottom = bottom
-        .max(top + dimension(min[1]))
-        .min(dimension(grid(bounds[1])).max(top + dimension(min[1])));
-    let ratio = match aspect {
-        AspectRatio::Free => None,
-        AspectRatio::Wide => Some([16, 9]),
-        AspectRatio::Standard => Some([4, 3]),
-        AspectRatio::Current(ratio) => Some(ratio),
-    };
-    if let Some([rw, rh]) = ratio {
+        .max(top.saturating_add(dimension(min[1])))
+        .min(dimension(grid(bounds[1])).max(top.saturating_add(dimension(min[1]))));
+    if let Some([rw, rh]) = aspect_ratio(aspect) {
         if rw == 0 || rh == 0 {
             return old;
         }
         let rw = i64::from(rw);
         let rh = i64::from(rh);
-        let anchor_x = if west { x + w } else { x };
-        let anchor_y = if north { y + h } else { y };
+        let anchor_x = if west { x.saturating_add(w) } else { x };
+        let anchor_y = if north { y.saturating_add(h) } else { y };
         let max_w = i64::from(if west {
             anchor_x
         } else {
-            dimension(bounds[0]) - anchor_x
+            dimension(bounds[0]).saturating_sub(anchor_x)
         });
         let max_h = i64::from(if north {
             anchor_y
         } else {
-            dimension(bounds[1]) - anchor_y
+            dimension(bounds[1]).saturating_sub(anchor_y)
         })
-        .min(max_w * rh / rw);
-        let min_h = 16_i64.max((16 * rh + rw - 1) / rw);
+        .min(max_w.saturating_mul(rh) / rw);
+        let min_h = 16_i64.max(16_i64.saturating_mul(rh).saturating_add(rw - 1) / rw);
         if max_h < min_h {
             return old;
         }
-        let height = if i64::from(delta[0]).abs() * rh >= i64::from(delta[1]).abs() * rw {
-            i64::from(right - left) * rh / rw
+        let height = if i64::from(delta[0]).abs().saturating_mul(rh)
+            >= i64::from(delta[1]).abs().saturating_mul(rw)
+        {
+            i64::from(right.saturating_sub(left)).saturating_mul(rh) / rw
         } else {
             i64::from(bottom - top)
         }
         .clamp(min_h, max_h);
-        let width = snap(i32::try_from(height * rw / rh).unwrap_or(i32::MAX))
+        let width = snap(i32::try_from(height.saturating_mul(rw) / rh).unwrap_or(i32::MAX))
             .min(i32::try_from(max_w).unwrap_or(i32::MAX));
         let height = snap(i32::try_from(height).unwrap_or(i32::MAX))
             .min(snap(i32::try_from(max_h).unwrap_or(i32::MAX)));
-        left = if west { anchor_x - width } else { anchor_x };
-        right = left + width;
-        top = if north { anchor_y - height } else { anchor_y };
-        bottom = top + height;
+        left = if west {
+            anchor_x.saturating_sub(width)
+        } else {
+            anchor_x
+        };
+        right = left.saturating_add(width);
+        top = if north {
+            anchor_y.saturating_sub(height)
+        } else {
+            anchor_y
+        };
+        bottom = top.saturating_add(height);
     }
-    [left, top, right - left, bottom - top]
+    [
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    ]
 }
 
 fn apply_widget_action(
@@ -2020,6 +2084,11 @@ mod skin_tests {
     #[test]
     fn canvas_names_and_geometry_participate_in_undo_and_validation() {
         let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "test".into(),
+            logical_size: Some([800, 600]),
+        }]);
         model.editing = true;
         model.readonly = false;
         model.action(&EditorAction::AddCanvas);
@@ -2031,12 +2100,9 @@ mod skin_tests {
         assert!(!model.document_valid());
         assert!(model.action(&EditorAction::Undo));
         assert_eq!(model.current().unwrap().name, "Canvas 1");
-        assert!(!model.action(&EditorAction::CanvasGeometry(GeometryField::X, 40)));
-        assert_eq!(
-            model.current().unwrap().x,
-            0,
-            "full-size canvas cannot move outside output"
-        );
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::X, 40)));
+        assert_eq!(model.current().unwrap().x, 40);
+        assert!(model.document_valid());
     }
 
     #[test]
@@ -2319,7 +2385,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn field_commit_revalidates_against_current_output_bounds() {
+    fn field_commit_ignores_changed_preview_bounds() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.set_outputs(vec![crate::editor::EditorOutput {
             name: "DP-1".into(),
@@ -2346,10 +2412,9 @@ mod skin_tests {
             EditorFieldCommit::CanvasGeometry(GeometryField::Width),
         )));
 
-        assert!(effects.is_empty());
-        assert_eq!(model.current().unwrap().width, 1920);
-        assert_eq!(model.chrome.field_drafts[&field].text, "1600");
-        assert!(!model.chrome.field_drafts[&field].valid);
+        assert_eq!(effects.len(), 1);
+        assert_eq!(model.current().unwrap().width, 1600);
+        assert!(!model.chrome.field_drafts.contains_key(&field));
     }
 
     #[test]
@@ -2612,7 +2677,27 @@ mod skin_tests {
     }
 
     #[test]
-    fn output_reassignment_revalidates_canvas_bounds_before_save() {
+    fn placing_widget_on_extreme_saved_canvas_coordinates_stays_in_bounds() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        model.draft[0].x = i32::MIN;
+        model.draft[0].y = i32::MAX;
+        model.placing = Some(WidgetKind::Empty);
+
+        assert!(model.place([0, 0]));
+        let canvas = &model.draft[0];
+        let widget = &canvas.widgets[0];
+        assert_eq!(
+            widget.x,
+            i32::try_from(canvas.width - widget.width).unwrap()
+        );
+        assert_eq!(widget.y, 0);
+    }
+
+    #[test]
+    fn output_reassignment_does_not_invalidate_geometry_before_save() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.set_outputs(vec![
             crate::editor::EditorOutput {
@@ -2631,10 +2716,113 @@ mod skin_tests {
         assert!(model.action(&EditorAction::AddCanvas));
         assert!(model.document_valid());
         assert!(model.action(&EditorAction::Output("small".into())));
-        assert!(!model.document_valid());
+        assert!(model.document_valid());
         assert_eq!(
             model.view().access.save_validity,
-            crate::editor::SaveValidity::Invalid
+            crate::editor::SaveValidity::Valid
+        );
+    }
+
+    #[test]
+    fn offscreen_canvas_and_widget_can_be_selected_repaired_and_saved_without_output() {
+        let mut model = Model::new(Vec::new(), [800, 600], "obs");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "obs-output".into(),
+            model: "OBS".into(),
+            logical_size: Some([800, 600]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::AddWidget(0)));
+        let canvas_id = model.current().unwrap().id.clone();
+        let widget_id = model.current().unwrap().widgets[0].id.clone();
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::X, 2001)));
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::Y, -123)));
+        assert!(model.action(&EditorAction::WidgetGeometry(GeometryField::X, -101)));
+        assert!(model.action(&EditorAction::WidgetGeometry(GeometryField::Width, 17)));
+        model.set_outputs(Vec::new());
+        model.clear_selection();
+        model.action(&EditorAction::SelectWidget {
+            canvas_id: canvas_id.clone(),
+            widget_id,
+        });
+        assert!(model.selected_widget.is_some());
+        assert!(model.document_valid());
+        assert_eq!(
+            model.view().access.save_validity,
+            crate::editor::SaveValidity::Valid
+        );
+        model.action(&EditorAction::SelectCanvas(canvas_id));
+        assert!(model.selected_canvas.is_some());
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::X, -7)));
+        let effects = model.reduce(EditorInput::Action(EditorAction::Save));
+        assert!(matches!(effects.as_slice(), [EditorEffect::Save { .. }]));
+    }
+
+    #[test]
+    fn preview_canvas_gesture_keeps_positive_overlap_without_forcing_full_containment() {
+        let bounds = [800, 600];
+        assert_eq!(
+            resize_canvas([0, 0, 800, 600], [10_000, 0], None, bounds, [32, 32])[0],
+            796
+        );
+        assert_eq!(
+            resize_canvas([0, 0, 800, 600], [-10_000, 0], None, bounds, [32, 32])[0],
+            -796
+        );
+        let corner = resize_canvas(
+            [0, 0, 800, 600],
+            [10_000, 10_000],
+            Some("nw"),
+            bounds,
+            [32, 32],
+        );
+        assert_eq!(corner, [768, 568, 32, 32]);
+        assert_eq!(
+            resize_canvas([0, 0, 800, 600], [0, -10_000], None, bounds, [32, 32])[1],
+            -596
+        );
+        let resized = resize_canvas(
+            [-100, 0, 200, 200],
+            [-10_000, 0],
+            Some("se"),
+            bounds,
+            [32, 32],
+        );
+        assert!(resized[0] + resized[2] > 0);
+        assert!(resized[0] < 800);
+        assert_eq!(
+            resize_canvas(
+                [i32::MAX, i32::MIN, 200, 200],
+                [i32::MAX, i32::MIN],
+                None,
+                bounds,
+                [32, 32]
+            )[0],
+            796
+        );
+    }
+
+    #[test]
+    fn preview_widget_gesture_handles_extreme_saved_coordinates() {
+        let rect = resize(
+            [i32::MAX, i32::MIN, 17, 19],
+            [i32::MAX, i32::MIN],
+            None,
+            [800, 600],
+            [16, 16],
+            AspectRatio::Free,
+        );
+        assert!(rect[0] >= 0 && i64::from(rect[0]) + i64::from(rect[2]) <= 800);
+        assert!(rect[1] >= 0 && i64::from(rect[1]) + i64::from(rect[3]) <= 600);
+        let _ = resize(
+            [i32::MAX, i32::MIN, 17, 19],
+            [i32::MAX, i32::MIN],
+            Some("se"),
+            [800, 600],
+            [16, 16],
+            AspectRatio::Current([u32::MAX, u32::MAX]),
         );
     }
 
@@ -2795,12 +2983,12 @@ mod skin_tests {
         });
 
         assert_eq!(model.active_output.as_deref(), Some("DP-1"));
-        assert_eq!(model.draft[0].x, 1168);
+        assert_eq!(model.draft[0].x, 1724);
         model.reduce(EditorInput::SurfaceOnOutput {
             output: "DP-1".into(),
             action: crate::editor::effect::SurfaceAction::Cancel,
         });
-        assert_eq!(model.draft[0].x, 1168);
+        assert_eq!(model.draft[0].x, 1724);
         model.reduce(EditorInput::SurfaceOnOutput {
             output: "DP-1".into(),
             action: crate::editor::effect::SurfaceAction::CancelFromKeyboard,

@@ -1042,8 +1042,22 @@ mod tests {
         assert_eq!(reacquired.generation, committed.generation);
         assert!(!reacquired.dirty);
 
-        let mut invalid = reacquired.canvases;
-        invalid[0].widgets[0].x = -3;
+        let mut offscreen = reacquired.canvases;
+        offscreen[0].widgets[0].x = -3;
+        let accepted = client(
+            socket,
+            &Request::CommitBackend {
+                backend,
+                editor_id: editor_id.to_owned(),
+                canvases: offscreen,
+            },
+        )
+        .unwrap();
+        assert!(accepted.ok);
+        assert_eq!(accepted.canvases[0].widgets[0].x, -3);
+
+        let mut invalid = accepted.canvases;
+        invalid[0].widgets[0].width = 15;
         let rejected = client(
             socket,
             &Request::CommitBackend {

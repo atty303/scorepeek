@@ -179,4 +179,53 @@ mod tests {
         assert_eq!(restored.obs_listen, "invalid");
         fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn obs_and_wayland_offscreen_geometry_survives_isolated_save_and_reopen() {
+        let root = std::env::temp_dir().join(format!(
+            "scorepeek-overlay-geometry-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let skins = root.join("skins");
+        fs::create_dir_all(&skins).unwrap();
+        let skin: Skin = "dev.example.skin".parse().unwrap();
+        fs::write(skins.join("dev.example.skin.zip"), []).unwrap();
+        let store = crate::skin::StoreRoot::new(skins);
+        let mut document = OverlayConfig::initial();
+        for backend in [Backend::Obs, Backend::Wayland] {
+            let mut canvas = empty_canvas(format!("{backend:?}"), backend, skin);
+            canvas.output = if backend == Backend::Obs {
+                OBS_OUTPUT_ID.into()
+            } else {
+                "temporarily-disconnected".into()
+            };
+            canvas.x = i32::MIN;
+            canvas.y = 20_001;
+            canvas.width = 701;
+            canvas.height = 33;
+            canvas.widgets.push(Widget {
+                id: "offscreen-widget".into(),
+                kind: scorepeek_overlay::WidgetKind::Empty,
+                x: -19,
+                y: 9_999,
+                width: 17,
+                height: 16,
+                settings: scorepeek_overlay::WidgetSettings::default(),
+                skin_properties: BTreeMap::default(),
+            });
+            document.canvases.push(canvas);
+        }
+        let path = root.join("overlay.toml");
+        save_atomic_in_store(&path, &document, &store).unwrap();
+        let reopened: OverlayConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(reopened.validated().unwrap().1.is_empty());
+        assert_eq!(reopened.canvases, document.canvases);
+        for canvas in &reopened.canvases {
+            let presentation = canvas.presentation();
+            assert_eq!(presentation.x, i32::MIN);
+            assert_eq!(presentation.widgets[0].x, -19);
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
