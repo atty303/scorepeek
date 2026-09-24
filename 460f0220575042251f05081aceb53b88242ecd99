@@ -1,0 +1,131 @@
+Task: Diagnose and optimize Scorepeek Wayland overlay editor response and skin scheduling
+Anchor: 460f0220575042251f05081aceb53b88242ecd99
+Base: 1a0c890 feat(skins): allow forced reinstall of the same release
+Branch: main
+Commits: 460f0220575042251f05081aceb53b88242ecd99 perf(overlay): coalesce Wayland skin work and resolve once per paint
+Guidance: repository AGENTS.md; investigate-problem; dig; design-program-observability; develop-repository; review; git-task-evidence; data-handling
+Conditions: no deploy, push or release; comparison in isolated nested Scroll/Distrobox and prior real-display diagnostic; pinned Dioxus/Blitz revision
+## Evidence
+Original real-display diagnostic run-1790259271-49632256-1789344: 5120x1440 editor around 4.9 paint/s, 2 resolves/paint, roughly 459-597 ms for eight click-to-paint observations. Different environment from the nested comparison.
+Comparable nested 120/60 Hz, 20 s per run: baseline two resolves per paint on both editor stages; after one. Stable paint medians: 120 Hz 9.85 to 6.11 ms; 60 Hz 11.00 to 7.68 ms. Four steady resize-input-to-next-paint observations median 4.87 to 1.85 ms. Nested pointer injection did not produce an editor action; no post-change real-display click claim.
+Fresh current-package 240 Hz nested run: actual paint 196.7/s, Wasm 57.6/s, resolve 3955 and paint 3955 over 20.108 s; 60 Hz peer Wasm 60.8/s. 120/60 Hz current package ran about 60.6/60.7 Wasm/s respectively.
+Verification: mise run test passed 758 Rust and 3 browser cases; 38 native visual PNG/layout pairs and OBS editor iframe were inspected; independent exact-diff review SHA-256 0058861d4e13417a510202d1bdf7bb3ecdfa510e8d2a286ec5d786db91e8b131 found no actionable issue.
+Authority: current repository source and living docs, pinned dependency source, user-approved implementation request and decisions; diagnostic measurements are observations, not normative design
+## Transcript
+- U1: overlay editorのwayland版が明らかに遅くレスポンスが悪い。クリックが反映されるまで1秒ぐらいラグがある。dioxus native/blitzの制約なら仕方ないが、scorepeek側で遅くなる実装をしていないか？ 必要な計測などはしていいが、原因を探すだけで修正は確定しないこと
+  - A: Investigated read-only with diagnostics and pinned source; the real 5120x1440 editor showed roughly one-second click response and two Blitz resolves per paint.
+- U2: それはblitz layoutが遅いのが原因か？
+  - A: Explained that measured layout dominates the slow output while attribution to Blitz alone is not supported.
+- U3: dioxusとblitzの関係がよくわかっていないが、dioxus domが変化していない、つまりlayoutが変化していないときもblitz layoutを呼ぶものなのか？
+  - A: Traced Dioxus VDOM polling and Blitz resolve behavior; a poll result is not an exact layout-change flag.
+- U4: dioxus native公式demoを実行したときscrollがbrowserに比べて非常に遅かったのは観測している。差分layout計算はblitzの責務だとしたら、それがまだ最適化されていないといえるか。それとは別に1frameで2回layoutするのは明らかにおかしい。
+  - A: Separated upstream native scroll observations from the Scorepeek double-resolve defect and measured frame work.
+- U5: dioxus nativeではblitz layoutをどのタイミングで呼んでいるのか調べて
+  - A: Read the pinned Dioxus Native and Blitz call path for frame, event, poll and resolve.
+- U6: ん？それならdioxus pollかイベントがないときはlayoutしなくていいのでは？ scorepeekはしてるんだよね？
+  - A: Confirmed Scorepeek had unconditional resolve work on paint, including idle turns.
+- U7: CSS animationのpaintはlayoutが必須なのか？
+  - A: Explained that CSS animation can require resolve for style and layout and kept that responsibility in Blitz.
+- U8: dioxus nativeはanimationがあればredraw->resolveするといっているが、そのanimation中かどうかの判定責務はどこが持っているか？
+  - A: Verified Blitz is_animating is the available animation-state query at the pinned revision.
+- U9: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) scorepeekのあるべき実装をする
+  - A: Started dig design tree and checked the two surface roles and scheduling choices.
+- U10: B
+  - A: Recorded the selected design branch in the dig.
+- U11: A
+  - A: Recorded the selected design branch in the dig.
+- U12: B
+  - A: Recorded the selected design branch in the dig.
+- U13: B. skinの出力はdioxus vdomに反映される。mouse/keyboardもdioxus vdomに反映される。dioxus vdomはpollでblitz domに反映される。vdom差分がなければfalseになるのでblitz resolveはしない。wayland frame tickではblitz is\_animatiingならresolveする。resolveするかどうかはdirtyフラグにまとめ、paint前にdirtyなら1回だけresolveする。この理解であっているか？
+  - A: Corrected the model: skin trees mutate Blitz DOM directly; Dioxus poll is conservative, input damage needs tracking, and paint should aggregate one resolve.
+- U14: わかった。skinの出力はskin側のscheduleで決まるから、dirty判定は確実にできるよな？ skin自身がanimationするときだけ次scheduleを要求する構造になっているはずだ
+  - A: Confirmed the skin schedule can determine when Wasm output becomes due, independently of visual damage.
+- U15: 同梱skinは現状idleになることがないanimationしかしていないのでは？
+  - A: Confirmed bundled native skins use continuous NextFrame rather than becoming idle.
+- U16: next-frameはwayland tickに依存か？
+  - A: Confirmed NextFrame is admitted by Wayland compositor frame callbacks.
+- U17: A. かつnextframeを使っているのが想定外だ。このディスプレイは240hzなのでskin更新が240hzで走ることになる。skinにそこまで高fpsは求めていない。after-msで60hz程度に固定していい
+  - A: Accepted AfterMs near 60 Hz for bundled native skin work while keeping external input promptly queued.
+- U18: B. animationとwasm frameの処理は切り分ける。animation最適化は別の問題だ
+  - A: Recorded the choice to separate CSS animation from Wasm frame scheduling.
+- U19: B. animationとwasm frameの処理は切り分ける。animation最適化は別の問題だ。wasm domをblitzに反映するとおそらくblitzの差分layoutも効かなくて当然だと思う。css animationはblitzの責務だからblitzも最適化できる可能性が残る。それを現時点でscorepeek側でhackしない
+  - A: Agreed to leave Blitz animation behavior and optimization outside this change and inspect Scorepeek DOM mutations.
+- U20: A
+  - A: Recorded the selected design branch in the dig.
+- U21: B. さっき通常のcanvasをeditor preview canvasで経路が違うといっていたな。本当か？
+  - A: Checked normal display and editor preview as separate current call paths.
+- U22: A
+  - A: Recorded the selected design branch in the dig.
+- U23: A
+  - A: Recorded the selected design branch in the dig.
+- U24: 入力eventもblitzに渡しているのなら、そこからresolveが必要かどうかの判定もblitz自身から取れないのか？
+  - A: Verified Blitz input event handlers expose no dirty return; conservative Scorepeek input damage is required.
+- U25: # 実装依頼
+    
+    ## 依頼
+    
+    Scorepeek の Wayland overlay で、通常 canvas と editor preview の skin 更新を次の Wayland frame にまとめ、不要な Blitz layout を減らす実装を行ってください。
+    
+    ## 目的
+    
+    - overlay editor の操作応答を妨げている Scorepeek 側の余分な処理を取り除く。
+    - 通常 canvas と editor preview で、skin 更新のタイミングを揃える。
+    - 現在の skin の見た目と動きを保つ。
+    
+    ## 成功条件
+    
+    - Dioxus の poll、skin ツリーの反映、CSS animation の状態を踏まえ、Blitz `resolve()` が必要な paint でだけ呼ばれる。
+    - 1回の paint で Blitz `resolve()` を呼ぶ回数は最大1回である。
+    - 通常 canvas と editor preview の Wasm skin 更新は、期限到来後の次の Wayland frame で実行される。
+    - 同梱 skin の継続更新は `AfterMs` により約60 Hzとなり、240 Hz の表示環境でも skin の Wasm 実行が表示周波数に追従しない。
+    - 変更のない skin ノードに対して、Scorepeek の反映処理が不要な属性更新や子ノードの再配置を行わない。
+    - 描画、入力、skin 更新の正しさを検証し、変更前後の入力遅延と frame 処理時間を計測して報告する。入力遅延の数値目標は合否条件にしない。
+    
+    ## 決定事項
+    
+    - 通常 canvas と editor preview の両方を対象にする。
+      - 理由: 両経路で skin 更新の実行タイミングが現在異なり、同じ更新規則を適用したい。
+      - 主な棄却案: editor preview だけを変更する案。通常 canvas に現状の更新規則が残る。
+    - skin の Wasm 実行は、更新期限の到来を記録し、次の Wayland frame で行う。
+      - 理由: frame ごとに更新をまとめ、通常 canvas と editor preview の挙動を揃える。
+      - 主な棄却案: 通常 canvas では期限到来時に即座に Wasm を実行する現状維持。
+    - 同梱 skin の継続更新を `NextFrame` から `AfterMs` の約60 Hzに変更する。
+      - 理由: 240 Hz の表示環境で skin の Wasm 実行を240 Hzにする必要はない。
+      - 主な棄却案: `NextFrame` を維持する案。表示周波数に実行頻度が依存する。
+    - Wasm skin 更新の頻度と CSS animation の paint 頻度を分ける。
+      - 理由: CSS animation の進行と更新要否は Blitz が扱う。
+      - 主な棄却案: CSS animation も Scorepeek 側で約60 Hzに制限する案。
+    - skin ツリー反映時の不要な更新と再配置を Scorepeek 側で直す。
+      - 理由: 現在の反映処理には、未変更ノードでも Blitz の damage を広げる操作がある。
+      - 主な棄却案: Wasm DOM 反映では差分 layout が効かないものとして放置する案。
+    - 描画と更新の正しさを完了条件とし、入力遅延は再計測して報告する。
+      - 理由: 実測値には表示環境などの影響もあるため、今回の変更に固定の遅延目標を課さない。
+      - 主な棄却案: 特定の遅延値を必須の合格条件にする案。
+    
+    ## 制約
+    
+    - skin の現在の見た目と動きを保つ。
+    - CSS animation のために Blitz 内部を変更したり、Scorepeek 側に個別の最適化処理を追加したりしない。
+    - 入力や外部状態の変化を、同梱 skin の約60 Hzタイマー待ちによって遅らせない。
+    - この依頼に deploy、push、release は含まない。
+    
+    ## 対象外
+    
+    - Blitz 自体の CSS animation や差分 layout アルゴリズムの最適化。
+    - 入力遅延に対する数値目標の設定。
+    - skin のデザイン変更。
+    
+    ## 未検証の前提
+    
+    - 実装時に、現在の Dioxus poll 結果と Blitz の animation 状態から `resolve()` の要否を判定できるか、使用中の固定 revision の API と実際の呼び出し順で確認する。
+    - skin ツリー反映の差分化に際し、属性、子ノード順、削除、style 更新の意味を維持できることを確認する。
+    
+    ## 実装時の指示
+    
+    - まず通常 canvas と editor preview の更新・paint 経路、および `resolve()` の呼び出し箇所を確認する。
+    - dirty 状態を paint 前に集約し、必要な場合だけ `resolve()` を1回実行する。Dioxus poll に実際の DOM 変更がない場合の扱いも確認する。
+    - frame 待ち中に複数の skin 更新要求が来た場合はまとめ、最新の入力状態を使う。
+    - 同梱 skin の `AfterMs` 値は約60 Hzとなる値を選び、通常 canvas と editor preview の双方で実行頻度を確認する。
+    - 検証結果には、`resolve()` 回数、skin の Wasm 実行頻度、frame 処理時間、入力から paint までの時間を含める。
+    - work on main
+  - A: Implemented frame-coalesced normal/editor Wasm updates, AfterMs(14), conditional single resolve with synchronous image-load follow-up, and differential skin tree reconciliation. Updated living docs, reviewed exact diff, passed 758 Rust and 3 browser tests, inspected 38 native visual PNGs/layouts and OBS iframe, and measured nested before/after and 240 Hz behavior. No push, deploy or release.
