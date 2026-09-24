@@ -22,7 +22,6 @@ pub(crate) fn poll_native_document(document: &mut DioxusDocument, waker: &Waker)
 pub(crate) fn poll_native_document_for_frame(
     document: &mut DioxusDocument,
     waker: &Waker,
-    full_layout_pending: &mut bool,
     work: &mut FrameWorkProfile,
 ) -> bool {
     let started = Instant::now();
@@ -30,7 +29,6 @@ pub(crate) fn poll_native_document_for_frame(
     while poll_native_document(document, waker) {
         changed = true;
     }
-    *full_layout_pending |= changed;
     work.record("dioxus_poll", started.elapsed());
     changed
 }

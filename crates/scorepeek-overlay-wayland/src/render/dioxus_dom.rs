@@ -1777,7 +1777,6 @@ struct App {
     surface_state: NativeDisplaySurfaceState,
     paint_count: u32,
     render_calls: u32,
-    full_layout_pending: bool,
     resolve_pending: bool,
     editor_skin_updates: EditorSkinUpdates,
     report: Rc<RefCell<RunReport>>,
@@ -2020,7 +2019,6 @@ impl App {
             surface_state: NativeDisplaySurfaceState::AwaitingConfigure,
             paint_count: 0,
             render_calls: 0,
-            full_layout_pending: false,
             resolve_pending: true,
             editor_skin_updates,
             report,
@@ -2348,7 +2346,6 @@ impl App {
                     &mut self.editor_skin_updates,
                     &mut self.skin_runtime_create_count,
                     &mut self.next_skin_render,
-                    &mut self.full_layout_pending,
                     &mut self.resolve_pending,
                     &mut self.frame_work,
                     &self.waker,
@@ -2438,7 +2435,6 @@ impl App {
                     run_native_display_turn(
                         &mut self.document,
                         &self.skin_assets,
-                        &mut self.full_layout_pending,
                         &mut self.resolve_pending,
                         &mut self.surface_state,
                         &mut self.frame_work,
@@ -2565,12 +2561,8 @@ impl App {
     }
 
     fn poll_dioxus(&mut self) -> bool {
-        let changed = poll_native_document_for_frame(
-            &mut self.document,
-            &self.waker,
-            &mut self.full_layout_pending,
-            &mut self.frame_work,
-        );
+        let changed =
+            poll_native_document_for_frame(&mut self.document, &self.waker, &mut self.frame_work);
         if changed && self.editing() {
             let (session_id, revision) = match &*self.projection.borrow() {
                 NativeDocumentProjection::Editor(stage) => {

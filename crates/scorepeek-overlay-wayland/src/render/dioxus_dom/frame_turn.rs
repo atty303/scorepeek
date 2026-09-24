@@ -123,7 +123,6 @@ pub(super) struct NativeDisplayTurnResult {
 pub(super) fn run_native_display_turn(
     document: &mut DioxusDocument,
     assets: &Arc<SkinAssetCache>,
-    full_layout_pending: &mut bool,
     resolve_pending: &mut bool,
     surface_state: &mut NativeDisplaySurfaceState,
     work: &mut FrameWorkProfile,
@@ -160,12 +159,11 @@ pub(super) fn run_native_display_turn(
     if !boundary || !presenter.is_active() {
         return Ok(NativeDisplayTurnResult::default());
     }
-    let dioxus_changed = poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    let dioxus_changed = poll_native_document_for_frame(document, waker, work);
     *resolve_pending |= dioxus_changed;
     render_native_frame(
         &mut document.inner.borrow_mut(),
         input.seconds,
-        full_layout_pending,
         resolve_pending,
         presenter,
         assets,
@@ -198,7 +196,6 @@ pub(super) fn run_native_editor_stage_turn(
     updates: &mut EditorSkinUpdates,
     runtime_create_count: &mut u64,
     next_skin_render: &mut Option<Instant>,
-    full_layout_pending: &mut bool,
     resolve_pending: &mut bool,
     work: &mut FrameWorkProfile,
     waker: &Waker,
@@ -214,8 +211,7 @@ pub(super) fn run_native_editor_stage_turn(
     // animation-frame boundary. Input/configure turns only accumulate damage and
     // request the next frame; they must not introduce extra VDOM polls between
     // frame callbacks.
-    let dioxus_changed =
-        frame && poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    let dioxus_changed = frame && poll_native_document_for_frame(document, waker, work);
     *resolve_pending |= dioxus_changed;
     let dragging = matches!(&*projection.borrow(), NativeDocumentProjection::Editor(editor_projection) if editor_projection.drag.is_some());
     let mut reconciliation = EditorSkinReconciliation::default();
@@ -264,7 +260,6 @@ pub(super) fn run_native_editor_stage_turn(
         render_native_frame(
             &mut document.inner.borrow_mut(),
             input.seconds,
-            full_layout_pending,
             resolve_pending,
             presenter,
             assets,
@@ -290,7 +285,6 @@ pub(super) fn run_native_editor_stage_turn(
 fn render_native_frame(
     document: &mut blitz_dom::BaseDocument,
     seconds: f64,
-    full_layout_pending: &mut bool,
     resolve_pending: &mut bool,
     presenter: &mut impl NativeFramePresenter,
     assets: &SkinAssetCache,
@@ -315,16 +309,8 @@ fn render_native_frame(
             .load(std::sync::atomic::Ordering::Relaxed),
     };
     if *resolve_pending || document.is_animating() {
-        let incremental_layout = document.incremental_layout();
-        if *full_layout_pending {
-            document.set_incremental_layout(false);
-        }
         *resolve_pending = false;
         work.measure("blitz_layout", || document.resolve(seconds));
-        if *full_layout_pending {
-            document.set_incremental_layout(incremental_layout);
-            *full_layout_pending = false;
-        }
         if assets
             .resource_lookup_count
             .load(std::sync::atomic::Ordering::Relaxed)
