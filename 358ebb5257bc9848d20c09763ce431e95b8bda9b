@@ -1,0 +1,67 @@
+Task: Fix bundled history graph level guides and format skin CSS
+Anchor: 358ebb5257bc9848d20c09763ce431e95b8bda9b
+Base: 6c62a28f1ba9409c03f297c0bd5a859b31339f95
+Branch: main
+Commits: 358ebb5257bc9848d20c09763ce431e95b8bda9b
+Guidance: current user implementation request and corrections; repository AGENTS.md; investigate-problem; develop-repository; design-program-observability applicability review
+Conditions: local CSS change; no deployment, target skin install, or push; native visual renderer available; nested Scroll blocked before paint by missing host container
+## Evidence
+User Wayland screenshot SHA256 0334693d1edc685b4f3c4e99e0ff994e69c5075cdf9b566059941a66401cf61e shows AA and E guides missing at normal graph size.
+At 655x310 graph and 1.25 output scale, native pre-change image lost B, C, and E guides while layout retained seven nodes. Integer pixel positions only shifted the loss. A 1px repeating gradient with original percent positions painted all seven at the same fixture; before and after threshold/label layout positions matched.
+Native visual captures passed for graph heights 308-312 at 1.25 scale, 1.5 scale, all three bundled skins, and the checked-in 38-step scenario. OBS iframe DOM had seven guide and seven label nodes, and the composed browser image showed seven guides. Repository check and test passed, including three Playwright tests. Nested Scroll failed at crun before compositor paint, so actual Wayland composition remains unverified.
+Authority: latest user messages, repository AGENTS.md, committed source and living documentation
+## Transcript
+- U1: # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の同梱 skin にある HISTORY GRAPH で、AAA〜E の横向きの破線がグラフの高さによって欠ける問題を修正してください。
+    
+    ## 目的
+    
+    - Wayland 描画で、グラフの通常サイズを変えても DJ LEVEL の7本の破線がすべて見えるようにする。
+    
+    ## 成功条件
+    
+    - 提供された Wayland 画像 `/tmp/codex-clipboard-23e5f83d-ea60-4048-89be-10fe5d7003b5.png` で欠けている AA と E を含め、AAA〜E の7本が表示される。
+    - グラフの高さを変えた場合も、各破線と左側のレベル文字が同じ高さに揃う。
+    - 破線の本数、意味、現在の見た目を保つ。
+    - 修正前に欠ける条件を確認し、同じ条件で修正後の Wayland 描画を検証する。
+    
+    ## 決定事項
+    
+    - 破線とレベル文字の位置は、描画領域の高さから計算した整数 `px` の `top` で揃える。
+      - 理由: 現在の実装は小数の `%` を指定しており、1px の破線が欠ける原因候補を小さな変更で検証できる。高さの変更時には位置を再計算する。
+      - 主な棄却案: 小数の `%` 指定を維持する案。今回の原因候補を残すため採用しない。
+    - 通常サイズで欠ける症状を修正対象とする。
+      - 理由: 提供画像は通常サイズのグラフで AA と E が欠けている。
+      - 主な棄却案: グラフ widget の最小高さを引き上げる案。提供画像の症状を解決しない。
+    
+    ## 制約
+    
+    - 3つの同梱 skin が共有するグラフ実装を対象とする。
+    - Wayland と OBS の双方で同じグラフの意味と配置を保つ。
+    - deploy、skin install、push は行わない。
+    
+    ## 対象外
+    
+    - グラフの意匠変更、データ線の変更、極端に小さい widget でも7本を判別可能にするためのレイアウト再設計。
+    
+    ## 未検証の前提
+    
+    - 小数の `%` から算出される位置が Wayland native renderer で AA・E の1px破線を欠けさせているか。
+    - 整数 `px` への変更で、提供画像と同じ条件の欠けが解消するか。
+    - 出力スケールが異なる場合にも7本が描画されるか。
+    
+    ## 実装時の指示
+    
+    - `skins/shared/src/render/history.rs` の7本の破線と左側のレベル文字の位置計算、および関連 CSS を確認する。
+    - 提供画像を修正前の症状として扱い、描画領域の高さだけを変えた比較で原因候補を切り分ける。
+    - Wayland native の PNG を目視し、対応するレイアウト情報も確認する。OBS 側でも表示を確認する。
+  - A: Accepted the implementation request and began the pre-change investigation before the turn was interrupted.
+- U2: 続けて
+  - A: Read source and guidance, reproduced missing native dashed guides at fractional scale, tested integer pixel positions, found that they did not fix paint, and tested a repeating gradient.
+- U3: それなら位置は%に戻したほうがシンプルでは？
+  - A: Agreed with the correction, restored percentage positions, and verified seven guides with gradient paint in native and OBS paths.
+- U4: ついでにcssのminifyをやめてくれる？ たいして意味がないのにdiffが読めなくなってる
+  - A: Formatted the seven bundled skin CSS source files, ran native and browser checks, completed repository tests, recorded nested Scroll host failure, and committed the local change.
