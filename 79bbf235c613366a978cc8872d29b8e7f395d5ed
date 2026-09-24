@@ -1,0 +1,68 @@
+Task: Reassign overlay persistence and child startup settings by crate and backend
+Anchor: 79bbf235c613366a978cc8872d29b8e7f395d5ed
+Base: 4a11f84d85a0142bffb54071ee6941e080b0338d
+Branch: main
+Commits: 79bbf235c613366a978cc8872d29b8e7f395d5ed moves the persisted document and migration to the native runtime, validates OBS listen at OBS startup, and splits child role settings
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; independent review; Git task evidence
+Conditions: durable local implementation; no push, release, deploy, data migration, or new dependency; nested Wayland host gate unavailable before child startup because crun container was absent
+## Evidence
+mise run test passed: 756 Rust tests and 3 browser tests; native visual scenario completed 30 PNG/layout pairs with complete manifest; reviewer found no actionable defects.
+The runtime log for this Codex task contained two user-role records: one injected plugin/AGENTS context and one human implementation request; the latter is reproduced below.
+Authority: the human request, repository AGENTS.md, current source and tests, and docs/architecture.md
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    overlay の保存設定文書と子プロセス起動設定を、crate と backend の責務に沿って整理してください。
+    
+    ## 目的
+    
+    - portable UI crate から native の保存形式と運用設定を外す。
+    - Wayland の起動を OBS 専用の待受設定から独立させる。
+    - 各 overlay 子プロセスへ、その backend が使う設定だけを渡す。
+    
+    ## 成功条件
+    
+    - `OverlayConfig` の保存文書、schema version、migration、`obs_listen`、`unknown_grace_ms`、projection generation の所有先が `scorepeek-overlay-runtime` になる。
+    - `scorepeek-overlay` には portable な canvas・widget・editor の型と検証が残る。既存の視覚検証用設定と editor 経路も動く。
+    - OBS の待受アドレスは OBS 起動時に形式と loopback 制約を検証する。Wayland だけの起動や共通設定の読み込みは、不正な `obs_listen` によって失敗しない。
+    - 子プロセス起動設定は共通項目と Wayland／OBS 専用項目に分かれ、Wayland 子に OBS の待受先を、OBS 子に Wayland の編集開始指定を渡さない。
+    - 既存の overlay TOML の保存形式と必要な migration は維持する。
+    
+    ## 決定事項
+    
+    - 保存設定文書を `scorepeek-overlay-runtime` が所有する。
+      - 理由: 保存形式と migration、待受先や feed の運用設定は native の設定管理に属し、portable UI の状態ではないため。
+      - 主な棄却案: `scorepeek-overlay` に文書全体を残す案。UI crate に native の運用設定と保存形式が残る。
+    - `obs_listen` は OBS 起動時に検証する。
+      - 理由: Wayland と OBS は独立した backend であり、Wayland は OBS の待受先を使用しないため。
+      - 主な棄却案: 共通文書の読み込み・保存時に必須検証する案。Wayland だけの起動も OBS の値に依存する。
+    - 子プロセス起動設定を backend 別の型または tagged enum にする。
+      - 理由: backend ごとの必須項目を型で表し、不要な値を別の子へ渡さないため。
+      - 主な棄却案: 専用項目をすべて含む平坦な `Config` を維持する案。使わない項目を各子が無視し続ける。
+    
+    ## 制約
+    
+    - OBS 起動時の loopback 制約を緩めない。
+    - 既存の overlay TOML を読み書きできるようにする。
+    - 未関連の変更、push、release、deploy は行わない。
+    
+    ## 対象外
+    
+    - editor 制御プロトコルの移動。
+    - overlay 子プロセスの診断プロトコルの整理。
+    - skin 実行や描画処理の変更。
+    
+    ## 未検証の前提
+    
+    - 実装開始時も、保存文書と `obs_listen` の参照箇所が調査時から変わっていないこと。
+    
+    ## 実装時の指示
+    
+    - 不正な `obs_listen` を持つ既存文書でも Wayland だけなら起動でき、OBS 起動は bind 前に失敗することを確認する。
+    - Wayland／OBS の子プロセスが、それぞれ自分の設定型を読み、起動と終了を従来どおり扱えることを確認する。
+    - 設定 migration、保存、editor の canvas 更新、視覚検証用経路を変更後の所有先で確認する。
+    - work on main
+  - A: Inspected clean main and current code, moved the versioned overlay document and migration into scorepeek-overlay-runtime, kept portable canvas and widget validation, split shared and backend child settings, and updated both role readers and visual fixture payloads. Verified config load/save and listener checks, passed mise run test, completed native visual scenario, attempted nested Wayland gate but crun container was missing, obtained a clean independent review, and committed locally without push.
