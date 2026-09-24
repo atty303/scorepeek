@@ -1,0 +1,124 @@
+Task: Implement shared overlay editor selection, panel output, and multi-output canvas interaction
+Anchor: 6c62a28f1ba9409c03f297c0bd5a859b31339f95
+Base: 6dcc1e6693cc2f6f2ed542ff1eee46ed73f819a4
+Branch: main
+Commits: 6c62a28f1ba9409c03f297c0bd5a859b31339f95
+Guidance: user implementation contract; repository AGENTS.md; develop-repository; design-program-observability; review; investigate-problem
+Conditions: durable local change; no new dependency, migration, deployment, or push; nested compositor check limited by host/Distrobox Vulkan crash
+## Evidence
+Reviewed diff SHA256 7843c1c34c3f2ccb41b167bb0741d3c0d83c4470461429f3808b220bd70daeb4. Final commit diff is identical.
+mise run check passed; mise run test passed 756 Rust tests and 3 Playwright tests. Native visual scenario completed 38 PNG/layout pairs. Isolated OBS browser confirmed one named option only when picker opens and the selection/height/add behavior. Fake Wayland two-output test covered remote selection, drag, resize, Add widget, panel movement, and input-region exclusion. Nested Scroll reached two stages but Vulkan loader SIGSEGV occurred before editor paint; no live compositor success claimed.
+Authority: current user contract, repository AGENTS.md, committed source and living documentation
+## Transcript
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) overlay editorのobjectsの高さが小さすぎて一覧性が悪すぎる
+  - A: dig を適用し、現状の高さと選択経路を調べ、OBJECTS と INSPECTOR の配分を質問した。
+- U2: C. inspectorで対象非選択を可能にし、非選択ならinspectorを表示しない。かつinspectに標準高さも調整する
+  - A: 非選択時に Inspector を隠す案を採用し、開始時の選択を質問した。
+- U3: B
+  - A: 開始時選択の回答を受け、選択解除の方法を質問した。
+- U4: A
+  - A: 直後は非選択という回答を確認し、解除操作を改めて質問した。
+- U5: B
+  - A: Inspector の閉じる操作案を受け、解除操作の併用を確認した。
+- U6: C
+  - A: 両方の解除操作を採用し、選択時の標準高さを質問した。
+- U7: C
+  - A: 選択時の等分と非選択時の全面表示を確定し、Canvas から開く場合を質問した。
+- U8: 通常のエディタを開くってなに？
+  - A: 曖昧な「通常」を訂正し、OBS と Wayland の実際の開始経路を説明して質問し直した。
+- U9: A
+  - A: どの開始経路も非選択とし、削除後の選択状態を質問した。
+- U10: A
+  - A: 削除後も非選択とし、Canvas 追加先と出力表示を質問した。
+- U11: Cでデフォルトの出力先はeditorのoutputと同じでいい。追加したあとにinspectorで変更すればいい
+  - A: Canvas 追加先を editor output としたが追加先表示を誤読し、次の出力操作を質問した。
+- U12: 追加先表示がいらないといっている。
+  - A: 追加先名を表示しないよう訂正し、OBJECTS の出力行の役割を質問し直した。
+- U13: A
+  - A: 出力行をツリー開閉に使う案を確認した。
+- U14: B. add widget/add canvasが縦に並んでいていてスペースを使っていてデザインも違う。意図はあるのか？
+  - A: 追加操作の縦並びと種類選択の実装・履歴を調べ、横並びの統一案を示した。
+- U15: A
+  - A: Add widget と Add canvas の横並びを採用し、設計全体を確認した。
+- U16: B. 特にwaylandは複数outputでeditorをどこに出すか、objectsでoutputを選択するとeditorのoutput先も変わる挙動があるはずだが、今回の修正はそれとの整合性は取れているか？
+  - A: 複数出力で現行の対象選択が editor 表示先を移すことを確認し、先の案との不整合を訂正した。
+- U17: そもそもobjects選択でeditorが移動する挙動がわかりづらい。しかしeditorは移動できないといけない。editor自体のoutput先を選ぶ小さな独立コントロールにしたほうがいい。obsでも表示はするが、選択肢が1つしかない。
+  - A: editor 表示先を独立コントロールにし、OBS でも一選択肢を表示する案へ更新した。
+- U18: ん？別outputのcanvasを選択しても操作できるのでは？ あくまでeditorをどこに表示するかであって、canvas上の操作はeditor表示先に依存しないでいいが
+  - A: 表示先と Canvas 操作先の結合を調べ、全出力で直接操作できる設計へ更新した。
+- U19: A
+  - A: 全出力での直接操作と入力透過の条件を質問した。
+- U20: Aだし、editor表示にあるoutputでも同じだ
+  - A: panel 側を含む全出力で空白入力を背後へ通すと確定し、Output コントロールの位置を質問した。
+- U21: A
+  - A: Context Bar を選び、パネル移動時の選択維持を質問した。
+- U22: A. output controlの常時表示は出力名など不要。まさにcontrolがどのoutputに出ているかで判別できるからな。押したときだけ出力名の選択肢を出すこと
+  - A: Output コントロールを閉じたときは名前なし、開いた選択肢だけに名前を示すと確定した。
+- U23: A
+  - A: 合意した仕様を実装依頼文としてまとめた。
+- U24:
+    # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の共有 overlay editor で、OBJECTS の一覧領域を広げ、対象選択・エディタの表示先・Canvas 操作を独立させてください。Add widget と Add canvas の配置も揃えてください。
+    
+    ## 目的
+    
+    - OBJECTS の一覧を見渡しやすくする。
+    - エディタの表示先を明示的に切り替えられるようにし、対象を選んだだけでパネルが別の出力へ移動する分かりにくさをなくす。
+    - Wayland の複数出力でも、パネルの表示先にかかわらず各出力の Canvas/Widget を直接操作できるようにする。
+    
+    ## 成功条件
+    
+    - 対象が非選択なら INSPECTOR を表示せず、OBJECTS がパネル内の利用可能な高さを使う。Canvas/Widget を選択したら、OBJECTS と INSPECTOR をほぼ半分ずつ表示し、それぞれスクロールできる。
+    - エディタは、キャンバスから開く経路を含め、開いた直後は非選択となる。INSPECTOR の「×」と選択中の OBJECTS 行の再クリックで選択解除できる。選択中の Canvas/Widget を削除した後も非選択となる。
+    - Context Bar に、エディタの**表示先**を選ぶ小さな独立コントロールがある。閉じている間は出力名を表示せず、押したときだけ出力名の選択肢を表示する。OBS でも表示し、選択肢は一つとする。
+    - Output コントロールでパネルを移しても、選択中の対象と INSPECTOR の内容は維持される。OBJECTS の対象選択ではパネルは移動しない。OBJECTS の出力行はツリーの開閉に使う。
+    - Wayland のすべての出力で Canvas/Widget の選択、ドラッグ、リサイズができる。選択対象がパネルとは別の出力にあっても、その出力上で直接操作できる。Widget の追加・配置も選択中の Canvas の出力で完結する。
+    - 全出力で、パネルと Canvas/Widget の操作領域以外への入力は背後へ通る。パネルを表示している出力でも、空白の画面全体を入力領域にしない。
+    - Add widget と Add canvas は同じ高さ・見た目で横並びにする。Widget の種類選択は維持する。新しい Canvas は現在パネルを表示している出力へ追加して選択状態にし、必要なら INSPECTOR で出力先を変更できる。追加先の説明表示は設けない。
+    - 共有 UI、OBS、および Wayland 複数出力の検証で、上記の表示・入力・選択・移動の挙動を確認できる。
+    
+    ## 決定事項
+    
+    - 非選択時は OBJECTS を全面表示し、選択時は OBJECTS と INSPECTOR をほぼ半分ずつにする。
+      - 理由: 一覧性を優先しながら、設定中は両方を見られるようにするため。
+      - 主な棄却案: 現状の OBJECTS 180〜260px 固定は一覧が狭すぎる。ドラッグ式の高さ調整は今回必要な標準配置より操作と実装が増える。
+    - 選択解除を明示的に可能にし、開始時と選択対象の削除後は非選択にする。
+      - 理由: 利用者がいつでも一覧を広く表示でき、予期しない対象への自動切り替えを避けられるため。
+      - 主な棄却案: 最初の Canvas や削除後の別対象を自動選択し続ける挙動。
+    - パネルの表示先は Context Bar の独立コントロールだけで切り替える。対象選択とパネルの表示先を独立させる。
+      - 理由: OBJECTS の選択でパネルが移動する挙動が分かりにくいため。
+      - 主な棄却案: 出力行や他出力の対象選択でパネルを自動移動する挙動。表示先を固定して移動できなくする案。
+    - 全出力で Canvas/Widget を操作可能にし、操作領域以外は入力を背後へ通す。
+      - 理由: パネルの置き場所に関係なく対象を直接編集でき、空白部分の通常操作も妨げないため。
+      - 主な棄却案: パネルのある出力だけを操作可能にする挙動、または各出力の全面を入力領域にする挙動。
+    - Add widget と Add canvas は横並びの統一したコントロールにする。
+      - 理由: 現状の縦並びが OBJECTS の高さを消費し、見た目も揃っていないため。
+      - 主な棄却案: 縦並びの維持、二つの操作を一つの Add メニューへ統合する案。
+    
+    ## 制約
+    
+    - Wayland と OBS で共有する editor の操作・見た目を保つ。OBS の Output コントロールも省略しない。
+    - 既存の Canvas/Widget 設定、INSPECTOR からの Canvas 出力先変更、保存形式の意味を保つ。
+    - 出力名は Output コントロールを開いたときの選択肢に表示する。閉じたコントロールや Add canvas の近くに追加先名を表示しない。
+    
+    ## 対象外
+    
+    - スキン自体のデザイン変更。
+    - overlay 設定形式や保存データの移行。
+    - 出力ごとに独立した編集セッションを設けること。
+    
+    ## 未検証の前提
+    
+    - Wayland の既存 layer surface と入力領域の仕組みで、パネルと各 Canvas/Widget の操作領域を出力ごとに指定・更新できるか、実装前に確認する。
+    - 出力をまたぐ Widget 配置、ポインター操作、フォーカスの現在の経路を確認し、パネル表示先との結合箇所を特定する。
+    
+    ## 実装時の指示
+    
+    - CSS の高さ変更だけで終わらせず、現在一つに結び付いている「パネル表示」「出力上の Canvas 操作」「入力領域」を必要な範囲で分離する。
+    - Wayland の少なくとも二出力を使う検証で、別出力の対象選択・ドラッグ・リサイズ・Widget 配置、パネル移動後の選択維持、空白部分の入力透過を確認する。
+    - OBS では一つの出力名がコントロールを開いたときだけ見えることと、選択解除・高さ配分・追加ボタンの配置を確認する。
+    - 本質的に必要でない限りwayland/obsの実装分岐をしないこと。
+  - A: 作業ツリーと文書を確認して共有 editor、Wayland stage と入力領域を修正。OBS の一出力 UI、native 38 枚と layout、fake Wayland 二出力操作を観測。mise run check と最終 mise run test が通過し、756 Rust tests と 3 browser tests が成功。独立レビューの Escape cancel 指摘を修正し delta review も通過。nested Scroll は Distrobox 起動・ライブラリ境界を調整して二 stage まで進んだが Vulkan loader 内で描画前に SIGSEGV。差分を 6c62a28 に local commit し、push は行っていない。
