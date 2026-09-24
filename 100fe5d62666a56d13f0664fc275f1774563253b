@@ -1,0 +1,64 @@
+Task: Type doctor collection results across runtime and CLI
+Anchor: 100fe5d62666a56d13f0664fc275f1774563253b
+Base: 79bbf235c613366a978cc8872d29b8e7f395d5ed
+Branch: main
+Commits: 100fe5d62666a56d13f0664fc275f1774563253b replaces JSON assembly and reparsing with typed doctor reports and CLI owned serialization
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review; Git task evidence
+Conditions: local commit only; no push, release, deploy, probe change, new crate, or diagnostic stream change
+## Evidence
+mise run test passed: 755 Rust tests and 3 browser tests; mise run check and scoped Clippy passed. Isolated doctor JSON and human commands both exited 0, with expected schemas, filtered inventory, and matching status display. Independent review of final diff found no actionable findings.
+Authority: human implementation request, repository AGENTS.md, current source and tests, docs/architecture.md
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    `scorepeek doctor` の収集結果を、runtime から CLI まで型付きで渡すようにしてください。
+    
+    ## 目的
+    
+    - doctor の項目を追加・変更する際、収集側と表示側の食い違いを型で検出できるようにする。
+    - 収集結果の JSON 文字列化と再解析をなくす。
+    
+    ## 成功条件
+    
+    - `scorepeek-frontend-api::DoctorReport` の各検査結果が、汎用 `serde_json::Value` ではなく型付きで表現される。
+    - runtime は検査結果から `DoctorReport` を直接組み立てる。inventory を JSON 文字列にして読み直す処理や、report 全体を JSON 値にして詰め直す処理がない。
+    - CLI の人間向け表示は JSON キーへの添字アクセスを使わず、型付きの状態を読む。
+    - CLI の JSON 出力は型付き report を serialize する。
+    - `scorepeek-doctor-v5` と `scorepeek-target-inventory-v1` の公開 JSON 形、人間向け表示、終了状態を維持する。
+    - inventory に含める OS 情報と probe 結果の現在の絞り込みを維持する。
+    
+    ## 決定事項
+    
+    - doctor の frontend API 境界を型付きにする。
+      - 理由: 現在は汎用 JSON 値のキー名を CLI が暗黙に知っており、項目変更時の食い違いを型で検出できないため。
+      - 主な棄却案: 各項目を `serde_json::Value` のまま渡す案。収集・表示間のキー依存が残る。
+    - JSON への変換は CLI の出力時に行う。
+      - 理由: CLI がコマンド結果の表示を所有しているため。
+      - 主な棄却案: runtime で JSON 文字列化して再解析する案。不要な変換と失敗点が増える。
+    
+    ## 制約
+    
+    - 既存の公開 doctor JSON 契約を維持する。
+    - inventory の生の probe 出力や、現在除外している OS 情報を report に加えない。
+    - 未関連の Event API、score 保存、overlay、push、release、deploy は対象にしない。
+    
+    ## 対象外
+    
+    - doctor が実行する probe の追加・変更。
+    - 診断ストリームの契約変更。
+    - 新しい crate の作成。
+    
+    ## 未検証の前提
+    
+    - 実装開始時も doctor の収集・表示経路と公開 JSON 形が調査時から変わっていないこと。
+    
+    ## 実装時の指示
+    
+    - inventory、numeric model、catalog、Vulkan layer の成功・利用不可・失敗に相当する形を、既存の JSON と照合する。
+    - inventory の収集値を絞り込むテストを、型付き表現と最終 JSON 出力の両方で意味が保たれるよう更新する。
+    - CLI の人間向け表示と JSON 出力を、それぞれ実際の doctor コマンド経由で確認する。
+    - work on main
+  - A: Inspected clean main and current doctor contracts, implemented typed frontend reports and direct runtime assembly, preserved inventory filtering and CLI output behavior, updated tests and architecture reference, verified complete test suite plus actual isolated commands, obtained independent review, and committed locally without push.
