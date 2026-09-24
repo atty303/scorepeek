@@ -1,0 +1,88 @@
+Task: Refactor run-event domain input ownership and verify private corpus replay
+Anchor: 12b0669be50f1dca6bccb267cb443675ff111172
+Base: d46e6b2b811c66c6ed2758dbe7e1fd5ead034935
+Branch: main
+Commits: 12b0669be50f1dca6bccb267cb443675ff111172 isolates semantic coordinator inputs, retains runtime diagnostic and score ordering, and updates v19 diagnostics documentation
+Guidance: user-provided scorepeek AGENTS.md; develop-repository; design-program-observability; review; investigate-problem; repository README and domain references
+Conditions: local repository changes only; no deployment, release, migration, push, or target-machine apply; private canonical corpus replay was read-only
+## Evidence
+- Repository started clean at d46e6b2, main ahead of origin/main by one commit; origin code fetch succeeded and local notes contain the remote notes history.
+- cargo clippy --locked --workspace --all-targets -- -D warnings and mise run test passed; 745 Rust tests and 3 browser integration tests passed.
+- mise run corpus:test -- --store /var/home/atty/.local/share/scorepeek/private-canonical-corpus-v1 passed with replayed_sessions=7. The older private-corpus-v2 location was rejected before replay because it has no active.json.
+- Fresh independent review found score worker ordering and unused display input; both were fixed and the delta review found no remaining actionable findings.
+Authority: committed source and tests, README.md, docs/architecture.md, docs/diagnostics.md, docs/private-corpus.md, and the user request
+## Transcript
+- U1: # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の run-event 経路を整理し、`scorepeek-core` が domain 判断に必要な入力だけを受け取るよう変更してください。運用イベント、診断専用値、表示更新、スコア worker の終了処理は、それぞれの所有先へ移してください。
+    
+    ## 目的
+    
+    - core の責務を認識と domain 状態遷移に限定する。
+    - live 実行と corpus replay が同じ domain 入力契約を使う。
+    - 既存の診断、公​​開イベント、スコア保存の振る舞いを保つ。
+    
+    ## 成功条件
+    
+    - core の domain 入力型は出力イベント型から独立し、overlay・recording・watcher などの運用イベントを受け付けない。
+    - core が使わずに中継しているフィールドを全入力型で調べ、必要な診断・計測値は runtime 側で扱う。
+    - `FieldObservation` の core 入力には意味判断に必要な値だけが入り、runtime の処理時間集計は維持される。
+    - live と corpus replay が共通のセッション開始・終了入力、および共通の `GameVersionState` 入力を使う。
+    - watcher 停止時は runtime が core に明示的な domain 終了入力を渡す。core の domain 出力を処理した後、runtime がスコア worker を終了する。
+    - セッション終了時、core には domain 終了に必要な値を渡し、`outcome` と `report` は runtime が診断記録に保持する。
+    - core から `FinishScores`、`Refresh`、`ClearFieldObservation` の指示効果と、利用先のない `raw_fields` 整形・保持を除く。runtime は core の出力と状態 snapshot から必要な表示更新を行う。
+    - 診断記録のイベント順序と `channel_sequence`、公開 Event API v5、RESULT の確定と SQLite 保存の順序を維持する。
+    - `input_sequence` は実際に core へ渡した入力だけを数える。意味が変わる診断フィールドとスキーマを更新し、現行ドキュメントと関連テストを合わせる。
+    
+    ## 決定事項
+    
+    - core の domain 入力型を出力イベント型から分ける。
+      - 理由: 運用イベントを core 入力として表せない境界にする。
+      - 主な棄却案: 共通型を維持して実行時に振り分ける案。責務外の入力を型が許してしまう。
+    - 運用イベントは runtime で domain 出力と合流させ、一つの順序付き診断列を維持する。
+      - 理由: core に運用イベントを中継させず、診断の順序を保つ。
+      - 主な棄却案: core を全イベントの中継器として残す案。domain 判断に不要な責務が残る。
+    - watcher 停止とセッション終了は、core には明示的な domain 終了入力として渡す。
+      - 理由: core の終了処理を保ちながら、watcher 状態と診断 report を core から外す。
+      - 主な棄却案: `WatcherStopped` や report を含む `SessionFinished` を例外的に core 入力へ残す案。運用情報との結合が残る。
+    - スコア worker の終了と表示更新は runtime が判断する。
+      - 理由: worker と表示状態は runtime が所有する。
+      - 主な棄却案: core の `FinishScores`、`Refresh`、`ClearFieldObservation` 効果を残す案。core が保存・表示処理を指示し続ける。
+    - core が使わない診断・計測フィールドを全入力型から外し、利用先のない `raw_fields` 整形・保持を削除する。
+      - 理由: domain 入力と snapshot に必要な状態だけを残す。
+      - 主な棄却案: 完全な観測を core の型に保持する案。診断用データの中継が残る。
+    - live と corpus replay は同じセッション境界入力と `GameVersionState` 入力を使い、game version の入力型に由来の区別を設けない。
+      - 理由: core での意味は由来によらず同じであり、録画済みの四つの状態もそのまま渡せる。
+      - 主な棄却案: live／corpus 別の境界種別や game version 専用メソッドを残す案。core の入力経路が分かれたままになる。
+    - `input_sequence` は core 入力のみを数え、診断スキーマを更新する。
+      - 理由: core 入力件数と 256 入力ごとの集計の意味を一致させる。
+      - 主な棄却案: 運用イベントも番号に含め続ける案。番号が core 入力の実数を表さなくなる。
+    
+    ## 制約
+    
+    - 公開 Event API v5 と SQLite の保存契約を変更しない。
+    - 診断記録の順序、session finish の記録内容、スコア worker の終了順序を保持する。
+    - corpus replay は録画済み game version の `identified`、`not_observed`、`ambiguous`、`observer_failed` を推測や再認識なしで渡す。
+    - 実機への適用、配布、push は行わない。
+    
+    ## 対象外
+    
+    - 認識アルゴリズム、OCR モデル、カタログ、キャプチャ方式の変更。
+    - 公開 Event API の新バージョン。
+    - 過去の診断記録の移行。
+    
+    ## 未検証の前提
+    
+    - 現行の run-event 各フィールドについて、core の判断、runtime の診断・集計、corpus の oracle が実際に参照する箇所を実装前に確認する。
+    - domain 出力と運用イベントを runtime で合流させても、既存の公開イベントと診断記録の順序を再現できることを確認する。
+    
+    ## 実装時の指示
+    
+    - 現在の domain coordinator を live と corpus replay の共通経路として維持する。
+    - core の終了出力をすべて処理してからスコア worker を終了する。
+    - 診断スキーマと `docs/diagnostics.md` の `input_sequence`・集計の説明を新しい意味に合わせる。
+  - A: Recorded Git state, inspected repository contracts and field usage, implemented distinct DomainInput for live and corpus replay, moved operational events and timing to runtime, preserved diagnostic ordering, updated schema and docs, verified targeted tests, and requested independent review.
+- U2: corpus:testも実行して
+  - A: Ran corpus:test first against the old store location, diagnosed the absent active.json without changing data, then replayed the current private canonical store successfully across seven sessions. Applied review fixes, passed full mise run test and Clippy, committed the implementation locally as 12b0669, and made no remote or live changes.
