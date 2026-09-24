@@ -1,6 +1,6 @@
 //! Uses only synthetic inputs and an absent, isolated score database.
 use scorepeek_overlay::Backend;
-use scorepeek_overlay_runtime::data::Config;
+use scorepeek_overlay_runtime::data::{CommonConfig, ObsConfig};
 use std::{
     io::{Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -52,7 +52,7 @@ struct OverlayChild {
 }
 
 impl OverlayChild {
-    fn start(isolated: &IsolatedHome, config: &Config, name: &str) -> Self {
+    fn start(isolated: &IsolatedHome, config: &ObsConfig, name: &str) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
         isolated.apply(&mut command);
         let stdout = isolated.path(&format!("{name}.stdout"));
@@ -189,24 +189,24 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         .unwrap()
         .local_addr()
         .unwrap();
-    let config = Config {
-        backend: Backend::Obs,
-        canvases: {
-            vec![scorepeek_overlay_runtime::config::empty_canvas(
-                "obs-selection".into(),
-                Backend::Obs,
-                "dev.atty303.scorepeek.skin.result-aurora".parse().unwrap(),
-            )]
+    let config = ObsConfig {
+        common: CommonConfig {
+            canvases: {
+                vec![scorepeek_overlay_runtime::config::empty_canvas(
+                    "obs-selection".into(),
+                    Backend::Obs,
+                    "dev.atty303.scorepeek.skin.result-aurora".parse().unwrap(),
+                )]
+            },
+            config_path: isolated.path("overlay.toml"),
+            control_socket: isolated.path("absent-control.sock"),
+            skin_store: skin_store.path().to_owned(),
+            socket: isolated.path("absent.sock"),
+            invocation: "test".into(),
+            scores_db: None,
+            unknown_grace_ms: 1_000,
         },
-        config_path: isolated.path("overlay.toml"),
-        control_socket: isolated.path("absent-control.sock"),
-        skin_store: skin_store.path().to_owned(),
-        socket: isolated.path("absent.sock"),
-        invocation: "test".into(),
-        scores_db: None,
         listen: address,
-        unknown_grace_ms: 1_000,
-        edit_on_start: false,
     };
     let mut child = OverlayChild::start(&isolated, &config, "primary");
     let deadline = Instant::now() + Duration::from_secs(10);

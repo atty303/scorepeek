@@ -39,11 +39,15 @@ impl Children {
     /// # Errors
     /// Returns spawn or configuration-pipe errors.
     pub fn start(&mut self, executable: &Path, config: &Config) -> Result<(), String> {
-        let name = format!("{:?}", config.backend);
+        let name = format!("{:?}", config.backend());
         self.status.insert(name.clone(), "failed");
-        let mut bytes = serde_json::to_vec(config).map_err(|error| error.to_string())?;
+        let mut bytes = match config {
+            Config::Wayland(value) => serde_json::to_vec(value),
+            Config::Obs(value) => serde_json::to_vec(value),
+        }
+        .map_err(|error| error.to_string())?;
         bytes.push(b'\n');
-        let role = match config.backend {
+        let role = match config.backend() {
             Backend::Wayland => crate::process_role::WAYLAND_ENTRYPOINT,
             Backend::Obs => crate::process_role::WEB_ENTRYPOINT,
         };

@@ -1,8 +1,11 @@
-//! Filesystem and installed-skin adapter for the backend-neutral config document.
+//! Native overlay document, validation, migration, and storage.
 
+mod document;
+pub use document::{
+    OverlayConfig, ProjectionGenerations, SCHEMA_VERSION, migrate_v8, visual_debug_config,
+};
 pub use scorepeek_overlay::config::{
-    Canvas, ConfigIssue, OBS_OUTPUT_ID, OverlayConfig, PENDING_WAYLAND_OUTPUT_ID,
-    ProjectionGenerations, SCHEMA_VERSION, Widget, empty_canvas, visual_debug_config,
+    Canvas, ConfigIssue, OBS_OUTPUT_ID, PENDING_WAYLAND_OUTPUT_ID, Widget, empty_canvas,
 };
 use std::{
     fs::{self, OpenOptions},
@@ -36,7 +39,7 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("overlay TOML is not UTF-8: {error}"))?;
-    let (migrated, migrated_text) = scorepeek_overlay::config::migrate_v8(text)?;
+    let (migrated, migrated_text) = migrate_v8(text)?;
     let parsed: OverlayConfig =
         toml::from_str(&migrated_text).map_err(|error| format!("overlay TOML: {error}"))?;
     let (canvases, mut issues) = parsed.validated()?;
@@ -120,4 +123,31 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         return Err(format!("persist {}: {error}", path.display()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_document_with_invalid_obs_listener_loads_and_saves() {
+        let root = std::env::temp_dir().join(format!(
+            "scorepeek-overlay-config-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("overlay.toml");
+        let mut document = OverlayConfig::initial();
+        document.obs_listen = "invalid".into();
+        fs::write(&path, toml::to_string_pretty(&document).unwrap()).unwrap();
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded.obs_listen, "invalid");
+        let store = crate::skin::StoreRoot::new(root.join("skins"));
+        save_atomic_in_store(&path, &loaded, &store).unwrap();
+        let restored: OverlayConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(restored.obs_listen, "invalid");
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -1,12 +1,10 @@
-use crate::{Backend, Skin, WidgetKind, WidgetSettings};
+use scorepeek_overlay::{Backend, ScreenKind, Skin, WidgetKind, WidgetSettings};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use super::layout::{Canvas, Widget, default_height, default_width};
+use scorepeek_overlay::config::{Canvas, Widget};
 
 pub const SCHEMA_VERSION: u32 = 9;
-pub const OBS_OUTPUT_ID: &str = "obs-output";
-pub const PENDING_WAYLAND_OUTPUT_ID: &str = "__pending-wayland-output__";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -17,7 +15,7 @@ pub struct OverlayConfig {
     pub legacy_wayland_refresh_hz: Option<serde_json::Value>,
     #[serde(default = "default_unknown_grace_ms")]
     pub unknown_grace_ms: u32,
-    /// Run-local projection generations; omitted from the persisted v7 document.
+    /// Run-local projection generations; omitted from the persisted document.
     #[serde(skip)]
     pub projection_generations: ProjectionGenerations,
     #[serde(default = "default_listen")]
@@ -66,6 +64,35 @@ impl OverlayConfig {
             obs_listen: default_listen(),
             canvases: Vec::new(),
         }
+    }
+
+    /// Validates native settings and returns individually valid canvases.
+    /// # Errors
+    /// Returns an unsupported schema or invalid shared setting.
+    pub fn validated(
+        &self,
+    ) -> Result<(Vec<Canvas>, Vec<scorepeek_overlay::config::ConfigIssue>), String> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
+        }
+        if self.unknown_grace_ms > 10_000 {
+            return Err("overlay unknown_grace_ms must be at most 10000".into());
+        }
+        Ok(scorepeek_overlay::config::validate_canvases(&self.canvases))
+    }
+
+    /// Parses the OBS listener at the OBS startup boundary.
+    /// # Errors
+    /// Returns a malformed or non-loopback address.
+    pub fn obs_listen_address(&self) -> Result<std::net::SocketAddr, String> {
+        let listen = self
+            .obs_listen
+            .parse::<std::net::SocketAddr>()
+            .map_err(|error| format!("overlay obs_listen: {error}"))?;
+        if !listen.ip().is_loopback() {
+            return Err("overlay obs_listen must use a loopback address".into());
+        }
+        Ok(listen)
     }
 }
 
@@ -138,9 +165,7 @@ pub fn migrate_v8(text: &str) -> Result<(bool, String), String> {
 
 #[doc(hidden)]
 #[must_use]
-pub fn visual_debug_config(skin: crate::Skin) -> OverlayConfig {
-    use crate::ScreenKind;
-
+pub fn visual_debug_config(skin: Skin) -> OverlayConfig {
     let mut config = OverlayConfig::initial();
     config.canvases = [Backend::Wayland, Backend::Obs]
         .into_iter()
@@ -194,7 +219,7 @@ pub fn visual_debug_config(skin: crate::Skin) -> OverlayConfig {
                 show_on,
                 opacity_percent: 100,
                 output: if backend == Backend::Obs {
-                    OBS_OUTPUT_ID.into()
+                    scorepeek_overlay::config::OBS_OUTPUT_ID.into()
                 } else {
                     "DP-1".into()
                 },
@@ -233,29 +258,6 @@ fn dashboard_test_widgets() -> Vec<(&'static str, WidgetKind, i32, i32)> {
     ]
 }
 
-#[must_use]
-pub fn empty_canvas(id: String, backend: Backend, skin: Skin) -> Canvas {
-    Canvas {
-        name: id.clone(),
-        id,
-        backend,
-        skin,
-        skin_properties: BTreeMap::new(),
-        show_on: Some(Vec::new()),
-        opacity_percent: 100,
-        output: if backend == Backend::Obs {
-            OBS_OUTPUT_ID.into()
-        } else {
-            PENDING_WAYLAND_OUTPUT_ID.into()
-        },
-        x: 20,
-        y: 20,
-        width: default_width(),
-        height: default_height(),
-        widgets: Vec::new(),
-    }
-}
-
 const fn visual_debug_widget_size(kind: WidgetKind) -> (u32, u32) {
     match kind {
         WidgetKind::Status => (544, 56),
@@ -271,4 +273,56 @@ const fn default_unknown_grace_ms() -> u32 {
 }
 fn default_listen() -> String {
     "127.0.0.1:3939".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_obs_listener_does_not_invalidate_shared_document() {
+        let mut document = OverlayConfig::initial();
+        document.obs_listen = "bad-address".into();
+        let text = toml::to_string_pretty(&document).unwrap();
+        let restored: OverlayConfig = toml::from_str(&text).unwrap();
+        assert!(restored.validated().is_ok());
+        assert!(
+            restored
+                .obs_listen_address()
+                .unwrap_err()
+                .contains("obs_listen")
+        );
+        document.obs_listen = "0.0.0.0:3939".into();
+        assert!(
+            document
+                .obs_listen_address()
+                .unwrap_err()
+                .contains("loopback")
+        );
+    }
+
+    #[test]
+    fn v8_document_migrates_canvas_and_widget_properties() {
+        let text = r#"schema_version = 8
+[[canvases]]
+id = "test"
+background = "blue"
+[[canvases.widgets]]
+id = "score"
+[canvases.widgets.settings]
+frame_width = 3
+"#;
+        let (changed, migrated) = migrate_v8(text).unwrap();
+        assert!(changed);
+        let value: toml::Value = toml::from_str(&migrated).unwrap();
+        assert_eq!(value["schema_version"].as_integer(), Some(9));
+        assert_eq!(
+            value["canvases"][0]["skin_properties"]["background"].as_str(),
+            Some("blue")
+        );
+        assert_eq!(
+            value["canvases"][0]["widgets"][0]["skin_properties"]["frame-width"].as_integer(),
+            Some(3)
+        );
+    }
 }

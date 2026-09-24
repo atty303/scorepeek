@@ -221,8 +221,11 @@ skin ABI, and canvas/widget document. Backend adapters own only transport,
 surface lifecycle, input normalization, and rendering differences.
 The portable `scorepeek-overlay` crate also serves the browser Wasm client.
 `scorepeek-overlay-runtime` owns the shared native Event API feed and reconnection,
-SQLite history projection, configuration storage, skin package storage, and ZIP
-structure checks and child process configuration. Installation checks ZIP and manifest structure
+SQLite history projection, the versioned overlay TOML document and migration,
+configuration storage, skin package storage, and ZIP structure checks. It passes
+shared child settings plus backend-specific startup settings to each child. The OBS
+listener address is validated as loopback when OBS starts; loading or saving the
+shared document and starting Wayland do not depend on that address. Installation checks ZIP and manifest structure
 without executing or validating the Wasm module. The Wayland adapter owns native Wasmtime
 execution; the browser client executes skins in a Web Worker. Runtime failures follow each
 adapter's existing error and diagnostic path.

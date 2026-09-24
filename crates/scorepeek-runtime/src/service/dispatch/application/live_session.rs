@@ -1,4 +1,5 @@
 use super::*;
+use scorepeek_overlay_runtime::data::{CommonConfig, Config, ObsConfig, WaylandConfig};
 
 pub(super) fn run_startup_stage<T>(
     diagnostics: &diagnostic_stream::DiagnosticSink,
@@ -443,36 +444,37 @@ pub(super) fn run_routine_live_session(
             .ok_or_else(|| "event socket unavailable".to_owned())
             .and_then(|socket| {
                 let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-                overlay_children.start(
-                    &executable,
-                    &scorepeek_overlay_runtime::data::Config {
-                        backend,
-                        canvases,
-                        config_path: overlay_config_path.clone(),
-                        control_socket: overlay_controller
-                            .as_ref()
-                            .expect("overlay controller started")
-                            .path()
-                            .to_owned(),
-                        skin_store: scorepeek_overlay_runtime::skin::StoreRoot::discover()
-                            .path()
-                            .to_owned(),
-                        socket: socket.to_path_buf(),
-                        invocation: invocation_id.clone(),
-                        scores_db: scores_path.clone(),
-                        listen: overlay_config
-                            .obs_listen
-                            .parse()
-                            .map_err(|error| format!("overlay obs_listen: {error}"))?,
-                        unknown_grace_ms: overlay_config.unknown_grace_ms,
-                        edit_on_start: backend == scorepeek_overlay::Backend::Wayland
-                            && (overlays.wayland_edit
-                                || !overlay_config
-                                    .canvases
-                                    .iter()
-                                    .any(|canvas| canvas.backend == backend)),
-                    },
-                )
+                let common = CommonConfig {
+                    canvases,
+                    config_path: overlay_config_path.clone(),
+                    control_socket: overlay_controller
+                        .as_ref()
+                        .expect("overlay controller started")
+                        .path()
+                        .to_owned(),
+                    skin_store: scorepeek_overlay_runtime::skin::StoreRoot::discover()
+                        .path()
+                        .to_owned(),
+                    socket: socket.to_path_buf(),
+                    invocation: invocation_id.clone(),
+                    scores_db: scores_path.clone(),
+                    unknown_grace_ms: overlay_config.unknown_grace_ms,
+                };
+                let config = match backend {
+                    scorepeek_overlay::Backend::Wayland => Config::Wayland(WaylandConfig {
+                        common,
+                        edit_on_start: overlays.wayland_edit
+                            || !overlay_config
+                                .canvases
+                                .iter()
+                                .any(|canvas| canvas.backend == backend),
+                    }),
+                    scorepeek_overlay::Backend::Obs => Config::Obs(ObsConfig {
+                        common,
+                        listen: overlay_config.obs_listen_address()?,
+                    }),
+                };
+                overlay_children.start(&executable, &config)
             });
         if let Err(error) = settle_output_startup_result(&mut output, monitor, started) {
             if error == INTERRUPTED_ERROR || error == TERMINATED_ERROR {

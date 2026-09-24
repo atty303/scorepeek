@@ -45,14 +45,11 @@ pub fn run() -> Result<(), String> {
 }
 
 fn run_inner() -> Result<(), String> {
-    let (config, input) = crate::bridge::data::read_config()?;
-    if config.backend != crate::host::lifecycle::Backend::Obs {
-        return Err("Wayland config was sent to the Web host process role".into());
-    }
+    let (config, input): (crate::bridge::data::Config, _) = crate::bridge::data::read_config()?;
     emit(
         "canvases_loaded",
         &serde_json::json!({
-            "backend": config.backend,
+            "backend": "obs",
             "canvas_count": config.canvases.len(),
             "canvas_ids": config.canvases.iter().map(|canvas| canvas.id.as_str()).collect::<Vec<_>>(),
         }),

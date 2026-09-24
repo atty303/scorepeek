@@ -159,10 +159,11 @@ controller.listen(controlSocket, () => {
     feedServer.listen(eventSocket);
   }
   const config = {
-    backend, canvases: initialCanvases, config_path: configPath,
+    canvases: initialCanvases, config_path: configPath,
     control_socket: controlSocket, skin_store: skinStore,
     socket: backend === "wayland" ? eventSocket : path.join(root, "absent-events.sock"), invocation: "overlay-fixture",
-    scores_db: null, listen: address, unknown_grace_ms: 1000, edit_on_start: backend === "wayland",
+    scores_db: null, unknown_grace_ms: 1000,
+    ...(backend === "wayland" ? { edit_on_start: true } : { listen: address }),
   };
   child = spawn(path.resolve("target/debug/scorepeek"), [backend === "obs" ? "__scorepeek-overlay-web-host" : "__scorepeek-overlay-wayland"], {
     stdio: ["pipe", fs.openSync(path.join(root, "role.stdout"), "w"), fs.openSync(path.join(root, "role.stderr"), "w")],

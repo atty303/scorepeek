@@ -119,17 +119,17 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         let changed = Arc::new(Notify::new());
         let config = Config {
-            backend: Backend::Obs,
-            canvases: document.canvases.clone(),
-            config_path: path,
-            control_socket: controller.path().to_owned(),
-            skin_store: skins.path().to_owned(),
-            socket: directory.0.join("absent.sock"),
-            invocation: "stage-session-test".into(),
-            scores_db: None,
+            common: scorepeek_overlay_runtime::data::CommonConfig {
+                canvases: document.canvases.clone(),
+                config_path: path,
+                control_socket: controller.path().to_owned(),
+                skin_store: skins.path().to_owned(),
+                socket: directory.0.join("absent.sock"),
+                invocation: "stage-session-test".into(),
+                scores_db: None,
+                unknown_grace_ms: document.unknown_grace_ms,
+            },
             listen: address,
-            unknown_grace_ms: document.unknown_grace_ms,
-            edit_on_start: false,
         };
         let shared = Arc::new(Shared {
             canvases: Mutex::new(

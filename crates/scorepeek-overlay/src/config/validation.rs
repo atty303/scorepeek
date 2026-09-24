@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::{AspectRatio, Backend};
 
-use super::document::{OverlayConfig, PENDING_WAYLAND_OUTPUT_ID, SCHEMA_VERSION};
+use super::PENDING_WAYLAND_OUTPUT_ID;
 use super::layout::Canvas;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -13,41 +13,25 @@ pub struct ConfigIssue {
     pub message: String,
 }
 
-impl OverlayConfig {
-    /// Validates global invariants and returns individually valid canvases.
-    /// # Errors
-    /// Returns an unsupported schema or a backend without a valid canvas.
-    pub fn validated(&self) -> Result<(Vec<Canvas>, Vec<ConfigIssue>), String> {
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
+/// Returns individually valid canvases and their validation issues.
+#[must_use]
+pub fn validate_canvases(canvases: &[Canvas]) -> (Vec<Canvas>, Vec<ConfigIssue>) {
+    let mut canvas_ids = BTreeSet::new();
+    let mut canvas_names = BTreeSet::new();
+    let mut valid = Vec::new();
+    let mut issues = Vec::new();
+    for canvas in canvases {
+        match validate_canvas(canvas, &mut canvas_ids, &mut canvas_names)
+            .and_then(|()| crate::validate_skin_id(canvas.skin.name()))
+        {
+            Ok(()) => valid.push(canvas.clone()),
+            Err(message) => issues.push(ConfigIssue {
+                canvas_id: canvas.id.clone(),
+                message,
+            }),
         }
-        if self.unknown_grace_ms > 10_000 {
-            return Err("overlay unknown_grace_ms must be at most 10000".into());
-        }
-        let listen = self
-            .obs_listen
-            .parse::<std::net::SocketAddr>()
-            .map_err(|error| format!("overlay obs_listen: {error}"))?;
-        if !listen.ip().is_loopback() {
-            return Err("overlay obs_listen must use a loopback address".into());
-        }
-        let mut canvas_ids = BTreeSet::new();
-        let mut canvas_names = BTreeSet::new();
-        let mut valid = Vec::new();
-        let mut issues = Vec::new();
-        for canvas in &self.canvases {
-            match validate_canvas(canvas, &mut canvas_ids, &mut canvas_names)
-                .and_then(|()| crate::validate_skin_id(canvas.skin.name()))
-            {
-                Ok(()) => valid.push(canvas.clone()),
-                Err(message) => issues.push(ConfigIssue {
-                    canvas_id: canvas.id.clone(),
-                    message,
-                }),
-            }
-        }
-        Ok((valid, issues))
     }
+    (valid, issues)
 }
 
 fn validate_canvas(

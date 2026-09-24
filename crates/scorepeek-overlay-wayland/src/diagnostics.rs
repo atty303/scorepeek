@@ -45,19 +45,14 @@ pub fn run() -> Result<(), String> {
 }
 
 fn run_inner() -> Result<(), String> {
-    let (config, input) = crate::bridge::data::read_config()?;
+    let (config, input): (crate::bridge::data::Config, _) = crate::bridge::data::read_config()?;
     emit(
         "canvases_loaded",
         &serde_json::json!({
-            "backend": config.backend,
+            "backend": "wayland",
             "canvas_count": config.canvases.len(),
             "canvas_ids": config.canvases.iter().map(|canvas| canvas.id.as_str()).collect::<Vec<_>>(),
         }),
     );
-    match config.backend {
-        crate::bridge::data::Backend::Wayland => crate::host::run(config, input),
-        crate::bridge::data::Backend::Obs => {
-            Err("OBS config was sent to the Wayland process role".into())
-        }
-    }
+    crate::host::run(config, input)
 }

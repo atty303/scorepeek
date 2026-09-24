@@ -1,7 +1,5 @@
 use scorepeek_overlay::editor::projection::Consumer;
-use scorepeek_overlay::{
-    Backend, BestView, GraphPlay, History, HistoryPlay, OverlayState, ResultDetail,
-};
+use scorepeek_overlay::{BestView, GraphPlay, History, HistoryPlay, OverlayState, ResultDetail};
 use serde::{Deserialize, Serialize};
 use std::{
     io::Read as _,
@@ -17,10 +15,10 @@ use std::{
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-/// Immutable configuration sent by the parent to either overlay child role.
+/// Settings shared by both overlay child roles.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Config {
-    pub backend: Backend,
+#[serde(deny_unknown_fields)]
+pub struct CommonConfig {
     pub canvases: Vec<crate::config::Canvas>,
     pub config_path: PathBuf,
     pub control_socket: PathBuf,
@@ -28,16 +26,65 @@ pub struct Config {
     pub socket: PathBuf,
     pub invocation: String,
     pub scores_db: Option<PathBuf>,
-    pub listen: SocketAddr,
     pub unknown_grace_ms: u32,
-    #[serde(default)]
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaylandConfig {
+    #[serde(flatten)]
+    pub common: CommonConfig,
     pub edit_on_start: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObsConfig {
+    #[serde(flatten)]
+    pub common: CommonConfig,
+    pub listen: SocketAddr,
+}
+
+pub enum Config {
+    Wayland(WaylandConfig),
+    Obs(ObsConfig),
+}
+
+impl Config {
+    #[must_use]
+    pub const fn backend(&self) -> scorepeek_overlay::Backend {
+        match self {
+            Self::Wayland(_) => scorepeek_overlay::Backend::Wayland,
+            Self::Obs(_) => scorepeek_overlay::Backend::Obs,
+        }
+    }
+}
+
+impl std::ops::Deref for WaylandConfig {
+    type Target = CommonConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
+impl std::ops::DerefMut for WaylandConfig {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common
+    }
+}
+
+impl std::ops::Deref for ObsConfig {
+    type Target = CommonConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
 }
 
 /// Reads one configuration line; the remaining stdin pipe is the parent lifetime lease.
 /// # Errors
 /// Returns malformed configuration or stdin errors.
-pub fn read_config() -> Result<(Config, std::io::BufReader<std::io::Stdin>), String> {
+pub fn read_config<T: serde::de::DeserializeOwned>()
+-> Result<(T, std::io::BufReader<std::io::Stdin>), String> {
     use std::io::BufRead as _;
     let mut input = std::io::BufReader::new(std::io::stdin());
     let mut line = String::new();
@@ -49,14 +96,67 @@ pub fn read_config() -> Result<(Config, std::io::BufReader<std::io::Stdin>), Str
     Ok((config, input))
 }
 
-impl From<Config> for FeedConfig {
-    fn from(config: Config) -> Self {
+impl From<CommonConfig> for FeedConfig {
+    fn from(config: CommonConfig) -> Self {
         Self {
             socket: config.socket,
             invocation: config.invocation,
             scores_db: config.scores_db,
             unknown_grace_ms: config.unknown_grace_ms,
         }
+    }
+}
+
+impl From<WaylandConfig> for FeedConfig {
+    fn from(config: WaylandConfig) -> Self {
+        config.common.into()
+    }
+}
+
+impl From<ObsConfig> for FeedConfig {
+    fn from(config: ObsConfig) -> Self {
+        config.common.into()
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn child_roles_accept_only_their_backend_settings() {
+        let common = CommonConfig {
+            canvases: Vec::new(),
+            config_path: "overlay.toml".into(),
+            control_socket: "control.sock".into(),
+            skin_store: "skins".into(),
+            socket: "events.sock".into(),
+            invocation: "test".into(),
+            scores_db: None,
+            unknown_grace_ms: 1_000,
+        };
+        let wayland = serde_json::to_value(WaylandConfig {
+            common: common.clone(),
+            edit_on_start: true,
+        })
+        .unwrap();
+        let obs = serde_json::to_value(ObsConfig {
+            common,
+            listen: "127.0.0.1:3939".parse().unwrap(),
+        })
+        .unwrap();
+        assert!(wayland.get("listen").is_none());
+        assert!(obs.get("edit_on_start").is_none());
+        assert!(serde_json::from_value::<WaylandConfig>(wayland).is_ok());
+        assert!(serde_json::from_value::<ObsConfig>(obs).is_ok());
+        assert!(
+            serde_json::from_value::<WaylandConfig>(serde_json::json!({
+                "canvases": [], "config_path": "overlay.toml", "control_socket": "control.sock",
+                "skin_store": "skins", "socket": "events.sock", "invocation": "test",
+                "scores_db": null, "unknown_grace_ms": 1000, "listen": "127.0.0.1:3939"
+            }))
+            .is_err()
+        );
     }
 }
 
