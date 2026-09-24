@@ -611,10 +611,22 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                     preview_screen: None,
                 });
             } else {
-                surface_port.send(EditorInput::Surface(action), "surface");
+                surface_port.send(
+                    EditorInput::SurfaceOnOutput {
+                        output: surface_port.source_output.clone().unwrap_or_default(),
+                        action,
+                    },
+                    "surface",
+                );
             }
         }
-        _ => surface_port.send(EditorInput::Surface(action), "surface"),
+        _ => surface_port.send(
+            EditorInput::SurfaceOnOutput {
+                output: surface_port.source_output.clone().unwrap_or_default(),
+                action,
+            },
+            "surface",
+        ),
     });
     let action_port = props.port;
     let onaction = Callback::new(move |action: EditorAction| {
@@ -638,24 +650,24 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                     div { id:"scorepeek-skin-root", style:"display:none" }
                     for canvas in &stage.canvases {
                         Fragment { key:"{canvas.id}",
-                            EditorCanvas {canvas:canvas.clone(),editing:stage.interactive,selected:stage.interactive&&selected.is_some_and(|selected|selected.id==canvas.id),selected_widget:stage.selected_widget.clone(),onaction:onsurface,
+                            EditorCanvas {canvas:canvas.clone(),editing:true,selected:selected.is_some_and(|selected|selected.id==canvas.id),selected_widget:stage.selected_widget.clone(),onaction:onsurface,
                                 div { id:editor_skin_root_id(&canvas.id), class:"scorepeek-skin-scope", "data-backend":"native", "data-skin-canvas":"{canvas.id}", style:"position:absolute;inset:0" }
                             }
                         }
                     }
+                    if let Some(canvas)=selected {
+                        EditorSelectionMetrics { canvas:canvas.clone(), selected_widget:stage.selected_widget.clone() }
+                    }
                     if stage.interactive {
-                        if let Some(canvas)=selected {
-                            EditorSelectionMetrics { canvas:canvas.clone(), selected_widget:stage.selected_widget.clone() }
-                        }
                         EditorPanel {
                             view:stage.view.clone(),
                             title:stage.title.clone(),
                             onaction,
                         }
-                        if let Some(kind)=stage.placing {
-                            if let Some(size) = stage.view.skins.iter().find(|skin| stage.selected_canvas.as_ref().is_some_and(|canvas| canvas.skin == skin.id)).and_then(|skin| skin.widget_defaults.get(kind.name())).map(|default| [default.width, default.height]) {
-                                PlacementPreview {kind,point:stage.point.map(f64::from),size}
-                            }
+                    }
+                    if let Some(kind)=stage.placing.filter(|_| selected.is_some()) {
+                        if let Some(size) = stage.view.skins.iter().find(|skin| stage.selected_canvas.as_ref().is_some_and(|canvas| canvas.skin == skin.id)).and_then(|skin| skin.widget_defaults.get(kind.name())).map(|default| [default.width, default.height]) {
+                            PlacementPreview {kind,point:stage.point.map(f64::from),size}
                         }
                     }
                     if let Some(notice)=&stage.notice {
@@ -766,6 +778,31 @@ fn embedded_editor_skins() -> Vec<scorepeek_overlay::editor::EditorSkin> {
 #[allow(clippy::cast_possible_truncation)]
 fn snap_i32(value: f64) -> i32 {
     ((value / 4.0).round() * 4.0).clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn editor_input_rects(document: &DioxusDocument) -> Vec<[i32; 4]> {
+    let inner = document.inner.borrow();
+    let Ok(nodes) = inner.query_selector_all(".editor-panel,.editor-panel-toggle,.editor-canvas")
+    else {
+        return Vec::new();
+    };
+    nodes
+        .into_iter()
+        .filter_map(|node| {
+            let rect = inner.get_client_bounding_rect(node)?;
+            let x = rect.x.floor() as i32;
+            let y = rect.y.floor() as i32;
+            let right = (rect.x + rect.width).ceil() as i32;
+            let bottom = (rect.y + rect.height).ceil() as i32;
+            (right > x && bottom > y).then_some([
+                x,
+                y,
+                right.saturating_sub(x),
+                bottom.saturating_sub(y),
+            ])
+        })
+        .collect()
 }
 const fn grid_floor(value: u32) -> u32 {
     value / 4 * 4
@@ -1965,11 +2002,7 @@ impl App {
             .filter_map(|preview| preview.next_render)
             .min();
         let editor_preview_count = u64::try_from(editor_skin_previews.len()).unwrap_or(u64::MAX);
-        shell.set_input_enabled(surface_input_enabled(
-            role == SurfaceRole::EditorStage,
-            interactive,
-            visible,
-        ));
+        shell.set_input_enabled(role != SurfaceRole::EditorStage && visible);
         shell.set_keyboard_enabled(role == SurfaceRole::EditorStage && interactive);
         let surface_logical = [canvas.width, canvas.height];
         let surface_output = shell.output_name.clone();
@@ -2111,7 +2144,7 @@ impl App {
             self.editor_skin_updates.request();
         }
         let interactive = candidate.interactive;
-        self.shell.set_input_enabled(interactive);
+        self.shell.set_input_enabled(false);
         self.shell.set_keyboard_enabled(interactive);
         crate::diagnostics::emit(
             "native_editor_projection_received",
@@ -2327,6 +2360,20 @@ impl App {
                 )?;
                 if !result.text_input_active {
                     self.set_text_composing(false);
+                }
+                if result.painted {
+                    let rects = editor_input_rects(&self.document);
+                    if self.shell.set_input_rects(Some(rects.clone())) {
+                        crate::diagnostics::emit(
+                            "native_editor_input_region",
+                            &serde_json::json!({
+                                "run_id": self.report.borrow().run_id,
+                                "output": self.surface_output,
+                                "rects": rects,
+                                "revision": match &*self.projection.borrow() { NativeDocumentProjection::Editor(stage) => Some(stage.revision), NativeDocumentProjection::Display { .. } => None },
+                            }),
+                        );
+                    }
                 }
                 if result.dioxus_changed {
                     let projection = self.projection.borrow();
@@ -2595,9 +2642,6 @@ impl App {
     }
 }
 
-const fn surface_input_enabled(editing: bool, interactive: bool, visible: bool) -> bool {
-    visible && (!editing || interactive)
-}
 fn duration_us(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }

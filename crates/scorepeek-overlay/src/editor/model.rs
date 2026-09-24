@@ -181,6 +181,10 @@ pub enum EditorInput {
     SetOutputs(Vec<crate::editor::EditorOutput>),
     Action(EditorAction),
     Surface(crate::editor::effect::SurfaceAction),
+    SurfaceOnOutput {
+        output: String,
+        action: crate::editor::effect::SurfaceAction,
+    },
     Resize {
         output: String,
         logical_size: [u32; 2],
@@ -209,7 +213,7 @@ impl EditorInput {
             Self::Open { .. } => "open",
             Self::SetOutputs(_) => "set_outputs",
             Self::Action(_) => "action",
-            Self::Surface(_) => "surface",
+            Self::Surface(_) | Self::SurfaceOnOutput { .. } => "surface",
             Self::Resize { .. } => "resize",
             Self::TransportReady { .. } => "transport_ready",
             Self::TransportLost => "transport_lost",
@@ -257,7 +261,7 @@ impl EditorSession {
         Self {
             session_id: 0,
             revision: 0,
-            selected_canvas: canvases.first().map(|canvas| canvas.id.clone()),
+            selected_canvas: None,
             saved: canvases.clone(),
             draft: canvases,
             selected_widget: None,
@@ -270,8 +274,8 @@ impl EditorSession {
                 widget_add_open: false,
                 sample: true,
                 screen_picker_open: false,
+                output_picker_open: false,
                 expanded_outputs: active_output.clone().into_iter().collect(),
-                collapsed_outputs: std::collections::BTreeSet::new(),
                 expanded_canvases,
                 collapsed_accordions: std::collections::BTreeSet::new(),
                 field_drafts: std::collections::BTreeMap::new(),
@@ -353,6 +357,9 @@ impl EditorSession {
                 self.activate_output(output.as_deref());
                 self.enter(canvas, preview);
                 vec![EditorEffect::Acquire]
+            }
+            EditorInput::SurfaceOnOutput { output, action } => {
+                self.reduce_output_surface_action(&output, action)
             }
             EditorInput::SetOutputs(outputs) => {
                 self.set_outputs(outputs);
@@ -454,6 +461,39 @@ impl EditorSession {
         }
     }
 
+    fn reduce_output_surface_action(
+        &mut self,
+        output: &str,
+        action: crate::editor::effect::SurfaceAction,
+    ) -> Vec<EditorEffect> {
+        use crate::editor::effect::SurfaceAction;
+        let canvas_id = match &action {
+            SurfaceAction::Select(canvas) | SurfaceAction::Start { canvas, .. } => {
+                Some(canvas.as_str())
+            }
+            SurfaceAction::Move(_) | SurfaceAction::End | SurfaceAction::Cancel => self
+                .drag
+                .as_ref()
+                .map(|drag| drag.canvas.as_str())
+                .or(self.selected_canvas.as_deref()),
+            SurfaceAction::Place(_) => self.selected_canvas.as_deref(),
+            SurfaceAction::Enter(_) | SurfaceAction::CancelFromKeyboard => None,
+        };
+        if self.editing
+            && canvas_id.is_some_and(|id| {
+                self.draft
+                    .iter()
+                    .find(|canvas| canvas.id == id)
+                    .is_none_or(|canvas| {
+                        canvas.output.as_deref().or(self.active_output.as_deref()) != Some(output)
+                    })
+            })
+        {
+            return Vec::new();
+        }
+        self.reduce_surface_action(action)
+    }
+
     fn reduce_surface_action(
         &mut self,
         action: crate::editor::effect::SurfaceAction,
@@ -501,7 +541,7 @@ impl EditorSession {
                 .iter()
                 .any(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
             {
-                self.select_visible();
+                self.clear_selection();
             }
         }
         if !reply.ok {
@@ -554,12 +594,7 @@ impl EditorSession {
         .map(str::to_owned);
         self.activate_output(active.as_deref());
         if self.active_output != previous_active {
-            self.selected_canvas = None;
-            self.selected_widget = None;
-            self.placing = None;
-            self.drag = None;
-            self.title = None;
-            self.chrome.field_drafts.clear();
+            self.chrome.output_picker_open = false;
         }
     }
     pub fn activate_output(&mut self, output: Option<&str>) {
@@ -676,48 +711,27 @@ impl EditorSession {
             new_canvas_skin: self.new_canvas_skin,
         }
     }
-    pub fn select_visible(&mut self) {
-        self.selected_canvas = self
-            .draft
-            .iter()
-            .find(|canvas| {
-                canvas.output.as_ref() == self.active_output.as_ref()
-                    && visible_on(canvas, Some(self.preview))
-            })
-            .map(|canvas| canvas.id.clone());
+    pub fn clear_selection(&mut self) {
+        self.selected_canvas = None;
         self.selected_widget = None;
         self.title = None;
+        self.placing = None;
+        self.drag = None;
+        self.chrome.field_drafts.clear();
     }
-    pub fn enter(&mut self, canvas: Option<String>, preview: ScreenKind) {
+    pub fn enter(&mut self, _canvas: Option<String>, preview: ScreenKind) {
         self.editing = true;
         self.chrome.panel_open = true;
         self.preview = preview;
-        self.select_visible();
-        if canvas.is_some() {
-            self.selected_canvas = canvas;
-        }
+        self.clear_selection();
         self.readonly = true;
-    }
-    fn activate_canvas_output(&mut self, canvas: &CanvasPresentation) -> bool {
-        let Some(output) = canvas.output.as_deref().filter(|output| {
-            self.outputs
-                .iter()
-                .any(|candidate| candidate.name == *output)
-        }) else {
-            return false;
-        };
-        let changed = self.active_output.as_deref() != Some(output);
-        self.activate_output(Some(output));
-        changed
     }
     fn select_canvas(&mut self, id: &str) {
         let Some(canvas) = self.draft.iter().find(|canvas| canvas.id == id).cloned() else {
             return;
         };
-        let output_changed = self.activate_canvas_output(&canvas);
-        let scope_changed = self.selected_canvas.as_deref() != Some(id)
-            || self.selected_widget.is_some()
-            || output_changed;
+        let scope_changed =
+            self.selected_canvas.as_deref() != Some(id) || self.selected_widget.is_some();
         select_canvas_preview(&canvas, &mut self.preview);
         self.chrome.expanded_canvases.insert(id.to_owned());
         self.selected_canvas = Some(id.to_owned());
@@ -739,10 +753,8 @@ impl EditorSession {
         else {
             return;
         };
-        let output_changed = self.activate_canvas_output(&canvas);
         let scope_changed = self.selected_canvas.as_deref() != Some(canvas_id)
-            || self.selected_widget.as_deref() != Some(widget_id)
-            || output_changed;
+            || self.selected_widget.as_deref() != Some(widget_id);
         select_canvas_preview(&canvas, &mut self.preview);
         self.selected_canvas = Some(canvas_id.to_owned());
         self.selected_widget = Some(widget_id.to_owned());
@@ -756,6 +768,7 @@ impl EditorSession {
         self.editing = false;
         self.discard_pending = false;
         self.chrome.screen_picker_open = false;
+        self.chrome.output_picker_open = false;
         self.chrome.widget_add_open = false;
         self.chrome.field_drafts.clear();
         self.selected_widget = None;
@@ -771,14 +784,9 @@ impl EditorSession {
         match action {
             EditorAction::TogglePanel => self.chrome.panel_open = !self.chrome.panel_open,
             EditorAction::SetScreenPickerOpen(open) => self.chrome.screen_picker_open = *open,
+            EditorAction::SetOutputPickerOpen(open) => self.chrome.output_picker_open = *open,
             EditorAction::ToggleOutputExpanded(output) => {
-                if self.chrome.expanded_outputs.remove(output) {
-                    self.chrome.collapsed_outputs.insert(output.clone());
-                } else if self.chrome.collapsed_outputs.remove(output) {
-                    self.chrome.expanded_outputs.insert(output.clone());
-                } else if self.active_output.as_ref() == Some(output) {
-                    self.chrome.collapsed_outputs.insert(output.clone());
-                } else {
+                if !self.chrome.expanded_outputs.remove(output) {
                     self.chrome.expanded_outputs.insert(output.clone());
                 }
             }
@@ -803,21 +811,28 @@ impl EditorSession {
                     && self.active_output.as_deref() != Some(output.as_str())
                 {
                     self.activate_output(Some(output));
-                    self.selected_canvas = None;
-                    self.selected_widget = None;
-                    self.placing = None;
-                    self.title = None;
-                    self.chrome.field_drafts.clear();
                 }
+                self.chrome.output_picker_open = false;
             }
+            EditorAction::ClearSelection => self.clear_selection(),
             EditorAction::SelectCanvas(id) => {
-                self.select_canvas(id);
+                if self.selected_canvas.as_deref() == Some(id) && self.selected_widget.is_none() {
+                    self.clear_selection();
+                } else {
+                    self.select_canvas(id);
+                }
             }
             EditorAction::SelectWidget {
                 canvas_id,
                 widget_id,
             } => {
-                self.select_widget(canvas_id, widget_id);
+                if self.selected_canvas.as_deref() == Some(canvas_id)
+                    && self.selected_widget.as_deref() == Some(widget_id)
+                {
+                    self.clear_selection();
+                } else {
+                    self.select_widget(canvas_id, widget_id);
+                }
             }
             EditorAction::ToggleWidgetAdd => {
                 self.chrome.widget_add_open = !self.chrome.widget_add_open;
@@ -977,7 +992,7 @@ impl EditorSession {
                     self.placing = None;
                     self.chrome.field_drafts.clear();
                     if self.current().is_none() {
-                        self.select_visible();
+                        self.clear_selection();
                     }
                     if !self.current().is_some_and(|canvas| {
                         canvas
@@ -1143,8 +1158,7 @@ impl EditorSession {
             EditorAction::DeleteCanvas => {
                 self.draft
                     .retain(|canvas| Some(&canvas.id) != self.selected_canvas.as_ref());
-                self.select_visible();
-                self.chrome.field_drafts.clear();
+                self.clear_selection();
             }
             _ => {
                 if let Some(canvas) = self
@@ -1224,8 +1238,7 @@ impl EditorSession {
                                 .widgets
                                 .retain(|widget| Some(&widget.id) != self.selected_widget.as_ref());
                             self.selected_widget = None;
-                            self.title = None;
-                            self.chrome.field_drafts.clear();
+                            self.clear_selection();
                         }
                         _ => {
                             if let Some(widget) = canvas
@@ -1385,7 +1398,7 @@ impl EditorSession {
             }
             SurfaceAction::End => return self.end_drag(),
             SurfaceAction::Place(point) => return self.place(point),
-            SurfaceAction::Cancel => {
+            SurfaceAction::Cancel | SurfaceAction::CancelFromKeyboard => {
                 if let Some(drag) = self.drag.take() {
                     self.draft = drag.original;
                 }
@@ -1487,7 +1500,7 @@ impl EditorSession {
                 ],
                 delta,
                 drag.corner.as_deref(),
-                self.viewport,
+                crate::editor::canvas_geometry_bounds(original, &self.outputs),
                 min,
                 AspectRatio::Free,
             );
@@ -1875,6 +1888,7 @@ mod skin_tests {
 
         assert!(model.action(&EditorAction::DeleteCanvas));
         assert!(model.draft.is_empty());
+        assert!(model.selected_canvas.is_none());
     }
 
     #[test]
@@ -1957,6 +1971,8 @@ mod skin_tests {
         );
         assert!(model.action(&EditorAction::DeleteWidget));
         assert!(model.draft[0].widgets.is_empty());
+        assert!(model.selected_canvas.is_none());
+        assert!(model.selected_widget.is_none());
         assert_eq!(model.draft[1].id, second_canvas);
         assert_eq!(model.draft[1].widgets[0].id, shared_widget_id);
     }
@@ -1973,6 +1989,7 @@ mod skin_tests {
         let widget_id = model.draft[0].widgets[0].id.clone();
         model.draft[0].show_on = Some(vec![ScreenKind::Result]);
         model.preview = ScreenKind::Play;
+        model.clear_selection();
 
         model.action(&EditorAction::SelectWidget {
             canvas_id,
@@ -1980,6 +1997,24 @@ mod skin_tests {
         });
 
         assert_eq!(model.preview, ScreenKind::Result);
+    }
+
+    #[test]
+    fn editor_entry_and_repeated_object_selection_allow_no_selection() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        model.enter(Some(canvas.clone()), ScreenKind::Play);
+        assert!(model.selected_canvas.is_none());
+        model.action(&EditorAction::SelectCanvas(canvas.clone()));
+        assert_eq!(model.selected_canvas.as_deref(), Some(canvas.as_str()));
+        model.action(&EditorAction::SelectCanvas(canvas.clone()));
+        assert!(model.selected_canvas.is_none());
+        model.action(&EditorAction::SelectCanvas(canvas));
+        model.action(&EditorAction::ClearSelection);
+        assert!(model.selected_canvas.is_none());
     }
 
     #[test]
@@ -2005,7 +2040,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn output_navigation_clears_selection_without_changing_preview_or_draft() {
+    fn output_navigation_preserves_selection_without_changing_preview_or_draft() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.set_outputs(vec![
             crate::editor::EditorOutput {
@@ -2029,7 +2064,7 @@ mod skin_tests {
         assert_eq!(model.active_output.as_deref(), Some("DP-2"));
         assert_eq!(model.preview, ScreenKind::Result);
         assert_eq!(model.draft, draft);
-        assert!(model.selected_canvas.is_none());
+        assert_eq!(model.selected_canvas, Some(draft[0].id.clone()));
     }
 
     #[test]
@@ -2052,7 +2087,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn selecting_a_peer_canvas_or_widget_activates_its_output_atomically() {
+    fn selecting_a_peer_canvas_or_widget_preserves_editor_output() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.set_outputs(vec![
             crate::editor::EditorOutput {
@@ -2075,9 +2110,10 @@ mod skin_tests {
         let canvas = model.selected_canvas.clone().unwrap();
         let widget = model.selected_widget.clone().unwrap();
         model.action(&EditorAction::SelectOutput("DP-1".into()));
+        model.clear_selection();
 
         model.action(&EditorAction::SelectCanvas(canvas.clone()));
-        assert_eq!(model.active_output.as_deref(), Some("DP-2"));
+        assert_eq!(model.active_output.as_deref(), Some("DP-1"));
         assert!(model.stage_projections()[1].selected_canvas.is_some());
 
         model.action(&EditorAction::SelectOutput("DP-1".into()));
@@ -2085,7 +2121,7 @@ mod skin_tests {
             canvas_id: canvas,
             widget_id: widget,
         });
-        assert_eq!(model.active_output.as_deref(), Some("DP-2"));
+        assert_eq!(model.active_output.as_deref(), Some("DP-1"));
         assert!(model.stage_projections()[1].selected_widget.is_some());
     }
 
@@ -2178,6 +2214,7 @@ mod skin_tests {
         assert!(model.action(&EditorAction::AddCanvas));
         let canvas = model.selected_canvas.clone().unwrap();
         model.chrome.expanded_canvases.clear();
+        model.clear_selection();
         let revision = model.revision;
 
         assert!(
@@ -2221,7 +2258,7 @@ mod skin_tests {
         model.reduce(EditorInput::Action(EditorAction::TogglePanel));
         assert_eq!(model.chrome.field_drafts[&field].text, "99999");
         assert!(!model.document_valid());
-        model.reduce(EditorInput::Action(EditorAction::SelectCanvas(canvas)));
+        assert_eq!(model.selected_canvas.as_deref(), Some(canvas.as_str()));
         model.reduce(EditorInput::Action(EditorAction::SelectOutput(
             "DP-1".into(),
         )));
@@ -2374,10 +2411,6 @@ mod skin_tests {
         model.reduce(EditorInput::Action(EditorAction::SelectOutput(
             "DP-1".into(),
         )));
-        model.reduce(EditorInput::Action(EditorAction::SelectCanvas(
-            canvas.clone(),
-        )));
-
         assert_eq!(model.selected_canvas.as_deref(), Some(canvas.as_str()));
         assert_eq!(
             model.stage_projections()[0]
@@ -2389,7 +2422,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn disconnected_active_output_selects_a_peer_and_clears_transient_selection() {
+    fn disconnected_editor_output_selects_a_peer_and_preserves_selection() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.set_outputs(vec![
             crate::editor::EditorOutput {
@@ -2416,7 +2449,7 @@ mod skin_tests {
         }]);
 
         assert_eq!(model.active_output.as_deref(), Some("DP-1"));
-        assert!(model.selected_canvas.is_none());
+        assert!(model.selected_canvas.is_some());
         assert!(model.selected_widget.is_none());
         assert!(model.drag.is_none());
     }
@@ -2711,7 +2744,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn active_output_updates_the_drag_bounds_for_mixed_resolutions() {
+    fn remote_canvas_drag_uses_its_own_output_bounds() {
         let canvas = CanvasPresentation {
             id: "wide-canvas".into(),
             name: "Wide canvas".into(),
@@ -2740,13 +2773,39 @@ mod skin_tests {
             },
         ]);
         model.activate_output(Some("DP-1"));
-        model.draft[0].output = Some("DP-1".into());
+        model.editing = true;
         model.readonly = false;
-        model.begin_drag("wide-canvas".into(), None, None, [0, 0]);
-        model.move_pointer([10_000, 0]);
+        model.reduce(EditorInput::SurfaceOnOutput {
+            output: "DP-2".into(),
+            action: crate::editor::effect::SurfaceAction::Start {
+                canvas: "wide-canvas".into(),
+                widget: None,
+                corner: None,
+                point: [0, 0],
+            },
+        });
+        model.reduce(EditorInput::SurfaceOnOutput {
+            output: "DP-1".into(),
+            action: crate::editor::effect::SurfaceAction::Move([10_000, 0]),
+        });
+        assert_eq!(model.draft[0].x, 0);
+        model.reduce(EditorInput::SurfaceOnOutput {
+            output: "DP-2".into(),
+            action: crate::editor::effect::SurfaceAction::Move([10_000, 0]),
+        });
 
-        assert_eq!(model.viewport, [5120, 1440]);
-        assert_eq!(model.draft[0].x, 4560);
+        assert_eq!(model.active_output.as_deref(), Some("DP-1"));
+        assert_eq!(model.draft[0].x, 1168);
+        model.reduce(EditorInput::SurfaceOnOutput {
+            output: "DP-1".into(),
+            action: crate::editor::effect::SurfaceAction::Cancel,
+        });
+        assert_eq!(model.draft[0].x, 1168);
+        model.reduce(EditorInput::SurfaceOnOutput {
+            output: "DP-1".into(),
+            action: crate::editor::effect::SurfaceAction::CancelFromKeyboard,
+        });
+        assert_eq!(model.draft[0].x, 0);
     }
 
     #[test]
@@ -2771,6 +2830,7 @@ mod skin_tests {
             widgets: Vec::new(),
         };
         let mut model = Model::new(vec![canvas], [1920, 1080], "test");
+        model.select_canvas("canvas");
         model.set_skins(vec![skin(first.name(), 2), skin(second.name(), 7)]);
         assert_eq!(
             model.draft[0].skin_properties["amount"],

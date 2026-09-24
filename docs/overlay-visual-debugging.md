@@ -49,6 +49,8 @@ the acquire, keepalive, draft update, commit and release effect outcome and dura
 contain only stable input/effect names and operational canvas/output identifiers; they do not record
 titles, property values or other entered content. Editor input transport is an ordered, unbounded
 process-local channel, so no accepted drag movement or keyboard/IME input is intentionally dropped.
+`native_editor_input_region` records the panel and canvas input rectangles for each output after
+layout, so a projected stage can be distinguished from the pointer area accepted by Wayland.
 `native_summary.frame_work` aggregates call counts and nanoseconds for projection/config conversion,
 Dioxus polling, package/runtime/skin-tree work, motion, resource lookup and message decoding, Blitz
 layout, scene construction and renderer present/commit work. It also retains up to 256 per-frame
@@ -163,6 +165,15 @@ visible preview follows the schedule returned by its skin; damage remains
 coalesced until the next callback. In a nested multi-output check, leave the editor idle before and
 after an output assignment and confirm that frame callbacks continue without a configure timeout or
 canvas-worker failure.
+
+The Context Bar output picker moves only the editor panel. Object selection and Inspector content
+remain in the shared session; selecting a canvas or widget never moves the panel. Every stage keeps
+its own canvas and widget hit regions, and the Wayland surface accepts pointer input only over the
+panel or those canvas rectangles. Blank output areas pass input through. New canvases target the
+panel's current output, while widgets are added to the selected canvas on its assigned output.
+Opening the editor clears selection, including when opened from a canvas. Without selection,
+OBJECTS fills the workspace and INSPECTOR is hidden; with selection they split its height equally.
+The output picker is also present in OBS with its single output choice.
 
 OBS `/overlay` boots the editor WASM bundle and places display-only skin canvas iframes inside
 the shared editor canvas. Native supplies rendered canvas content in the same component

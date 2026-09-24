@@ -35,9 +35,17 @@
     ".inspector-scroll"
   ],
   "actions": [
+    { "action": "capture", "name": "initial-unselected" },
+    { "action": "click", "selector": ".workspace-output-option .navigator-item-select" },
     { "action": "click", "selector": ".workspace-output-option .navigator-item-select" },
     { "action": "click", "selector": ".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select" },
-    { "action": "capture", "name": "same-output-canvas-reselected" },
+    { "action": "capture", "name": "canvas-selected" },
+    { "action": "click", "selector": ".widget-picker .list-picker-trigger" },
+    { "action": "capture", "name": "widget-choices" },
+    { "action": "click", "selector": ".widget-picker .list-picker-trigger" },
+    { "action": "click", "selector": ".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select" },
+    { "action": "capture", "name": "selection-cleared" },
+    { "action": "click", "selector": ".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select" },
     { "action": "click", "selector": ".editor-panel-toggle" },
     { "action": "click", "selector": ".editor-panel-toggle" },
     { "action": "click", "selector": ".screen-picker .list-picker-trigger" },

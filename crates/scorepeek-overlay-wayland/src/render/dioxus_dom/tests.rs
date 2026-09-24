@@ -485,7 +485,7 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         .unwrap();
         assert!(outcome.input_damage);
     };
-    let canvases = crate::config::visual_debug_config(cyan_skin())
+    let mut canvases: Vec<_> = crate::config::visual_debug_config(cyan_skin())
         .canvases
         .into_iter()
         .filter(|canvas| canvas.backend == crate::bridge::data::Backend::Wayland)
@@ -494,6 +494,12 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
             canvas.presentation()
         })
         .collect();
+    for index in 0..8 {
+        let mut extra = canvases[0].clone();
+        extra.id = format!("scroll-{index}");
+        extra.name = format!("Scroll {index}");
+        canvases.push(extra);
+    }
     let scenario = VisualDebugScenario {
         canvases: Some(canvases),
         skin: None,
@@ -539,6 +545,7 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         ),
     ] {
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".canvas-select").unwrap();
         let prior = offset(&session);
         let point = point_in_navigator(&session, selector);
         axis(&mut session, point, [0.0, delta]);
@@ -549,6 +556,7 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         );
     }
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session.click(".canvas-select").unwrap();
     let before = offset(&session);
     let canvas_point = {
         let inner = session.document.inner.borrow();
@@ -664,6 +672,9 @@ fn blitz_adapter_preserves_browser_interaction_identity_across_empty_vdom_diff()
         actions: Vec::new(),
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session
+        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .unwrap();
     session.click(".editor-number-field").unwrap();
     let focus_before = session
         .document
@@ -2188,16 +2199,16 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                     .query_selector_all(".editor-widget-hit")
                     .unwrap()
                     .len(),
-                if expected.interactive {
-                    expected
-                        .canvases
-                        .iter()
-                        .map(|canvas| canvas.widgets.len())
-                        .sum::<usize>()
-                } else {
-                    0
-                },
+                expected
+                    .canvases
+                    .iter()
+                    .map(|canvas| canvas.widgets.len())
+                    .sum::<usize>(),
                 "hit regions must exactly equal projected widgets"
+            );
+            assert_eq!(
+                inner.query_selector_all(".editor-panel").unwrap().len(),
+                usize::from(expected.interactive)
             );
             for canvas in &expected.canvases {
                 assert!(
@@ -2218,9 +2229,8 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                     "every projected canvas must own one editor hit root"
                 );
                 expected_owners.insert(canvas.id.clone(), output.clone());
-                if expected.interactive {
-                    for widget in &canvas.widgets {
-                        assert!(
+                for widget in &canvas.widgets {
+                    assert!(
                                 inner
                                     .query_selector(&format!(
                                         ".editor-canvas[data-canvas='{}'] .editor-widget-hit[data-widget='{}']",
@@ -2230,7 +2240,6 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                                     .is_some(),
                                 "every interactive projected widget must own one matching hit region"
                             );
-                    }
                 }
             }
         }
@@ -2406,20 +2415,44 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     fake.scroll_stage(&mut authority, "WL-1", ".navigator-scroll", -800.0)
         .unwrap();
     fake.click_stage(
-            &mut authority,
-            "WL-1",
-            ".workspace-output-option[data-output='WL-2'] > .navigator-item-line > .navigator-item-select",
-        )
-        .unwrap();
+        &mut authority,
+        "WL-1",
+        ".editor-output-picker .list-picker-trigger",
+    )
+    .unwrap();
+    fake.click_stage(
+        &mut authority,
+        "WL-1",
+        ".editor-output-picker .list-picker-option[data-index='1']",
+    )
+    .unwrap();
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-2"));
     fake.scroll_stage(&mut authority, "WL-2", ".navigator-scroll", -800.0)
         .unwrap();
+    fake.click_stage(&mut authority, "WL-2", ".workspace-output-option[data-output='WL-2'] > .navigator-item-line > .navigator-item-select").unwrap();
     fake.click_stage(
             &mut authority,
             "WL-2",
             ".canvas-select[data-canvas-id='wayland-selection'] > .navigator-item-line > .navigator-item-select",
         )
         .unwrap();
+    fake.click_stage(
+        &mut authority,
+        "WL-2",
+        ".editor-output-picker .list-picker-trigger",
+    )
+    .unwrap();
+    fake.click_stage(
+        &mut authority,
+        "WL-2",
+        ".editor-output-picker .list-picker-option[data-index='0']",
+    )
+    .unwrap();
+    assert_eq!(authority.session().active_output.as_deref(), Some("WL-1"));
+    assert_eq!(
+        authority.session().selected_canvas.as_deref(),
+        Some("wayland-selection")
+    );
     let (drag_output, dragged_canvas, dragged_widget, before_drag) = {
         let session = authority.session();
         let canvas = session.current().expect("opened canvas remains selected");
@@ -2439,7 +2472,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             })
             .expect("fixture has a draggable widget inside the logical viewport");
         (
-            session.active_output.clone().unwrap(),
+            canvas.output.clone().unwrap(),
             canvas.id.clone(),
             widget.id.clone(),
             [widget.x, widget.y],
@@ -2709,6 +2742,89 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         }
     }
 
+    authority.dispatch(EditorInput::Action(EditorAction::SelectWidget {
+        canvas_id: dragged_canvas.clone(),
+        widget_id: dragged_widget.clone(),
+    }));
+    fake.apply(&mut authority).unwrap();
+    let widget_size_before = {
+        let session = authority.session();
+        let widget = session
+            .current()
+            .unwrap()
+            .widgets
+            .iter()
+            .find(|widget| widget.id == dragged_widget)
+            .unwrap();
+        [widget.width, widget.height]
+    };
+    fake.drag_stage(
+        &mut authority,
+        "WL-2",
+        &format!(".editor-canvas[data-canvas='{dragged_canvas}'] .editor-widget-hit[data-widget='{dragged_widget}'] .resize-handle.se"),
+        [20.0, 20.0],
+    ).unwrap();
+    let widget_size_after = {
+        let session = authority.session();
+        let widget = session
+            .current()
+            .unwrap()
+            .widgets
+            .iter()
+            .find(|widget| widget.id == dragged_widget)
+            .unwrap();
+        [widget.width, widget.height]
+    };
+    assert_ne!(widget_size_after, widget_size_before);
+    authority.dispatch(EditorInput::Action(EditorAction::SelectCanvas(
+        dragged_canvas.clone(),
+    )));
+    fake.apply(&mut authority).unwrap();
+    let canvas_size_before = {
+        let session = authority.session();
+        let canvas = session.current().unwrap();
+        [canvas.width, canvas.height]
+    };
+    fake.drag_stage(
+        &mut authority,
+        "WL-2",
+        &format!(".editor-canvas[data-canvas='{dragged_canvas}'] .resize-handle.canvas-resize.se"),
+        [20.0, 20.0],
+    )
+    .unwrap();
+    let canvas_size_after = {
+        let session = authority.session();
+        let canvas = session.current().unwrap();
+        [canvas.width, canvas.height]
+    };
+    assert_ne!(canvas_size_after, canvas_size_before);
+    let widget_count_before = authority.session().current().unwrap().widgets.len();
+    fake.click_stage(
+        &mut authority,
+        "WL-1",
+        ".widget-picker .list-picker-trigger",
+    )
+    .unwrap();
+    fake.click_stage(
+        &mut authority,
+        "WL-1",
+        ".widget-picker .list-picker-option[data-index='5']",
+    )
+    .unwrap();
+    assert_eq!(
+        authority.session().current().unwrap().widgets.len(),
+        widget_count_before + 1
+    );
+    assert_eq!(
+        authority.session().current().unwrap().output.as_deref(),
+        Some("WL-2")
+    );
+    authority.dispatch(EditorInput::Action(EditorAction::DeleteWidget));
+    fake.apply(&mut authority).unwrap();
+    authority.dispatch(EditorInput::Action(EditorAction::SelectCanvas(
+        "wayland-status".into(),
+    )));
+    fake.apply(&mut authority).unwrap();
     authority.dispatch(EditorInput::Action(EditorAction::CanvasVisibleNone));
     fake.apply(&mut authority).unwrap();
     assert!(
@@ -3393,14 +3509,6 @@ fn unmap_failure_is_primary_when_the_app_loop_also_failed() {
 }
 
 #[test]
-fn only_active_editor_stage_accepts_input() {
-    assert!(surface_input_enabled(true, true, true));
-    assert!(!surface_input_enabled(true, false, true));
-    assert!(!surface_input_enabled(true, true, false));
-    assert!(surface_input_enabled(false, false, true));
-}
-
-#[test]
 fn editor_stages_are_output_owned_when_canvas_assignment_changes() {
     let mut canvases = crate::config::visual_debug_config(cyan_skin())
         .canvases
@@ -3531,6 +3639,9 @@ fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
         actions: Vec::new(),
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session
+        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .unwrap();
     session
         .authority
         .dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
@@ -3687,6 +3798,9 @@ fn native_keyboard_edits_the_focused_dioxus_number_field() {
         actions: Vec::new(),
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session
+        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .unwrap();
     session.click(".editor-number-field").unwrap();
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::SelectAll);
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::Insert(
@@ -3711,6 +3825,9 @@ fn native_keyboard_uses_the_shared_title_input_contract() {
         actions: Vec::new(),
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session
+        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .unwrap();
     session
         .click(".widget-picker .list-picker-trigger")
         .unwrap();
@@ -3749,6 +3866,9 @@ fn native_ime_batch_uses_browser_order_and_shared_composition_state() {
         actions: Vec::new(),
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session
+        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .unwrap();
     session
         .click(".widget-picker .list-picker-trigger")
         .unwrap();
@@ -3807,6 +3927,9 @@ fn native_ime_targets_the_focused_shared_text_control() {
         actions: Vec::new(),
     };
     let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    session
+        .click(".canvas-select[data-canvas-id='wayland-status'] .navigator-item-select")
+        .unwrap();
     session.click(".editor-text-field").unwrap();
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::SelectAll);
     {
@@ -4073,12 +4196,49 @@ fn compact_canvas_editor_expands_inside_the_output() {
 }
 
 #[test]
+fn editor_input_region_covers_panel_and_canvas_but_leaves_blank_output_clear() {
+    let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
+    canvas.output = Some("WL-1".into());
+    let scenario = VisualDebugScenario {
+        canvases: Some(vec![canvas]),
+        skin: None,
+        logical_size: [1920, 1080],
+        scale: 1.0,
+        canvas_id: None,
+        editing: true,
+        selectors: Vec::new(),
+        actions: Vec::new(),
+    };
+    let session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+    let rects = editor_input_rects(&session.document);
+    let contains = |x: f64, y: f64| {
+        rects.iter().any(|[left, top, width, height]| {
+            x >= f64::from(*left)
+                && x < f64::from(left.saturating_add(*width))
+                && y >= f64::from(*top)
+                && y < f64::from(top.saturating_add(*height))
+        })
+    };
+    let inner = session.document.inner.borrow();
+    for selector in [".editor-panel", ".editor-canvas"] {
+        let node = inner.query_selector(selector).unwrap().unwrap();
+        let rect = inner.get_client_bounding_rect(node).unwrap();
+        assert!(contains(
+            rect.x + rect.width / 2.0,
+            rect.y + rect.height / 2.0
+        ));
+    }
+    assert!(!contains(1900.0, 1040.0));
+}
+
+#[test]
 fn aggregate_canvas_visibility_preserves_explicit_screen_membership() {
     use scorepeek_overlay::editor::model::SCREENS;
     let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
     canvas.show_on = None;
     let mut model = EditorSession::new(vec![canvas.clone()], [1920, 1080], "wayland");
     model.readonly = false;
+    model.action(&EditorAction::SelectCanvas(canvas.id.clone()));
     for screen in SCREENS {
         model.action(&EditorAction::CanvasVisible(screen, false));
     }

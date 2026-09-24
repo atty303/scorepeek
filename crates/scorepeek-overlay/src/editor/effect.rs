@@ -15,6 +15,7 @@ pub enum SurfaceAction {
     Move([i32; 2]),
     End,
     Cancel,
+    CancelFromKeyboard,
     Place([i32; 2]),
 }
 fn point(event: &PointerEvent) -> [i32; 2] {
@@ -64,7 +65,7 @@ pub fn EditorSelectionMetrics(
 #[component]
 pub fn EditorSurface(onaction: EventHandler<SurfaceAction>, children: Element) -> Element {
     rsx! { div { class:"editor-surface",
-        onkeydown:move |event|{if event.key()==Key::Escape {onaction.call(SurfaceAction::Cancel);}},
+        onkeydown:move |event|{if event.key()==Key::Escape {onaction.call(SurfaceAction::CancelFromKeyboard);}},
         onpointermove: move |event| onaction.call(SurfaceAction::Move(point(&event))),
         onpointerup: move |_| onaction.call(SurfaceAction::End),
         onpointercancel: move |_| onaction.call(SurfaceAction::Cancel),
@@ -90,7 +91,8 @@ pub fn EditorCanvas(
             Option<String>,
             Option<String>,
         )| {
-            if !selected && event.trigger_button() == Some(MouseButton::Primary) {
+            if !selected && widget.is_none() && event.trigger_button() == Some(MouseButton::Primary)
+            {
                 event.prevent_default();
                 event.stop_propagation();
                 onaction.call(SurfaceAction::Select(canvas));

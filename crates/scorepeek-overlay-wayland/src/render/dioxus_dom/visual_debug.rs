@@ -126,6 +126,7 @@ struct VisualDebugElement {
 pub(super) struct VisualDebugSession {
     pub(super) document: DioxusDocument,
     pub(super) pointer: PointerInput,
+    display_canvas_id: String,
     logical_size: [u32; 2],
     physical_size: [u32; 2],
     scale: f32,
@@ -204,7 +205,6 @@ impl VisualDebugSession {
         );
         model.set_outputs(vec![output.clone()]);
         model.active_output = Some(output.name.clone());
-        model.selected_canvas = Some(selected);
         model.editing = scenario.editing;
         model.readonly = false;
         model.advance_revision();
@@ -346,6 +346,7 @@ impl VisualDebugSession {
         let mut session = Self {
             document,
             pointer: PointerInput::default(),
+            display_canvas_id: selected,
             logical_size: scenario.logical_size,
             physical_size,
             scale: scenario.scale,
@@ -582,7 +583,14 @@ impl VisualDebugSession {
         if let Some(output) = output {
             self.projection.set(if editing {
                 NativeDocumentProjection::Editor(self.authority.session().stage_projection(&output))
-            } else if let Some(canvas) = self.authority.session().current().cloned() {
+            } else if let Some(canvas) = self
+                .authority
+                .session()
+                .draft
+                .iter()
+                .find(|canvas| canvas.id == self.display_canvas_id)
+                .cloned()
+            {
                 NativeDocumentProjection::Display {
                     canvas,
                     visible: true,

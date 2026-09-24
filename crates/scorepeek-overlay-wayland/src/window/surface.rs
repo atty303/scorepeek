@@ -84,6 +84,7 @@ pub struct Shell {
     pub position: [i32; 2],
     pub output_logical_size: Option<[u32; 2]>,
     pub fractional_scaling: bool,
+    input_rects: Option<Vec<[i32; 4]>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -256,6 +257,7 @@ impl Shell {
             state: app,
             event_loop,
             configure_phase: ConfigurePhase::Awaiting(Instant::now()),
+            input_rects: None,
         })
     }
     #[must_use]
@@ -396,19 +398,39 @@ impl Shell {
     /// # Panics
     /// Panics when called after the configured shell has lost its owned overlay surface.
     pub fn set_input_enabled(&mut self, enabled: bool) {
+        let _ = self.set_input_rects(if enabled { None } else { Some(Vec::new()) });
+    }
+
+    /// Sets the union of logical surface rectangles that accept pointer input.
+    ///
+    /// # Panics
+    /// Panics when called after the configured shell has lost its owned overlay surface.
+    pub fn set_input_rects(&mut self, rects: Option<Vec<[i32; 4]>>) -> bool {
+        if self.input_rects == rects {
+            return false;
+        }
         let surface = self
             .state
             .overlay_surface
             .as_ref()
             .expect("configured shell owns an overlay surface");
-        if enabled {
+        if rects.is_none() {
             surface.set_input_region(None);
         } else if let Ok(region) = Region::new(&self.state.compositor) {
+            for [x, y, width, height] in rects.as_ref().into_iter().flatten() {
+                if *width > 0 && *height > 0 {
+                    region.add(*x, *y, *width, *height);
+                }
+            }
             surface.set_input_region(Some(region.wl_region()));
+        } else {
+            return false;
         }
+        self.input_rects = rects;
         if self.state.configured {
             surface.commit();
         }
+        true
     }
 
     /// Selects a compositor-provided cursor shape while the pointer is over this surface.

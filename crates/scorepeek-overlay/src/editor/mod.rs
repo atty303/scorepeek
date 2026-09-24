@@ -67,8 +67,8 @@ pub struct EditorChrome {
     pub widget_add_open: bool,
     pub sample: bool,
     pub screen_picker_open: bool,
+    pub output_picker_open: bool,
     pub expanded_outputs: std::collections::BTreeSet<String>,
-    pub collapsed_outputs: std::collections::BTreeSet<String>,
     pub expanded_canvases: std::collections::BTreeSet<String>,
     pub collapsed_accordions: std::collections::BTreeSet<String>,
     pub field_drafts: std::collections::BTreeMap<String, EditorFieldDraft>,
@@ -362,6 +362,11 @@ pub fn CollapsedEditorButton(dirty: bool, onaction: EventHandler<EditorAction>) 
 
 #[component]
 pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Element {
+    let output_names = view
+        .outputs
+        .iter()
+        .map(|output| output.name.clone())
+        .collect::<Vec<_>>();
     let options = crate::editor::model::SCREENS
         .into_iter()
         .map(|screen| ListPickerOption {
@@ -376,6 +381,18 @@ pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Ele
     rsx! {
         header { class: "editor-context-bar",
             IconButton { class: "editor-panel-toggle", label: "Hide editor panel", onclick: move |_| onaction.call(EditorAction::TogglePanel), "‹" }
+            ListPicker {
+                class: "editor-output-picker",
+                label: "Editor output",
+                value: "▣",
+                options: view.outputs.iter().map(|output| ListPickerOption { label: output.name.clone(), detail: None }).collect(),
+                selected: view.outputs.iter().position(|output| Some(&output.name) == view.active_output.as_ref()).unwrap_or_default(),
+                cursor: view.chrome.picker_cursors.get("editor-output").copied().unwrap_or_default(),
+                open: view.chrome.output_picker_open,
+                onopen: move |open| onaction.call(EditorAction::SetOutputPickerOpen(open)),
+                onselect: move |index: usize| if let Some(output) = output_names.get(index) { onaction.call(EditorAction::SelectOutput(output.clone())); },
+                oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("editor-output".into(), index)),
+            }
             ListPicker {
                 class: "screen-picker",
                 label: "GAME SCREEN",
@@ -402,9 +419,9 @@ pub fn EditorWorkspace(
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     rsx! {
-        div { class: "editor-workspace",
+        div { class: if view.selected_canvas.is_some() { "editor-workspace has-selection" } else { "editor-workspace" },
             ObjectNavigator { view: view.clone(), onaction }
-            Inspector { view, title, onaction }
+            if view.selected_canvas.is_some() { Inspector { view: view.clone(), title, onaction } }
         }
     }
 }
@@ -476,22 +493,18 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                     for (output, assigned_output) in navigator_outputs.iter() {
                         {
                             let output_name = output.name.clone();
-                            let selected_ancestor = view.selected_canvas.as_ref().is_some_and(|selected| view.canvases.iter().any(|canvas| &canvas.id == selected && canvas.output.as_ref() == assigned_output.as_ref()));
-                            let output_open = selected_ancestor
-                                || view.chrome.expanded_outputs.contains(&output.name)
-                                || view.active_output.as_ref() == Some(&output.name)
-                                    && !view.chrome.collapsed_outputs.contains(&output.name);
+                            let output_open = view.chrome.expanded_outputs.contains(&output.name);
                             rsx! {
                                 NavigatorItem {
                                     key: "{output.name}",
                                     class: "workspace-output-option",
                                     label: output.name.clone(),
                                     depth: 0,
-                                    selected: assigned_output.as_ref().is_some_and(|assigned| view.active_output.as_ref() == Some(assigned)),
+                                    selected: false,
                                     expanded: output_open,
                                     "data-output": output.name.clone(),
-                                    onclick: { let assigned_output = assigned_output.clone(); move |_| if let Some(output) = &assigned_output { onaction.call(EditorAction::SelectOutput(output.clone())); } },
-                                    ontoggle: move |_| onaction.call(EditorAction::ToggleOutputExpanded(output_name.clone())),
+                                    onclick: move |_| onaction.call(EditorAction::ToggleOutputExpanded(output_name.clone())),
+                                    ontoggle: { let output_name = output.name.clone(); move |_| onaction.call(EditorAction::ToggleOutputExpanded(output_name.clone())) },
                                     for canvas in view.canvases.iter().filter(|canvas| canvas.output.as_ref() == assigned_output.as_ref()) {
                                         {
                                             let canvas_id = canvas.id.clone();
@@ -529,20 +542,18 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                 }
             }
             div { class: "navigator-add",
-                if canvas.is_some() {
-                    ListPicker {
+                ListPicker {
                         class: "widget-picker",
-                        label: "ADD",
-                        value: "Widget",
+                        label: "Add widget",
+                        value: "+ Add widget",
                         options: widget_options,
                         selected: 0,
                         cursor: view.chrome.picker_cursors.get("widget-add").copied().unwrap_or(0),
                         open: view.chrome.widget_add_open,
-                        disabled: view.access.readonly,
+                        disabled: view.access.readonly || canvas.is_none(),
                         onopen: move |open| if open != view.chrome.widget_add_open { onaction.call(EditorAction::ToggleWidgetAdd); },
                         onselect: move |index| onaction.call(EditorAction::AddWidget(index)),
                         oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("widget-add".into(), index)),
-                    }
                 }
                 Button { class: "add-canvas", disabled: view.access.readonly || view.active_output.is_none() || view.new_canvas_skin.is_none(), onclick: move |_| onaction.call(EditorAction::AddCanvas), "+ Add canvas" }
             }
@@ -562,7 +573,7 @@ pub fn Inspector(
         .find(|canvas| Some(canvas.id.as_str()) == view.selected_canvas.as_deref());
     rsx! {
         main { class: "object-inspector",
-            div { class: "pane-heading", strong { "INSPECTOR" } }
+            div { class: "pane-heading", strong { "INSPECTOR" } IconButton { class: "inspector-close", label: "Clear selection", onclick: move |_| onaction.call(EditorAction::ClearSelection), "×" } }
             div { class: "inspector-scroll",
                 Accordion { label: "Object properties",
                     if let Some(canvas) = canvas {

@@ -18,6 +18,7 @@ mod tests {
         );
         model.editing = true;
         model.readonly = false;
+        model.selected_canvas = Some("design".into());
         model.selected_widget = Some("cam".into());
         model.set_skins(vec![EditorSkin {
             id: model.draft[0].skin,

@@ -6,6 +6,7 @@ use crate::{ScreenKind, Skin};
 pub enum EditorAction {
     TogglePanel,
     SetScreenPickerOpen(bool),
+    SetOutputPickerOpen(bool),
     SetPickerCursor(String, usize),
     BeginFieldEdit(String, String),
     UpdateFieldDraft(String, String, bool),
@@ -16,6 +17,7 @@ pub enum EditorAction {
     ToggleAccordion(String),
     PreviewScreen(ScreenKind),
     SelectOutput(String),
+    ClearSelection,
     SelectCanvas(String),
     CanvasName(String),
     CanvasVisible(ScreenKind, bool),
@@ -70,6 +72,7 @@ impl EditorAction {
         match self {
             Self::TogglePanel => "toggle_panel",
             Self::SetScreenPickerOpen(_) => "screen_picker",
+            Self::SetOutputPickerOpen(_) => "output_picker",
             Self::SetPickerCursor(_, _) => "picker_cursor",
             Self::BeginFieldEdit(_, _) => "field_focus",
             Self::UpdateFieldDraft(_, _, _) => "field_input",
@@ -80,6 +83,7 @@ impl EditorAction {
             Self::ToggleAccordion(_) => "inspector_disclosure",
             Self::PreviewScreen(_) => "preview_screen",
             Self::SelectOutput(_) => "select_output",
+            Self::ClearSelection => "clear_selection",
             Self::SelectCanvas(_) => "select_canvas",
             Self::CanvasName(_) => "canvas_name",
             Self::CanvasVisible(_, _) => "canvas_visibility",
