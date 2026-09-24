@@ -41,17 +41,11 @@ fn format(result: &CommandResult) -> String {
         },
         CommandResult::Doctor { report, .. } => format!(
             "scorepeek doctor\n  numeric model: {} ({})\n  catalog: {}\n  capture inventory: {}\n  Vulkan layer: {}\n",
-            report.numeric_model["status"].as_str().unwrap_or("unknown"),
-            report.numeric_model["model_id"]
-                .as_str()
-                .unwrap_or("not available"),
-            report.catalog["status"].as_str().unwrap_or("unknown"),
-            if report.target_inventory.is_object() {
-                "available"
-            } else {
-                "unavailable"
-            },
-            report.vulkan_layer["status"].as_str().unwrap_or("unknown"),
+            report.numeric_model.status(),
+            report.numeric_model.model_id(),
+            report.catalog.status.as_str(),
+            "available",
+            report.vulkan_layer.status.as_str(),
         ),
         CommandResult::Skin { result, .. } => match result {
             SkinResult::Installed { outcome } => match outcome {

@@ -42,6 +42,8 @@ and event authority lives in `scorepeek-core`; SQLite score persistence and quer
 `scorepeek-scores`. The CLI owns terminal lifecycle, human and JSON command-result output, and Ratatui
 rendering; the runtime publishes typed frontend snapshots, command results, inspection events, and warnings and
 does not depend on a TUI toolkit.
+Doctor inventory and check results cross this boundary as typed reports; the CLI serializes the
+public JSON or renders the human summary.
 Config and installed-skin result paths cross the frontend protocol as native OS strings. The CLI
 displays them for human output and requires UTF-8 only when rendering JSON.
 The frontend protocol also delivers validated diagnostic inspection headers and records one at a

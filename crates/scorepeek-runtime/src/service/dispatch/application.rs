@@ -208,7 +208,7 @@ fn dispatch_public(
     let PublicCli { config, command } = cli;
     match command {
         PublicCommand::Run(args) => run_public(args, config).map(|()| None),
-        PublicCommand::Doctor => collect_frontend_doctor().map(Some),
+        PublicCommand::Doctor => Ok(Some(collect_frontend_doctor())),
         PublicCommand::Config { command } => {
             let config_path = config_paths::resolve(config)?;
             run_config_command(&command, &config_path).map(Some)

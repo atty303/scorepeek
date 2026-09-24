@@ -6,7 +6,7 @@ use std::io::{Cursor, Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 const MANIFEST_NAME: &str = "VkLayer_SCOREPEEK_capture.json";
@@ -74,27 +74,9 @@ pub(crate) enum UninstallOutcome {
     NotInstalled,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum InstallationStatus {
-    NotInstalled,
-    MatchesEmbedded,
-    DifferentPayload,
-    Invalid,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct InstallationReport {
-    pub(crate) status: InstallationStatus,
-    manifest_path: PathBuf,
-    library_path: PathBuf,
-    embedded_manifest_sha256: Option<String>,
-    embedded_library_sha256: Option<String>,
-    installed_manifest_sha256: Option<String>,
-    installed_library_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-}
+use scorepeek_frontend_api::{
+    VulkanLayerReport as InstallationReport, VulkanLayerStatus as InstallationStatus,
+};
 
 #[derive(Clone, Debug)]
 struct InstallationPaths {

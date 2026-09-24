@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
@@ -353,72 +352,32 @@ fn safe_line(value: &str) -> Option<String> {
 }
 
 impl Inventory {
-    pub fn to_json(&self) -> String {
-        let mut json = String::from("{\"schema\":");
-        write_json_string(&mut json, SCHEMA);
-        json.push_str(",\"os\":{");
-        write_string_map(&mut json, &self.os);
-        json.push_str("},\"observations\":{");
-
-        for (index, (name, observation)) in self.observations.iter().enumerate() {
-            if index > 0 {
-                json.push(',');
-            }
-            write_json_string(&mut json, name);
-            json.push(':');
-            observation.write_json(&mut json);
-        }
-
-        json.push_str("}}");
-        json
-    }
-}
-
-impl Observation {
-    fn write_json(&self, json: &mut String) {
-        match self {
-            Self::Detected(value) => {
-                json.push_str("{\"status\":\"detected\",\"value\":");
-                write_json_string(json, value);
-                json.push('}');
-            }
-            Self::Unavailable => json.push_str("{\"status\":\"unavailable\"}"),
-            Self::Failed(exit_code) => {
-                write!(json, "{{\"status\":\"failed\",\"exit_code\":{exit_code}}}")
-                    .expect("writing to a String cannot fail");
-            }
+    pub fn into_report(self) -> scorepeek_frontend_api::TargetInventory {
+        scorepeek_frontend_api::TargetInventory {
+            schema: SCHEMA.to_owned(),
+            os: self.os,
+            observations: self
+                .observations
+                .into_iter()
+                .map(|(name, observation)| {
+                    (
+                        name.to_owned(),
+                        match observation {
+                            Observation::Detected(value) => {
+                                scorepeek_frontend_api::ProbeObservation::Detected { value }
+                            }
+                            Observation::Unavailable => {
+                                scorepeek_frontend_api::ProbeObservation::Unavailable
+                            }
+                            Observation::Failed(exit_code) => {
+                                scorepeek_frontend_api::ProbeObservation::Failed { exit_code }
+                            }
+                        },
+                    )
+                })
+                .collect(),
         }
     }
-}
-
-fn write_string_map(json: &mut String, values: &BTreeMap<String, String>) {
-    for (index, (key, value)) in values.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        write_json_string(json, key);
-        json.push(':');
-        write_json_string(json, value);
-    }
-}
-
-fn write_json_string(json: &mut String, value: &str) {
-    json.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => json.push_str("\\\""),
-            '\\' => json.push_str("\\\\"),
-            '\n' => json.push_str("\\n"),
-            '\r' => json.push_str("\\r"),
-            '\t' => json.push_str("\\t"),
-            character if character.is_control() => {
-                write!(json, "\\u{:04x}", u32::from(character))
-                    .expect("writing to a String cannot fail");
-            }
-            character => json.push(character),
-        }
-    }
-    json.push('"');
 }
 
 #[cfg(test)]
@@ -458,16 +417,22 @@ mod tests {
             ]),
         };
 
-        let inventory = collect_with(&runner, "/path/that/does/not/exist").to_json();
+        let inventory = collect_with(&runner, "/path/that/does/not/exist").into_report();
+        assert!(inventory.os.is_empty());
+        assert_eq!(inventory.observations.len(), 2);
+        assert!(
+            matches!(inventory.observations.get("gpu"), Some(scorepeek_frontend_api::ProbeObservation::Detected { value }) if value == "0000:03:00.0 VGA compatible controller: Example GPU [1234:5678] | Kernel driver in use: amdgpu")
+        );
+        let json = serde_json::to_string(&inventory).unwrap();
 
-        assert!(inventory.contains("\"schema\":\"scorepeek-target-inventory-v1\""));
-        assert!(inventory.contains("Example GPU [1234:5678] | Kernel driver in use: amdgpu"));
-        assert!(!inventory.contains("Subsystem: private"));
-        assert!(!inventory.contains("secret_driver"));
-        assert!(!inventory.contains("secret from stderr"));
-        assert!(!inventory.contains("gamescope"));
-        assert!(!inventory.contains("pipewire"));
-        assert!(!inventory.contains("obs_"));
+        assert!(json.contains("\"schema\":\"scorepeek-target-inventory-v1\""));
+        assert!(json.contains("Example GPU [1234:5678] | Kernel driver in use: amdgpu"));
+        assert!(!json.contains("Subsystem: private"));
+        assert!(!json.contains("secret_driver"));
+        assert!(!json.contains("secret from stderr"));
+        assert!(!json.contains("gamescope"));
+        assert!(!json.contains("pipewire"));
+        assert!(!json.contains("obs_"));
     }
 
     #[test]
@@ -479,18 +444,20 @@ mod tests {
             ]),
         };
 
-        let inventory = collect_with(&runner, "/path/that/does/not/exist").to_json();
+        let inventory = collect_with(&runner, "/path/that/does/not/exist").into_report();
+        assert!(matches!(
+            inventory.observations.get("kernel"),
+            Some(scorepeek_frontend_api::ProbeObservation::Failed { exit_code: 7 })
+        ));
+        assert!(matches!(
+            inventory.observations.get("gpu"),
+            Some(scorepeek_frontend_api::ProbeObservation::Unavailable)
+        ));
+        let json = serde_json::to_string(&inventory).unwrap();
 
-        assert!(inventory.contains("\"kernel\":{\"status\":\"failed\",\"exit_code\":7}"));
-        assert!(inventory.contains("\"gpu\":{\"status\":\"unavailable\"}"));
-        assert!(!inventory.contains("secret from stderr"));
-    }
-
-    #[test]
-    fn json_strings_are_escaped() {
-        let mut json = String::new();
-        write_json_string(&mut json, "a\"b\\c\n");
-        assert_eq!(json, "\"a\\\"b\\\\c\\n\"");
+        assert!(json.contains("\"kernel\":{\"status\":\"failed\",\"exit_code\":7}"));
+        assert!(json.contains("\"gpu\":{\"status\":\"unavailable\"}"));
+        assert!(!json.contains("secret from stderr"));
     }
 
     #[test]

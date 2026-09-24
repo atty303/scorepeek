@@ -17,7 +17,9 @@ pub use event::{
 };
 pub use protocol::{RequestId, Revision};
 pub use reply::{
-    CommandResult, ConfigResult, DoctorReport, FrontendReply, InstalledSkin, ModelDownload,
-    SkinInstallResult, SkinResult, VulkanLayerResult,
+    CatalogReport, CatalogStatus, CatalogUpdateErrorType, CatalogUpdateFailure, CommandResult,
+    ConfigResult, DoctorReport, FrontendReply, InstalledSkin, ModelDownload, NumericModelReport,
+    ProbeObservation, SkinInstallResult, SkinResult, TargetInventory, VulkanLayerReport,
+    VulkanLayerResult, VulkanLayerStatus,
 };
 pub use snapshot::{ApplicationSnapshot, RunSnapshot};

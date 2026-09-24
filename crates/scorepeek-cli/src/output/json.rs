@@ -71,7 +71,11 @@ fn config_path(path: &OsStr) -> Result<&str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scorepeek_frontend_api::{DoctorReport, InstalledSkin};
+    use scorepeek_frontend_api::{
+        CatalogReport, CatalogStatus, DoctorReport, InstalledSkin, NumericModelReport,
+        TargetInventory, VulkanLayerReport, VulkanLayerStatus,
+    };
+    use std::collections::BTreeMap;
     use std::os::unix::ffi::OsStringExt as _;
 
     #[test]
@@ -108,14 +112,42 @@ mod tests {
     fn doctor_and_skin_json_preserve_public_shapes() {
         let report = DoctorReport {
             schema: "scorepeek-doctor-v5".to_owned(),
-            target_inventory: serde_json::json!({"schema": "inventory"}),
-            numeric_model: serde_json::json!({"status": "active"}),
-            catalog: serde_json::json!({"status": "unavailable"}),
-            vulkan_layer: serde_json::json!({"status": "available"}),
+            target_inventory: TargetInventory {
+                schema: "scorepeek-target-inventory-v1".to_owned(),
+                os: BTreeMap::new(),
+                observations: BTreeMap::new(),
+            },
+            numeric_model: NumericModelReport::Unavailable {
+                reason: "missing".to_owned(),
+                registered_manifest_sha256: "hash".to_owned(),
+            },
+            catalog: CatalogReport {
+                status: CatalogStatus::Unavailable,
+                reason: Some("missing".to_owned()),
+                active_catalog_sha256: None,
+                source_url_sha256: None,
+                last_success_unix_seconds: None,
+                etag_present: None,
+                last_modified_present: None,
+                last_failure: None,
+            },
+            vulkan_layer: VulkanLayerReport {
+                status: VulkanLayerStatus::NotInstalled,
+                manifest_path: "/tmp/manifest".into(),
+                library_path: "/tmp/library".into(),
+                embedded_manifest_sha256: None,
+                embedded_library_sha256: None,
+                installed_manifest_sha256: None,
+                installed_library_sha256: None,
+                reason: None,
+            },
         };
         assert_eq!(
-            format(&CommandResult::Doctor { report }).unwrap(),
-            r#"{"schema":"scorepeek-doctor-v5","target_inventory":{"schema":"inventory"},"numeric_model":{"status":"active"},"catalog":{"status":"unavailable"},"vulkan_layer":{"status":"available"}}"#
+            format(&CommandResult::Doctor {
+                report: Box::new(report)
+            })
+            .unwrap(),
+            r#"{"schema":"scorepeek-doctor-v5","target_inventory":{"schema":"scorepeek-target-inventory-v1","os":{},"observations":{}},"numeric_model":{"status":"unavailable","reason":"missing","registered_manifest_sha256":"hash"},"catalog":{"status":"unavailable","reason":"missing"},"vulkan_layer":{"status":"not_installed","manifest_path":"/tmp/manifest","library_path":"/tmp/library","embedded_manifest_sha256":null,"embedded_library_sha256":null,"installed_manifest_sha256":null,"installed_library_sha256":null}}"#
         );
         let result = SkinResult::Listed {
             skins: vec![InstalledSkin {
