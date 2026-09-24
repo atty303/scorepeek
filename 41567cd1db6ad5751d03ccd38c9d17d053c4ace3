@@ -1,0 +1,141 @@
+Task: Move catalog publication to publisher and shared native overlay work to scorepeek-overlay-runtime
+Anchor: 41567cd1db6ad5751d03ccd38c9d17d053c4ace3
+Base: c13bb19013cf0363a95cef5d14a5c116ad0964a0
+Branch: codex/capture-canonical-session-refactor
+Commits: 41567cd refactors catalog publishing and native overlay ownership; no other task commits
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; dig; review; git-task-evidence
+Conditions: local source only; no push, deploy, release, migration, or external service change; no crate conditional compilation
+## Evidence
+Initial tree clean at c13bb19. Full thread compared with local Codex session 01a0cf29-6a59-7640-9234-b60e2ed56485; auto-injected AGENTS, skill text, plugin lists, and environment omitted.
+Publisher SQLite and ZIP round trip through resources passed. mise run check passed; mise run test passed 746 Rust and 3 browser tests; workspace clippy passed; native visual scenario completed 30 states. Independent read-only review found no actionable issue.
+Browser host dependency tree contains no Wasmtime; Wayland owns Wasmtime and installation smoke validation; browser client executes skins in Web Worker.
+Authority: latest user implementation request and Wasmtime correction; current repository source, tests, and docs/architecture.md
+## Transcript
+- U1:
+    [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) crateの責務を逸脱している実装コードがあるか？
+    
+  - A: Used dig to inspect architecture and code, identifying catalog publishing in resources, federation in core, and native overlay duplication; asked for the first boundary decision.
+- U2:
+    A
+    
+  - A: Selected publisher ownership of ZIP creation, publication verification, and unchanged selection; inspected SQLite writer placement.
+- U3:
+    A
+    
+  - A: Selected publisher ownership of SQLite snapshot generation; examined the shared format contract.
+- U4:
+    A
+    
+  - A: Selected cross-crate producer and reader tests without a format crate; inspected federation and fixtures.
+- U5:
+    A
+    
+  - A: Selected publisher ownership of source federation while preserving completed-catalog contracts in core; checked test fixture dependencies.
+- U6:
+    overlayに共通実装を持たせる
+    
+  - A: Initially proposed placing native feed and SQLite work in overlay; inspected browser client dependency.
+- U7:
+    ちょっとまて。browserはserverとclientにわかれていて、serverが購読やsqliteをするはずだから、wasmビルドではないはずだ。clientがoverlayに依存しているなら、なにに依存している？
+    
+  - A: Corrected the distinction between browser server and Wasm client: client uses portable overlay UI types/editor, while server owns feed and SQLite.
+- U8:
+    crateの条件コンパイルはしたくない
+    
+  - A: Accepted the no-conditional-compilation constraint and proposed a separate native shared crate.
+- U9:
+    B. overlay-runtimeにしよう
+    
+  - A: Selected scorepeek-overlay-runtime and examined config, skins, and backend-specific work.
+- U10:
+    A
+    
+  - A: Selected shared native feed/config/skin handling and backend-specific adapters; inspected SourcePolicy boundary.
+- U11:
+    A
+    
+  - A: Kept SourcePolicy in core and moved source observations and federation to publisher; fixed the implementation scope.
+- U12:
+    A
+    
+  - A: Restricted implementation to confirmed crossings and directly necessary related code; prepared implementation request.
+- U13:
+    A
+    
+  - A: Provided a concrete implementation request and verification contract.
+- U14:
+    # 実装依頼
+    
+    ## 依頼
+    
+    `/var/home/atty/src/atty303/scorepeek` で、確認済みのcrate責務の越境を整理してください。カタログ公開専用処理を `scorepeek-catalog-publisher` へ移し、Waylandとbrowser serverに重複する共通ネイティブ処理を新しい `scorepeek-overlay-runtime` crateへ集めてください。
+    
+    ## 目的
+    
+    - カタログの生成・公開と、実行時の検証・利用の責務を明確にする。
+    - Waylandとbrowser serverの共通処理を一か所で保守できるようにする。
+    
+    ## 成功条件
+    
+    - カタログ連合、公開元の観測入力、SQLiteスナップショット生成、ZIP作成、公開側の検証と更新なし判定がpublisher側にある。
+    - `scorepeek-core` は完成済みカタログの型・検証・認識用操作と `SourcePolicy` を持ち、`scorepeek-resources` はクライアント側のZIP検証、検証済みスナップショットの取り込み・保存・読み込みを担当する。
+    - publisherが生成したSQLiteとZIPを、既存の`resources`の読み込み・検証経路で確認できる。
+    - `scorepeek-overlay-runtime` が両backendに共通するEvent API購読と再接続、SQLite照会、表示用変換、設定保存、スキン保存、ZIP検証、Wasm実行を持つ。WaylandのDOM・描画・入力処理とbrowser serverのHTTP・WebSocket処理は各backend crateに残る。
+    - `scorepeek-overlay-web-client` のWasmビルドを含む既存の検証が通る。既存の外部動作、SQLite・ZIP形式、CLI、設定、イベント契約は維持される。
+    
+    ## 決定事項
+    
+    - 公開専用のZIP作成・検証・更新なし判定をpublisherへ移す。
+      - 理由: 現行の責務定義ではpublisherが公開処理を所有する。
+      - 主な棄却案: `resources` を公開・実行時兼用のartifact crateとして扱う案。公開専用の判断が実行時資源管理に残るため。
+    - publisher用SQLite書き込み・公開処理もpublisherへ移す。
+      - 理由: ZIP処理だけを移しても、カタログ生成経路が `resources` に残るため。
+      - 主な棄却案: `CatalogStore` の公開側writerを `resources` に残す案。同じ責務の越境が続くため。
+    - SQLite形式のための新しい共有crateは作らず、publisherの生成物を `resources` の既存リーダーで検証する。
+      - 理由: 現在の単一スキーマをcrate間の実際の生成・読み込みで確認できるため。
+      - 主な棄却案: SQLite形式専用crate。現時点ではcrateと依存関係を増やす必要がないため。
+    - 公開元別の連合・隔離判断と連合入力型をpublisherへ移し、`SourcePolicy` は `core` に残す。
+      - 理由: 連合は公開処理であり、`SourcePolicy` は完成済みカタログの検証契約にも使われるため。
+      - 主な棄却案: 連合を `core` に残す案と、`SourcePolicy` まで移して読み込み側の検証を縮める案。前者は公開処理がcoreに残り、後者は現在の検証契約を変えるため。
+    - 共通ネイティブ処理の所有者として `scorepeek-overlay-runtime` を新設する。
+      - 理由: 既存の `scorepeek-overlay` はWasm clientも使う共有UI実装であり、crateの条件コンパイルを使わずにネイティブ処理を分離するため。
+      - 主な棄却案: `scorepeek-overlay` へのネイティブ処理追加と条件コンパイル。条件コンパイルを使わないという指定に反するため。
+    - 移動対象は今回確認した越境と、その移動に直接必要な関連コードに限定する。
+      - 理由: 変更範囲と成功条件を具体的に固定するため。
+      - 主な棄却案: 全workspace crateの追加監査と、新たに見つかる越境の一括修正。別領域の設計判断が混ざるため。
+    
+    ## 制約
+    
+    - crateの条件コンパイルを導入しない。
+    - 既存の外部動作、保存形式、公開イベント、設定とCLIの互換性を維持する。
+    - 実環境への適用、deploy、release、push、PR作成は行わない。
+    - 関係のないcrateや機能の整理を広げない。
+    
+    ## 対象外
+    
+    - 全workspace crateを網羅する新たな責務監査。
+    - Waylandとbrowser serverに固有の描画、入力、HTTP、WebSocket処理の共通化。
+    - 実データのmigrationとライブ環境での検証。
+    
+    ## 未検証の前提
+    
+    - `core` やruntimeのテストが連合処理を使って合成カタログを作っているため、publisherへの逆依存を作らずにテストfixtureを維持できること。
+    - Waylandとbrowser serverのスキン処理の共通部分を分離しても、各backend固有の接続処理と公開APIを維持できること。
+    - 既存のSQLite・ZIP生成物と、移動後の生成物が同じ形式・検証契約を満たすこと。
+    
+    ## 実装時の指示
+    
+    - まず上記の未検証の前提を現行sourceで確認する。
+    - `scorepeek-overlay-web-client` が使う `scorepeek-overlay` の共有データ型・エディタ・表示処理は維持する。
+    - publisher移動後の合成カタログfixtureは、実行時crateからpublisherへ依存しない形にする。
+    - 所有者が変わる現行アーキテクチャ資料を実装と同じ変更で更新する。
+    
+  - A: Read repository guidance and current source, checked fixtures and skin boundaries, then began the authorized refactor.
+- U15:
+    wasmtime実行はnative固有処理じゃないか？
+    
+  - A: Initially explained Wasmtime as shared native execution; this was later corrected after browser server usage was inspected.
+- U16:
+    え？browserはwasntime依存しないのでなんでruntimeに置く必要があるの？
+    
+  - A: Confirmed browser rendering uses a Web Worker. Moved Wasmtime execution and installation smoke validation back to Wayland; shared runtime now owns only cross-backend native work. Moved publisher code, updated fixtures and architecture, passed checks/tests/visual scenario, obtained independent review, and made local commit 41567cd.
