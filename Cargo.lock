@@ -4237,10 +4237,12 @@ dependencies = [
  "clap_complete_nushell",
  "ratatui",
  "scorepeek-frontend-api",
- "scorepeek-overlay-wayland",
+ "scorepeek-overlay",
+ "scorepeek-overlay-runtime",
  "scorepeek-runtime",
  "serde_json",
  "tempfile",
+ "zip",
 ]
 
 [[package]]
@@ -4409,6 +4411,8 @@ dependencies = [
  "rustix",
  "scorepeek-core",
  "scorepeek-frontend-api",
+ "scorepeek-overlay",
+ "scorepeek-overlay-runtime",
  "scorepeek-overlay-wayland",
  "scorepeek-overlay-web-host",
  "scorepeek-resources",

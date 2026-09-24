@@ -18,9 +18,11 @@ scorepeek-frontend-api = { path = "../scorepeek-frontend-api" }
 scorepeek-runtime = { path = "../scorepeek-runtime" }
 
 [dev-dependencies]
-scorepeek-overlay-wayland = { path = "../scorepeek-overlay-wayland" }
+scorepeek-overlay = { path = "../scorepeek-overlay" }
+scorepeek-overlay-runtime = { path = "../scorepeek-overlay-runtime" }
 serde_json.workspace = true
 tempfile.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true

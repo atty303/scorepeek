@@ -12,6 +12,8 @@ scorepeek-core = { path = "../scorepeek-core" }
 scorepeek-resources = { path = "../scorepeek-resources" }
 scorepeek-scores = { path = "../scorepeek-scores" }
 scorepeek-frontend-api = { path = "../scorepeek-frontend-api" }
+scorepeek-overlay = { path = "../scorepeek-overlay" }
+scorepeek-overlay-runtime = { path = "../scorepeek-overlay-runtime" }
 scorepeek-overlay-wayland = { path = "../scorepeek-overlay-wayland" }
 scorepeek-overlay-web-host = { path = "../scorepeek-overlay-web-host" }
 scorepeek-vulkan-capture = { path = "../scorepeek-vulkan-capture" }

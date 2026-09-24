@@ -193,6 +193,8 @@ scorepeek skin uninstall dev.example.skin-name
 
 The store is `$XDG_DATA_HOME/scorepeek/skins` (or the corresponding home data directory). A package
 whose ID and release already match is reported as `unchanged` without replacing the stored ZIP.
+Installation checks package structure and does not execute or validate `skin.wasm`. A package with
+an unusable module can be installed; its execution failure is reported when an overlay uses it.
 Changing the opaque release replaces that ID atomically after the v2 property compatibility check.
 An installed package from an older API is never listed or executed, but installing a valid v2 ZIP
 with the same ID replaces it atomically and reports the previous release.

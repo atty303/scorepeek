@@ -1,5 +1,8 @@
 use scorepeek_overlay::editor::projection::Consumer;
-use scorepeek_overlay::{BestView, GraphPlay, History, HistoryPlay, OverlayState, ResultDetail};
+use scorepeek_overlay::{
+    Backend, BestView, GraphPlay, History, HistoryPlay, OverlayState, ResultDetail,
+};
+use serde::{Deserialize, Serialize};
 use std::{
     io::Read as _,
     os::unix::net::UnixStream,
@@ -11,7 +14,51 @@ use std::{
     time::{Duration, Instant},
 };
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
+
+/// Immutable configuration sent by the parent to either overlay child role.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Config {
+    pub backend: Backend,
+    pub canvases: Vec<crate::config::Canvas>,
+    pub config_path: PathBuf,
+    pub control_socket: PathBuf,
+    pub skin_store: PathBuf,
+    pub socket: PathBuf,
+    pub invocation: String,
+    pub scores_db: Option<PathBuf>,
+    pub listen: SocketAddr,
+    pub unknown_grace_ms: u32,
+    #[serde(default)]
+    pub edit_on_start: bool,
+}
+
+/// Reads one configuration line; the remaining stdin pipe is the parent lifetime lease.
+/// # Errors
+/// Returns malformed configuration or stdin errors.
+pub fn read_config() -> Result<(Config, std::io::BufReader<std::io::Stdin>), String> {
+    use std::io::BufRead as _;
+    let mut input = std::io::BufReader::new(std::io::stdin());
+    let mut line = String::new();
+    input
+        .read_line(&mut line)
+        .map_err(|error| error.to_string())?;
+    let config =
+        serde_json::from_str(&line).map_err(|error| format!("overlay configuration: {error}"))?;
+    Ok((config, input))
+}
+
+impl From<Config> for FeedConfig {
+    fn from(config: Config) -> Self {
+        Self {
+            socket: config.socket,
+            invocation: config.invocation,
+            scores_db: config.scores_db,
+            unknown_grace_ms: config.unknown_grace_ms,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct FeedConfig {

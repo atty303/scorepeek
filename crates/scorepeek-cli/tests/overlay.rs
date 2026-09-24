@@ -1,5 +1,6 @@
 //! Uses only synthetic inputs and an absent, isolated score database.
-use scorepeek_overlay_wayland::bridge::data::{Backend, Config};
+use scorepeek_overlay::Backend;
+use scorepeek_overlay_runtime::data::Config;
 use std::{
     io::{Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -129,15 +130,61 @@ fn skin_install_stdout_remains_one_result_line() {
 }
 
 #[test]
+fn structurally_valid_package_with_unusable_wasm_installs() {
+    let isolated = IsolatedHome::new();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
+    let file = std::fs::File::open(source).unwrap();
+    let mut original = zip::ZipArchive::new(file).unwrap();
+    let package = isolated.path("unusable-wasm.zip");
+    let mut rewritten = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
+    for index in 0..original.len() {
+        let mut entry = original.by_index(index).unwrap();
+        let name = entry.name().to_owned();
+        rewritten
+            .start_file(name.clone(), zip::write::SimpleFileOptions::default())
+            .unwrap();
+        if name == "skin.wasm" {
+            rewritten.write_all(b"not a wasm module").unwrap();
+        } else {
+            std::io::copy(&mut entry, &mut rewritten).unwrap();
+        }
+    }
+    rewritten.finish().unwrap();
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
+    isolated.apply(&mut command);
+    let output = command
+        .args(["skin", "install"])
+        .arg(&package)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"installed\n");
+    let store =
+        scorepeek_overlay_runtime::skin::StoreRoot::new(isolated.path("data/scorepeek/skins"));
+    let installed = store
+        .open("dev.atty303.scorepeek.skin.result-aurora")
+        .unwrap();
+    assert_eq!(
+        installed.resource("skin.wasm"),
+        Some(b"not a wasm module".as_slice())
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let isolated = IsolatedHome::new();
-    let skin_store = scorepeek_overlay_wayland::skin::StoreRoot::new(isolated.path("skins"));
-    scorepeek_overlay_wayland::skin::install(
-        &skin_store,
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
-    )
-    .unwrap();
+    let skin_store = scorepeek_overlay_runtime::skin::StoreRoot::new(isolated.path("skins"));
+    skin_store
+        .install(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
+        )
+        .unwrap();
     let address = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -145,7 +192,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let config = Config {
         backend: Backend::Obs,
         canvases: {
-            vec![scorepeek_overlay_wayland::config::empty_canvas(
+            vec![scorepeek_overlay_runtime::config::empty_canvas(
                 "obs-selection".into(),
                 Backend::Obs,
                 "dev.atty303.scorepeek.skin.result-aurora".parse().unwrap(),

@@ -1,5 +1,6 @@
 //! Owned subprocesses. Closing stdin revokes their lifetime lease.
-use scorepeek_overlay_wayland::bridge::data::{Backend, Config};
+use scorepeek_overlay::Backend;
+use scorepeek_overlay_runtime::data::Config;
 use std::{
     io::Write as _,
     os::unix::process::ExitStatusExt as _,

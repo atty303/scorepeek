@@ -22,7 +22,7 @@ struct CompiledModule {
 #[derive(Clone, Copy)]
 #[allow(
     dead_code,
-    reason = "shared skin ABI timing remains part of host smoke execution"
+    reason = "runtime timing is retained for native host profiling"
 )]
 pub struct RuntimeTiming {
     pub cache_phase: &'static str,
@@ -34,7 +34,7 @@ pub struct RuntimeTiming {
 #[derive(Clone, Copy)]
 #[allow(
     dead_code,
-    reason = "shared skin ABI timing remains part of host smoke execution"
+    reason = "runtime timing is retained for native host profiling"
 )]
 pub struct RenderTiming {
     pub wasm: Duration,
@@ -353,23 +353,6 @@ fn run_with_timeout<T>(
             error
         }
     })
-}
-
-/// Validates native Wasm execution and both skin input modes before installation.
-/// # Errors
-/// Returns invalid module, ABI, timeout, or output errors.
-pub fn validate_and_smoke_test(package: &Package) -> Result<(), String> {
-    let wasm = package
-        .resource(MODULE_PATH)
-        .ok_or_else(|| format!("skin ZIP requires {MODULE_PATH} at its root"))?;
-    Module::validate(&engine()?, wasm).map_err(|error| format!("skin.wasm: {error}"))?;
-    for backend in ["native", "obs"] {
-        let mut runtime = Runtime::new(package)?;
-        let input = serde_json::json!({"schema":"scorepeek-skin-input-v2","backend":backend,"monotonic_ms":0,"canvas":{"id":"install-smoke","skin":package.manifest.id,"width":1920,"height":1080,"properties":{}},"widgets":[],"state":{"screen":"unknown"}});
-        runtime.init(&input)?;
-        runtime.render(&input)?;
-    }
-    Ok(())
 }
 
 /// Stateful keyed adapter from the shared JSON tree to Blitz's ordinary DOM.

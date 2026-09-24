@@ -371,18 +371,16 @@ pub(super) fn run_routine_live_session(
     let mut overlay_children = crate::overlay::supervisor::Children::default();
     let overlay_config_path = overlays
         .config_path
-        .unwrap_or_else(scorepeek_overlay_wayland::config::default_path);
+        .unwrap_or_else(scorepeek_overlay_runtime::config::default_path);
     let requested_backends = [
         overlays
             .wayland
-            .then_some(scorepeek_overlay_wayland::bridge::data::Backend::Wayland),
-        overlays
-            .obs
-            .then_some(scorepeek_overlay_wayland::bridge::data::Backend::Obs),
+            .then_some(scorepeek_overlay::Backend::Wayland),
+        overlays.obs.then_some(scorepeek_overlay::Backend::Obs),
     ];
     settle_output_startup_result(&mut output, monitor, Ok(()))?;
     let loaded_overlay_config_result = if overlays.wayland || overlays.obs {
-        Some(scorepeek_overlay_wayland::config::load_or_create(
+        Some(scorepeek_overlay_runtime::config::load_or_create(
             &overlay_config_path,
         ))
         .transpose()
@@ -431,7 +429,7 @@ pub(super) fn run_routine_live_session(
                 let executable = std::env::current_exe().map_err(|error| error.to_string())?;
                 overlay_children.start(
                     &executable,
-                    &scorepeek_overlay_wayland::bridge::data::Config {
+                    &scorepeek_overlay_runtime::data::Config {
                         backend,
                         canvases,
                         config_path: overlay_config_path.clone(),
@@ -440,7 +438,7 @@ pub(super) fn run_routine_live_session(
                             .expect("overlay controller started")
                             .path()
                             .to_owned(),
-                        skin_store: scorepeek_overlay_wayland::skin::StoreRoot::discover()
+                        skin_store: scorepeek_overlay_runtime::skin::StoreRoot::discover()
                             .path()
                             .to_owned(),
                         socket: socket.to_path_buf(),
@@ -451,8 +449,7 @@ pub(super) fn run_routine_live_session(
                             .parse()
                             .map_err(|error| format!("overlay obs_listen: {error}"))?,
                         unknown_grace_ms: overlay_config.unknown_grace_ms,
-                        edit_on_start: backend
-                            == scorepeek_overlay_wayland::bridge::data::Backend::Wayland
+                        edit_on_start: backend == scorepeek_overlay::Backend::Wayland
                             && (overlays.wayland_edit
                                 || !overlay_config
                                     .canvases

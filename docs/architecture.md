@@ -202,8 +202,10 @@ surface lifecycle, input normalization, and rendering differences.
 The portable `scorepeek-overlay` crate also serves the browser Wasm client.
 `scorepeek-overlay-runtime` owns the shared native Event API feed and reconnection,
 SQLite history projection, configuration storage, skin package storage, and ZIP
-structure checks. The Wayland adapter owns native Wasmtime execution and
-installation smoke validation; the browser client executes skins in a Web Worker.
+structure checks and child process configuration. Installation checks ZIP and manifest structure
+without executing or validating the Wasm module. The Wayland adapter owns native Wasmtime
+execution; the browser client executes skins in a Web Worker. Runtime failures follow each
+adapter's existing error and diagnostic path.
 
 Each installed skin is a self-contained ZIP with manifest, Wasm DOM producer,
 CSS, preview, and package-relative resources. Native executes the Wasm module

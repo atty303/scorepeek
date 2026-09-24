@@ -503,18 +503,18 @@ fn run_diagnostic_command(command: DiagnosticCommand) -> Result<(), String> {
 }
 
 fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::CommandResult, String> {
-    let store = scorepeek_overlay_wayland::skin::StoreRoot::discover();
+    let store = scorepeek_overlay_runtime::skin::StoreRoot::discover();
     let (format, result) = match command {
         SkinCommand::Install { package } => {
-            let outcome = scorepeek_overlay_wayland::skin::install(&store, &package)?;
+            let outcome = store.install(&package)?;
             let outcome = match outcome {
-                scorepeek_overlay_wayland::skin::InstallOutcome::Installed => {
+                scorepeek_overlay_runtime::skin::InstallOutcome::Installed => {
                     scorepeek_frontend_api::SkinInstallResult::Installed
                 }
-                scorepeek_overlay_wayland::skin::InstallOutcome::Replaced { previous_release } => {
+                scorepeek_overlay_runtime::skin::InstallOutcome::Replaced { previous_release } => {
                     scorepeek_frontend_api::SkinInstallResult::Replaced { previous_release }
                 }
-                scorepeek_overlay_wayland::skin::InstallOutcome::Unchanged => {
+                scorepeek_overlay_runtime::skin::InstallOutcome::Unchanged => {
                     scorepeek_frontend_api::SkinInstallResult::Unchanged
                 }
             };

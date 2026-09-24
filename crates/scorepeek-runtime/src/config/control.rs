@@ -1,7 +1,7 @@
 //! Runtime-owned transactional authority for the overlay configuration document.
 
-use scorepeek_overlay_wayland::{
-    bridge::data::{Backend, CanvasPresentation},
+use scorepeek_overlay::{Backend, CanvasPresentation};
+use scorepeek_overlay_runtime::{
     config::{Canvas, OverlayConfig, empty_canvas, save_atomic_in_store},
     skin::StoreRoot,
 };
@@ -25,7 +25,7 @@ const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const CONTROL_IO_TIMEOUT: Duration = Duration::from_millis(100);
 
-pub use scorepeek_overlay_wayland::bridge::action::{
+pub use scorepeek_overlay_runtime::control::{
     CONTROL_MESSAGE_MAX_BYTES, Request, Response, decode_message, encode_message,
 };
 
@@ -589,11 +589,11 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
 mod tests {
     use super::*;
 
-    fn blackbox_skin() -> scorepeek_overlay_wayland::bridge::data::Skin {
+    fn blackbox_skin() -> scorepeek_overlay::Skin {
         "dev.atty303.scorepeek.skin.dj-blackbox".parse().unwrap()
     }
 
-    fn cyan_skin() -> scorepeek_overlay_wayland::bridge::data::Skin {
+    fn cyan_skin() -> scorepeek_overlay::Skin {
         "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap()
     }
 
@@ -623,7 +623,7 @@ mod tests {
         (
             root.join("overlay.toml"),
             Mutex::new(State {
-                config: scorepeek_overlay_wayland::config::visual_debug_config(cyan_skin()),
+                config: scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
                 skin_store: StoreRoot::new(root.join("skins")),
                 leases: BTreeMap::new(),
                 diagnostics: VecDeque::new(),
@@ -925,7 +925,7 @@ mod tests {
         let path = root.path().join("overlay.toml");
         let controller = Controller::start(
             &path,
-            scorepeek_overlay_wayland::config::visual_debug_config(cyan_skin()),
+            scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
         )
         .unwrap();
         let mut stalled = UnixStream::connect(controller.path()).unwrap();
@@ -947,7 +947,7 @@ mod tests {
         let path = root.path().join("overlay.toml");
         let controller = Controller::start_with_store(
             &path,
-            scorepeek_overlay_wayland::config::visual_debug_config(cyan_skin()),
+            scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
             seed_skin_store(root.path()),
         )
         .unwrap();
@@ -956,13 +956,13 @@ mod tests {
             Backend::Wayland,
             "wayland-editor",
             controller.path(),
-            scorepeek_overlay_wayland::bridge::action::request,
+            scorepeek_overlay_runtime::control::request,
         );
         exercise_production_client(
             Backend::Obs,
             "web-editor",
             controller.path(),
-            scorepeek_overlay_web_host::bridge::action::request,
+            scorepeek_overlay_runtime::control::request,
         );
 
         let saved = std::fs::read_to_string(&path).unwrap();
@@ -975,7 +975,7 @@ mod tests {
         let path = root.path().join("overlay.toml");
         let controller = Controller::start(
             &path,
-            scorepeek_overlay_wayland::config::visual_debug_config(cyan_skin()),
+            scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
         )
         .unwrap();
         let mut stream = UnixStream::connect(controller.path()).unwrap();
