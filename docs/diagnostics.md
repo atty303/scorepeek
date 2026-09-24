@@ -77,6 +77,9 @@ live records. If capacity has truncated the requested window, the header sets `r
 and reports `replay_available_us`, and the CLI warns on stderr while continuing with the available
 suffix. A client that falls behind is disconnected and the observer exits nonzero instead of
 resynchronizing.
+Replay truncation and diagnostic persistence or socket failures reach the CLI as typed warnings;
+the CLI chooses their stderr text. Writer failures remain recorded in the diagnostic stream and
+health state, and are delivered once during normal runtime updates.
 
 Private corpus replay reads the separate canonical recording contract directly. It does not
 launch a runtime replay process or consume `diagnostics.sock`. The ordinary `scorepeek run` ring
@@ -100,7 +103,9 @@ scorepeek diagnostic inspect --latest --format json
 ```
 
 `diagnostic observe` stdout is streaming NDJSON. `diagnostic inspect` is a finite query with
-human-readable output by default and one JSON document with `--format json`. `--latest` resolves
+human-readable output by default and one JSON document with `--format json`. The runtime validates the saved snapshot
+before delivery and streams validated header and record values to the CLI for human formatting.
+If stdout closes during delivery, inspection stops and exits with failure. `--latest` resolves
 once to the active run, or otherwise the newest run. An incomplete active tail is
 `tail_in_progress` and succeeds; an incomplete ended tail is partial and fails. Active state comes
 from the run-directory lock rather than socket availability. Interior malformed data and sequence

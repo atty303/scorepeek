@@ -13,7 +13,7 @@ impl ServiceHandle {
     pub fn dispatch(
         &self,
         command: FrontendCommand,
-        mut event: impl FnMut(FrontendEvent),
+        mut event: impl FnMut(FrontendEvent) -> Result<(), String>,
     ) -> FrontendReply {
         super::dispatch::dispatch(command, &mut event)
     }

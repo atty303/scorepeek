@@ -29,9 +29,9 @@ pub const RETAINED_RUNS: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InspectionFormat {
-    Human,
     Json,
     Ndjson,
+    Events,
 }
 
 const MAX_CLIENTS: usize = 8;
@@ -66,6 +66,7 @@ struct State {
     partial: bool,
     active: bool,
     started_at: Instant,
+    warnings: VecDeque<scorepeek_frontend_api::OperationalWarning>,
 }
 
 #[derive(Clone)]
@@ -153,18 +154,21 @@ impl RunDiagnostics {
         } else {
             RING_BYTES
         };
-        let (run_root, file, active_lock, persistence) = match disk {
+        let (run_root, file, active_lock, persistence, initial_warning) = match disk {
             Ok((root, file, active_lock)) => (
                 Some(root),
                 Some(file),
                 Some(active_lock),
                 Persistence::Active,
+                None,
             ),
             Err(error) => {
-                if report_persistence_error {
-                    eprintln!("scorepeek: diagnostic persistence unavailable: {error}");
-                }
-                (None, None, None, Persistence::Unavailable)
+                let warning = report_persistence_error.then_some(
+                    scorepeek_frontend_api::OperationalWarning::DiagnosticPersistenceUnavailable {
+                        error,
+                    },
+                );
+                (None, None, None, Persistence::Unavailable, warning)
             }
         };
         let shared = Arc::new(Shared {
@@ -179,6 +183,7 @@ impl RunDiagnostics {
                 partial: persistence.partial(),
                 active: true,
                 started_at: Instant::now(),
+                warnings: initial_warning.into_iter().collect(),
             }),
             changed: Condvar::new(),
         });
@@ -188,10 +193,10 @@ impl RunDiagnostics {
         let writer = file.and_then(|file| match spawn_writer(Arc::clone(&shared), file) {
             Ok(writer) => Some(writer),
             Err(error) => {
-                eprintln!("scorepeek: diagnostic persistence unavailable: {error}");
                 if let Ok(mut state) = shared.state.lock() {
                     state.persistence = Persistence::Failed;
                     state.partial = true;
+                    state.warnings.push_back(scorepeek_frontend_api::OperationalWarning::DiagnosticPersistenceUnavailable { error });
                 }
                 None
             }
@@ -204,7 +209,13 @@ impl RunDiagnostics {
                 },
             )
             .unwrap_or_else(|error| {
-                eprintln!("scorepeek: diagnostic socket unavailable: {error}");
+                if let Ok(mut state) = shared.state.lock() {
+                    state.warnings.push_back(
+                        scorepeek_frontend_api::OperationalWarning::DiagnosticSocketUnavailable {
+                            error,
+                        },
+                    );
+                }
                 None
             });
         let diagnostics = Self {
@@ -241,6 +252,16 @@ impl RunDiagnostics {
     #[must_use]
     pub fn run_root(&self) -> Option<&Path> {
         self.run_root.as_deref()
+    }
+
+    pub fn take_warnings(&self) -> Vec<scorepeek_frontend_api::OperationalWarning> {
+        let mut state = self
+            .sink
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.warnings.drain(..).collect()
     }
 
     pub fn finish(&mut self, operation_status: &str) {
@@ -491,7 +512,7 @@ fn spawn_writer(shared: Arc<Shared>, mut file: File) -> Result<JoinHandle<()>, S
                         if cursor < oldest {
                             mark_persistence_failure(&mut state, Persistence::Lagged, "writer_lagged");
                             shared.changed.notify_all();
-                            eprintln!("scorepeek: diagnostic persistence degraded: writer lagged behind the ring");
+                            state.warnings.push_back(scorepeek_frontend_api::OperationalWarning::DiagnosticPersistenceLagged);
                             return;
                         }
                         if let Some(record) = record_at(&state, cursor).cloned() {
@@ -512,9 +533,9 @@ fn spawn_writer(shared: Arc<Shared>, mut file: File) -> Result<JoinHandle<()>, S
                 if result.is_err() {
                     if let Ok(mut state) = shared.state.lock() {
                         mark_persistence_failure(&mut state, Persistence::Failed, "write_failed");
+                        state.warnings.push_back(scorepeek_frontend_api::OperationalWarning::DiagnosticPersistenceWriteFailed);
                         shared.changed.notify_all();
                     }
-                    eprintln!("scorepeek: diagnostic persistence degraded: stream write failed");
                     return;
                 }
                 cursor = cursor.saturating_add(1);
@@ -873,7 +894,31 @@ pub fn inspect_latest_with_format(
         }
         None => latest_run(store)?,
     };
-    inspect_run(&root, format, output)
+    inspect_run(&root, format, output, None)
+}
+
+/// Delivers a validated saved header and its records in order.
+///
+/// # Errors
+/// Returns an error if selection, validation, reading, or event delivery fails.
+pub fn inspect_latest_events(
+    store: &Path,
+    run_id: Option<&str>,
+    event: &mut impl FnMut(scorepeek_frontend_api::FrontendEvent) -> Result<(), String>,
+) -> Result<i32, String> {
+    let root = match run_id {
+        Some(run_id) => {
+            validate_run_id(run_id)?;
+            store.join(run_id)
+        }
+        None => latest_run(store)?,
+    };
+    inspect_run(
+        &root,
+        InspectionFormat::Events,
+        &mut io::sink(),
+        Some(event),
+    )
 }
 
 fn validate_run_id(run_id: &str) -> Result<(), String> {
@@ -950,6 +995,7 @@ fn inspect_run(
     root: &Path,
     format: InspectionFormat,
     output: &mut impl io::Write,
+    mut event: Option<&mut dyn FnMut(scorepeek_frontend_api::FrontendEvent) -> Result<(), String>>,
 ) -> Result<i32, String> {
     let run_id = root
         .file_name()
@@ -1046,6 +1092,29 @@ fn inspect_run(
     file.seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
     match format {
+        InspectionFormat::Events => {
+            use scorepeek_frontend_api::{FrontendEvent, InspectionHeader, InspectionRecord};
+            let send = event
+                .as_mut()
+                .ok_or_else(|| "inspection event sink is unavailable".to_owned())?;
+            let header: InspectionHeader = serde_json::from_value(header.clone())
+                .map_err(|error| format!("diagnostic inspection header is invalid: {error}"))?;
+            send(FrontendEvent::InspectionHeader { header })?;
+            let mut reader = BufReader::new((&mut file).take(complete_len));
+            loop {
+                line.clear();
+                let read = reader
+                    .read_until(b'\n', &mut line)
+                    .map_err(|error| format!("diagnostic stream could not be read: {error}"))?;
+                if read == 0 {
+                    break;
+                }
+                let record: InspectionRecord = serde_json::from_slice(&line).map_err(|_| {
+                    "diagnostic stream contains a malformed interior record".to_owned()
+                })?;
+                send(FrontendEvent::InspectionRecord { record })?;
+            }
+        }
         InspectionFormat::Ndjson => {
             serde_json::to_writer(&mut *output, &header).map_err(|error| error.to_string())?;
             output.write_all(b"\n").map_err(|error| error.to_string())?;
@@ -1064,18 +1133,6 @@ fn inspect_run(
             output
                 .write_all(b"]}\n")
                 .map_err(|error| error.to_string())?;
-        }
-        InspectionFormat::Human => {
-            writeln!(output, "scorepeek diagnostic inspection")
-                .map_err(|error| error.to_string())?;
-            writeln!(output, "  run: {run_id}").map_err(|error| error.to_string())?;
-            writeln!(output, "  active: {active}").map_err(|error| error.to_string())?;
-            writeln!(output, "  partial: {}", header["partial"])
-                .map_err(|error| error.to_string())?;
-            writeln!(output, "  records: {}", next.saturating_sub(oldest))
-                .map_err(|error| error.to_string())?;
-            writeln!(output, "events:").map_err(|error| error.to_string())?;
-            write_human_records(BufReader::new((&mut file).take(complete_len)), &mut *output)?;
         }
     }
     Ok(i32::from(partial || (!active && (tail || !finished))))
@@ -1102,34 +1159,6 @@ fn write_json_records(
         output
             .write_all(line.strip_suffix(b"\n").unwrap_or(&line))
             .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn write_human_records(
-    mut reader: impl io::BufRead,
-    output: &mut impl io::Write,
-) -> Result<(), String> {
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        let value: Value = serde_json::from_slice(&line)
-            .map_err(|_| "diagnostic stream contains a malformed interior record".to_owned())?;
-        let sequence = value["sequence"].as_u64().unwrap_or_default();
-        let operation = value["operation"].as_str().unwrap_or("unknown");
-        write!(output, "  {sequence}: {operation}").map_err(|error| error.to_string())?;
-        for key in ["stage", "status", "error_type"] {
-            if let Some(detail) = value["data"][key].as_str() {
-                write!(output, " {key}={detail}").map_err(|error| error.to_string())?;
-            }
-        }
-        writeln!(output).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -1171,15 +1200,14 @@ pub fn default_store() -> Result<PathBuf, String> {
         .ok_or_else(|| "XDG_STATE_HOME or HOME is required for diagnostics".to_owned())
 }
 
-/// Streams live diagnostics to stdout as NDJSON, optionally preceded by a bounded replay window.
+/// Streams a live diagnostic socket and reports replay truncation as values.
 ///
 /// # Errors
-///
-/// Returns an error for unavailable runtime state, connection failures, gaps, or malformed data.
-pub fn observe(
+/// Returns an error if the socket, stream, output, or warning callback fails.
+pub fn observe_with_warning(
     replay_seconds: Option<u64>,
     output: &mut impl io::Write,
-    warning: &mut impl io::Write,
+    warning: &mut impl FnMut(u64, u64) -> Result<(), String>,
 ) -> Result<(), String> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -1196,7 +1224,7 @@ pub fn observe(
         .write_all(b"\n")
         .and_then(|()| stream.shutdown(Shutdown::Write))
         .map_err(|error| format!("diagnostic socket request failed: {error}"))?;
-    copy_observation_stream(BufReader::new(stream), output, warning)
+    copy_observation_stream_with_warning(BufReader::new(stream), output, warning)
 }
 
 /// A validated, ordered client of one `diagnostics.sock` stream.
@@ -1306,10 +1334,10 @@ fn read_observation_value(
     Ok(Some((value, line)))
 }
 
-fn copy_observation_stream(
+fn copy_observation_stream_with_warning(
     mut reader: impl std::io::BufRead,
     mut output: impl std::io::Write,
-    mut warning: impl std::io::Write,
+    warning: &mut impl FnMut(u64, u64) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut line = Vec::new();
     let mut expected = None;
@@ -1340,12 +1368,7 @@ fn copy_observation_stream(
             if value["replay_truncated"] == true {
                 let requested = value["replay_seconds"].as_u64().unwrap_or(0);
                 let available_us = value["replay_available_us"].as_u64().unwrap_or(0);
-                writeln!(
-                    warning,
-                    "scorepeek: requested {requested}s diagnostic replay, but the ring retains only {:.3}s; streaming the available suffix",
-                    Duration::from_micros(available_us).as_secs_f64()
-                )
-                .map_err(|error| format!("diagnostic warning output failed: {error}"))?;
+                warning(requested, available_us)?;
             }
             if value["gap"] == true {
                 return Err("diagnostic socket declared an initial sequence gap".to_owned());
@@ -1391,9 +1414,43 @@ mod tests {
                 partial: persistence.partial(),
                 active: true,
                 started_at: Instant::now(),
+                warnings: VecDeque::new(),
             }),
             changed: Condvar::new(),
         })
+    }
+
+    #[test]
+    fn inspection_events_stop_at_callback_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut diagnostics = RunDiagnostics::start(temporary.path(), "run-1-0-1");
+        diagnostics.sink().record("first", &json!({}), true);
+        diagnostics.sink().record("second", &json!({}), true);
+        diagnostics.finish("success");
+        let mut seen = Vec::new();
+        let error = inspect_latest_events(temporary.path(), Some("run-1-0-1"), &mut |event| {
+            if let scorepeek_frontend_api::FrontendEvent::InspectionRecord { record } = event {
+                seen.push(record.sequence);
+                return Err("output closed".to_owned());
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error, "output closed");
+        assert_eq!(seen, [1]);
+    }
+
+    #[test]
+    fn diagnostic_warning_is_taken_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let blocked = temporary.path().join("blocked");
+        std::fs::write(&blocked, b"file").unwrap();
+        let diagnostics = RunDiagnostics::start_ephemeral_at(&blocked, "run-1-0-1");
+        assert!(matches!(
+            diagnostics.take_warnings().as_slice(),
+            [scorepeek_frontend_api::OperationalWarning::DiagnosticSocketUnavailable { .. }]
+        ));
+        assert!(diagnostics.take_warnings().is_empty());
     }
 
     #[test]
@@ -1517,8 +1574,15 @@ mod tests {
         input.push(b'\n');
         let mut output = Vec::new();
         let mut warning = Vec::new();
-        let error = copy_observation_stream(std::io::Cursor::new(input), &mut output, &mut warning)
-            .unwrap_err();
+        let error = copy_observation_stream_with_warning(
+            std::io::Cursor::new(input),
+            &mut output,
+            &mut |requested, available| {
+                warning.push((requested, available));
+                Ok(())
+            },
+        )
+        .unwrap_err();
         assert!(error.contains("initial sequence gap"));
         assert_eq!(output, [header, vec![b'\n']].concat());
         assert!(warning.is_empty());
@@ -1551,10 +1615,16 @@ mod tests {
         input.push(b'\n');
         let mut output = Vec::new();
         let mut warning = Vec::new();
-        copy_observation_stream(std::io::Cursor::new(input), &mut output, &mut warning).unwrap();
-        let warning = String::from_utf8(warning).unwrap();
-        assert!(warning.contains("requested 30s"));
-        assert!(warning.contains("12.500s"));
+        copy_observation_stream_with_warning(
+            std::io::Cursor::new(input),
+            &mut output,
+            &mut |requested, available| {
+                warning.push((requested, available));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(warning, [(30, 12_500_000)]);
     }
 
     #[test]
@@ -1591,7 +1661,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join(STREAM_NAME), b"{\"sequence\":1}\n{\"sequence\":2").unwrap();
         assert_eq!(
-            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new()).unwrap(),
+            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new(), None).unwrap(),
             1
         );
     }
@@ -1603,7 +1673,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join(STREAM_NAME), b"{\"sequence\":1}\n").unwrap();
         assert_eq!(
-            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new()).unwrap(),
+            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new(), None).unwrap(),
             1
         );
     }
@@ -1617,12 +1687,12 @@ mod tests {
             .unwrap();
         stream.flush().unwrap();
         assert_eq!(
-            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new()).unwrap(),
+            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new(), None).unwrap(),
             0
         );
         active_lock.unlock().unwrap();
         assert_eq!(
-            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new()).unwrap(),
+            inspect_run(&root, InspectionFormat::Ndjson, &mut Vec::new(), None).unwrap(),
             1
         );
     }

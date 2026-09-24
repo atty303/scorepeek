@@ -52,48 +52,6 @@ pub(super) fn collect_doctor_report() -> Result<serde_json::Value, String> {
     }))
 }
 
-pub(super) fn print_doctor(format: OutputFormat) -> Result<(), String> {
-    let report = collect_doctor_report()?;
-    match format {
-        OutputFormat::Json => println!(
-            "{}",
-            serde_json::to_string(&report)
-                .map_err(|error| format!("doctor report serialization failed: {error}"))?
-        ),
-        OutputFormat::Human => {
-            println!("scorepeek doctor");
-            println!(
-                "  numeric model: {} ({})",
-                report["numeric_model"]["status"]
-                    .as_str()
-                    .unwrap_or("unknown"),
-                report["numeric_model"]["model_id"]
-                    .as_str()
-                    .unwrap_or("not available")
-            );
-            println!(
-                "  catalog: {}",
-                report["catalog"]["status"].as_str().unwrap_or("unknown")
-            );
-            println!(
-                "  capture inventory: {}",
-                if report["target_inventory"].is_object() {
-                    "available"
-                } else {
-                    "unavailable"
-                }
-            );
-            println!(
-                "  Vulkan layer: {}",
-                report["vulkan_layer"]["status"]
-                    .as_str()
-                    .unwrap_or("unknown")
-            );
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn collect_frontend_doctor(
     format: OutputFormat,
 ) -> Result<scorepeek_frontend_api::CommandResult, String> {

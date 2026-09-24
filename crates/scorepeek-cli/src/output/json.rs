@@ -5,7 +5,3 @@ pub fn render(result: &scorepeek_frontend_api::CommandResult) -> Result<(), Stri
     text.push('\n');
     super::human::write(&text)
 }
-
-pub fn write(text: &str) {
-    let _ = super::human::write(text);
-}

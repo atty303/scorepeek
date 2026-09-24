@@ -12,7 +12,9 @@ pub use command::{
     SkinAction, VulkanLayerAction,
 };
 pub use error::FrontendError;
-pub use event::{FrontendEvent, OutputStream};
+pub use event::{
+    FrontendEvent, InspectionHeader, InspectionRecord, OperationalWarning, OutputStream,
+};
 pub use protocol::{RequestId, Revision};
 pub use reply::{
     CommandResult, ConfigResult, DoctorReport, FrontendReply, InstalledSkin, ModelDownload,

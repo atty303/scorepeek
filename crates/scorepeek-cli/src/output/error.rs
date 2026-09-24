@@ -1,4 +1,5 @@
 use scorepeek_frontend_api::{FrontendReply, OutputFormat};
+use std::io::Write as _;
 use std::process::ExitCode;
 
 pub fn render_reply(reply: FrontendReply) -> ExitCode {
@@ -17,14 +18,17 @@ pub fn render_reply(reply: FrontendReply) -> ExitCode {
                     }
                 };
                 if let Err(error) = rendered {
-                    eprintln!("scorepeek: output rendering failed: {error}");
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "scorepeek: output rendering failed: {error}"
+                    );
                     return ExitCode::from(1);
                 }
             }
             ExitCode::from(exit_code)
         }
         FrontendReply::Error { error } => {
-            eprintln!("scorepeek: {}", error.message);
+            let _ = writeln!(std::io::stderr().lock(), "scorepeek: {}", error.message);
             ExitCode::from(1)
         }
         FrontendReply::Accepted { .. } | FrontendReply::Snapshot { .. } => ExitCode::SUCCESS,

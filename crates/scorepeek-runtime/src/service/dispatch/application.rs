@@ -62,10 +62,19 @@ impl io::Write for FrontendWriter {
 }
 
 fn diagnostic_observe(replay: Option<u64>) -> Result<(), String> {
-    diagnostic_stream::observe(
+    diagnostic_stream::observe_with_warning(
         replay,
         &mut FrontendWriter(scorepeek_frontend_api::OutputStream::Stdout),
-        &mut FrontendWriter(scorepeek_frontend_api::OutputStream::Stderr),
+        &mut |requested_seconds, available_us| {
+            frontend_event(scorepeek_frontend_api::FrontendEvent::Warning {
+                warning: scorepeek_frontend_api::OperationalWarning::ReplayTruncated {
+                    requested_seconds,
+                    available_us,
+                },
+            })
+            .then_some(())
+            .ok_or_else(|| "frontend event sink closed".to_owned())
+        },
     )
 }
 
@@ -74,24 +83,19 @@ fn diagnostic_inspect(
     run_id: Option<&str>,
     format: diagnostic_stream::InspectionFormat,
 ) -> Result<i32, String> {
+    if format == diagnostic_stream::InspectionFormat::Events {
+        return diagnostic_stream::inspect_latest_events(store, run_id, &mut |event| {
+            frontend_event(event)
+                .then_some(())
+                .ok_or_else(|| "frontend event sink closed".to_owned())
+        });
+    }
     diagnostic_stream::inspect_latest_with_format(
         store,
         run_id,
         format,
         &mut FrontendWriter(scorepeek_frontend_api::OutputStream::Stdout),
     )
-}
-
-macro_rules! print {
-    ($($argument:tt)*) => {{
-        let text = format!($($argument)*);
-        let _ = frontend_output(scorepeek_frontend_api::OutputStream::Stdout, text);
-    }};
-}
-
-macro_rules! println {
-    () => { print!("\n") };
-    ($($argument:tt)*) => { print!("{}\n", format_args!($($argument)*)) };
 }
 
 macro_rules! eprintln {
@@ -375,9 +379,16 @@ fn run_public_with_model_initializer(
     let invocation_id = new_run_id();
     let mut diagnostics = diagnostic_stream::RunDiagnostics::start_default(&invocation_id);
     let sink = diagnostics.sink();
-    let monitor = run_startup_stage(&sink, "signal_monitor", || {
-        live_control::SignalStopMonitor::start()
-    })?;
+    let monitor = match run_startup_stage(&sink, "signal_monitor", || {
+        live_control::SignalStopMonitor::start_with_stop(crate::service::state::stop_token())
+    }) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            diagnostics.finish("error");
+            live_session::emit_diagnostic_warnings(&diagnostics);
+            return Err(error);
+        }
+    };
     let config_path_result = run_startup_stage(&sink, "config_path", || {
         config_paths::resolve(config_override)
     });
@@ -491,7 +502,7 @@ fn run_diagnostic_command(command: DiagnosticCommand) -> Result<(), String> {
         DiagnosticCommand::Inspect(args) => {
             let store = diagnostic_stream::default_store()?;
             let format = match args.format.format {
-                OutputFormat::Human => diagnostic_stream::InspectionFormat::Human,
+                OutputFormat::Human => diagnostic_stream::InspectionFormat::Events,
                 OutputFormat::Json => diagnostic_stream::InspectionFormat::Json,
             };
             let status = diagnostic_inspect(&store, args.run_id.as_deref(), format)?;

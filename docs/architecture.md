@@ -40,7 +40,12 @@ classifies CLI requests into the transport-neutral `scorepeek-frontend-api` prot
 them to the in-process Linux `scorepeek-runtime` service. Portable catalog, recognition, temporal,
 and event authority lives in `scorepeek-core`; SQLite score persistence and queries live in
 `scorepeek-scores`. The CLI owns terminal lifecycle and Ratatui
-rendering; the runtime publishes only typed frontend snapshots and does not depend on a TUI toolkit.
+rendering; the runtime publishes typed frontend snapshots, inspection events, and warnings and
+does not depend on a TUI toolkit.
+The frontend protocol also delivers validated diagnostic inspection headers and records one at a
+time. CLI formats human inspection output and operational warnings. The runtime owns diagnostic
+run selection, validation, JSON and NDJSON serialization, health, and warning facts; frontend
+write failures stop inspection delivery and fail the command.
 
 The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX

@@ -15,8 +15,12 @@ pub struct SignalStopMonitor {
 }
 
 impl SignalStopMonitor {
+    #[cfg(test)]
     pub fn start() -> Result<Self, String> {
-        let stop = Arc::new(AtomicBool::new(false));
+        Self::start_with_stop(Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn start_with_stop(stop: Arc<AtomicBool>) -> Result<Self, String> {
         let signal = Arc::new(AtomicUsize::new(0));
         let interrupt = signal_hook::flag::register(SIGINT, Arc::clone(&stop))
             .map_err(|error| format!("SIGINT handler registration failed: {error}"))?;

@@ -615,6 +615,7 @@ impl RoutineOutput {
     }
 
     pub fn finish_diagnostics(&mut self, operation_status: &str) {
+        self.emit_diagnostic_warnings();
         self.record_trace_summary(self.next_core_input_sequence.saturating_sub(1), None);
         if let Ok(state) = self.state.lock() {
             self.record_diagnostic("runtime_run_summary", &json!({
@@ -628,6 +629,17 @@ impl RoutineOutput {
         }
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.finish(operation_status);
+        }
+        self.emit_diagnostic_warnings();
+    }
+
+    fn emit_diagnostic_warnings(&self) {
+        if let Some(diagnostics) = &self.diagnostics {
+            for warning in diagnostics.take_warnings() {
+                let _ = crate::service::dispatch::frontend_event(
+                    scorepeek_frontend_api::FrontendEvent::Warning { warning },
+                );
+            }
         }
     }
 
@@ -1355,6 +1367,7 @@ impl RoutineOutput {
                 message: state.message.clone(),
             }),
         };
+        self.emit_diagnostic_warnings();
         let _ = crate::service::dispatch::frontend_event(
             scorepeek_frontend_api::FrontendEvent::Snapshot {
                 snapshot: Box::new(snapshot),
@@ -1441,6 +1454,10 @@ impl Drop for RoutineOutput {
             scores.finish();
             let _ = self.refresh();
         }
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.finish("error");
+        }
+        self.emit_diagnostic_warnings();
     }
 }
 

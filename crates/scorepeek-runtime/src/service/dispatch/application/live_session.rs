@@ -52,9 +52,20 @@ pub(super) fn settle_startup_result<T>(
     let sink = diagnostics.sink();
     if let Err(error) = check_startup_stop(&sink, monitor) {
         diagnostics.finish("cancel");
+        emit_diagnostic_warnings(diagnostics);
         return Err(error);
     }
+    if result.is_err() {
+        diagnostics.finish("error");
+    }
+    emit_diagnostic_warnings(diagnostics);
     result
+}
+
+pub(super) fn emit_diagnostic_warnings(diagnostics: &diagnostic_stream::RunDiagnostics) {
+    for warning in diagnostics.take_warnings() {
+        let _ = frontend_event(scorepeek_frontend_api::FrontendEvent::Warning { warning });
+    }
 }
 
 pub(super) fn settle_output_startup_result<T>(
@@ -315,7 +326,12 @@ pub(super) fn run_routine_live_session(
                 }),
                 true,
             );
-            eprintln!("scorepeek: background catalog update unavailable: {error}");
+            let _ = frontend_event(scorepeek_frontend_api::FrontendEvent::Warning {
+                warning:
+                    scorepeek_frontend_api::OperationalWarning::BackgroundCatalogWorkerStartFailed {
+                        error: error.to_string(),
+                    },
+            });
             None
         }
         None => None,
