@@ -1,1 +1,121 @@
-@keyframes skin-background-opacity{0%,100%{opacity:.3}50%{opacity:.85}}@keyframes skin-energy-opacity{0%,100%{opacity:.06}50%{opacity:.16}}@keyframes skin-energy-left{0%,100%{left:-5%}50%{left:1%}}@keyframes skin-glint-left{0%{left:-20%}100%{left:100%}}@keyframes skin-full-combo-opacity{0%,100%{opacity:.82}50%{opacity:1}}@keyframes skin-ex-hard-opacity{0%,100%{opacity:.82}50%{opacity:1}}@keyframes skin-active-lamp-opacity{0%,100%{opacity:.68}50%{opacity:1}}@keyframes skin-processing-lamp-opacity{0%,100%{opacity:.4}50%{opacity:1}}.canvas-background[data-motion=animated] .canvas-background-light{animation:skin-background-opacity 16s ease-in-out infinite}.skin-energy{animation:skin-energy-opacity 7s ease-in-out infinite,skin-energy-left 11s ease-in-out infinite}.status-widget .skin-glint{animation:skin-glint-left 6s linear infinite}.selection-widget .skin-glint{animation:skin-glint-left 6s linear -.84s infinite}.score-widget .skin-glint{animation:skin-glint-left 6s linear -1.68s infinite}.history-list-widget .skin-glint{animation:skin-glint-left 6s linear -2.52s infinite}.history-graph-widget .skin-glint{animation:skin-glint-left 6s linear -3.36s infinite}[data-clear=full-combo]{animation:skin-full-combo-opacity .72s ease-in-out infinite}[data-clear=ex-hard]{animation:skin-ex-hard-opacity 1.1s ease-in-out infinite}.lamp[data-state=active],.lamp[data-state=persisted]{animation:skin-active-lamp-opacity 1.8s ease-in-out infinite}.lamp[data-state=processing]{animation:skin-processing-lamp-opacity .8s ease-in-out infinite}@media(prefers-reduced-motion:reduce){.skin-energy,.skin-glint,.canvas-background-light,[data-clear],.lamp{animation:none!important}}
+@keyframes skin-background-opacity {
+  0%,100% {
+    opacity: .3;
+  }
+  50% {
+    opacity: .85;
+  }
+}
+
+@keyframes skin-energy-opacity {
+  0%,100% {
+    opacity: .06;
+  }
+  50% {
+    opacity: .16;
+  }
+}
+
+@keyframes skin-energy-left {
+  0%,100% {
+    left: -5%;
+  }
+  50% {
+    left: 1%;
+  }
+}
+
+@keyframes skin-glint-left {
+  0% {
+    left: -20%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@keyframes skin-full-combo-opacity {
+  0%,100% {
+    opacity: .82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes skin-ex-hard-opacity {
+  0%,100% {
+    opacity: .82;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes skin-active-lamp-opacity {
+  0%,100% {
+    opacity: .68;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes skin-processing-lamp-opacity {
+  0%,100% {
+    opacity: .4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.canvas-background[data-motion=animated] .canvas-background-light {
+  animation: skin-background-opacity 16s ease-in-out infinite;
+}
+
+.skin-energy {
+  animation: skin-energy-opacity 7s ease-in-out infinite,skin-energy-left 11s ease-in-out infinite;
+}
+
+.status-widget .skin-glint {
+  animation: skin-glint-left 6s linear infinite;
+}
+
+.selection-widget .skin-glint {
+  animation: skin-glint-left 6s linear -.84s infinite;
+}
+
+.score-widget .skin-glint {
+  animation: skin-glint-left 6s linear -1.68s infinite;
+}
+
+.history-list-widget .skin-glint {
+  animation: skin-glint-left 6s linear -2.52s infinite;
+}
+
+.history-graph-widget .skin-glint {
+  animation: skin-glint-left 6s linear -3.36s infinite;
+}
+
+[data-clear=full-combo] {
+  animation: skin-full-combo-opacity .72s ease-in-out infinite;
+}
+
+[data-clear=ex-hard] {
+  animation: skin-ex-hard-opacity 1.1s ease-in-out infinite;
+}
+
+.lamp[data-state=active],.lamp[data-state=persisted] {
+  animation: skin-active-lamp-opacity 1.8s ease-in-out infinite;
+}
+
+.lamp[data-state=processing] {
+  animation: skin-processing-lamp-opacity .8s ease-in-out infinite;
+}
+
+@media(prefers-reduced-motion:reduce) {
+  .skin-energy,.skin-glint,.canvas-background-light,[data-clear],.lamp {
+    animation: none!important;
+  }
+}

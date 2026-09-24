@@ -1,1 +1,72 @@
-.overlay-canvas{--text:#e5e5e2;--accent:#c6f139;--panel:#111312f5;--surface:linear-gradient(115deg,#191b19,#101210 65%,#1b1d1b);--line:#747a75;--dim:#686e6699;--metal:#a0a59f;--ok:#b8ee20;--warn:#ffb718;--bad:#ff523c}.overlay-canvas .canvas-background{background:#242925}.overlay-canvas .canvas-background-light{background:radial-gradient(ellipse at 20% 60%,#91a74444,transparent 65%)}.overlay-canvas .song-copy h1{color:#dddeda;text-shadow:0 1px #fff,0 3px #050605}.overlay-canvas .score-content{padding:18px 28px 14px}.overlay-canvas h2{height:21px}.overlay-canvas .history-content{padding:18px 28px 14px}.overlay-canvas .history-row{height:20px;line-height:20px}.overlay-canvas .history-head{height:17px}.overlay-canvas .graph-content{padding:18px var(--graph-padding-x) 14px}.overlay-canvas .plot{margin-top:18px}.overlay-canvas .graph-legend{top:41px}.overlay-canvas .time-axis{height:18px;line-height:18px}.overlay-canvas .detail-row{height:16px;line-height:16px}.overlay-canvas .detail-row.fast,.overlay-canvas .detail-row.options{height:21px}
+.overlay-canvas {
+  --text: #e5e5e2;
+  --accent: #c6f139;
+  --panel: #111312f5;
+  --surface: linear-gradient(115deg,#191b19,#101210 65%,#1b1d1b);
+  --line: #747a75;
+  --dim: #686e6699;
+  --metal: #a0a59f;
+  --ok: #b8ee20;
+  --warn: #ffb718;
+  --bad: #ff523c;
+}
+
+.overlay-canvas .canvas-background {
+  background: #242925;
+}
+
+.overlay-canvas .canvas-background-light {
+  background: radial-gradient(ellipse at 20% 60%,#91a74444,transparent 65%);
+}
+
+.overlay-canvas .song-copy h1 {
+  color: #dddeda;
+  text-shadow: 0 1px #fff,0 3px #050605;
+}
+
+.overlay-canvas .score-content {
+  padding: 18px 28px 14px;
+}
+
+.overlay-canvas h2 {
+  height: 21px;
+}
+
+.overlay-canvas .history-content {
+  padding: 18px 28px 14px;
+}
+
+.overlay-canvas .history-row {
+  height: 20px;
+  line-height: 20px;
+}
+
+.overlay-canvas .history-head {
+  height: 17px;
+}
+
+.overlay-canvas .graph-content {
+  padding: 18px var(--graph-padding-x) 14px;
+}
+
+.overlay-canvas .plot {
+  margin-top: 18px;
+}
+
+.overlay-canvas .graph-legend {
+  top: 41px;
+}
+
+.overlay-canvas .time-axis {
+  height: 18px;
+  line-height: 18px;
+}
+
+.overlay-canvas .detail-row {
+  height: 16px;
+  line-height: 16px;
+}
+
+.overlay-canvas .detail-row.fast,.overlay-canvas .detail-row.options {
+  height: 21px;
+}

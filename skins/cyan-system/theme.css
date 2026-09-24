@@ -1,1 +1,12 @@
-.overlay-canvas{--text:#f2f6fa;--accent:#12daf6;--panel:#020710e8;--surface:linear-gradient(110deg,#02070c,#000306);--line:#12dff4;--dim:#087489aa;--metal:#96abb8;--ok:#54e56b;--warn:#ffd041;--bad:#ff4b45}
+.overlay-canvas {
+  --text: #f2f6fa;
+  --accent: #12daf6;
+  --panel: #020710e8;
+  --surface: linear-gradient(110deg,#02070c,#000306);
+  --line: #12dff4;
+  --dim: #087489aa;
+  --metal: #96abb8;
+  --ok: #54e56b;
+  --warn: #ffd041;
+  --bad: #ff4b45;
+}
