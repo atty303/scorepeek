@@ -1,0 +1,91 @@
+Task: Separate typed core domain reduction from runtime diagnostics and update live and corpus paths
+Anchor: 5d13c67af6b0b55d08de3f3ed38062699ba1eb1c
+Base: 12b0669be50f1dca6bccb267cb443675ff111172
+Branch: codex/domain-boundary-refactor
+Commits: 5d13c67af6b0b55d08de3f3ed38062699ba1eb1c refactors typed core input and transitions, runtime diagnostic projection, and corpus replay
+Guidance: user-provided scorepeek AGENTS.md; develop-repository; design-program-observability; investigate-problem; review; repository README and domain references
+Conditions: repository-local implementation only; no push, release, deployment, real-data migration, or real-device verification
+## Evidence
+- Starting HEAD 12b0669 and clean worktree; origin code fetched, standard notes fetch conflicted on a non-fast-forward local notes ref and was not overwritten.
+- Core reducer now consumes typed DomainInput and emits DomainTransitionKind with typed snapshots. Runtime owns RunEvent and diagnostic schemas, projects public Event API v5 and score persistence. Live and corpus use the typed coordinator.
+- Separate domain_transition and runtime_event diagnostic records have shared logical channel_sequence; omitted inputs consume numbers; input_sequence counts core inputs. Session final domain transitions precede runtime session_finished.
+- mise run check and mise run test passed: 745 Rust nextest tests, three browser tests, build and artifact checks. Independent review found no actionable issues.
+Authority: committed source and tests, README.md, docs/architecture.md, docs/diagnostics.md, and the user request
+## Transcript
+- U1: # 実装依頼
+    
+    ## 依頼
+    
+    `scorepeek-core` の domain reducer を診断用 `RunEvent` から分離し、型付き入力・出力で動作するようリファクタリングしてください。live の観測経路、runtime の診断・公開投影、corpus の replay も新しい境界に合わせて更新してください。
+    
+    ## 目的
+    
+    - core が認識と domain 状態遷移を所有し、runtime が診断 schema と表示形式を所有する。
+    - live と corpus が、診断用 JSON の組み立てや再解析を経ずに同じ domain coordinator を使えるようにする。
+    
+    ## 成功条件
+    
+    - core の reducer は `DomainInput` を直接処理し、入力を `RunEvent` に変換し直さない。出力は core が判断した途中状態を含む型付き domain 遷移と状態 snapshot であり、観測入力の写しを含まない。
+    - `RunEvent` と診断 schema は runtime が所有する。core は recording・overlay など runtime 固有のイベント種別や診断 schema version に依存しない。
+    - `DomainInput::FieldObservation` の判定に使う字段と画面状態は型付きである。JSON path による読み直しや、診断用の空値を詰めた reducer 入力がない。
+    - live session は型付き観測を runtime に渡す。JSON に直して読み戻し、完全な joint evidence を別添えで差し替える経路がない。
+    - corpus は core の型付き出力を直接照合し、runtime crate と診断用 `RunEvent` に依存しない。
+    - core の snapshot は判定事実を型付きで返す。候補・gate・attempt などの診断表示用文字列は runtime が作る。
+    - 新しい診断契約では `domain_transition` と `runtime_event` を別の記録として扱い、両者に共通の `channel_sequence` で処理順を示す。省略された観測入力も番号を消費し、保存 record の番号には飛びを許す。`input_sequence` は従来どおり実際の core 入力だけを数える。
+    - session 終了時は core の最終遷移をすべて処理してから runtime が `session_finished` を発行する。
+    - 公開 Event API v5 の payload と意味、score persistence、認識判定、corpus oracle の判定結果を維持する。診断契約の変更は新 version として資料・テストへ反映する。
+    
+    ## 決定事項
+    
+    - reducer の入力と出力を診断用 `RunEvent` から分離する。
+      - 理由: 現状は `DomainInput` を core 内で `RunEvent` に戻し、診断字段へ空値を詰めている。
+      - 主な棄却案: 共有 `RunEvent` を reducer 内に残す案。診断 schema への依存が残る。
+    - 診断イベントの型と schema は runtime が所有し、corpus は型付き domain 出力を読む。
+      - 理由: recording・overlay・watcher の運用イベントは runtime の責務であり、corpus の oracle に診断 schema は不要。
+      - 主な棄却案: core に共有 schema を残す案、および診断専用の新 crate を作る案。いずれも不要な共有依存を残す。
+    - core は入力の写しを出力せず、自身が決めた途中状態と確定状態を出力する。
+      - 理由: 入力の診断記録は runtime が元の入力から作れ、途中状態の判断主体は core である。
+      - 主な棄却案: 型付き入力を core 出力へ再掲する案、および途中状態を runtime が snapshot から推測する案。
+    - `FieldObservation` の意味字段と画面状態には既存の core の型を使う。
+      - 理由: JSON の形式違いが暗黙の欠測や既定値になる経路をなくせる。
+      - 主な棄却案: `serde_json::Value` と画面名 `String` を reducer 入力に残す案。
+    - live の認識結果は型付きで runtime に渡し、runtime が domain 入力と診断表現をそれぞれ作る。
+      - 理由: 診断用 JSON の往復と joint evidence の差し替えをなくす。
+      - 主な棄却案: 現行の JSON emission を維持する案。
+    - core snapshot は型付き事実とし、診断表示の整形は runtime に置く。
+      - 理由: 判定と表示の所有先を一致させる。
+      - 主な棄却案: core に表示用ラベルや説明文を残す案。
+    - 診断は `domain_transition` と `runtime_event` を分け、新 version にする。
+      - 理由: 所有先の違いを記録にも表し、片方の変更がもう片方の enum に波及しないようにする。
+      - 主な棄却案: 単一の診断用 `run_event` enum に再統合する案。
+    - `channel_sequence` は保存した record 数ではなく、観測入力を含む論理イベント順を数える。
+      - 理由: 診断から省略した入力も処理順と frontend revision に反映する。
+      - 主な棄却案: 保存 record だけを数え、frontend revision を別管理する案。
+    - session 終了は core の最終遷移の後に発行する。
+      - 理由: 終了までに起きた domain 遷移を出し切ってから lifecycle を閉じる順序が自然である。
+      - 主な棄却案: 従来の `SessionEnded` marker の位置へ `session_finished` を挿入し、従来の順序を維持する案。互換性のための順序維持は今回の判断基準にしない。
+    
+    ## 制約
+    
+    - この依頼は repository 内の実装・資料・検証までを対象とする。push、release、deploy、実データ migration は行わない。
+    - 公開 Event API v5 の payload と意味を変更する必要が生じた場合は、変更内容と影響を示して確認する。
+    - 診断の version 更新は実際に変更した契約へ限定し、診断 stream の保存・socket・retention の仕組みは目的なく変更しない。
+    
+    ## 対象外
+    
+    - 認識アルゴリズム、threshold、catalog 判定の変更。
+    - overlay、capture backend、score DB の機能変更。
+    - 実機環境での capture・Wayland・OBS 検証。
+    
+    ## 未検証の前提
+    
+    - 実装開始時の作業ツリーと HEAD が、調査時に確認した `12b0669` から変わっていないこと。
+    - `RunEvent` の利用箇所と診断・frontend の契約が調査時から変わっていないこと。変更があれば現行 source に合わせて影響範囲を確認する。
+    
+    ## 実装時の指示
+    
+    - 先に、現行の core 出力順、公開 Event API v5、診断の sequence 規則、corpus oracle を実装とテストから確認する。
+    - core の型付き観測から `DomainInput` を作る経路を live と corpus で共用し、診断 JSON を domain 入力の原本にしない。
+    - 診断の新 version、record 種別、sequence 規則、および変更した現在の責務境界を `docs/architecture.md` と `docs/diagnostics.md` に反映する。
+    - 型付き境界、session 終了順、診断 record の順序・番号、公開 Event API と corpus replay の結果を検証する。
+  - A: Confirmed initial Git and current contracts, applied typed domain and runtime diagnostic refactor across core, live and corpus, updated docs and tests, passed standard checks, received independent review with no findings, and committed locally as 5d13c67 without remote or live changes.
