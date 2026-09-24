@@ -5,84 +5,55 @@
 
 use super::*;
 
-impl RunEventReducer {
+impl DomainReducer {
     pub(super) fn publish_internal(
         &mut self,
-        event: &RunEvent,
-    ) -> Result<(), RunEventReductionError> {
-        match &event.kind {
-            RunEventKind::CanonicalSessionStarted { session_id } => {
+        input: &crate::event::DomainInput,
+    ) -> Result<(), DomainReductionError> {
+        use crate::event::DomainInput;
+        match input {
+            DomainInput::SessionStarted { session_id } => {
                 self.reset_session();
-                self.publish_one(event)?;
-                self.publish_result_state(session_id.clone(), 0, ResultState::Inactive)?;
-                Ok(())
+                self.active_session_id = Some(session_id.clone());
+                self.current_screen = None;
+                self.raw_screen = None;
+                self.publish_result_state(session_id.clone(), 0, ResultState::Inactive)
             }
-            RunEventKind::SessionStarted { session_id, .. } => {
-                self.reset_session();
-                self.publish_one(event)?;
-                if let Some(session_id) = session_id.clone() {
-                    self.publish_result_state(session_id, 0, ResultState::Inactive)?;
-                }
-                Ok(())
+            DomainInput::SessionFinished { session_id } => {
+                self.publish_session_finished(session_id)
             }
-            RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
-            RunEventKind::RawScreenObserved {
+            DomainInput::WatcherFinished => self.finish_watcher(),
+            DomainInput::GameVersionState(_) => Ok(()),
+            DomainInput::RawScreenObserved {
                 session_id,
                 semantic_episode_id,
                 sequence,
                 monotonic_end_ms,
                 screen,
-                result_presence,
-                ..
+                result_panel_side,
             } => {
-                self.publish_one(event)?;
-                if screen == "result"
-                    && let (Some(episode_id), Some(side)) = (
-                        *semantic_episode_id,
-                        result_presence
-                            .as_ref()
-                            .and_then(|evidence| evidence.panel_side.known()),
-                    )
+                self.raw_screen = Some(*screen);
+                if *screen == ScreenClass::Result
+                    && let (Some(episode_id), Some(side)) = (semantic_episode_id, result_panel_side)
                 {
                     self.observe_result_panel_side(
                         session_id.as_ref(),
-                        episode_id,
+                        *episode_id,
                         *sequence,
-                        side,
+                        *side,
                     )?;
                 }
                 self.publish_screen_tick(*sequence, *monotonic_end_ms)
             }
-            RunEventKind::SemanticScreenEpisodeChanged { .. } => {
-                self.publish_semantic_screen_episode(event)
+            DomainInput::SemanticScreenEpisodeChanged { .. } => {
+                self.publish_semantic_screen_episode(input)
             }
-            RunEventKind::ScreenChanged { .. } => self.publish_screen_change(event, true),
-            RunEventKind::ScreenTick {
+            DomainInput::ScreenChanged { .. } => self.publish_screen_change(input),
+            DomainInput::ScreenTick {
                 sequence,
                 monotonic_end_ms,
-                ..
             } => self.publish_screen_tick(*sequence, *monotonic_end_ms),
-            RunEventKind::SessionFinished { .. }
-            | RunEventKind::CanonicalSessionFinished { .. } => self.publish_session_finished(event),
-            RunEventKind::WatcherStarted { .. }
-            | RunEventKind::GameVersionChanged { .. }
-            | RunEventKind::RecordingHealthChanged { .. }
-            | RunEventKind::RecordingFinalizing { .. }
-            | RunEventKind::RecordingCompleted { .. }
-            | RunEventKind::TemporalResultChanged { .. }
-            | RunEventKind::TemporalMusicSelectChanged { .. }
-            | RunEventKind::NumericResultChanged { .. }
-            | RunEventKind::PlayAttemptChanged { .. }
-            | RunEventKind::ResolverStateChanged { .. }
-            | RunEventKind::SelectionDifficultyChanged { .. }
-            | RunEventKind::MusicSelectionChanged { .. }
-            | RunEventKind::MusicSelectBestObserved { .. }
-            | RunEventKind::MusicSelectResolverChanged { .. }
-            | RunEventKind::ResultChanged { .. }
-            | RunEventKind::ResultPanelSideChanged { .. }
-            | RunEventKind::ResultSelectContextMismatch { .. }
-            | RunEventKind::OverlayObserved { .. } => self.publish_one(event),
-            RunEventKind::WatcherStopped { .. } => unreachable!("watcher state is runtime-owned"),
+            DomainInput::FieldObservation { .. } => self.publish_field_observation(input),
         }
     }
 
@@ -92,20 +63,17 @@ impl RunEventReducer {
         episode_id: u64,
         sequence: u64,
         side: ResultPanelSide,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         let Some((state, reason)) = self.result_panel_side.observe(episode_id, sequence, side)
         else {
             return Ok(());
         };
-        self.publish_one(&RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResultPanelSideChanged {
-                session_id: session_id.cloned(),
-                screen_episode_id: episode_id,
-                source_sequence: sequence,
-                state,
-                reason,
-            },
+        self.publish_one(&DomainTransitionKind::ResultPanelSideChanged {
+            session_id: session_id.cloned(),
+            screen_episode_id: episode_id,
+            source_sequence: sequence,
+            state,
+            reason,
         })?;
         if reason == ResultPanelSideTransitionReason::Conflict
             && let Some(session_id) = session_id.cloned()
@@ -121,21 +89,20 @@ impl RunEventReducer {
 
     pub(super) fn publish_semantic_screen_episode(
         &mut self,
-        event: &RunEvent,
-    ) -> Result<(), RunEventReductionError> {
-        let RunEventKind::SemanticScreenEpisodeChanged {
+        input: &crate::event::DomainInput,
+    ) -> Result<(), DomainReductionError> {
+        let crate::event::DomainInput::SemanticScreenEpisodeChanged {
             session_id,
             screen_episode_id,
             sequence,
             monotonic_end_ms,
             screen,
             phase,
-        } = &event.kind
+        } = input
         else {
-            unreachable!("semantic episode dispatcher preserves event kind");
+            unreachable!("semantic episode dispatcher preserves input kind");
         };
-        self.publish_one(event)?;
-        if screen == "music_select" && *phase != SemanticEpisodePhase::Started {
+        if *screen == ScreenClass::MusicSelect && *phase != SemanticEpisodePhase::Started {
             self.music_select_resolver.best_minimum_sequence = *sequence;
             if matches!(
                 phase,
@@ -148,22 +115,18 @@ impl RunEventReducer {
             SemanticEpisodePhase::Started => {
                 self.semantic_episode_suspended = false;
                 self.clear_field_observation();
-                let screen_change = RunEvent {
-                    schema: event.schema.clone(),
-                    kind: RunEventKind::ScreenChanged {
-                        session_id: session_id.clone(),
-                        screen_episode_id: *screen_episode_id,
-                        sequence: *sequence,
-                        monotonic_start_ms: *monotonic_end_ms,
-                        monotonic_end_ms: *monotonic_end_ms,
-                        screen: screen.clone(),
-                    },
+                let screen_change = crate::event::DomainInput::ScreenChanged {
+                    session_id: session_id.clone(),
+                    screen_episode_id: *screen_episode_id,
+                    sequence: *sequence,
+                    monotonic_end_ms: *monotonic_end_ms,
+                    screen: *screen,
                 };
-                self.publish_screen_change(&screen_change, false)
+                self.publish_screen_change(&screen_change)
             }
             SemanticEpisodePhase::Suspended => {
                 self.semantic_episode_suspended = true;
-                if screen == "music_select" {
+                if *screen == ScreenClass::MusicSelect {
                     self.music_select_resolver
                         .best
                         .hold(SelectIdentityStatus::AwaitingEvidence);
@@ -172,17 +135,19 @@ impl RunEventReducer {
                 Ok(())
             }
             SemanticEpisodePhase::Resumed => {
+                self.current_screen = Some(*screen);
                 self.semantic_episode_suspended = false;
                 self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
                 Ok(())
             }
             SemanticEpisodePhase::Closing => {
-                self.result_episode_finalizing = screen == "result";
+                self.result_episode_finalizing = *screen == ScreenClass::Result;
                 self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
                 Ok(())
             }
             SemanticEpisodePhase::Finalized => {
-                if screen == "music_select" {
+                self.current_screen = None;
+                if *screen == ScreenClass::MusicSelect {
                     self.engine.retained_select = self.engine.selection_epochs.handoff();
                     self.publish_music_selection(
                         session_id.as_ref(),
@@ -192,7 +157,7 @@ impl RunEventReducer {
                         },
                     )?;
                     self.music_selection_episode_active = false;
-                } else if screen == "result" {
+                } else if *screen == ScreenClass::Result {
                     self.finalize_result_attempt(session_id.clone(), *sequence)?;
                     self.result_panel_side.clear();
                     self.result_select_context_detached = false;
@@ -209,12 +174,12 @@ impl RunEventReducer {
         &mut self,
         sequence: u64,
         monotonic_end_ms: u64,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), false)?;
         Ok(())
     }
 
-    pub(crate) fn finish_watcher(&mut self) -> Result<(), RunEventReductionError> {
+    pub(crate) fn finish_watcher(&mut self) -> Result<(), DomainReductionError> {
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(self.active_session_id.clone(), None, state)?;
         }
@@ -223,23 +188,19 @@ impl RunEventReducer {
 
     pub(super) fn publish_field_observation(
         &mut self,
-        event: &RunEvent,
-    ) -> Result<(), RunEventReductionError> {
-        let RunEventKind::FieldObservation {
+        input: &crate::event::DomainInput,
+    ) -> Result<(), DomainReductionError> {
+        let crate::event::DomainInput::FieldObservation {
             session_id,
             screen_episode_id,
             sequence,
             monotonic_end_ms,
-            screen,
-            fields,
-            parsed_result_fields,
+            observation,
             joint_evidence,
-            ..
-        } = &event.kind
+        } = input
         else {
-            unreachable!("field observation dispatcher preserves event kind");
+            unreachable!("field observation dispatcher preserves input kind");
         };
-        self.publish_one(event)?;
         if self
             .latest_screen_boundary_sequence
             .is_some_and(|boundary| *sequence < boundary)
@@ -247,37 +208,50 @@ impl RunEventReducer {
         {
             return Ok(());
         }
-        if screen == "result" {
-            let panel_side = result_panel_side(fields);
+        if let crate::event::DomainFieldObservation::Result { panel_side, .. } = observation {
             if let Some(side) = panel_side {
                 self.observe_result_panel_side(
                     session_id.as_ref(),
                     *screen_episode_id,
                     *sequence,
-                    side,
+                    *side,
                 )?;
             }
-            if panel_side != self.result_panel_side.stable() {
+            if *panel_side != self.result_panel_side.stable() {
                 return Ok(());
             }
         }
-        match screen.as_str() {
-            "result" => self.reduce_result_observation(
+        match observation {
+            crate::event::DomainFieldObservation::Result {
+                play_options,
+                clear_type,
+                parsed_fields,
+                ..
+            } => self.reduce_result_observation(
                 session_id.as_ref(),
                 *sequence,
                 *monotonic_end_ms,
-                fields,
-                parsed_result_fields.as_ref(),
+                play_options.as_ref(),
+                clear_type.as_ref(),
+                parsed_fields.as_deref(),
                 joint_evidence,
             ),
-            "music_select" => self.reduce_music_select_observation(
+            crate::event::DomainFieldObservation::MusicSelect {
+                selected_difficulty,
+                play_type,
+                play_side,
+                best,
+            } => self.reduce_music_select_observation(
                 session_id.as_ref(),
                 *sequence,
                 *monotonic_end_ms,
-                fields,
+                *selected_difficulty,
+                *play_type,
+                *play_side,
+                best,
                 joint_evidence,
             ),
-            _ => Ok(()),
+            crate::event::DomainFieldObservation::Title => Ok(()),
         }
     }
 
@@ -329,7 +303,7 @@ impl RunEventReducer {
         scope: ResolverScope,
         summary: &HypothesisSummary,
         observation_count: u32,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         let identity = ResolverTransitionIdentity {
             state: summary.state,
             select_play_type: summary.select_play_type,
@@ -343,36 +317,33 @@ impl RunEventReducer {
             return Ok(());
         }
         self.resolver_transitions.insert(scope, identity.clone());
-        self.emit(RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResolverStateChanged {
-                session_id: session_id.cloned(),
-                screen_episode_id: self.screen_episode_id,
-                source_sequence,
-                scope,
-                state: identity.state,
-                select_play_type: identity.select_play_type,
-                result_play_type: identity.result_play_type,
-                play_type_mismatch: identity.select_play_type.is_some()
-                    && identity.result_play_type.is_some()
-                    && identity.select_play_type != identity.result_play_type,
-                top: identity.top,
-                runner_up: identity.runner_up,
-                runner_song: identity.runner_song,
-                runner_chart: identity.runner_chart,
-                top_candidates: summary
-                    .top_candidates
-                    .iter()
-                    .map(resolver_hypothesis_key)
-                    .collect(),
-                support: summary.support,
-                margin: summary.margin,
-                song_margin: summary.song_margin,
-                chart_margin: summary.chart_margin,
-                selected_family_support: summary.selected_family_support.clone(),
-                runner_up_family_support: summary.runner_up_family_support.clone(),
-                observation_count,
-            },
+        self.emit(DomainTransitionKind::ResolverStateChanged {
+            session_id: session_id.cloned(),
+            screen_episode_id: self.screen_episode_id,
+            source_sequence,
+            scope,
+            state: identity.state,
+            select_play_type: identity.select_play_type,
+            result_play_type: identity.result_play_type,
+            play_type_mismatch: identity.select_play_type.is_some()
+                && identity.result_play_type.is_some()
+                && identity.select_play_type != identity.result_play_type,
+            top: identity.top,
+            runner_up: identity.runner_up,
+            runner_song: identity.runner_song,
+            runner_chart: identity.runner_chart,
+            top_candidates: summary
+                .top_candidates
+                .iter()
+                .map(resolver_hypothesis_key)
+                .collect(),
+            support: summary.support,
+            margin: summary.margin,
+            song_margin: summary.song_margin,
+            chart_margin: summary.chart_margin,
+            selected_family_support: summary.selected_family_support.clone(),
+            runner_up_family_support: summary.runner_up_family_support.clone(),
+            observation_count,
         })
     }
 
@@ -382,22 +353,22 @@ impl RunEventReducer {
     )]
     pub(super) fn publish_screen_change(
         &mut self,
-        event: &RunEvent,
-        publish_event: bool,
-    ) -> Result<(), RunEventReductionError> {
-        let RunEventKind::ScreenChanged {
+        input: &crate::event::DomainInput,
+    ) -> Result<(), DomainReductionError> {
+        let crate::event::DomainInput::ScreenChanged {
             session_id,
             screen_episode_id,
             sequence,
             monotonic_end_ms,
             screen,
             ..
-        } = &event.kind
+        } = input
         else {
-            unreachable!("screen change dispatcher preserves event kind");
+            unreachable!("screen change dispatcher preserves input kind");
         };
+        self.current_screen = Some(*screen);
         self.latest_screen_boundary_sequence = Some(*sequence);
-        if screen != "music_select" && self.music_selection_episode_active {
+        if *screen != ScreenClass::MusicSelect && self.music_selection_episode_active {
             self.publish_music_selection(
                 session_id.as_ref(),
                 *sequence,
@@ -410,15 +381,15 @@ impl RunEventReducer {
         self.screen_episode_id = *screen_episode_id;
         self.screen_episode_started_ms = Some(*monotonic_end_ms);
         self.screen_episode_last_ms = Some(*monotonic_end_ms);
-        let close_result_resolver = screen != "result" && self.result_resolver_active;
-        let selection_difficulty_reset = (screen == "music_select")
+        let close_result_resolver = *screen != ScreenClass::Result && self.result_resolver_active;
+        let selection_difficulty_reset = (*screen == ScreenClass::MusicSelect)
             .then(|| self.engine.selection_epochs.active_difficulty_state())
             .flatten();
         if close_result_resolver {
             self.result_resolver_active = false;
             self.engine.result_hypotheses = HypothesisAccumulator::default();
             self.engine.provisional_joint = None;
-            if screen != "play" {
+            if *screen != ScreenClass::Play {
                 self.engine.retained_select = HypothesisAccumulator::default();
             }
             self.resolver_transitions.remove(&ResolverScope::Result);
@@ -426,7 +397,7 @@ impl RunEventReducer {
                 .remove(&ResolverScope::AttemptJoint);
         }
         let mut selection_screen_attempt_update = None;
-        if screen == "music_select" {
+        if *screen == ScreenClass::MusicSelect {
             self.music_selection_revision = 0;
             self.music_select_resolver = MusicSelectResolver::default();
             self.active_music_selection = None;
@@ -439,7 +410,7 @@ impl RunEventReducer {
                 .remove(&ResolverScope::SelectionSuccessor);
             selection_screen_attempt_update = self.engine.play_attempt.observe_selection_screen();
         }
-        if screen == "result" {
+        if *screen == ScreenClass::Result {
             self.result_panel_side.start_episode(*screen_episode_id);
             self.result_select_context_detached = false;
             self.result_resolver_active = true;
@@ -452,32 +423,29 @@ impl RunEventReducer {
             self.numeric_evidence.clear();
             self.play_options = PlayOptionsEpisodeAccumulator::default();
         }
-        if matches!(screen.as_str(), "decide_transition" | "play")
+        if matches!(*screen, ScreenClass::DecideTransition | ScreenClass::Play)
             && self.attempt_started_ms.is_none()
         {
             self.attempt_started_ms = Some(*monotonic_end_ms);
         }
-        if matches!(screen.as_str(), "decide_transition" | "play" | "result") {
+        if matches!(
+            *screen,
+            ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Result
+        ) {
             self.attempt_phase_started_ms = Some(*monotonic_end_ms);
         }
-        if publish_event {
-            self.publish_one(event)?;
-        }
         if let Some((target, _)) = selection_difficulty_reset {
-            self.publish_one(&RunEvent {
-                schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-                kind: RunEventKind::SelectionDifficultyChanged {
-                    session_id: session_id.clone(),
-                    screen_episode_id: *screen_episode_id,
-                    source_sequence: *sequence,
-                    target,
-                    reason: SelectionDifficultyTransitionReason::Reset,
-                    current: None,
-                },
+            self.publish_one(&DomainTransitionKind::SelectionDifficultyChanged {
+                session_id: session_id.clone(),
+                screen_episode_id: *screen_episode_id,
+                source_sequence: *sequence,
+                target,
+                reason: SelectionDifficultyTransitionReason::Reset,
+                current: None,
             })?;
         }
         let unresolved = HypothesisAccumulator::default().summary();
-        for scope in if close_result_resolver || screen == "result" {
+        for scope in if close_result_resolver || *screen == ScreenClass::Result {
             [
                 Some(ResolverScope::Result),
                 Some(ResolverScope::AttemptJoint),
@@ -496,7 +464,7 @@ impl RunEventReducer {
                 0,
             )?;
         }
-        if screen == "music_select" {
+        if *screen == ScreenClass::MusicSelect {
             for scope in [
                 ResolverScope::SelectionIncumbent,
                 ResolverScope::SelectionSuccessor,
@@ -510,7 +478,7 @@ impl RunEventReducer {
                 )?;
             }
         }
-        if let Some(attempt_screen) = play_attempt_screen(screen)
+        if let Some(attempt_screen) = play_attempt_screen(*screen)
             && let Some(state) = self
                 .engine
                 .play_attempt
@@ -518,7 +486,7 @@ impl RunEventReducer {
         {
             self.publish_play_attempt_update(session_id.clone(), Some(*sequence), state)?;
         }
-        if screen == "play"
+        if *screen == ScreenClass::Play
             && let Some(session_id) = session_id.clone()
         {
             self.active_provisional_result = None;
@@ -529,7 +497,7 @@ impl RunEventReducer {
             self.attempt_phase_started_ms = None;
             self.publish_play_attempt_update(session_id.clone(), Some(*sequence), state)?;
         }
-        if screen != "result" {
+        if *screen != ScreenClass::Result {
             self.result_panel_side.clear();
             self.result_select_context_detached = false;
             self.reset_numeric_result();
@@ -542,13 +510,8 @@ impl RunEventReducer {
 
     pub(super) fn publish_session_finished(
         &mut self,
-        event: &RunEvent,
-    ) -> Result<(), RunEventReductionError> {
-        let (RunEventKind::SessionFinished { session_id, .. }
-        | RunEventKind::CanonicalSessionFinished { session_id }) = &event.kind
-        else {
-            unreachable!("session-finished dispatcher preserves event kind")
-        };
+        session_id: &String,
+    ) -> Result<(), DomainReductionError> {
         if self.music_selection_episode_active {
             let source_sequence = self
                 .resolver_source_sequence
@@ -565,12 +528,12 @@ impl RunEventReducer {
         }
         self.result_panel_side.clear();
         self.result_select_context_detached = false;
-        self.effects.push(RunReducerEffect::SessionEnded);
-        self.active_session_id = None;
-        self.current_screen = None;
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(Some(session_id.clone()), None, state)?;
         }
+        self.effects.push(DomainEffect::SessionEnded);
+        self.active_session_id = None;
+        self.current_screen = None;
         Ok(())
     }
 
@@ -579,14 +542,11 @@ impl RunEventReducer {
         session_id: Option<String>,
         source_sequence: Option<u64>,
         state: PlayAttemptState,
-    ) -> Result<(), RunEventReductionError> {
-        self.publish_one(&RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::PlayAttemptChanged {
-                session_id: session_id.clone(),
-                source_sequence,
-                state,
-            },
+    ) -> Result<(), DomainReductionError> {
+        self.publish_one(&DomainTransitionKind::PlayAttemptChanged {
+            session_id: session_id.clone(),
+            source_sequence,
+            state,
         })?;
         if let Some(sequence) = source_sequence {
             self.try_emit_result(session_id, sequence)?;
@@ -598,7 +558,7 @@ impl RunEventReducer {
         &mut self,
         session_id: Option<String>,
         sequence: u64,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         self.result_episode_finalizing = true;
         let rejection = if self.holds_stable_numeric_result() {
             None

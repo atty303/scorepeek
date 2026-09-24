@@ -999,11 +999,8 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use crate::catalog::{Catalog, Difficulty};
+    use crate::event::DomainInput;
     use crate::event::coordinator::{CoordinatorPolicy, DomainCoordinator};
-    use crate::event::{
-        RUN_EVENT_SCHEMA, RunEvent, RunEventKind, RunReducerEffect,
-        run_event_from_field_observation,
-    };
     use crate::recognition::music_select::{
         MusicSelectScreenFieldObservations, MusicSelectSongResolution, MusicSelectSongUnknownReason,
     };
@@ -1078,53 +1075,24 @@ mod tests {
             timing.text_worker_ids = (0..workers).collect();
             let observation = observation.complete(None, timing);
             let mut coordinator = DomainCoordinator::new(CoordinatorPolicy::default()).unwrap();
-            let start = RunEvent {
-                schema: RUN_EVENT_SCHEMA.into(),
-                kind: RunEventKind::CanonicalSessionStarted {
-                    session_id: "session".into(),
-                },
+            let start = DomainInput::SessionStarted {
+                session_id: "session".into(),
             };
-            let screen = RunEvent {
-                schema: RUN_EVENT_SCHEMA.into(),
-                kind: RunEventKind::ScreenChanged {
-                    session_id: Some("session".into()),
-                    screen_episode_id: 1,
-                    sequence: 1,
-                    monotonic_start_ms: 100,
-                    monotonic_end_ms: 100,
-                    screen: "result".into(),
-                },
+            let screen = DomainInput::ScreenChanged {
+                session_id: Some("session".into()),
+                screen_episode_id: 1,
+                sequence: 1,
+                monotonic_end_ms: 100,
+                screen: crate::recognition::screen::ScreenClass::Result,
             };
-            coordinator
-                .step(
-                    1,
-                    &crate::event::DomainInput::from_run_event(&start).unwrap(),
-                )
-                .unwrap();
-            coordinator
-                .step(
-                    2,
-                    &crate::event::DomainInput::from_run_event(&screen).unwrap(),
-                )
-                .unwrap();
-            let event =
-                run_event_from_field_observation("session", 1, 2, 200, 200, &observation).unwrap();
-            let outputs = coordinator
-                .step(
-                    3,
-                    &crate::event::DomainInput::from_run_event(&event).unwrap(),
-                )
-                .unwrap();
+            coordinator.step(1, &start).unwrap();
+            coordinator.step(2, &screen).unwrap();
+            let input = DomainInput::from_registered_field("session", 1, 2, 200, &observation);
+            let outputs = coordinator.step(3, &input).unwrap();
             let semantic_outputs = outputs
                 .effects()
                 .iter()
-                .filter_map(|effect| match effect {
-                    RunReducerEffect::Event(RunEvent {
-                        kind: RunEventKind::FieldObservation { .. },
-                        ..
-                    }) => None,
-                    other => Some(format!("{other:?}")),
-                })
+                .map(|effect| format!("{effect:?}"))
                 .collect::<Vec<_>>();
             results.push((
                 observation.fields().clone(),

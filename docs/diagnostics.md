@@ -5,14 +5,22 @@ recording is enabled. The invocation ID is the run ID; capture lifetimes use
 `<run-id>-session-<generation>` IDs.
 
 The stream records lifecycle, capture scheduling and failures, domain transitions, and
-public event delivery in order. It omits individual raw screen, screen tick, and field
-observation records. Their canonical sequence and pixels live in the separate recording.
+public event delivery in order. Runtime emits `runtime_event` records with
+`scorepeek-runtime-event-v1` data, and formats core decisions as separate
+`domain_transition` records with `scorepeek-domain-transition-v1` data. The two
+record types share one `channel_sequence`. They are distinct from the public
+Event API v5 sequence and from the stream's own record sequence. Runtime omits
+individual raw screen, screen tick, and field observation records. Their
+canonical sequence and pixels live in the separate recording.
+
 The runtime emits `domain_summary` after every 256 core inputs and at session or watcher
 finish. `input_sequence` counts only values actually passed to the core domain coordinator;
 runtime-owned watcher startup, overlay, and recording events do not consume a number.
-The `scorepeek-run-event-v19` diagnostic records retain one ordered `channel_sequence`
-across domain outputs and runtime events. Records emitted while processing a core input
-carry that input's `input_sequence`; runtime events outside a core step omit it. The summary's
+`channel_sequence` advances for every logical runtime event, core transition and
+observation input, including an observation omitted from the saved stream. Saved
+records may therefore have gaps in `channel_sequence`; those gaps also advance
+the frontend revision. Records emitted while processing a core input carry that
+input's `input_sequence`; runtime events outside a core step omit it. The summary's
 `inputs` and 256-input cadence use the same core-only count. The summary includes
 cumulative no-op, transition, and output counts,
 admitted frame and completed field counts, source sequence gaps, bounded screen and output-kind counts,
@@ -80,7 +88,8 @@ These counters describe runtime admission of whole frames. Core owns the bounded
 queue and worker pool within an admitted frame; its completion order cannot reorder
 domain commits, and its internal scheduling is not a canonical input or corpus oracle.
 The `session_finished` record reports recording publication as `disabled`, `published`,
-`partial`, or `failed`.
+`partial`, or `failed`. Core's final session transitions are recorded and
+projected before runtime emits `session_finished`.
 
 ```text
 scorepeek diagnostic observe

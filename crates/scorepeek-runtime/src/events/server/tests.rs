@@ -129,7 +129,12 @@ fn operational_events_share_channel_order_without_consuming_core_input_numbers()
     let events: Vec<Value> = stream
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter(|record| record["operation"] == "run_event")
+        .filter(|record| {
+            matches!(
+                record["operation"].as_str(),
+                Some("runtime_event" | "domain_transition")
+            )
+        })
         .map(|record| record["data"].clone())
         .collect();
     let find = |kind| events.iter().find(|value| value["event"] == kind).unwrap();
@@ -148,6 +153,10 @@ fn operational_events_share_channel_order_without_consuming_core_input_numbers()
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the test covers one complete ordered diagnostic stream"
+)]
 fn diagnostic_trace_counts_no_op_ticks_without_repeating_them() {
     let temporary = tempfile::tempdir().unwrap();
     let diagnostics = RunDiagnostics::start(temporary.path(), "run-trace-test");
@@ -215,6 +224,52 @@ fn diagnostic_trace_counts_no_op_ticks_without_repeating_them() {
         fs::read_to_string(temporary.path().join("run-trace-test/diagnostics.ndjson")).unwrap();
     assert!(!stream.contains("\"event\":\"screen_tick\""));
     assert!(stream.contains("\"operation\":\"domain_summary\""));
+    let records = stream
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| {
+            matches!(
+                record["operation"].as_str(),
+                Some("runtime_event" | "domain_transition")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        records
+            .iter()
+            .all(|record| match record["operation"].as_str() {
+                Some("runtime_event") => record["data"]["schema"] == RUN_EVENT_SCHEMA,
+                Some("domain_transition") =>
+                    record["data"]["schema"] == super::super::schema::DOMAIN_TRANSITION_SCHEMA,
+                _ => false,
+            })
+    );
+    let screen_changed = records
+        .iter()
+        .position(|record| record["data"]["event"] == "screen_changed")
+        .unwrap();
+    assert!(
+        records[screen_changed]["data"]["channel_sequence"]
+            .as_u64()
+            .unwrap()
+            > records[screen_changed - 1]["data"]["channel_sequence"]
+                .as_u64()
+                .unwrap()
+                + 1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .find(|record| record["data"]["event"] == "session_finished")
+            .unwrap()["data"]["input_sequence"],
+        6
+    );
+    assert!(
+        records
+            .windows(2)
+            .all(|pair| pair[0]["data"]["channel_sequence"].as_u64().unwrap()
+                < pair[1]["data"]["channel_sequence"].as_u64().unwrap())
+    );
     let summary = stream
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -1875,8 +1930,9 @@ fn public_worker_loss_and_oversize_do_not_fail_internal_publication() {
             .load(Ordering::Acquire)
     );
     output.publish(&accepted_result_event(1)).unwrap();
+    assert_eq!(output.core_reducer.state().last_input_sequence(), Some(1));
     assert!(
-        output
+        !output
             .take_headless_events()
             .iter()
             .any(|event| matches!(event.kind, RunEventKind::FieldObservation { .. }))
@@ -2279,8 +2335,14 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
         )
         .unwrap();
     let snapshot = shared.lock().unwrap().resolver.clone();
-    assert_eq!(snapshot.latest_field_sequence, Some(42));
-    assert_eq!(snapshot.local.unwrap().top_candidates.len(), 1);
+    assert_eq!(snapshot["latest_field_sequence"], 42);
+    assert_eq!(
+        snapshot["local"]["top_candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     output
         .publish(&RunEvent {
             schema: RUN_EVENT_SCHEMA.to_owned(),
@@ -2295,8 +2357,8 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
         })
         .unwrap();
     let snapshot = shared.lock().unwrap().resolver.clone();
-    assert_eq!(snapshot.latest_field_sequence, None);
-    assert_eq!(snapshot.latest_field_ms, None);
+    assert!(snapshot["latest_field_sequence"].is_null());
+    assert!(snapshot["latest_field_ms"].is_null());
 }
 
 fn music_selection_test_observation()
@@ -2983,14 +3045,8 @@ fn pending_marker_is_visible_before_any_song_evidence() {
         )
         .unwrap();
     let snapshot = shared.lock().unwrap().resolver.clone();
-    assert_eq!(
-        snapshot.selection_difficulty_target,
-        Some(SelectionDifficultyTarget::Pending)
-    );
-    assert_eq!(
-        snapshot.selection_difficulty.unwrap().difficulty,
-        Difficulty::Normal
-    );
+    assert_eq!(snapshot["selection_difficulty_target"], "pending");
+    assert_eq!(snapshot["selection_difficulty"]["difficulty"], "normal");
 }
 
 #[test]
@@ -3001,11 +3057,12 @@ fn resolver_transition_records_raw_and_normalized_family_contributions() {
 
     output.publish(&accepted_result_event(1)).unwrap();
     let events = output.take_headless_events();
-    assert!(matches!(
-        events[0].kind,
-        RunEventKind::FieldObservation { .. }
-    ));
-    let transition = events[1].to_value().unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, RunEventKind::FieldObservation { .. }))
+    );
+    let transition = events[0].to_value().unwrap();
     assert_eq!(transition["event"], "resolver_state_changed");
     assert_eq!(transition["scope"], "result");
     assert_eq!(transition["state"], "song_projected");

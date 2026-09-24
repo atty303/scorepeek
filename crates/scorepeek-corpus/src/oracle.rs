@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use scorepeek_core::canonical_recording::{CanonicalTick, TickDisposition};
 use scorepeek_core::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek_core::event::{
-    MusicSelectionState, ResultDomainEvent, ResultState, RunEvent, RunEventKind,
+    DomainTransitionKind, MusicSelectionState, ResultDomainEvent, ResultState,
 };
 use scorepeek_core::recognition::music_select::PlaySide;
 use scorepeek_core::recognition::result::{
@@ -448,9 +448,9 @@ impl ReplayObserver for OracleObserver<'_> {
         Ok(())
     }
 
-    fn event(&mut self, event: &RunEvent) -> Result<(), ReplayError> {
-        match &event.kind {
-            RunEventKind::MusicSelectionChanged {
+    fn event(&mut self, event: &DomainTransitionKind) -> Result<(), ReplayError> {
+        match event {
+            DomainTransitionKind::MusicSelectionChanged {
                 source_sequence,
                 state,
                 ..
@@ -466,7 +466,7 @@ impl ReplayObserver for OracleObserver<'_> {
                     }
                 }
             }
-            RunEventKind::ResultChanged {
+            DomainTransitionKind::ResultChanged {
                 source_sequence,
                 state: ResultState::Confirmed { result, .. },
                 ..

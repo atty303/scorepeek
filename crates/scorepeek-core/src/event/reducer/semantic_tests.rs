@@ -2,13 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::*;
 use crate::catalog::{Chart, ChartKey, Difficulty, PlayType};
 use crate::event::{
     ResolverResolutionState, ResultPanelSideEpisodeState, ResultPanelSideTransitionReason,
-    SelectionDifficultyTarget, SelectionDifficultyTransitionReason, SongResolutionPresentation,
+    SelectionDifficultyTarget, SelectionDifficultyTransitionReason,
 };
 use crate::recognition::result::{
     PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
@@ -48,9 +48,9 @@ fn one_numeric_challenger_cannot_replace_an_accepted_song_or_chart() {
         } else {
             challenger.chart.key.difficulty = Difficulty::Another;
         }
-        let mut reducer = RunEventReducer {
+        let mut reducer = DomainReducer {
             accepted_numeric_result: Some(base.clone()),
-            ..RunEventReducer::default()
+            ..DomainReducer::default()
         };
         assert!(
             reducer
@@ -64,7 +64,7 @@ fn one_numeric_challenger_cannot_replace_an_accepted_song_or_chart() {
 
 #[test]
 fn conflicting_result_panel_side_detaches_retained_select_context() {
-    let mut reducer = RunEventReducer::default();
+    let mut reducer = DomainReducer::default();
     reducer
         .engine
         .retained_select
@@ -82,7 +82,8 @@ fn conflicting_result_panel_side_detaches_retained_select_context() {
             Some(&session),
             3,
             300,
-            &json!({}),
+            None,
+            None,
             None,
             &JointEvidenceObservation {
                 catalog_song_count: 0,
@@ -94,12 +95,9 @@ fn conflicting_result_panel_side_detaches_retained_select_context() {
     assert!(reducer.engine.retained_select.select_play_sides.is_empty());
     assert!(reducer.effects.iter().any(|effect| matches!(
         effect,
-        RunReducerEffect::Event(RunEvent {
-            kind: RunEventKind::ResultSelectContextMismatch {
-                select_play_side: PlaySide::OnePlayer,
-                result_play_side: PlaySide::TwoPlayer,
-                ..
-            },
+        DomainEffect::Event(DomainTransitionKind::ResultSelectContextMismatch {
+            select_play_side: PlaySide::OnePlayer,
+            result_play_side: PlaySide::TwoPlayer,
             ..
         })
     )));
@@ -1178,23 +1176,9 @@ fn accepted_hypothesis_can_return_to_conflict_on_new_contradictory_evidence() {
     );
 }
 
-fn music_selection_test_observation()
--> (Value, JointEvidenceObservation, SongResolutionPresentation) {
+fn music_selection_test_observation() -> JointEvidenceObservation {
     let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000046\"").unwrap();
-    let fields = json!({
-        "play_type": {
-            "state": { "status": "known", "value": "double" },
-            "single_score_ppm": 974_000,
-            "double_score_ppm": 999_000
-        },
-        "selected_difficulty": {
-            "state": { "status": "known", "value": "hyper" }
-        },
-        "play_side": {
-            "state": { "status": "known", "value": "two_player" }
-        }
-    });
-    let evidence = JointEvidenceObservation {
+    JointEvidenceObservation {
         catalog_song_count: 2,
         candidates: vec![JointEvidenceCandidate {
             song_id,
@@ -1211,38 +1195,30 @@ fn music_selection_test_observation()
             family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
             support: 300,
         }],
-    };
-    let presentation = SongResolutionPresentation::Unknown {
-        reason: json!("test"),
-        selected: None,
-        runner_up: None,
-        evidence_summary: None,
-    };
-    (fields, evidence, presentation)
+    }
 }
 
 #[test]
 fn music_selection_requires_two_equal_play_sides_and_rejects_a_conflict() {
     let mut resolver = MusicSelectResolver::default();
-    let (mut fields, mut evidence, _) = music_selection_test_observation();
-    fields["play_type"]["state"]["value"] = json!("single");
+    let mut evidence = music_selection_test_observation();
     evidence.candidates[0].chart.key.play_type = PlayType::Single;
     resolver.observe(
         1,
         100,
         &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
+        Some(Difficulty::Hyper),
+        Some(evidence.candidates[0].chart.key.play_type),
+        Some(PlaySide::TwoPlayer),
     );
     assert!(resolver.selected().is_none());
     resolver.observe(
         2,
         200,
         &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
+        Some(Difficulty::Hyper),
+        Some(evidence.candidates[0].chart.key.play_type),
+        Some(PlaySide::TwoPlayer),
     );
     assert!(matches!(
         resolver.selected(),
@@ -1252,14 +1228,13 @@ fn music_selection_requires_two_equal_play_sides_and_rejects_a_conflict() {
         })
     ));
 
-    fields["play_side"]["state"]["value"] = json!("one_player");
     resolver.observe(
         3,
         300,
         &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
+        Some(Difficulty::Hyper),
+        Some(evidence.candidates[0].chart.key.play_type),
+        Some(PlaySide::OnePlayer),
     );
     assert!(resolver.selected().is_none());
 }
@@ -1267,18 +1242,18 @@ fn music_selection_requires_two_equal_play_sides_and_rejects_a_conflict() {
 #[test]
 fn double_play_selection_requires_a_footer_play_side() {
     let mut resolver = MusicSelectResolver::default();
-    let (fields, evidence, _) = music_selection_test_observation();
+    let evidence = music_selection_test_observation();
     for (sequence, monotonic_ms) in [(1, 100), (2, 200)] {
         resolver.observe(
             sequence,
             monotonic_ms,
             &evidence,
-            selected_difficulty(&fields),
-            selected_play_type(&fields),
+            Some(Difficulty::Hyper),
+            Some(evidence.candidates[0].chart.key.play_type),
             if sequence == 1 {
                 None
             } else {
-                selected_play_side(&fields)
+                Some(PlaySide::TwoPlayer)
             },
         );
     }
@@ -1287,9 +1262,9 @@ fn double_play_selection_requires_a_footer_play_side() {
         3,
         300,
         &evidence,
-        selected_difficulty(&fields),
-        selected_play_type(&fields),
-        selected_play_side(&fields),
+        Some(Difficulty::Hyper),
+        Some(evidence.candidates[0].chart.key.play_type),
+        Some(PlaySide::TwoPlayer),
     );
     assert!(matches!(
         resolver.selected(),

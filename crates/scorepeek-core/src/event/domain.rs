@@ -216,23 +216,6 @@ impl ResolverHypothesisKey {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum SongResolutionPresentation {
-    Accepted {
-        reason: Option<serde_json::Value>,
-        selected: SongPresentation,
-        runner_up: SongPresentation,
-        evidence_summary: String,
-    },
-    Unknown {
-        reason: serde_json::Value,
-        selected: Option<SongPresentation>,
-        runner_up: Option<SongPresentation>,
-        evidence_summary: Option<String>,
-    },
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionDifficultyTarget {

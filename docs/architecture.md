@@ -177,6 +177,18 @@ become song-identity or attempt-acceptance evidence. Current field
 applicability and acceptance rules are defined in
 [field semantics](field-semantics.md).
 
+`scorepeek-core` admits typed `DomainInput` values and returns ordered
+`DomainTransitionKind` decisions and a typed `DomainSnapshot`. Field inputs use
+the registered observation's screen-specific values and full joint evidence;
+the reducer does not parse diagnostic JSON or echo observations as decisions.
+The live session constructs this input from the registered observation, while
+runtime independently formats the diagnostic observation. Corpus replay uses
+the same input constructor and domain coordinator, and its oracle reads typed
+transitions. Runtime owns the diagnostic event types, schema and display labels,
+as well as the projection of domain decisions into Event API v5 and SQLite score
+consumption. The diagnostic record contract is described in
+[runtime diagnostics](diagnostics.md).
+
 ## Events and score persistence
 
 The public live interface is Event API v5 on

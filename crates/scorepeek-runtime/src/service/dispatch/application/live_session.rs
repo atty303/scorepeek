@@ -631,7 +631,7 @@ pub(super) fn run_routine_live_session(
                     break;
                 }
                 let mut started = false;
-                let mut emit = |emission: LiveSessionEmission| {
+                let mut emit = |emission: TypedLiveSessionEmission| {
                     output.refresh_scores()?;
                     output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
                     let output_started = std::time::Instant::now();
@@ -642,13 +642,18 @@ pub(super) fn run_routine_live_session(
                         output.record_diagnostic("capture", fact, true);
                         return Ok(capture_live::LiveEventProcessingTiming::default());
                     }
-                    let event = run_event_from_live_emission(emission)?;
+                    let Some(event) = emission.event else {
+                        return Ok(capture_live::LiveEventProcessingTiming::default());
+                    };
                     if matches!(&event.kind, RunEventKind::SessionStarted { .. }) {
                         started = true;
                     }
                     let output_overhead_us =
                         u64::try_from(output_started.elapsed().as_micros()).unwrap_or(u64::MAX);
-                    let timing = output.publish_timed(&event)?;
+                    let timing = match emission.domain_input {
+                        Some(input) => output.publish_timed_domain(&event, input)?,
+                        None => output.publish_timed(&event)?,
+                    };
                     Ok(capture_live::LiveEventProcessingTiming {
                         screen_resolver_us: timing.screen_resolver_us,
                         attempt_resolver_us: timing.attempt_resolver_us,
@@ -896,7 +901,7 @@ pub(super) fn execute_live_session(
     runtime_capture: capture_live::RuntimeCaptureInput<'_>,
     stop: &std::sync::atomic::AtomicBool,
     emit: &mut impl FnMut(
-        LiveSessionEmission,
+        TypedLiveSessionEmission,
     ) -> Result<capture_live::LiveEventProcessingTiming, String>,
 ) -> Result<capture_live::CaptureSessionReport, String> {
     let execution_context = crate::service::session::recognition::RecognitionExecutionContext::new(
@@ -968,20 +973,14 @@ pub(super) fn execute_live_session(
                 }
                 _ => None,
             };
-            let authority_joint_evidence = match &event {
-                capture_live::CaptureSessionEvent::Observation { output, .. } => {
-                    Some(output.joint_evidence().clone())
-                }
-                _ => None,
-            };
-            let value = live_session_event_value(Some(session_id), None, event)?;
-            let serialization_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            let mut timing = emit(LiveSessionEmission {
-                value,
-                authority_joint_evidence,
+            let emission = typed_live_session_emission(
+                session_id,
+                event,
                 diagnostic_identity,
                 diagnostic_capture_fact,
-            })?;
+            )?;
+            let serialization_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let mut timing = emit(emission)?;
             timing.add(capture_live::LiveEventProcessingTiming {
                 screen_resolver_us: None,
                 attempt_resolver_us: None,

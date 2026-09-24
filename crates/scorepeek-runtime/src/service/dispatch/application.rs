@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use crate::diagnostics::contract::{
     DiagnosticBinding, DiagnosticPolicy, DiagnosticResource, DiagnosticRunDescriptor,
 };
+use crate::events::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
 use crate::{
     capture_live,
     config::{
@@ -31,7 +32,6 @@ use crate::{
     },
     service::session as routine_watcher,
 };
-use scorepeek_core::event::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind};
 use scorepeek_core::frame::CanonicalLayout;
 use scorepeek_core::recognition::{screen as recognition, title as recognition_title};
 use scorepeek_resources::CatalogStore;

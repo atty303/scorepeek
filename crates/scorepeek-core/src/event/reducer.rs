@@ -17,12 +17,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::catalog::{Chart, ChartKey, Difficulty, PlayType, ScorepeekSongId};
 use crate::event::{
-    BestChart, CurrentSelectionDifficulty, EvidenceContribution, MusicSelectResolverState,
-    MusicSelectionState, MusicSelectionUnresolvedReason, NumericResultEventSuppressionReason,
-    NumericResultTemporalState, NumericResultTransitionReason, ResolverHypothesisKey,
-    ResolverResolutionState, ResolverScope, ResultDomainEvent, ResultPanelSideEpisodeState,
-    ResultPanelSideTransitionReason, ResultRetractionReason, ResultState, RunEvent, RunEventKind,
-    SelectFrameIdentity, SelectIdentityStatus, SelectionDifficultyTarget,
+    BestChart, CurrentSelectionDifficulty, DomainTransitionKind, EvidenceContribution,
+    MusicSelectResolverState, MusicSelectionState, MusicSelectionUnresolvedReason,
+    NumericResultEventSuppressionReason, NumericResultTemporalState, NumericResultTransitionReason,
+    ResolverHypothesisKey, ResolverResolutionState, ResolverScope, ResultDomainEvent,
+    ResultPanelSideEpisodeState, ResultPanelSideTransitionReason, ResultRetractionReason,
+    ResultState, SelectFrameIdentity, SelectIdentityStatus, SelectionDifficultyTarget,
     SelectionDifficultyTransitionReason, SongPresentation,
 };
 use crate::recognition::music_select::PlaySide;
@@ -31,6 +31,7 @@ use crate::recognition::result::{
     ResultPerformanceResolution, resolve_result_performance,
 };
 use crate::recognition::screen::ResultPanelSide;
+use crate::recognition::screen::ScreenClass;
 use crate::recognition::shared::{
     EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
 };
@@ -39,7 +40,6 @@ use crate::session::attempt::{
 };
 use crate::session::timeline::SemanticEpisodePhase;
 use serde::Serialize;
-use serde_json::Value;
 use std::convert::Infallible;
 
 pub const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
@@ -113,27 +113,14 @@ const fn result_play_side(panel_side: Option<ResultPanelSide>) -> Option<PlaySid
     })
 }
 
-fn play_attempt_screen(screen: &str) -> Option<PlayAttemptScreen> {
+fn play_attempt_screen(screen: ScreenClass) -> Option<PlayAttemptScreen> {
     match screen {
-        "music_select" => Some(PlayAttemptScreen::MusicSelect),
-        "decide_transition" => Some(PlayAttemptScreen::DecideTransition),
-        "play" => Some(PlayAttemptScreen::Play),
-        "result" => Some(PlayAttemptScreen::Result),
+        ScreenClass::MusicSelect => Some(PlayAttemptScreen::MusicSelect),
+        ScreenClass::DecideTransition => Some(PlayAttemptScreen::DecideTransition),
+        ScreenClass::Play => Some(PlayAttemptScreen::Play),
+        ScreenClass::Result => Some(PlayAttemptScreen::Result),
         _ => None,
     }
-}
-
-fn selected_play_side(fields: &Value) -> Option<PlaySide> {
-    let value = fields.pointer("/play_side/state")?.get("value")?.as_str()?;
-    match value {
-        "one_player" => Some(PlaySide::OnePlayer),
-        "two_player" => Some(PlaySide::TwoPlayer),
-        _ => None,
-    }
-}
-
-fn result_panel_side(fields: &Value) -> Option<ResultPanelSide> {
-    serde_json::from_value(fields.get("panel_side")?.clone()).ok()
 }
 
 fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
@@ -146,20 +133,20 @@ fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
 }
 
 fn resolver_node(
-    label: &'static str,
+    scope: ResolverScope,
     accumulator: &HypothesisAccumulator,
     summary: &HypothesisSummary,
 ) -> ResolverNodeSnapshot {
     ResolverNodeSnapshot {
-        label,
+        scope,
         started_ms: accumulator.first_observation_ms,
         last_observation_ms: accumulator.last_observation_ms,
         observations: accumulator.observation_count,
-        top: summary.selected.as_ref().map(candidate_label),
-        runner_up: summary.runner_up.as_ref().map(candidate_label),
-        runner_song: summary.runner_song.as_ref().map(candidate_label),
-        runner_chart: summary.runner_chart.as_ref().map(candidate_label),
-        top_candidates: summary.top_candidates.iter().map(candidate_label).collect(),
+        top: summary.selected.clone(),
+        runner_up: summary.runner_up.clone(),
+        runner_song: summary.runner_song.clone(),
+        runner_chart: summary.runner_chart.clone(),
+        top_candidates: summary.top_candidates.clone(),
         support: summary.support,
         margin: summary.margin,
         song_margin: summary.song_margin,
@@ -169,38 +156,9 @@ fn resolver_node(
         play_type_mismatch: summary.select_play_type.is_some()
             && summary.result_play_type.is_some()
             && summary.select_play_type != summary.result_play_type,
-        family_contributions: family_contribution_labels(&summary.selected_family_support),
+        family_contributions: summary.selected_family_support.clone(),
         current_difficulty: accumulator.select_difficulty,
         state: summary.state,
-    }
-}
-
-fn candidate_label(candidate: &JointEvidenceCandidate) -> String {
-    let title = candidate.display_titles.first().map_or("?", String::as_str);
-    format!(
-        "{} / {:?} {:?} Lv{} notes={}",
-        title,
-        play_type_label(candidate.chart.key.play_type),
-        difficulty_label(candidate.chart.key.difficulty),
-        candidate.chart.level,
-        candidate.chart.notes,
-    )
-}
-
-const fn play_type_label(play_type: PlayType) -> &'static str {
-    match play_type {
-        PlayType::Single => "SP",
-        PlayType::Double => "DP",
-    }
-}
-
-const fn difficulty_label(difficulty: Difficulty) -> &'static str {
-    match difficulty {
-        Difficulty::Beginner => "BEGINNER",
-        Difficulty::Normal => "NORMAL",
-        Difficulty::Hyper => "HYPER",
-        Difficulty::Another => "ANOTHER",
-        Difficulty::Leggendaria => "LEGGENDARIA",
     }
 }
 
@@ -212,96 +170,58 @@ fn attempt_node(
     result: &HypothesisSummary,
     joint: &HypothesisSummary,
 ) -> Option<AttemptNodeSnapshot> {
-    let (attempt_id, phase, path) = match state {
-        PlayAttemptState::Idle => return None,
-        PlayAttemptState::UnlinkedResult { .. } => {
-            (None, "unlinked_result".to_owned(), "R".to_owned())
-        }
-        PlayAttemptState::Attempt { attempt } => {
-            let mut path = String::new();
-            for (observed, label) in [
-                (attempt.path.select_observed, 'S'),
-                (attempt.path.decide_observed, 'D'),
-                (attempt.path.play_observed, 'P'),
-                (attempt.path.result_observed, 'R'),
-            ] {
-                if observed {
-                    if !path.is_empty() {
-                        path.push('-');
-                    }
-                    path.push(label);
-                }
-            }
-            (
-                Some(attempt.attempt_id),
-                format!("{:?}", attempt.phase).to_ascii_lowercase(),
-                path,
-            )
-        }
+    if matches!(state, PlayAttemptState::Idle) {
+        return None;
+    }
+    let attempt_id = match state {
+        PlayAttemptState::Attempt { attempt } => Some(attempt.attempt_id),
+        PlayAttemptState::Idle | PlayAttemptState::UnlinkedResult { .. } => None,
     };
     Some(AttemptNodeSnapshot {
         attempt_id,
         started_ms,
         phase_started_ms,
-        phase,
-        path,
-        select_top: select.selected.as_ref().map(candidate_label),
-        result_top: result.selected.as_ref().map(candidate_label),
-        joint_top: joint.selected.as_ref().map(candidate_label),
+        attempt_state: state.clone(),
+        select_top: select.selected.clone(),
+        result_top: result.selected.clone(),
+        joint_top: joint.selected.clone(),
         support: joint.support,
         margin: joint.margin,
         song_margin: joint.song_margin,
         chart_margin: joint.chart_margin,
-        runner_song: joint.runner_song.as_ref().map(candidate_label),
-        runner_chart: joint.runner_chart.as_ref().map(candidate_label),
-        top_candidates: joint.top_candidates.iter().map(candidate_label).collect(),
-        family_contributions: family_contribution_labels(&joint.selected_family_support),
+        runner_song: joint.runner_song.clone(),
+        runner_chart: joint.runner_chart.clone(),
+        top_candidates: joint.top_candidates.clone(),
+        family_contributions: joint.selected_family_support.clone(),
         state: joint.state,
     })
 }
 
-fn family_contribution_labels(
-    contributions: &BTreeMap<EvidenceFamily, EvidenceContribution>,
-) -> Vec<String> {
-    let mut values = contributions
-        .iter()
-        .map(|(family, contribution)| {
-            format!(
-                "{}={}",
-                format!("{family:?}").to_ascii_lowercase(),
-                contribution.normalized()
-            )
-        })
-        .collect::<Vec<_>>();
-    values.sort();
-    values
-}
-
-/// A transport-neutral action produced by [`RunEventReducer`].
+/// A transport-neutral action produced by [`DomainReducer`].
 #[allow(
     clippy::large_enum_variant,
     reason = "effects retain owned domain values in one ordered queue without extra indirection"
 )]
 #[derive(Clone, Debug)]
-pub enum RunReducerEffect {
-    Event(RunEvent),
+pub enum DomainEffect {
+    Event(DomainTransitionKind),
     SessionEnded,
-    Snapshot(RunReducerSnapshot),
+    Snapshot(DomainSnapshot),
 }
 
 /// Ordered output from one reducer input.
 #[derive(Clone, Debug, Default)]
-pub struct ReducedRunEvents {
-    effects: Vec<RunReducerEffect>,
+pub struct ReducedDomainTransitions {
+    effects: Vec<DomainEffect>,
 }
 
-pub type RunEventReductionError = Infallible;
+pub type DomainReductionError = Infallible;
 
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct RunReducerSnapshot {
+pub struct DomainSnapshot {
     pub now_ms: u64,
-    pub raw_screen: Option<String>,
-    pub screen: Option<String>,
+    pub raw_screen: Option<ScreenClass>,
+    pub screen: Option<ScreenClass>,
     pub suspended: bool,
     pub finalizing: bool,
     pub screen_episode_id: u64,
@@ -314,7 +234,7 @@ pub struct RunReducerSnapshot {
     pub local: Option<ResolverNodeSnapshot>,
     pub successor: Option<ResolverNodeSnapshot>,
     pub attempt: Option<AttemptNodeSnapshot>,
-    pub gate: String,
+    pub gate: GateDecision,
     pub gates: Vec<GateSnapshot>,
     pub play_options: Option<PlayOptionsDebugSnapshot>,
 }
@@ -336,23 +256,45 @@ pub enum GateState {
     Inactive,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateKind {
+    Link,
+    Identity,
+    Clear,
+    Numeric,
+    Drain,
+    Emit,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateDecision {
+    ResultConfirmed,
+    #[default]
+    JointIdentityPending,
+    NumericPending,
+    LinkedAttemptPending,
+    Ready,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct GateSnapshot {
-    pub label: &'static str,
+    pub kind: GateKind,
     pub state: GateState,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolverNodeSnapshot {
-    pub label: &'static str,
+    pub scope: ResolverScope,
     pub started_ms: Option<u64>,
     pub last_observation_ms: Option<u64>,
     pub observations: u32,
-    pub top: Option<String>,
-    pub runner_up: Option<String>,
-    pub runner_song: Option<String>,
-    pub runner_chart: Option<String>,
-    pub top_candidates: Vec<String>,
+    pub top: Option<JointEvidenceCandidate>,
+    pub runner_up: Option<JointEvidenceCandidate>,
+    pub runner_song: Option<JointEvidenceCandidate>,
+    pub runner_chart: Option<JointEvidenceCandidate>,
+    pub top_candidates: Vec<JointEvidenceCandidate>,
     pub support: u16,
     pub margin: u16,
     pub song_margin: u16,
@@ -360,7 +302,7 @@ pub struct ResolverNodeSnapshot {
     pub select_play_type: Option<PlayType>,
     pub result_play_type: Option<PlayType>,
     pub play_type_mismatch: bool,
-    pub family_contributions: Vec<String>,
+    pub family_contributions: BTreeMap<EvidenceFamily, EvidenceContribution>,
     pub current_difficulty: Option<CurrentSelectionDifficulty>,
     pub state: ResolverResolutionState,
 }
@@ -370,30 +312,29 @@ pub struct AttemptNodeSnapshot {
     pub attempt_id: Option<u64>,
     pub started_ms: Option<u64>,
     pub phase_started_ms: Option<u64>,
-    pub phase: String,
-    pub path: String,
-    pub select_top: Option<String>,
-    pub result_top: Option<String>,
-    pub joint_top: Option<String>,
+    pub attempt_state: PlayAttemptState,
+    pub select_top: Option<JointEvidenceCandidate>,
+    pub result_top: Option<JointEvidenceCandidate>,
+    pub joint_top: Option<JointEvidenceCandidate>,
     pub support: u16,
     pub margin: u16,
     pub song_margin: u16,
     pub chart_margin: u16,
-    pub runner_song: Option<String>,
-    pub runner_chart: Option<String>,
-    pub top_candidates: Vec<String>,
-    pub family_contributions: Vec<String>,
+    pub runner_song: Option<JointEvidenceCandidate>,
+    pub runner_chart: Option<JointEvidenceCandidate>,
+    pub top_candidates: Vec<JointEvidenceCandidate>,
+    pub family_contributions: BTreeMap<EvidenceFamily, EvidenceContribution>,
     pub state: ResolverResolutionState,
 }
 
-impl ReducedRunEvents {
+impl ReducedDomainTransitions {
     #[must_use]
-    pub fn effects(&self) -> &[RunReducerEffect] {
+    pub fn effects(&self) -> &[DomainEffect] {
         &self.effects
     }
 
     #[must_use]
-    pub fn into_effects(self) -> Vec<RunReducerEffect> {
+    pub fn into_effects(self) -> Vec<DomainEffect> {
         self.effects
     }
 }
@@ -404,7 +345,7 @@ impl ReducedRunEvents {
     reason = "these booleans are independent reducer facts rather than one state machine axis"
 )]
 #[derive(Clone, Default)]
-pub(crate) struct RunEventReducer {
+pub(crate) struct DomainReducer {
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
     pending_supplemental_result: Option<PendingSupplementalResult>,
@@ -433,16 +374,16 @@ pub(crate) struct RunEventReducer {
     attempt_started_ms: Option<u64>,
     attempt_phase_started_ms: Option<u64>,
     active_session_id: Option<String>,
-    current_screen: Option<String>,
-    raw_screen: Option<String>,
+    current_screen: Option<ScreenClass>,
+    raw_screen: Option<ScreenClass>,
     resolver_now_ms: u64,
     resolver_source_sequence: Option<u64>,
     latest_field_sequence: Option<u64>,
     latest_field_ms: Option<u64>,
-    effects: Vec<RunReducerEffect>,
+    effects: Vec<DomainEffect>,
 }
 
-impl RunEventReducer {
+impl DomainReducer {
     #[cfg(test)]
     #[must_use]
     pub fn new() -> Self {
@@ -456,54 +397,23 @@ impl RunEventReducer {
         clippy::unnecessary_wraps,
         reason = "event emission shares the reducer's uniform fallible pipeline contract"
     )]
-    fn emit(&mut self, event: RunEvent) -> Result<(), RunEventReductionError> {
-        match &event.kind {
-            RunEventKind::CanonicalSessionStarted { session_id } => {
-                self.active_session_id = Some(session_id.clone());
-                self.current_screen = None;
-                self.raw_screen = None;
-            }
-            RunEventKind::SessionStarted { session_id, .. } => {
-                self.active_session_id.clone_from(session_id);
-                self.current_screen = None;
-                self.raw_screen = None;
-            }
-            RunEventKind::RawScreenObserved { screen, .. } => {
-                self.raw_screen = Some(screen.clone());
-            }
-            RunEventKind::ScreenChanged { screen, .. } => {
-                self.current_screen = Some(screen.clone());
-            }
-            RunEventKind::SemanticScreenEpisodeChanged { screen, phase, .. } => match phase {
-                SemanticEpisodePhase::Started | SemanticEpisodePhase::Resumed => {
-                    self.current_screen = Some(screen.clone());
-                }
-                SemanticEpisodePhase::Finalized => self.current_screen = None,
-                SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
-            },
-            RunEventKind::SessionFinished { .. }
-            | RunEventKind::CanonicalSessionFinished { .. } => {
-                self.active_session_id = None;
-                self.current_screen = None;
-            }
-            _ => {}
-        }
-        self.effects.push(RunReducerEffect::Event(event));
+    fn emit(&mut self, event: DomainTransitionKind) -> Result<(), DomainReductionError> {
+        self.effects.push(DomainEffect::Event(event));
         Ok(())
     }
 
-    pub(super) fn finish(&mut self) -> ReducedRunEvents {
-        ReducedRunEvents {
+    pub(super) fn finish(&mut self) -> ReducedDomainTransitions {
+        ReducedDomainTransitions {
             effects: std::mem::take(&mut self.effects),
         }
     }
 
-    fn publish_one(&mut self, event: &RunEvent) -> Result<(), RunEventReductionError> {
+    fn publish_one(&mut self, event: &DomainTransitionKind) -> Result<(), DomainReductionError> {
         self.emit(event.clone())
     }
 
-    fn sync_music_select_resolver_state(&mut self) -> Result<(), RunEventReductionError> {
-        let active = self.current_screen.as_deref() == Some("music_select")
+    fn sync_music_select_resolver_state(&mut self) -> Result<(), DomainReductionError> {
+        let active = self.current_screen == Some(ScreenClass::MusicSelect)
             && self.music_selection_episode_active;
         let difficulty = self
             .music_select_resolver
@@ -525,12 +435,9 @@ impl RunEventReducer {
         }
         let state = best.clone();
         self.published_music_select_resolver = state.clone();
-        self.publish_one(&RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::MusicSelectResolverChanged {
-                session_id: self.active_session_id.clone(),
-                state,
-            },
+        self.publish_one(&DomainTransitionKind::MusicSelectResolverChanged {
+            session_id: self.active_session_id.clone(),
+            state,
         })
     }
 
@@ -539,7 +446,7 @@ impl RunEventReducer {
         now_ms: u64,
         source_sequence: Option<u64>,
         field_observed: bool,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         self.screen_episode_last_ms = Some(now_ms);
         self.resolver_now_ms = now_ms;
         self.resolver_source_sequence = source_sequence;
@@ -548,77 +455,55 @@ impl RunEventReducer {
             self.latest_field_ms = Some(now_ms);
         }
         self.sync_music_select_resolver_state()?;
-        self.effects
-            .push(RunReducerEffect::Snapshot(self.snapshot()));
+        self.effects.push(DomainEffect::Snapshot(self.snapshot()));
         Ok(())
     }
 
-    /// Reduces one transport-neutral run event and returns all ordered semantic effects.
+    /// Reduces one typed domain input and returns ordered domain decisions.
     ///
     /// # Errors
     /// This reducer is currently infallible. The result keeps the boundary explicit for future
     /// schema-level validation without coupling consumers to implementation state.
     pub(crate) fn reduce(
         &mut self,
-        event: &RunEvent,
-    ) -> Result<ReducedRunEvents, RunEventReductionError> {
+        input: &crate::event::DomainInput,
+    ) -> Result<ReducedDomainTransitions, DomainReductionError> {
         debug_assert!(self.effects.is_empty());
-        self.publish_internal(event)?;
+        self.publish_internal(input)?;
         Ok(self.finish())
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn reduce_raw_screen(
-        &mut self,
-        event: &RunEvent,
-        session_id: Option<&String>,
-        semantic_episode_id: Option<u64>,
-        sequence: u64,
-        monotonic_end_ms: u64,
-        screen: &str,
-        result_panel_side: Option<ResultPanelSide>,
-    ) -> Result<ReducedRunEvents, RunEventReductionError> {
-        debug_assert!(self.effects.is_empty());
-        self.publish_one(event)?;
-        if screen == "result"
-            && let (Some(episode_id), Some(side)) = (semantic_episode_id, result_panel_side)
-        {
-            self.observe_result_panel_side(session_id, episode_id, sequence, side)?;
-        }
-        self.publish_screen_tick(sequence, monotonic_end_ms)?;
-        Ok(self.finish())
-    }
-
     #[must_use]
     #[allow(
         clippy::too_many_lines,
         reason = "the snapshot is an exhaustive projection of reducer authority"
     )]
-    pub fn snapshot(&self) -> RunReducerSnapshot {
+    pub fn snapshot(&self) -> DomainSnapshot {
         let current_summary = self.engine.selection_epochs.incumbent.summary();
         let challenger_summary = self.engine.selection_epochs.successor.summary();
         let result_summary = self.engine.result_hypotheses.summary();
         let mut joint = self.engine.retained_select.clone();
         joint.add_from(&self.engine.result_hypotheses);
         let joint_summary = joint.summary();
-        let local = match self.current_screen.as_deref() {
-            Some("music_select") => Some(resolver_node(
-                "MUSIC SELECT resolver",
+        let local = match self.current_screen {
+            Some(ScreenClass::MusicSelect) => Some(resolver_node(
+                ResolverScope::SelectionIncumbent,
                 &self.engine.selection_epochs.incumbent,
                 &current_summary,
             )),
-            Some("result") => Some(resolver_node(
-                "RESULT resolver",
+            Some(ScreenClass::Result) => Some(resolver_node(
+                ResolverScope::Result,
                 &self.engine.result_hypotheses,
                 &result_summary,
             )),
             _ => None,
         };
-        let successor = (self.current_screen.as_deref() == Some("music_select")
+        let successor = (self.current_screen == Some(ScreenClass::MusicSelect)
             && self.engine.selection_epochs.successor.observation_count > 0)
             .then(|| {
                 resolver_node(
-                    "successor",
+                    ResolverScope::SelectionSuccessor,
                     &self.engine.selection_epochs.successor,
                     &challenger_summary,
                 )
@@ -650,17 +535,16 @@ impl RunEventReducer {
                     && attempt.path.result_observed
         );
         let gate = if emitted {
-            "accepted: result confirmed"
+            GateDecision::ResultConfirmed
         } else if joint_summary.state != ResolverResolutionState::AcceptedJoint {
-            "waiting: joint identity"
+            GateDecision::JointIdentityPending
         } else if self.accepted_numeric_result.is_none() {
-            "waiting: numeric performance"
+            GateDecision::NumericPending
         } else if self.engine.play_attempt.accepted_result().is_none() {
-            "waiting: linked play attempt"
+            GateDecision::LinkedAttemptPending
         } else {
-            "ready: domain promotion"
-        }
-        .to_owned();
+            GateDecision::Ready
+        };
         let gate_state = |accepted: bool| {
             if accepted {
                 GateState::Accepted
@@ -672,11 +556,11 @@ impl RunEventReducer {
         };
         let gates = vec![
             GateSnapshot {
-                label: "link",
+                kind: GateKind::Link,
                 state: gate_state(linked),
             },
             GateSnapshot {
-                label: "identity",
+                kind: GateKind::Identity,
                 state: match joint_summary.state {
                     ResolverResolutionState::AcceptedJoint => GateState::Accepted,
                     ResolverResolutionState::Conflict => GateState::Failed,
@@ -685,15 +569,15 @@ impl RunEventReducer {
                 },
             },
             GateSnapshot {
-                label: "clear",
+                kind: GateKind::Clear,
                 state: gate_state(self.accepted_numeric_result.is_some()),
             },
             GateSnapshot {
-                label: "numeric",
+                kind: GateKind::Numeric,
                 state: gate_state(self.accepted_numeric_result.is_some()),
             },
             GateSnapshot {
-                label: "drain",
+                kind: GateKind::Drain,
                 state: if self.result_episode_finalizing {
                     GateState::Pending
                 } else if emitted || attempt_completed_rejected {
@@ -703,7 +587,7 @@ impl RunEventReducer {
                 },
             },
             GateSnapshot {
-                label: "emit",
+                kind: GateKind::Emit,
                 state: if emitted {
                     GateState::Accepted
                 } else if attempt_completed_rejected {
@@ -714,10 +598,10 @@ impl RunEventReducer {
             },
         ];
         let selection_difficulty = self.engine.selection_epochs.active_difficulty_state();
-        RunReducerSnapshot {
+        DomainSnapshot {
             now_ms: self.resolver_now_ms,
-            raw_screen: self.raw_screen.clone(),
-            screen: self.current_screen.clone(),
+            raw_screen: self.raw_screen,
+            screen: self.current_screen,
             suspended: self.semantic_episode_suspended,
             finalizing: self.result_episode_finalizing,
             screen_episode_id: self.screen_episode_id,
@@ -764,30 +648,21 @@ mod tests {
 
     #[test]
     fn semantic_episode_preserves_event_and_snapshot_checkpoint_order() {
-        let mut reducer = RunEventReducer::new();
-        let input = RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::SemanticScreenEpisodeChanged {
-                session_id: Some("session-1".to_owned()),
-                screen_episode_id: 7,
-                sequence: 11,
-                monotonic_end_ms: 1_100,
-                screen: "music_select".to_owned(),
-                phase: SemanticEpisodePhase::Started,
-            },
+        let mut reducer = DomainReducer::new();
+        let input = crate::event::DomainInput::SemanticScreenEpisodeChanged {
+            session_id: Some("session-1".to_owned()),
+            screen_episode_id: 7,
+            sequence: 11,
+            monotonic_end_ms: 1_100,
+            screen: ScreenClass::MusicSelect,
+            phase: SemanticEpisodePhase::Started,
         };
 
         let effects = reducer.reduce(&input).unwrap().into_effects();
-        assert!(matches!(
-            effects.first(),
-            Some(RunReducerEffect::Event(RunEvent {
-                kind: RunEventKind::SemanticScreenEpisodeChanged { sequence: 11, .. },
-                ..
-            }))
-        ));
+        assert!(matches!(effects.first(), Some(DomainEffect::Event(_))));
         assert!(effects.iter().any(|effect| matches!(
             effect,
-            RunReducerEffect::Snapshot(snapshot)
+            DomainEffect::Snapshot(snapshot)
                 if snapshot.screen_episode_id == 7
                     && snapshot.source_sequence == Some(11)
         )));

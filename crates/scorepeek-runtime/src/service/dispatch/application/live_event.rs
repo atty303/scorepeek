@@ -1,24 +1,190 @@
 use super::*;
 
-pub(super) struct LiveSessionEmission {
-    pub(super) value: serde_json::Value,
-    pub(super) authority_joint_evidence:
-        Option<scorepeek_core::recognition::shared::JointEvidenceObservation>,
+fn screen_name(screen: recognition::ScreenClass) -> &'static str {
+    match screen {
+        recognition::ScreenClass::Title => "title",
+        recognition::ScreenClass::Result => "result",
+        recognition::ScreenClass::MusicSelect => "music_select",
+        recognition::ScreenClass::ModeSelect => "mode_select",
+        recognition::ScreenClass::DecideTransition => "decide_transition",
+        recognition::ScreenClass::Play => "play",
+        recognition::ScreenClass::Unknown => "unknown",
+    }
+}
+
+fn semantic_phase(
+    phase: capture_live::SemanticScreenEpisodePhase,
+) -> scorepeek_core::session::timeline::SemanticEpisodePhase {
+    use capture_live::SemanticScreenEpisodePhase as Source;
+    use scorepeek_core::session::timeline::SemanticEpisodePhase as Target;
+    match phase {
+        Source::Started => Target::Started,
+        Source::Suspended => Target::Suspended,
+        Source::Resumed => Target::Resumed,
+        Source::Closing => Target::Closing,
+        Source::Finalized => Target::Finalized,
+    }
+}
+
+pub(super) struct TypedLiveSessionEmission {
+    pub(super) event: Option<RunEvent>,
+    pub(super) domain_input: Option<scorepeek_core::event::DomainInput>,
     pub(super) diagnostic_identity: Option<serde_json::Value>,
     pub(super) diagnostic_capture_fact: Option<serde_json::Value>,
 }
 
-pub(super) fn run_event_from_live_emission(
-    emission: LiveSessionEmission,
-) -> Result<RunEvent, String> {
-    let mut event = RunEvent::from_value(emission.value)?;
-    if let Some(authority_joint_evidence) = emission.authority_joint_evidence {
-        let RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind else {
-            return Err("full joint evidence was attached to a non-field event".to_owned());
-        };
-        *joint_evidence = authority_joint_evidence;
-    }
-    Ok(event)
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive mapping preserves typed capture event order"
+)]
+pub(super) fn typed_live_session_emission(
+    session_id: &str,
+    capture: capture_live::CaptureSessionEvent<'_>,
+    diagnostic_identity: Option<serde_json::Value>,
+    diagnostic_capture_fact: Option<serde_json::Value>,
+) -> Result<TypedLiveSessionEmission, String> {
+    use scorepeek_core::event::DomainInput;
+    let (kind, domain_input) = match capture {
+        capture_live::CaptureSessionEvent::Started { .. } => (
+            Some(RunEventKind::SessionStarted {
+                session_id: Some(session_id.to_owned()),
+            }),
+            Some(DomainInput::SessionStarted {
+                session_id: session_id.to_owned(),
+            }),
+        ),
+        capture_live::CaptureSessionEvent::RecordingHealth { snapshot } => (
+            Some(RunEventKind::RecordingHealthChanged {
+                session_id: Some(session_id.to_owned()),
+                state: match snapshot.state {
+                    canonical_recording::RecordingHealthState::Active => "active",
+                    canonical_recording::RecordingHealthState::Pressured => "pressured",
+                    canonical_recording::RecordingHealthState::Degraded => "degraded",
+                }
+                .to_owned(),
+                memory_limit_bytes: snapshot.memory_limit_bytes,
+                memory_used_bytes: snapshot.memory_used_bytes,
+                memory_high_water_bytes: snapshot.memory_high_water_bytes,
+                dropped_frames: snapshot.dropped_frames,
+            }),
+            None,
+        ),
+        capture_live::CaptureSessionEvent::RecordingFinalizing => (
+            Some(RunEventKind::RecordingFinalizing {
+                session_id: Some(session_id.to_owned()),
+            }),
+            None,
+        ),
+        capture_live::CaptureSessionEvent::CaptureDiagnostic { .. } => (None, None),
+        capture_live::CaptureSessionEvent::RawScreenObserved {
+            semantic_episode_id,
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            screen,
+            result_presence,
+            play_presence,
+        } => (
+            Some(RunEventKind::RawScreenObserved {
+                session_id: Some(session_id.to_owned()),
+                semantic_episode_id,
+                sequence,
+                monotonic_start_ms,
+                monotonic_end_ms,
+                screen: screen_name(screen).to_owned(),
+                result_presence: Some(result_presence),
+                play_presence: Some(play_presence),
+                unknown_reason: (screen == recognition::ScreenClass::Unknown)
+                    .then(|| "predicate_not_matched".to_owned()),
+            }),
+            Some(DomainInput::RawScreenObserved {
+                session_id: Some(session_id.to_owned()),
+                semantic_episode_id,
+                sequence,
+                monotonic_end_ms,
+                screen,
+                result_panel_side: result_presence.panel_side.known(),
+            }),
+        ),
+        capture_live::CaptureSessionEvent::SemanticScreenEpisode {
+            screen_episode_id,
+            sequence,
+            monotonic_end_ms,
+            screen,
+            phase,
+        } => {
+            let phase = semantic_phase(phase);
+            (
+                Some(RunEventKind::SemanticScreenEpisodeChanged {
+                    session_id: Some(session_id.to_owned()),
+                    screen_episode_id,
+                    sequence,
+                    monotonic_end_ms,
+                    screen: screen_name(screen).to_owned(),
+                    phase,
+                }),
+                Some(DomainInput::SemanticScreenEpisodeChanged {
+                    session_id: Some(session_id.to_owned()),
+                    screen_episode_id,
+                    sequence,
+                    monotonic_end_ms,
+                    screen,
+                    phase,
+                }),
+            )
+        }
+        capture_live::CaptureSessionEvent::GameVersionIdentified {
+            source_sequence,
+            version,
+        } => (
+            Some(RunEventKind::GameVersionChanged {
+                session_id: session_id.to_owned(),
+                source_sequence,
+                version: version.to_owned(),
+            }),
+            Some(DomainInput::GameVersionState(
+                scorepeek_core::game_version::GameVersionState::Identified(version.to_owned()),
+            )),
+        ),
+        capture_live::CaptureSessionEvent::Observation {
+            screen_episode_id,
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            output,
+        } => {
+            let event = crate::events::run_event_from_field_observation(
+                session_id,
+                screen_episode_id,
+                sequence,
+                monotonic_start_ms,
+                monotonic_end_ms,
+                output,
+            )?;
+            let input = DomainInput::from_registered_field(
+                session_id,
+                screen_episode_id,
+                sequence,
+                monotonic_end_ms,
+                output,
+            );
+            return Ok(TypedLiveSessionEmission {
+                event: Some(event),
+                domain_input: Some(input),
+                diagnostic_identity,
+                diagnostic_capture_fact,
+            });
+        }
+    };
+    Ok(TypedLiveSessionEmission {
+        event: kind.map(|kind| RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind,
+        }),
+        domain_input,
+        diagnostic_identity,
+        diagnostic_capture_fact,
+    })
 }
 
 pub(super) fn current_executable_sha256() -> Result<String, String> {
@@ -94,338 +260,24 @@ pub(super) fn prepare_private_directory(path: &Path) -> bool {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the serializer keeps the complete versioned live event mapping together"
-)]
+#[cfg(test)]
 pub(super) fn live_session_event_value(
     session_id: Option<&str>,
     _routine_generation: Option<u64>,
     event: capture_live::CaptureSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
-    let schema = if session_id.is_some() {
-        RUN_EVENT_SCHEMA
-    } else {
-        "scorepeek-live-session-event-v1"
-    };
-    let value = match event {
-        capture_live::CaptureSessionEvent::Started { .. } => {
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "session_started",
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::RecordingHealth { snapshot } => {
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "recording_health_changed",
-                "state": snapshot.state,
-                "memory_limit_bytes": snapshot.memory_limit_bytes,
-                "memory_used_bytes": snapshot.memory_used_bytes,
-                "memory_high_water_bytes": snapshot.memory_high_water_bytes,
-                "dropped_frames": snapshot.dropped_frames,
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::RecordingFinalizing => {
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "recording_finalizing",
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::CaptureDiagnostic { fact } => {
-            let mut value = serde_json::json!({
-                "schema": CAPTURE_DIAGNOSTIC_SCHEMA,
-                "event": "capture_diagnostic",
-                "fact": fact,
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::RawScreenObserved {
-            semantic_episode_id,
-            sequence,
-            monotonic_start_ms,
-            monotonic_end_ms,
-            screen,
-            result_presence,
-            play_presence,
-        } => {
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "raw_screen_observed",
-                "semantic_episode_id": semantic_episode_id,
-                "sequence": sequence,
-                "monotonic_start_ms": monotonic_start_ms,
-                "monotonic_end_ms": monotonic_end_ms,
-                "screen": screen,
-                "result_presence": result_presence,
-                "play_presence": play_presence,
-                "unknown_reason": (screen == recognition::ScreenClass::Unknown)
-                    .then_some("predicate_not_matched"),
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::SemanticScreenEpisode {
-            screen_episode_id,
-            sequence,
-            monotonic_end_ms,
-            screen,
-            phase,
-        } => {
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "semantic_screen_episode_changed",
-                "screen_episode_id": screen_episode_id,
-                "sequence": sequence,
-                "monotonic_end_ms": monotonic_end_ms,
-                "screen": screen,
-                "phase": phase,
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::GameVersionIdentified {
-            source_sequence,
-            version,
-        } => {
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "game_version_changed",
-                "source_sequence": source_sequence,
-                "version": version,
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value
-        }
-        capture_live::CaptureSessionEvent::Observation {
-            screen_episode_id,
-            sequence,
-            monotonic_start_ms,
-            monotonic_end_ms,
-            output: observation,
-        } => {
-            let (screen, fields) = match observation.fields() {
-                recognition::ScreenFieldObservations::Title(fields) => (
-                    "title",
-                    serde_json::json!({
-                        "game_version": fields.game_version.open_text,
-                    }),
-                ),
-                recognition::ScreenFieldObservations::Result(fields) => (
-                    "result",
-                    serde_json::json!({
-                        "panel_side": fields.panel_side,
-                        "title": fields.title.open_text,
-                        "artist": fields.artist.open_text,
-                        "clear_type": observation.clear_type(),
-                        "clear_type_ocr": fields.clear_type.open_text,
-                        "difficulty": fields.difficulty.open_text,
-                        "play_type": fields.play_type.open_text,
-                        "level": fields.level.open_text,
-                        "notes": fields.notes.open_text,
-                        "current_score": fields.current_score.open_text,
-                        "previous_clear_type": fields.previous_clear_type.open_text,
-                        "previous_score": fields.previous_score.open_text,
-                        "previous_miss_count": fields.previous_miss_count.open_text,
-                        "miss_count": fields.miss_count.open_text,
-                        "pgreat": fields.pgreat.open_text,
-                        "great": fields.great.open_text,
-                        "good": fields.good.open_text,
-                        "bad": fields.bad.open_text,
-                        "poor": fields.poor.open_text,
-                        "fast": fields.fast.open_text,
-                        "slow": fields.slow.open_text,
-                        "combo_break": fields.combo_break.open_text,
-                        "play_options": fields.play_options,
-                    }),
-                ),
-                recognition::ScreenFieldObservations::MusicSelect(fields) => (
-                    "music_select",
-                    serde_json::json!({
-                        "best": fields.best,
-                        "play_type": fields.play_type,
-                        "central_title": fields.central_title.open_text,
-                        "artist": fields.artist.open_text,
-                        "selected_difficulty": fields.selected_difficulty,
-                        "play_side": fields.play_side,
-                        "active_list_title": fields.active_list_title.open_text,
-                        "title_evidence": observation.title_evidence(),
-                    }),
-                ),
-            };
-            let mut value = serde_json::json!({
-                "schema": schema,
-                "event": "field_observation",
-                "screen_episode_id": screen_episode_id,
-                "sequence": sequence,
-                "monotonic_start_ms": monotonic_start_ms,
-                "monotonic_end_ms": monotonic_end_ms,
-                "screen": screen,
-                "fields": fields,
-                "result_song_resolution": observation.result_resolution(),
-                "music_select_song_resolution": observation.music_select_resolution(),
-                "parsed_result_fields": observation.parsed_result_fields(),
-                "result_chart_resolution": observation.result_chart_resolution(),
-                "result_performance_resolution": observation.result_performance_resolution(),
-                "current_score_ocr_resolution": observation.current_score_ocr_resolution(),
-                "numeric_batch": observation.numeric_batch(),
-                "joint_evidence": observation.joint_evidence().diagnostic_top(),
-                "processing_timing": observation.processing_timing(),
-            });
-            if let Some(session_id) = session_id {
-                value["session_id"] = session_id.into();
-            }
-            value["song_resolution_presentation"] =
-                serde_json::to_value(song_resolution_presentation(observation)?)
-                    .map_err(|error| format!("song presentation serialization failed: {error}"))?;
-            value
-        }
-    };
-    Ok(value)
-}
-
-pub(super) fn song_resolution_presentation(
-    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
-) -> Result<scorepeek_core::event::SongResolutionPresentation, String> {
-    use scorepeek_core::recognition::music_select::MusicSelectSongResolution;
-    use scorepeek_core::recognition::result::ResultSongResolution;
-
-    match observation.song_resolution() {
-        recognition::ScreenSongResolution::Title => {
-            Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
-                reason: serde_json::Value::String("not_applicable".to_owned()),
-                selected: None,
-                runner_up: None,
-                evidence_summary: None,
-            })
-        }
-        recognition::ScreenSongResolution::Result(resolution) => match resolution {
-            ResultSongResolution::Accepted {
-                selected,
-                runner_up,
-                title_edit_margin,
-                ..
-            } => Ok(scorepeek_core::event::SongResolutionPresentation::Accepted {
-                reason: None,
-                selected: song_presentation(observation, selected.song_id)?,
-                runner_up: song_presentation(observation, runner_up.song_id)?,
-                evidence_summary: format!(
-                    "title edit={} similarity={}/{}; artist similarity={}/{}; runner-up margin={}",
-                    selected.title.minimum_edit_distance,
-                    selected.title.maximum_normalized_similarity.matching_units,
-                    selected.title.maximum_normalized_similarity.compared_units,
-                    selected.artist.maximum_normalized_similarity.matching_units,
-                    selected.artist.maximum_normalized_similarity.compared_units,
-                    title_edit_margin,
-                ),
-            }),
-            ResultSongResolution::Unknown {
-                reason,
-                selected,
-                runner_up,
-                title_edit_margin,
-                ..
-            } => Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
-                reason: serde_json::to_value(reason).map_err(|error| format!("result resolution reason serialization failed: {error}"))?,
-                selected: selected.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
-                runner_up: runner_up.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
-                evidence_summary: selected.as_ref().map(|candidate| format!(
-                    "title edit={} similarity={}/{}; artist similarity={}/{}; runner-up margin={}",
-                    candidate.title.minimum_edit_distance,
-                    candidate.title.maximum_normalized_similarity.matching_units,
-                    candidate.title.maximum_normalized_similarity.compared_units,
-                    candidate.artist.maximum_normalized_similarity.matching_units,
-                    candidate.artist.maximum_normalized_similarity.compared_units,
-                    title_edit_margin.map_or_else(|| "-".to_owned(), |margin| margin.to_string()),
-                )),
-            }),
-        },
-        recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
-            MusicSelectSongResolution::Accepted {
-                selected,
-                runner_up,
-                active_prefix_edit_margin,
-                corroboration,
-                ..
-            } => Ok(scorepeek_core::event::SongResolutionPresentation::Accepted {
-                reason: None,
-                selected: song_presentation(observation, selected.song_id)?,
-                runner_up: song_presentation(observation, runner_up.song_id)?,
-                evidence_summary: format!(
-                    "active-prefix edit={} similarity={}/{}; runner-up margin={}; corroboration central-title={} artist={}",
-                    selected.active_list_title_prefix.minimum_edit_distance,
-                    selected.active_list_title_prefix.maximum_normalized_similarity.matching_units,
-                    selected.active_list_title_prefix.maximum_normalized_similarity.compared_units,
-                    active_prefix_edit_margin,
-                    corroboration.central_title,
-                    corroboration.artist,
-                ),
-            }),
-            MusicSelectSongResolution::Unknown {
-                reason,
-                selected,
-                runner_up,
-                active_prefix_edit_margin,
-                ..
-            } => Ok(scorepeek_core::event::SongResolutionPresentation::Unknown {
-                reason: serde_json::to_value(reason).map_err(|error| format!("music-select resolution reason serialization failed: {error}"))?,
-                selected: selected.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
-                runner_up: runner_up.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
-                evidence_summary: selected.as_ref().map(|candidate| format!(
-                    "active-prefix edit={} similarity={}/{}; runner-up margin={}",
-                    candidate.active_list_title_prefix.minimum_edit_distance,
-                    candidate.active_list_title_prefix.maximum_normalized_similarity.matching_units,
-                    candidate.active_list_title_prefix.maximum_normalized_similarity.compared_units,
-                    active_prefix_edit_margin.map_or_else(|| "-".to_owned(), |margin| margin.to_string()),
-                )),
-            }),
-        },
+    if let capture_live::CaptureSessionEvent::CaptureDiagnostic { fact } = event {
+        return Ok(serde_json::json!({
+            "schema": CAPTURE_DIAGNOSTIC_SCHEMA,
+            "event": "capture_diagnostic",
+            "session_id": session_id,
+            "fact": fact,
+        }));
     }
-}
-
-pub(super) fn song_presentation(
-    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
-    song_id: scorepeek_core::catalog::ScorepeekSongId,
-) -> Result<scorepeek_core::event::SongPresentation, String> {
-    let evidence = observation
-        .candidates()
-        .catalog_evidence()
-        .songs
-        .iter()
-        .find(|song| song.song_id == song_id)
-        .ok_or_else(|| {
-            format!("resolved song {song_id:?} is absent from the session catalog evidence")
-        })?;
-    let artists = &evidence.artist.display;
-    let [artist] = artists.as_slice() else {
-        return Err(format!(
-            "resolved song {song_id:?} does not have exactly one display artist"
-        ));
-    };
-    Ok(scorepeek_core::event::SongPresentation {
-        scorepeek_song_id: song_id,
-        display_titles: evidence.title.display.clone(),
-        artist: artist.clone(),
-    })
+    let session_id = session_id.ok_or_else(|| "session ID is required".to_owned())?;
+    let emission = typed_live_session_emission(session_id, event, None, None)?;
+    let event = emission
+        .event
+        .ok_or_else(|| "capture event is not a run event".to_owned())?;
+    crate::events::diagnostic_run_event_value(&event)
 }

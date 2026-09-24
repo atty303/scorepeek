@@ -1,7 +1,7 @@
 //! Explicit state transition and bounded output coordination for domain events.
 
-use super::reducer::RunEventReducer;
-use super::{DomainInput, ReducedRunEvents, RunReducerSnapshot};
+use super::reducer::DomainReducer;
+use super::{DomainInput, DomainSnapshot, ReducedDomainTransitions};
 use crate::game_version::GameVersionState;
 
 #[derive(Clone, Copy, Debug)]
@@ -30,7 +30,7 @@ pub enum CoordinatorError {
 /// the caller's state unchanged; ORT and scheduling state are deliberately outside this value.
 #[derive(Clone, Default)]
 pub struct DomainState {
-    reducer: RunEventReducer,
+    reducer: DomainReducer,
     last_input_sequence: Option<u64>,
     finished: bool,
     game_version: Option<GameVersionState>,
@@ -38,7 +38,7 @@ pub struct DomainState {
 
 impl DomainState {
     #[must_use]
-    pub fn snapshot(&self) -> RunReducerSnapshot {
+    pub fn snapshot(&self) -> DomainSnapshot {
         self.reducer.snapshot()
     }
     #[must_use]
@@ -57,7 +57,7 @@ impl DomainState {
 
 pub struct DomainTransition {
     pub next: DomainState,
-    pub outputs: ReducedRunEvents,
+    pub outputs: ReducedDomainTransitions,
 }
 
 /// Reduces one input from the supplied previous state. No state is hidden between calls.
@@ -83,40 +83,9 @@ pub fn reduce_transition(
         return Err(CoordinatorError::SequenceOrder);
     }
     let mut next = previous.clone();
-    let outputs = if let DomainInput::RawScreenObserved {
-        session_id,
-        semantic_episode_id,
-        sequence,
-        monotonic_end_ms,
-        screen,
-        result_panel_side,
-    } = input
-        && let Some(event) = input.as_reducer_event()
-    {
-        match next.reducer.reduce_raw_screen(
-            &event,
-            session_id.as_ref(),
-            *semantic_episode_id,
-            *sequence,
-            *monotonic_end_ms,
-            screen,
-            *result_panel_side,
-        ) {
-            Ok(value) => value,
-            Err(never) => match never {},
-        }
-    } else if let Some(event) = input.as_reducer_event() {
-        match next.reducer.reduce(&event) {
-            Ok(value) => value,
-            Err(never) => match never {},
-        }
-    } else if matches!(input, DomainInput::WatcherFinished) {
-        match next.reducer.finish_watcher() {
-            Ok(()) => next.reducer.finish(),
-            Err(never) => match never {},
-        }
-    } else {
-        ReducedRunEvents::default()
+    let outputs = match next.reducer.reduce(input) {
+        Ok(value) => value,
+        Err(never) => match never {},
     };
     if outputs.effects().len() > policy.maximum_effects_per_input {
         return Err(CoordinatorError::OutputLimit);
@@ -162,7 +131,7 @@ impl DomainCoordinator {
         &mut self,
         input_sequence: u64,
         input: &DomainInput,
-    ) -> Result<ReducedRunEvents, CoordinatorError> {
+    ) -> Result<ReducedDomainTransitions, CoordinatorError> {
         let transition = reduce_transition(&self.state, input_sequence, input, self.policy)?;
         self.state = transition.next;
         Ok(transition.outputs)
@@ -196,7 +165,7 @@ mod tests {
             outputs
                 .effects()
                 .iter()
-                .any(|effect| matches!(effect, super::super::RunReducerEffect::SessionEnded))
+                .any(|effect| matches!(effect, super::super::DomainEffect::SessionEnded))
         );
         coordinator.step(3, &inputs[0]).unwrap();
         coordinator.step(4, &DomainInput::WatcherFinished).unwrap();

@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl RunEventReducer {
+impl DomainReducer {
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -16,10 +16,11 @@ impl RunEventReducer {
         session_id: Option<&String>,
         sequence: u64,
         monotonic_end_ms: u64,
-        fields: &Value,
+        play_options: Option<&PlayOptionsObservation>,
+        clear_type: Option<&String>,
         parsed_result_fields: Option<&ParsedResultFields>,
         joint_evidence: &JointEvidenceObservation,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         self.engine.result_hypotheses.observe_at(
             sequence,
             monotonic_end_ms,
@@ -28,12 +29,8 @@ impl RunEventReducer {
             None,
             parsed_result_fields.map(result_chart_factor),
         );
-        if let Some(observation) = fields
-            .get("play_options")
-            .cloned()
-            .and_then(|value| serde_json::from_value::<PlayOptionsObservation>(value).ok())
-        {
-            self.play_options.observe(sequence, observation);
+        if let Some(observation) = play_options {
+            self.play_options.observe(sequence, observation.clone());
         }
         let result_summary = self.engine.result_hypotheses.summary();
         if !self.result_select_context_detached
@@ -44,15 +41,12 @@ impl RunEventReducer {
             self.result_select_context_detached = true;
             self.engine.retained_select = HypothesisAccumulator::default();
             self.engine.provisional_joint = None;
-            self.publish_one(&RunEvent {
-                schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-                kind: RunEventKind::ResultSelectContextMismatch {
-                    session_id: session_id.cloned(),
-                    screen_episode_id: self.screen_episode_id,
-                    source_sequence: sequence,
-                    select_play_side: select_side,
-                    result_play_side: result_side,
-                },
+            self.publish_one(&DomainTransitionKind::ResultSelectContextMismatch {
+                session_id: session_id.cloned(),
+                screen_episode_id: self.screen_episode_id,
+                source_sequence: sequence,
+                select_play_side: select_side,
+                result_play_side: result_side,
             })?;
             if let Some(state) = self.engine.play_attempt.detach_selection_linkage() {
                 self.publish_play_attempt_update(session_id.cloned(), Some(sequence), state)?;
@@ -80,10 +74,7 @@ impl RunEventReducer {
         )?;
         let accepted_joint = joint_summary.accepted();
         self.engine.provisional_joint.clone_from(&accepted_joint);
-        let observed_clear_type = fields
-            .get("clear_type")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
+        let observed_clear_type = clear_type.cloned();
         if let (Some(clear_type), Some(parsed)) =
             (observed_clear_type.clone(), parsed_result_fields.cloned())
         {
@@ -115,16 +106,12 @@ impl RunEventReducer {
                     Some(evidence.clear_type),
                     Some(&evidence.parsed),
                 ) {
-                    self.publish_one(&RunEvent {
-                        schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-                        kind: RunEventKind::NumericResultChanged {
-                            session_id: session_id.cloned(),
-                            source_sequence: evidence.sequence,
-                            state: transition.state,
-                            reason: transition.reason,
-                            event_suppression_reason: self
-                                .numeric_event_suppression_reason(session_id),
-                        },
+                    self.publish_one(&DomainTransitionKind::NumericResultChanged {
+                        session_id: session_id.cloned(),
+                        source_sequence: evidence.sequence,
+                        state: transition.state,
+                        reason: transition.reason,
+                        event_suppression_reason: self.numeric_event_suppression_reason(session_id),
                     })?;
                     if transition.replaced_accepted
                         && let Some(session_id) = session_id.cloned()
@@ -379,7 +366,7 @@ impl RunEventReducer {
         &mut self,
         session_id: Option<String>,
         fallback_sequence: u64,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         if !self.result_episode_finalizing {
             return Ok(());
         }
@@ -472,7 +459,7 @@ impl RunEventReducer {
         &mut self,
         session_id: Option<String>,
         fallback_sequence: u64,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         if self.holds_stable_numeric_result() {
             return Ok(());
         }
@@ -544,7 +531,7 @@ impl RunEventReducer {
         session_id: String,
         source_sequence: u64,
         reason: ResultRetractionReason,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         let Some(candidate) = self.active_provisional_result.take() else {
             return Ok(());
         };
@@ -564,14 +551,11 @@ impl RunEventReducer {
         session_id: String,
         source_sequence: u64,
         state: ResultState,
-    ) -> Result<(), RunEventReductionError> {
-        self.publish_one(&RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResultChanged {
-                session_id,
-                source_sequence,
-                state,
-            },
+    ) -> Result<(), DomainReductionError> {
+        self.publish_one(&DomainTransitionKind::ResultChanged {
+            session_id,
+            source_sequence,
+            state,
         })
     }
 }

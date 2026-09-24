@@ -10,10 +10,7 @@ use std::time::{Duration, Instant};
 
 use scorepeek_core::canonical_recording::{CanonicalTick, TickDisposition};
 use scorepeek_core::event::coordinator::{CoordinatorError, CoordinatorPolicy, DomainCoordinator};
-use scorepeek_core::event::{
-    DomainInput, RUN_EVENT_SCHEMA, RunEvent, RunEventKind, RunReducerEffect,
-    run_event_from_field_observation,
-};
+use scorepeek_core::event::{DomainEffect, DomainInput, DomainTransitionKind};
 use scorepeek_core::frame::{CANONICAL_BYTES, CanonicalFrameView};
 use scorepeek_core::recognition::screen::{
     ScreenClass, ScreenPredicateObservation, TitleConfirmationState, confirm_title_screen,
@@ -108,7 +105,7 @@ pub(crate) trait ReplayObserver {
     fn screen(&mut self, _sequence: u64, _screen: ScreenClass) -> Result<(), ReplayError> {
         Ok(())
     }
-    fn event(&mut self, _event: &RunEvent) -> Result<(), ReplayError> {
+    fn event(&mut self, _event: &DomainTransitionKind) -> Result<(), ReplayError> {
         Ok(())
     }
 }
@@ -117,12 +114,12 @@ impl ReplayObserver for () {}
 
 fn consume_outputs(
     report: &mut ReplayReport,
-    outputs: &[RunReducerEffect],
+    outputs: &[DomainEffect],
     observer: &mut dyn ReplayObserver,
 ) -> Result<(), ReplayError> {
     report.domain_outputs += outputs.len() as u64;
     for output in outputs {
-        if let RunReducerEffect::Event(event) = output {
+        if let DomainEffect::Event(event) = output {
             observer.event(event)?;
             report.domain_event_count += 1;
         }
@@ -225,39 +222,20 @@ fn inspect_batch(frames: Vec<Option<Vec<u8>>>) -> Result<Vec<Option<InspectedFra
     })
 }
 
-fn screen_name(screen: ScreenClass) -> &'static str {
-    match screen {
-        ScreenClass::Title => "title",
-        ScreenClass::Result => "result",
-        ScreenClass::MusicSelect => "music_select",
-        ScreenClass::ModeSelect => "mode_select",
-        ScreenClass::DecideTransition => "decide_transition",
-        ScreenClass::Play => "play",
-        ScreenClass::Unknown => "unknown",
-    }
-}
-
 fn raw_input(
     tick: &CanonicalTick,
     screen: ScreenClass,
     semantic_episode_id: Option<u64>,
     observed: Option<&ScreenPredicateObservation>,
     session_id: &str,
-) -> RunEvent {
-    let kind = RunEventKind::RawScreenObserved {
+) -> DomainInput {
+    DomainInput::RawScreenObserved {
         session_id: Some(session_id.to_owned()),
         semantic_episode_id,
         sequence: tick.sequence,
-        monotonic_start_ms: tick.source_timestamp_ms,
         monotonic_end_ms: tick.source_timestamp_ms,
-        screen: screen_name(screen).into(),
-        result_presence: observed.map(|value| value.result_presence),
-        play_presence: observed.map(|value| value.play_presence),
-        unknown_reason: (screen == ScreenClass::Unknown).then(|| "predicate_not_matched".into()),
-    };
-    RunEvent {
-        schema: RUN_EVENT_SCHEMA.into(),
-        kind,
+        screen,
+        result_panel_side: observed.and_then(|value| value.result_presence.panel_side.known()),
     }
 }
 
@@ -265,16 +243,10 @@ fn apply_event(
     coordinator: &mut DomainCoordinator,
     next_sequence: &mut u64,
     report: &mut ReplayReport,
-    kind: RunEventKind,
+    input: &DomainInput,
     observer: &mut dyn ReplayObserver,
 ) -> Result<(), ReplayError> {
-    let event = RunEvent {
-        schema: RUN_EVENT_SCHEMA.into(),
-        kind,
-    };
-    let input = DomainInput::from_run_event(&event)
-        .ok_or(ReplayError::Invalid("replay event is not a domain input"))?;
-    let output = coordinator.step(*next_sequence, &input)?;
+    let output = coordinator.step(*next_sequence, input)?;
     consume_outputs(report, output.effects(), observer)?;
     *next_sequence += 1;
     Ok(())
@@ -300,12 +272,12 @@ fn apply_timeline_actions(
                 coordinator,
                 next_sequence,
                 report,
-                RunEventKind::SemanticScreenEpisodeChanged {
+                &DomainInput::SemanticScreenEpisodeChanged {
                     session_id: Some(session_id.to_owned()),
                     screen_episode_id: episode.id,
                     sequence,
                     monotonic_end_ms: timestamp_ms,
-                    screen: screen_name(episode.screen).into(),
+                    screen: episode.screen,
                     phase,
                 },
                 observer,
@@ -411,7 +383,7 @@ fn replay_recording_observed(
         &mut coordinator,
         &mut core_sequence,
         &mut report,
-        RunEventKind::CanonicalSessionStarted {
+        &DomainInput::SessionStarted {
             session_id: recording.manifest.session_id.clone(),
         },
         observer,
@@ -545,9 +517,7 @@ fn replay_recording_observed(
                 observed.as_ref(),
                 &recording.manifest.session_id,
             );
-            let domain_input = DomainInput::from_run_event(&input)
-                .ok_or(ReplayError::Invalid("raw screen is not a domain input"))?;
-            let output = coordinator.step(core_sequence, &domain_input)?;
+            let output = coordinator.step(core_sequence, &input)?;
             consume_outputs(&mut report, output.effects(), observer)?;
             core_sequence += 1;
             apply_timeline_actions(
@@ -571,17 +541,13 @@ fn replay_recording_observed(
                 let episode = step.active_episode_id.ok_or(ReplayError::Invalid(
                     "field observation has no semantic episode",
                 ))?;
-                let field_event = run_event_from_field_observation(
+                let input = DomainInput::from_registered_field(
                     &recording.manifest.session_id,
                     episode,
                     tick.sequence,
                     tick.source_timestamp_ms,
-                    tick.source_timestamp_ms,
                     &field_output,
-                )
-                .map_err(ReplayError::Field)?;
-                let input = DomainInput::from_run_event(&field_event)
-                    .ok_or(ReplayError::Invalid("field event is not a domain input"))?;
+                );
                 let output = coordinator.step(core_sequence, &input)?;
                 consume_outputs(&mut report, output.effects(), observer)?;
                 core_sequence += 1;
@@ -612,7 +578,7 @@ fn replay_recording_observed(
         &mut coordinator,
         &mut core_sequence,
         &mut report,
-        RunEventKind::CanonicalSessionFinished {
+        &DomainInput::SessionFinished {
             session_id: recording.manifest.session_id.clone(),
         },
         observer,

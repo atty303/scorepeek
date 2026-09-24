@@ -5,12 +5,12 @@
 
 use super::*;
 
-impl RunEventReducer {
+impl DomainReducer {
     pub(super) fn sync_music_selection(
         &mut self,
         session_id: Option<&String>,
         source_sequence: u64,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         match self.music_select_resolver.selected() {
             Some(state) if self.active_music_selection.as_ref() != Some(&state) => {
                 self.publish_music_selection(session_id, source_sequence, state)
@@ -37,20 +37,17 @@ impl RunEventReducer {
         session_id: Option<&String>,
         source_sequence: u64,
         state: MusicSelectionState,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         if self.active_music_selection.as_ref() == Some(&state) {
             return Ok(());
         }
         self.music_selection_revision = self.music_selection_revision.saturating_add(1);
-        self.publish_one(&RunEvent {
-            schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::MusicSelectionChanged {
-                session_id: session_id.cloned(),
-                screen_episode_id: self.screen_episode_id,
-                source_sequence,
-                revision: self.music_selection_revision,
-                state: state.clone(),
-            },
+        self.publish_one(&DomainTransitionKind::MusicSelectionChanged {
+            session_id: session_id.cloned(),
+            screen_episode_id: self.screen_episode_id,
+            source_sequence,
+            revision: self.music_selection_revision,
+            state: state.clone(),
         })?;
         self.active_music_selection = Some(state);
         Ok(())
@@ -66,16 +63,19 @@ impl RunEventReducer {
         session_id: Option<&String>,
         sequence: u64,
         monotonic_end_ms: u64,
-        fields: &Value,
+        difficulty: Option<Difficulty>,
+        play_type: Option<PlayType>,
+        play_side: Option<PlaySide>,
+        best: &crate::recognition::music_select::MusicSelectBestObservation,
         joint_evidence: &JointEvidenceObservation,
-    ) -> Result<(), RunEventReductionError> {
+    ) -> Result<(), DomainReductionError> {
         self.music_select_resolver.observe(
             sequence,
             monotonic_end_ms,
             joint_evidence,
-            selected_difficulty(fields),
-            selected_play_type(fields),
-            selected_play_side(fields),
+            difficulty,
+            play_type,
+            play_side,
         );
         let current_observation = !self.semantic_episode_suspended
             && self
@@ -85,21 +85,18 @@ impl RunEventReducer {
             sequence,
             monotonic_end_ms,
             joint_evidence,
-            selected_difficulty(fields),
-            selected_play_type(fields),
-            selected_play_side(fields),
+            difficulty,
+            play_type,
+            play_side,
         );
         for transition in difficulty_transitions {
-            self.publish_one(&RunEvent {
-                schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-                kind: RunEventKind::SelectionDifficultyChanged {
-                    session_id: session_id.cloned(),
-                    screen_episode_id: self.screen_episode_id,
-                    source_sequence: sequence,
-                    target: transition.target,
-                    reason: transition.reason,
-                    current: transition.current,
-                },
+            self.publish_one(&DomainTransitionKind::SelectionDifficultyChanged {
+                session_id: session_id.cloned(),
+                screen_episode_id: self.screen_episode_id,
+                source_sequence: sequence,
+                target: transition.target,
+                reason: transition.reason,
+                current: transition.current,
             })?;
         }
         let current_summary = self.engine.selection_epochs.incumbent.summary();
@@ -121,17 +118,15 @@ impl RunEventReducer {
             )?;
         }
         if current_observation && self.music_selection_episode_active {
-            let identity = self
-                .music_select_resolver
-                .best_frame_identity(fields, joint_evidence);
-            let best = serde_json::from_value::<
-                crate::recognition::music_select::MusicSelectBestObservation,
-            >(fields["best"].clone())
-            .unwrap_or_default();
+            let identity = self.music_select_resolver.best_frame_identity(
+                difficulty,
+                play_type,
+                joint_evidence,
+            );
             self.music_select_resolver.best.screen_episode_id = self.screen_episode_id;
             self.music_select_resolver
                 .best
-                .observe_frame(identity, best.values);
+                .observe_frame(identity, best.values.clone());
             if let Some(session) = session_id
                 && let Some(snapshot) = self.music_select_resolver.best.publish_candidate(
                     session,
@@ -139,12 +134,9 @@ impl RunEventReducer {
                     monotonic_end_ms,
                 )
             {
-                self.publish_one(&RunEvent {
-                    schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
-                    kind: RunEventKind::MusicSelectBestObserved {
-                        session_id: session.clone(),
-                        snapshot,
-                    },
+                self.publish_one(&DomainTransitionKind::MusicSelectBestObserved {
+                    session_id: session.clone(),
+                    snapshot,
                 })?;
             }
         }

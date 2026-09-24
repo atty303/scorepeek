@@ -64,12 +64,11 @@ impl MusicSelectResolver {
     #[must_use]
     pub fn best_frame_identity(
         &self,
-        fields: &Value,
+        difficulty: Option<Difficulty>,
+        play_type: Option<PlayType>,
         evidence: &JointEvidenceObservation,
     ) -> SelectFrameIdentity {
         let credible = credible_song_set(evidence);
-        let difficulty = selected_difficulty(fields);
-        let play_type = selected_play_type(fields);
         let selected = self.selected().and_then(BestChart::from_selection);
         if let Some(chart) = selected.as_ref()
             && credible == BTreeSet::from([chart.scorepeek_song_id])
@@ -140,32 +139,6 @@ impl MusicSelectResolver {
             notes: selected.chart.notes,
             presentation: candidate_song_presentation(selected),
         })
-    }
-}
-
-#[must_use]
-pub fn selected_difficulty(fields: &Value) -> Option<Difficulty> {
-    let value = fields
-        .pointer("/selected_difficulty/state")?
-        .get("value")?
-        .as_str()?;
-    match value {
-        "beginner" => Some(Difficulty::Beginner),
-        "normal" => Some(Difficulty::Normal),
-        "hyper" => Some(Difficulty::Hyper),
-        "another" => Some(Difficulty::Another),
-        "leggendaria" => Some(Difficulty::Leggendaria),
-        _ => None,
-    }
-}
-
-#[must_use]
-pub fn selected_play_type(fields: &Value) -> Option<PlayType> {
-    let value = fields.pointer("/play_type/state")?.get("value")?.as_str()?;
-    match value {
-        "single" => Some(PlayType::Single),
-        "double" => Some(PlayType::Double),
-        _ => None,
     }
 }
 

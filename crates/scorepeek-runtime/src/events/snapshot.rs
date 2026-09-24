@@ -1,9 +1,10 @@
 //! Public live API projection. Internal observations never become wire records implicitly.
 #[cfg(test)]
+use super::RUN_EVENT_SCHEMA;
+use super::{RunEvent, RunEventKind};
+#[cfg(test)]
 use scorepeek_core::event::MusicSelectionUnresolvedReason;
-use scorepeek_core::event::{
-    MusicSelectBestSnapshot, MusicSelectionState, ResultState, RunEvent, RunEventKind,
-};
+use scorepeek_core::event::{MusicSelectBestSnapshot, MusicSelectionState, ResultState};
 use scorepeek_core::session::timeline::SemanticEpisodePhase;
 use serde::Serialize;
 use std::io::{self, Write};
@@ -549,7 +550,7 @@ pub(super) mod tests {
 
     fn run(kind: RunEventKind) -> RunEvent {
         RunEvent {
-            schema: scorepeek_core::event::RUN_EVENT_SCHEMA.into(),
+            schema: RUN_EVENT_SCHEMA.into(),
             kind,
         }
     }

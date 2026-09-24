@@ -25,21 +25,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use super::SongResolutionPresentation;
+use super::{RUN_EVENT_SCHEMA, RunEvent, RunEventKind, diagnostic_run_event_value};
 use crate::diagnostics::inspect::{DiagnosticSink, RunDiagnostics};
 #[cfg(test)]
 use scorepeek_core::catalog::{Difficulty, PlayType};
+use scorepeek_core::event::DomainEffect;
 use scorepeek_core::event::coordinator::{CoordinatorPolicy, DomainCoordinator};
 use scorepeek_core::event::{
-    DomainInput, MusicSelectResolverState, MusicSelectionState, RUN_EVENT_SCHEMA,
-    ResultDomainEvent, ResultState, RunEvent, RunEventKind, SongPresentation,
-    diagnostic_run_event_value,
+    DomainInput, MusicSelectResolverState, MusicSelectionState, ResultDomainEvent, ResultState,
+    SongPresentation,
 };
 #[cfg(test)]
 use scorepeek_core::event::{
     MusicSelectionUnresolvedReason, ResolverResolutionState, ResultRetractionReason,
-    SelectionDifficultyTarget, SongResolutionPresentation,
 };
-use scorepeek_core::event::{RunReducerEffect, RunReducerSnapshot as ResolverDebugSnapshot};
 #[cfg(test)]
 use scorepeek_core::recognition::music_select::PlaySide;
 #[cfg(test)]
@@ -120,7 +121,7 @@ pub struct RunViewState {
     #[serde(skip)]
     overlay_summary: String,
     message: String,
-    resolver: ResolverDebugSnapshot,
+    resolver: Value,
 }
 
 impl RunViewState {
@@ -170,7 +171,9 @@ impl RunViewState {
             recording_dropped_frames: 0,
             next_channel_sequence: 1,
             message: "initializing".to_owned(),
-            resolver: ResolverDebugSnapshot::default(),
+            resolver: super::debug_projection::snapshot(
+                &scorepeek_core::event::DomainSnapshot::default(),
+            ),
         }
     }
 
@@ -249,9 +252,7 @@ impl RunViewState {
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
             // Standalone canonical replay is not dispatched through the live UI projection.
-            RunEventKind::CanonicalSessionStarted { .. }
-            | RunEventKind::CanonicalSessionFinished { .. }
-            | RunEventKind::GameVersionChanged { .. }
+            RunEventKind::GameVersionChanged { .. }
             | RunEventKind::OverlayObserved { .. }
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::ScreenTick { .. }
@@ -598,6 +599,8 @@ impl RoutineOutput {
                 kind: RunEventKind::OverlayObserved { observation },
             },
             false,
+            "runtime_event",
+            None,
         )
     }
     #[must_use]
@@ -823,14 +826,31 @@ impl RoutineOutput {
         &mut self,
         event: &RunEvent,
     ) -> Result<RoutineEventProcessingTiming, String> {
-        self.publish_timed_core(event)
+        self.publish_timed_core(event, None)
     }
 
+    pub fn publish_timed_domain(
+        &mut self,
+        event: &RunEvent,
+        input: DomainInput,
+    ) -> Result<RoutineEventProcessingTiming, String> {
+        self.publish_timed_core(event, Some(input))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered core step and runtime projection share one timing scope"
+    )]
     fn publish_timed_core(
         &mut self,
         event: &RunEvent,
+        typed_input: Option<DomainInput>,
     ) -> Result<RoutineEventProcessingTiming, String> {
-        let Some(input) = DomainInput::from_run_event(event) else {
+        let input = match typed_input {
+            Some(input) => Some(input),
+            None => super::input::domain_input(event)?,
+        };
+        let Some(input) = input else {
             self.publish_one(event)?;
             return Ok(RoutineEventProcessingTiming::default());
         };
@@ -844,13 +864,15 @@ impl RoutineOutput {
         };
         self.next_core_input_sequence = input_sequence.saturating_add(1);
         self.active_core_input_sequence = Some(input_sequence);
-        let transition_count = reduced.effects().iter().filter(|effect| {
-            matches!(effect, RunReducerEffect::Event(output) if trace_domain_transition(&output.kind))
-        }).count() as u64 + u64::from(matches!(input, DomainInput::GameVersionState(_)));
+        let transition_count = reduced
+            .effects()
+            .iter()
+            .filter(|effect| matches!(effect, DomainEffect::Event(_)))
+            .count() as u64;
         let output_count = reduced
             .effects()
             .iter()
-            .filter(|effect| matches!(effect, RunReducerEffect::Event(_)))
+            .filter(|effect| matches!(effect, DomainEffect::Event(_)))
             .count() as u64;
         self.trace_counters.inputs = self.trace_counters.inputs.saturating_add(1);
         self.trace_counters.domain_transitions = self
@@ -862,11 +884,13 @@ impl RoutineOutput {
             .output_events
             .saturating_add(output_count);
         for effect in reduced.effects() {
-            if let RunReducerEffect::Event(output) = effect {
+            if let DomainEffect::Event(output) = effect {
                 let count = self
                     .trace_counters
                     .output_kinds
-                    .entry(output_kind(&output.kind))
+                    .entry(output_kind(
+                        &super::domain_projection::run_event(output).kind,
+                    ))
                     .or_default();
                 *count = count.saturating_add(1);
             }
@@ -875,7 +899,15 @@ impl RoutineOutput {
         if transition_count == 0 {
             self.trace_counters.no_op_inputs = self.trace_counters.no_op_inputs.saturating_add(1);
         }
-        self.publish_domain_outputs(event, reduced.into_effects())?;
+        if trace_ephemeral_input(&event.kind) {
+            self.consume_omitted_input()?;
+        } else if !matches!(
+            input,
+            DomainInput::SessionFinished { .. } | DomainInput::WatcherFinished
+        ) {
+            self.publish_one(event)?;
+        }
+        self.publish_domain_outputs(reduced.into_effects())?;
         if matches!(input, DomainInput::WatcherFinished) {
             if let Some(scores) = &mut self.scores {
                 scores.finish();
@@ -884,7 +916,7 @@ impl RoutineOutput {
         }
         if matches!(
             input,
-            DomainInput::GameVersionState(_) | DomainInput::WatcherFinished
+            DomainInput::SessionFinished { .. } | DomainInput::WatcherFinished
         ) {
             self.publish_one(event)?;
         }
@@ -921,28 +953,19 @@ impl RoutineOutput {
         })
     }
 
-    fn publish_domain_outputs(
-        &mut self,
-        input_event: &RunEvent,
-        effects: Vec<RunReducerEffect>,
-    ) -> Result<(), String> {
+    fn publish_domain_outputs(&mut self, effects: Vec<DomainEffect>) -> Result<(), String> {
         for effect in effects {
             match effect {
-                RunReducerEffect::Event(output) => {
-                    if std::mem::discriminant(&output.kind)
-                        == std::mem::discriminant(&input_event.kind)
-                    {
-                        self.publish_one(input_event)?;
-                    } else {
-                        self.publish_one(&output)?;
-                    }
+                DomainEffect::Event(output) => {
+                    let event = super::domain_projection::run_event(&output);
+                    self.publish_domain_transition(&output, &event)?;
                 }
-                RunReducerEffect::SessionEnded => self.publish_one(input_event)?,
-                RunReducerEffect::Snapshot(snapshot) => {
+                DomainEffect::SessionEnded => {}
+                DomainEffect::Snapshot(snapshot) => {
                     self.state
                         .lock()
                         .map_err(|_| "run view state lock was poisoned".to_owned())?
-                        .resolver = snapshot;
+                        .resolver = super::debug_projection::snapshot(&snapshot);
                 }
             }
         }
@@ -967,61 +990,65 @@ impl RoutineOutput {
 
     fn record_trace_summary(&self, input_sequence: u64, terminal_report: Option<&Value>) {
         let snapshot = self.core_reducer.state().snapshot();
-        self.record_diagnostic("domain_summary", &json!({
-            "input_sequence": input_sequence,
-            "inputs": self.trace_counters.inputs,
-            "no_op_inputs": self.trace_counters.no_op_inputs,
-            "domain_transitions": self.trace_counters.domain_transitions,
-            "output_events": self.trace_counters.output_events,
-            "core_errors": self.trace_counters.core_errors,
-            "admitted_frames": self.trace_counters.admitted_frames,
-            "completed_field_observations": self.trace_counters.completed_field_observations,
-            "recognition_field_timing_us": {
-                "frame_total": {
-                    "count": self.trace_counters.field_total_timing.count,
-                    "sum": self.trace_counters.field_total_timing.total_us,
-                    "max": self.trace_counters.field_total_timing.max_us,
+        self.record_diagnostic(
+            "domain_summary",
+            &json!({
+                "input_sequence": input_sequence,
+                "inputs": self.trace_counters.inputs,
+                "no_op_inputs": self.trace_counters.no_op_inputs,
+                "domain_transitions": self.trace_counters.domain_transitions,
+                "output_events": self.trace_counters.output_events,
+                "core_errors": self.trace_counters.core_errors,
+                "admitted_frames": self.trace_counters.admitted_frames,
+                "completed_field_observations": self.trace_counters.completed_field_observations,
+                "recognition_field_timing_us": {
+                    "frame_total": {
+                        "count": self.trace_counters.field_total_timing.count,
+                        "sum": self.trace_counters.field_total_timing.total_us,
+                        "max": self.trace_counters.field_total_timing.max_us,
+                    },
+                    "frame_end_to_end": {
+                        "count": self.trace_counters.field_end_to_end_timing.count,
+                        "sum": self.trace_counters.field_end_to_end_timing.total_us,
+                        "max": self.trace_counters.field_end_to_end_timing.max_us,
+                    },
+                    "field_queue_wait": {
+                        "count": self.trace_counters.field_queue_wait_timing.count,
+                        "sum": self.trace_counters.field_queue_wait_timing.total_us,
+                        "max": self.trace_counters.field_queue_wait_timing.max_us,
+                    },
                 },
-                "frame_end_to_end": {
-                    "count": self.trace_counters.field_end_to_end_timing.count,
-                    "sum": self.trace_counters.field_end_to_end_timing.total_us,
-                    "max": self.trace_counters.field_end_to_end_timing.max_us,
+                "source_sequence_gaps": self.trace_counters.source_sequence_gaps,
+                "screen_counts": {
+                    "title": self.trace_counters.screen_counts[0],
+                    "result": self.trace_counters.screen_counts[1],
+                    "music_select": self.trace_counters.screen_counts[2],
+                    "mode_select": self.trace_counters.screen_counts[3],
+                    "decide_transition": self.trace_counters.screen_counts[4],
+                    "play": self.trace_counters.screen_counts[5],
+                    "unknown": self.trace_counters.screen_counts[6],
                 },
-                "field_queue_wait": {
-                    "count": self.trace_counters.field_queue_wait_timing.count,
-                    "sum": self.trace_counters.field_queue_wait_timing.total_us,
-                    "max": self.trace_counters.field_queue_wait_timing.max_us,
+                "output_kinds": self.trace_counters.output_kinds,
+                "runtime_scheduling": terminal_report.map(|report| json!({
+                    "recognition_ticks": report["recognition_ticks"],
+                    "recognition_busy_skips": report["recognition_busy_skips"],
+                    "field_observation_busy_skips": report["field_observation_busy_skips"],
+                    "field_submitted": report["field_submitted"],
+                    "field_rejected": report["field_rejected"],
+                    "field_ready_failure": report["field_ready_failure"],
+                    "field_worker_abandoned": report["field_worker_abandoned"],
+                    "diagnostic_fact_queue_full": report["diagnostic_fact_queue_full"],
+                    "dropped_capture_diagnostic_facts": report["dropped_capture_diagnostic_facts"],
+                })),
+                "final_state": {
+                    "screen": snapshot.screen,
+                    "screen_episode_id": snapshot.screen_episode_id,
+                    "gate": super::debug_projection::snapshot(&snapshot)["gate"],
+                    "attempt": super::debug_projection::snapshot(&snapshot)["attempt"],
                 },
-            },
-            "source_sequence_gaps": self.trace_counters.source_sequence_gaps,
-            "screen_counts": {
-                "title": self.trace_counters.screen_counts[0],
-                "result": self.trace_counters.screen_counts[1],
-                "music_select": self.trace_counters.screen_counts[2],
-                "mode_select": self.trace_counters.screen_counts[3],
-                "decide_transition": self.trace_counters.screen_counts[4],
-                "play": self.trace_counters.screen_counts[5],
-                "unknown": self.trace_counters.screen_counts[6],
-            },
-            "output_kinds": self.trace_counters.output_kinds,
-            "runtime_scheduling": terminal_report.map(|report| json!({
-                "recognition_ticks": report["recognition_ticks"],
-                "recognition_busy_skips": report["recognition_busy_skips"],
-                "field_observation_busy_skips": report["field_observation_busy_skips"],
-                "field_submitted": report["field_submitted"],
-                "field_rejected": report["field_rejected"],
-                "field_ready_failure": report["field_ready_failure"],
-                "field_worker_abandoned": report["field_worker_abandoned"],
-                "diagnostic_fact_queue_full": report["diagnostic_fact_queue_full"],
-                "dropped_capture_diagnostic_facts": report["dropped_capture_diagnostic_facts"],
-            })),
-            "final_state": {
-                "screen": snapshot.screen,
-                "screen_episode_id": snapshot.screen_episode_id,
-                "gate": snapshot.gate,
-                "attempt": snapshot.attempt.as_ref().map(|attempt| (&attempt.attempt_id, &attempt.phase, &attempt.state)),
-            },
-        }), true);
+            }),
+            true,
+        );
     }
 
     #[cfg(test)]
@@ -1075,14 +1102,43 @@ impl RoutineOutput {
         self.publish(event)
     }
     fn publish_one(&mut self, event: &RunEvent) -> Result<(), String> {
-        self.publish_one_inner(event, true)
+        self.publish_one_inner(event, true, "runtime_event", None)
     }
 
-    fn publish_one_inner(&mut self, event: &RunEvent, refresh: bool) -> Result<(), String> {
+    fn publish_domain_transition(
+        &mut self,
+        transition: &scorepeek_core::event::DomainTransitionKind,
+        event: &RunEvent,
+    ) -> Result<(), String> {
+        let mut value = serde_json::to_value(transition)
+            .map_err(|error| format!("domain transition serialization failed: {error}"))?;
+        value["schema"] = super::schema::DOMAIN_TRANSITION_SCHEMA.into();
+        self.publish_one_inner(event, true, "domain_transition", Some(value))
+    }
+
+    fn consume_omitted_input(&mut self) -> Result<(), String> {
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.state
+            .lock()
+            .map_err(|_| "run view state lock was poisoned".to_owned())?
+            .next_channel_sequence = self.next_sequence;
+        Ok(())
+    }
+
+    fn publish_one_inner(
+        &mut self,
+        event: &RunEvent,
+        refresh: bool,
+        record_kind: &'static str,
+        diagnostic_value: Option<Value>,
+    ) -> Result<(), String> {
         let output_started = Instant::now();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let mut value = diagnostic_run_event_value(event)?;
+        let mut value = match diagnostic_value {
+            Some(value) => value,
+            None => diagnostic_run_event_value(event)?,
+        };
         let recording_enabled = self
             .state
             .lock()
@@ -1108,12 +1164,15 @@ impl RoutineOutput {
             }
             if let RunEventKind::SessionFinished { report, .. } = &event.kind {
                 let snapshot = self.core_reducer.state().snapshot();
-                object.insert("final_domain_state".to_owned(), json!({
-                    "screen": snapshot.screen,
-                    "screen_episode_id": snapshot.screen_episode_id,
-                    "gate": snapshot.gate,
-                    "attempt": snapshot.attempt.as_ref().map(|attempt| (&attempt.attempt_id, &attempt.phase, &attempt.state)),
-                }));
+                object.insert(
+                    "final_domain_state".to_owned(),
+                    json!({
+                        "screen": snapshot.screen,
+                        "screen_episode_id": snapshot.screen_episode_id,
+                        "gate": super::debug_projection::snapshot(&snapshot)["gate"],
+                        "attempt": super::debug_projection::snapshot(&snapshot)["attempt"],
+                    }),
+                );
                 let publication = recording_publication(report, recording_enabled);
                 object.insert("recording_publication".to_owned(), publication.into());
             } else if matches!(event.kind, RunEventKind::RecordingCompleted { .. }) {
@@ -1162,7 +1221,7 @@ impl RoutineOutput {
             }
             value["diagnostic_health"] = sink.health();
             if !trace_ephemeral_input(&event.kind) {
-                sink.record("run_event", &value, important_run_event(event));
+                sink.record(record_kind, &value, important_run_event(event));
             }
         }
         #[cfg(test)]
@@ -1351,7 +1410,6 @@ const fn output_kind(kind: &RunEventKind) -> &'static str {
         RunEventKind::MusicSelectBestObserved { .. } => "music_select_best_observed",
         RunEventKind::MusicSelectResolverChanged { .. } => "music_select_resolver_changed",
         RunEventKind::WatcherStarted { .. } => "watcher_started",
-        RunEventKind::CanonicalSessionStarted { .. } => "canonical_session_started",
         RunEventKind::SessionStarted { .. } => "session_started",
         RunEventKind::RecordingHealthChanged { .. } => "recording_health_changed",
         RunEventKind::RecordingFinalizing { .. } => "recording_finalizing",
@@ -1373,30 +1431,8 @@ const fn output_kind(kind: &RunEventKind) -> &'static str {
         RunEventKind::ResolverStateChanged { .. } => "resolver_state_changed",
         RunEventKind::SelectionDifficultyChanged { .. } => "selection_difficulty_changed",
         RunEventKind::SessionFinished { .. } => "session_finished",
-        RunEventKind::CanonicalSessionFinished { .. } => "canonical_session_finished",
         RunEventKind::WatcherStopped { .. } => "watcher_stopped",
     }
-}
-
-fn trace_domain_transition(kind: &RunEventKind) -> bool {
-    matches!(
-        kind,
-        RunEventKind::GameVersionChanged { .. }
-            | RunEventKind::SemanticScreenEpisodeChanged { .. }
-            | RunEventKind::ScreenChanged { .. }
-            | RunEventKind::ResultChanged { .. }
-            | RunEventKind::ResultPanelSideChanged { .. }
-            | RunEventKind::ResultSelectContextMismatch { .. }
-            | RunEventKind::MusicSelectionChanged { .. }
-            | RunEventKind::TemporalResultChanged { .. }
-            | RunEventKind::TemporalMusicSelectChanged { .. }
-            | RunEventKind::NumericResultChanged { .. }
-            | RunEventKind::PlayAttemptChanged { .. }
-            | RunEventKind::ResolverStateChanged { .. }
-            | RunEventKind::SelectionDifficultyChanged { .. }
-            | RunEventKind::MusicSelectResolverChanged { .. }
-            | RunEventKind::MusicSelectBestObserved { .. }
-    )
 }
 
 impl Drop for RoutineOutput {

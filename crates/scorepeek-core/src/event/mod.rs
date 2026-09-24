@@ -1,12 +1,10 @@
-//! Stable domain and run event authority.
+//! Stable domain input, transition, and state authority.
 
 pub mod coordinator;
 pub mod domain;
 pub mod input;
-pub mod projection;
 mod reducer;
-pub mod run;
-pub mod schema;
+pub mod transition;
 
 pub use domain::{
     BestChart, BestOutputState, CurrentSelectionDifficulty, EvidenceContribution,
@@ -16,15 +14,11 @@ pub use domain::{
     ResolverResolutionState, ResolverScope, ResultDomainEvent, ResultPanelSideEpisodeState,
     ResultPanelSideTransitionReason, ResultRetractionReason, ResultState, SelectFrameIdentity,
     SelectIdentityStatus, SelectionDifficultyTarget, SelectionDifficultyTransitionReason,
-    SongPresentation, SongResolutionPresentation,
+    SongPresentation,
 };
-pub use input::DomainInput;
-pub use projection::{
-    ProjectionCursor, diagnostic_run_event_value, run_event_from_field_observation,
-};
+pub use input::{DomainFieldObservation, DomainInput};
 pub use reducer::{
-    AttemptNodeSnapshot, GateSnapshot, GateState, PlayOptionsDebugSnapshot, ReducedRunEvents,
-    ResolverNodeSnapshot, RunReducerEffect, RunReducerSnapshot,
+    AttemptNodeSnapshot, DomainEffect, DomainSnapshot, GateDecision, GateKind, GateSnapshot,
+    GateState, PlayOptionsDebugSnapshot, ReducedDomainTransitions, ResolverNodeSnapshot,
 };
-pub use run::{RunEvent, RunEventEnvelope, RunEventKind};
-pub use schema::RUN_EVENT_SCHEMA;
+pub use transition::DomainTransitionKind;

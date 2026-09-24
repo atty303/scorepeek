@@ -1,30 +1,47 @@
-//! Run-event envelope shared by live execution and replay.
+//! Runtime-owned event envelope used by diagnostics and public projections.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::catalog::{PlayType, ScorepeekSongId};
-use crate::recognition::music_select::PlaySide;
-use crate::recognition::result::{
+use scorepeek_core::catalog::{PlayType, ScorepeekSongId};
+use scorepeek_core::recognition::music_select::PlaySide;
+use scorepeek_core::recognition::result::{
     ParsedResultFields, ResultChartResolution, ResultPerformanceResolution,
 };
-use crate::recognition::screen::{PlayPresenceEvidence, ResultPresenceEvidence};
-use crate::recognition::shared::{EvidenceFamily, JointEvidenceObservation};
-use crate::session::{
+use scorepeek_core::recognition::screen::{PlayPresenceEvidence, ResultPresenceEvidence};
+use scorepeek_core::recognition::shared::{EvidenceFamily, JointEvidenceObservation};
+use scorepeek_core::session::{
     MusicSelectTemporalState, MusicSelectTemporalTransitionReason, PlayAttemptState,
     ResultTemporalState, SemanticEpisodePhase, TemporalFieldTransition,
 };
 
-use super::{
+use scorepeek_core::event::{
     CurrentSelectionDifficulty, EvidenceContribution, MusicSelectBestSnapshot,
     MusicSelectResolverState, MusicSelectionState, NumericResultEventSuppressionReason,
     NumericResultTemporalState, NumericResultTransitionReason, ResolverHypothesisKey,
     ResolverResolutionState, ResolverScope, ResultPanelSideEpisodeState,
     ResultPanelSideTransitionReason, ResultState, SelectionDifficultyTarget,
-    SelectionDifficultyTransitionReason, SongPresentation, SongResolutionPresentation,
+    SelectionDifficultyTransitionReason, SongPresentation,
 };
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SongResolutionPresentation {
+    Accepted {
+        reason: Option<Value>,
+        selected: SongPresentation,
+        runner_up: SongPresentation,
+        evidence_summary: String,
+    },
+    Unknown {
+        reason: Value,
+        selected: Option<SongPresentation>,
+        runner_up: Option<SongPresentation>,
+        evidence_summary: Option<String>,
+    },
+}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct RunEventEnvelope<T> {
@@ -82,10 +99,6 @@ pub enum RunEventKind {
     },
     WatcherStarted {
         invocation_id: String,
-    },
-    /// Domain session boundary derived from a standalone canonical recording.
-    CanonicalSessionStarted {
-        session_id: String,
     },
     SessionStarted {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -295,10 +308,6 @@ pub enum RunEventKind {
         session_id: String,
         outcome: String,
         report: Value,
-    },
-    /// Completes a canonical session without a runtime capture binding.
-    CanonicalSessionFinished {
-        session_id: String,
     },
     WatcherStopped {
         invocation_id: String,

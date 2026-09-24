@@ -1,18 +1,15 @@
-//! Portable projection from registered observations into typed run events.
+//! Runtime projection from registered observations into diagnostic events.
 
 use serde_json::{Value, json};
 
-use crate::catalog::ScorepeekSongId;
-use crate::model::session::RegisteredScreenFieldObservation;
-use crate::recognition::music_select::MusicSelectSongResolution;
-use crate::recognition::result::ResultSongResolution;
-use crate::recognition::screen::{ScreenFieldObservations, ScreenSongResolution};
+use scorepeek_core::model::session::RegisteredScreenFieldObservation;
+use scorepeek_core::recognition::music_select::MusicSelectSongResolution;
+use scorepeek_core::recognition::result::ResultSongResolution;
+use scorepeek_core::recognition::screen::{ScreenFieldObservations, ScreenSongResolution};
 
-use super::{
-    RunEvent, RunEventKind, SongPresentation, SongResolutionPresentation, schema::RUN_EVENT_SCHEMA,
-};
+use super::{RunEvent, RunEventKind, SongResolutionPresentation, schema::RUN_EVENT_SCHEMA};
 
-/// Converts one registered field observation into its transport-neutral run event.
+/// Converts one registered field observation into its runtime event.
 ///
 /// # Errors
 /// Returns an error when a typed observation cannot be represented by the run-event contract.
@@ -111,105 +108,125 @@ pub fn run_event_from_field_observation(
 }
 
 fn song_resolution_presentation_from_observation(
-    observation: &RegisteredScreenFieldObservation,
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
 ) -> Result<SongResolutionPresentation, String> {
     match observation.song_resolution() {
-        ScreenSongResolution::Title => Ok(SongResolutionPresentation::Unknown {
-            reason: Value::String("not_applicable".to_owned()),
-            selected: None,
-            runner_up: None,
-            evidence_summary: None,
-        }),
+        ScreenSongResolution::Title => {
+            Ok(SongResolutionPresentation::Unknown {
+                reason: serde_json::Value::String("not_applicable".to_owned()),
+                selected: None,
+                runner_up: None,
+                evidence_summary: None,
+            })
+        }
         ScreenSongResolution::Result(resolution) => match resolution {
             ResultSongResolution::Accepted {
                 selected,
                 runner_up,
+                title_edit_margin,
                 ..
             } => Ok(SongResolutionPresentation::Accepted {
                 reason: None,
                 selected: observed_song_presentation(observation, selected.song_id)?,
                 runner_up: observed_song_presentation(observation, runner_up.song_id)?,
-                evidence_summary: "catalog_constrained_result".to_owned(),
+                evidence_summary: format!(
+                    "title edit={} similarity={}/{}; artist similarity={}/{}; runner-up margin={}",
+                    selected.title.minimum_edit_distance,
+                    selected.title.maximum_normalized_similarity.matching_units,
+                    selected.title.maximum_normalized_similarity.compared_units,
+                    selected.artist.maximum_normalized_similarity.matching_units,
+                    selected.artist.maximum_normalized_similarity.compared_units,
+                    title_edit_margin,
+                ),
             }),
             ResultSongResolution::Unknown {
                 reason,
                 selected,
                 runner_up,
+                title_edit_margin,
                 ..
             } => Ok(SongResolutionPresentation::Unknown {
-                reason: serde_json::to_value(reason).map_err(|error| error.to_string())?,
-                selected: selected
-                    .as_ref()
-                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
-                    .transpose()?,
-                runner_up: runner_up
-                    .as_ref()
-                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
-                    .transpose()?,
-                evidence_summary: selected
-                    .as_ref()
-                    .map(|_| "catalog_constrained_result".to_owned()),
+                reason: serde_json::to_value(reason).map_err(|error| format!("result resolution reason serialization failed: {error}"))?,
+                selected: selected.as_ref().map(|candidate| observed_song_presentation(observation, candidate.song_id)).transpose()?,
+                runner_up: runner_up.as_ref().map(|candidate| observed_song_presentation(observation, candidate.song_id)).transpose()?,
+                evidence_summary: selected.as_ref().map(|candidate| format!(
+                    "title edit={} similarity={}/{}; artist similarity={}/{}; runner-up margin={}",
+                    candidate.title.minimum_edit_distance,
+                    candidate.title.maximum_normalized_similarity.matching_units,
+                    candidate.title.maximum_normalized_similarity.compared_units,
+                    candidate.artist.maximum_normalized_similarity.matching_units,
+                    candidate.artist.maximum_normalized_similarity.compared_units,
+                    title_edit_margin.map_or_else(|| "-".to_owned(), |margin| margin.to_string()),
+                )),
             }),
         },
         ScreenSongResolution::MusicSelect(resolution) => match resolution {
             MusicSelectSongResolution::Accepted {
                 selected,
                 runner_up,
+                active_prefix_edit_margin,
+                corroboration,
                 ..
             } => Ok(SongResolutionPresentation::Accepted {
                 reason: None,
                 selected: observed_song_presentation(observation, selected.song_id)?,
                 runner_up: observed_song_presentation(observation, runner_up.song_id)?,
-                evidence_summary: "catalog_constrained_music_select".to_owned(),
+                evidence_summary: format!(
+                    "active-prefix edit={} similarity={}/{}; runner-up margin={}; corroboration central-title={} artist={}",
+                    selected.active_list_title_prefix.minimum_edit_distance,
+                    selected.active_list_title_prefix.maximum_normalized_similarity.matching_units,
+                    selected.active_list_title_prefix.maximum_normalized_similarity.compared_units,
+                    active_prefix_edit_margin,
+                    corroboration.central_title,
+                    corroboration.artist,
+                ),
             }),
             MusicSelectSongResolution::Unknown {
                 reason,
                 selected,
                 runner_up,
+                active_prefix_edit_margin,
                 ..
             } => Ok(SongResolutionPresentation::Unknown {
-                reason: serde_json::to_value(reason).map_err(|error| error.to_string())?,
-                selected: selected
-                    .as_ref()
-                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
-                    .transpose()?,
-                runner_up: runner_up
-                    .as_ref()
-                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
-                    .transpose()?,
-                evidence_summary: selected
-                    .as_ref()
-                    .map(|_| "catalog_constrained_music_select".to_owned()),
+                reason: serde_json::to_value(reason).map_err(|error| format!("music-select resolution reason serialization failed: {error}"))?,
+                selected: selected.as_ref().map(|candidate| observed_song_presentation(observation, candidate.song_id)).transpose()?,
+                runner_up: runner_up.as_ref().map(|candidate| observed_song_presentation(observation, candidate.song_id)).transpose()?,
+                evidence_summary: selected.as_ref().map(|candidate| format!(
+                    "active-prefix edit={} similarity={}/{}; runner-up margin={}",
+                    candidate.active_list_title_prefix.minimum_edit_distance,
+                    candidate.active_list_title_prefix.maximum_normalized_similarity.matching_units,
+                    candidate.active_list_title_prefix.maximum_normalized_similarity.compared_units,
+                    active_prefix_edit_margin.map_or_else(|| "-".to_owned(), |margin| margin.to_string()),
+                )),
             }),
         },
     }
 }
 
 fn observed_song_presentation(
-    observation: &RegisteredScreenFieldObservation,
-    song_id: ScorepeekSongId,
-) -> Result<SongPresentation, String> {
+    observation: &scorepeek_core::model::session::RegisteredScreenFieldObservation,
+    song_id: scorepeek_core::catalog::ScorepeekSongId,
+) -> Result<scorepeek_core::event::SongPresentation, String> {
     let evidence = observation
         .candidates()
         .catalog_evidence()
         .songs
         .iter()
         .find(|song| song.song_id == song_id)
-        .ok_or_else(|| "resolved song is absent from catalog evidence".to_owned())?;
-    let [artist] = evidence.artist.display.as_slice() else {
-        return Err("resolved song does not have exactly one display artist".to_owned());
+        .ok_or_else(|| {
+            format!("resolved song {song_id:?} is absent from the session catalog evidence")
+        })?;
+    let artists = &evidence.artist.display;
+    let [artist] = artists.as_slice() else {
+        return Err(format!(
+            "resolved song {song_id:?} does not have exactly one display artist"
+        ));
     };
-    Ok(SongPresentation {
+    Ok(scorepeek_core::event::SongPresentation {
         scorepeek_song_id: song_id,
         display_titles: evidence.title.display.clone(),
         artist: artist.clone(),
     })
-}
-
-/// Cursor for deterministic event consumers.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ProjectionCursor {
-    pub next_sequence: u64,
 }
 
 /// Projects a run event into the bounded diagnostic representation shared by live and replay.

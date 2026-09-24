@@ -1,15 +1,15 @@
-use super::{LiveSessionEmission, run_event_from_live_emission};
 use super::{
     RecordingRetention, RunArgs, catalog_paths, initialize_routine_model, live_session_event_value,
     load_run_options, parse_routine_run_options, prepare_live_diagnostic_root,
     routine_session_disposition, run_config_command, run_startup_stage,
-    transient_admission_capture_error,
+    transient_admission_capture_error, typed_live_session_emission,
 };
 use crate::capture_live::CaptureSessionEvent;
 use crate::config::document::ConfigFile;
 use crate::config::document::validate as validate_config_file;
 use crate::config::effective as config_effective;
 use crate::diagnostics::contract::DiagnosticPolicy;
+use crate::events::{RunEvent, RunEventKind};
 use scorepeek::capture::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticStatus,
@@ -17,7 +17,6 @@ use scorepeek::capture::{
 use scorepeek_core::catalog::Catalog;
 use scorepeek_core::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
 use scorepeek_core::catalog::{Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType};
-use scorepeek_core::event::{RunEvent, RunEventKind};
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 use scorepeek_core::recognition::screen as recognition;
 use scorepeek_core::recognition::screen::{ResultScreenFieldObservations, ScreenFieldObservations};
@@ -136,10 +135,13 @@ fn publish_headless_live_event(
     routine: &mut crate::events::server::RoutineOutput,
     event: CaptureSessionEvent<'_>,
 ) {
-    let value = live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
-    routine
-        .publish(&RunEvent::from_value(value).unwrap())
-        .unwrap();
+    let emission = typed_live_session_emission("invocation-session-1", event, None, None).unwrap();
+    let event = emission.event.unwrap();
+    if let Some(input) = emission.domain_input {
+        routine.publish_timed_domain(&event, input).unwrap();
+    } else {
+        routine.publish(&event).unwrap();
+    }
 }
 
 fn publish_two_player_result_episode(
@@ -828,7 +830,7 @@ fn live_serializer_and_reducer_keep_one_recording_schema() {
         1,
         "the corpus reader rejects mixed-schema sessions"
     );
-    assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v19"));
+    assert_eq!(schemas.first().copied(), Some("scorepeek-runtime-event-v1"));
 }
 
 #[test]
@@ -849,7 +851,7 @@ fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
         },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-run-event-v19");
+    assert_eq!(value["schema"], "scorepeek-runtime-event-v1");
     assert_eq!(value["event"], "raw_screen_observed");
     assert_eq!(value["semantic_episode_id"], 1);
     assert_eq!(value["session_id"], "invocation-session-2");
@@ -992,7 +994,7 @@ fn routine_observation_binds_session_without_generation() {
         },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-run-event-v19");
+    assert_eq!(value["schema"], "scorepeek-runtime-event-v1");
     assert_eq!(value["session_id"], "invocation-session-2");
     assert!(value.get("capture_generation").is_none());
     assert_eq!(value["sequence"], 1);
@@ -1042,15 +1044,23 @@ fn routine_live_emission_bounds_json_without_truncating_authority() {
         8
     );
 
-    let event = run_event_from_live_emission(LiveSessionEmission {
-        value,
-        authority_joint_evidence: Some(authority.clone()),
-        diagnostic_identity: None,
-        diagnostic_capture_fact: None,
-    })
+    let emission = typed_live_session_emission(
+        "invocation-session-2",
+        CaptureSessionEvent::Observation {
+            screen_episode_id: 7,
+            sequence: 8,
+            monotonic_start_ms: 10,
+            monotonic_end_ms: 20,
+            output: &output,
+        },
+        None,
+        None,
+    )
     .unwrap();
-    let RunEventKind::FieldObservation { joint_evidence, .. } = event.kind else {
-        panic!("expected field observation");
+    let scorepeek_core::event::DomainInput::FieldObservation { joint_evidence, .. } =
+        emission.domain_input.unwrap()
+    else {
+        panic!("expected typed field observation");
     };
     assert_eq!(joint_evidence, authority);
 }
