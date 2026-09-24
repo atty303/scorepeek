@@ -74,14 +74,15 @@ jobs:
             fi
             case "$current_status" in
               200)
-                mkdir "$work_root/selection"
-                cargo run --locked --quiet -p scorepeek-catalog-publisher -- select --candidate "$candidate" --current "$current" --output "$selected" --work-directory "$work_root/selection" | tee "$work_root/selection-summary.json"
-                {
-                  echo '## Publication decision'
-                  echo '```json'
-                  cat "$work_root/selection-summary.json"
-                  echo '```'
-                } >> "$GITHUB_STEP_SUMMARY"
+                cargo run --locked --quiet -p scorepeek-catalog-publisher -- verify --artifact "$candidate" --output-directory "$work_root/candidate-verified" > "$work_root/candidate-manifest.json"
+                cargo run --locked --quiet -p scorepeek-catalog-publisher -- verify --client-only --artifact "$current" --output-directory "$work_root/current-verified" > "$work_root/current-manifest.json"
+                if jq -e -s '.[0].semantic_digest == .[1].semantic_digest and .[0].artifact_revision == .[1].artifact_revision' "$work_root/candidate-manifest.json" "$work_root/current-manifest.json" >/dev/null && cmp -s "$work_root/candidate-verified/THIRD_PARTY_NOTICES.md" "$work_root/current-verified/THIRD_PARTY_NOTICES.md"; then
+                  cp -- "$current" "$selected"
+                  echo 'Catalog content, revision, and notices are unchanged; preserved the current ZIP bytes.' >> "$GITHUB_STEP_SUMMARY"
+                else
+                  cp -- "$candidate" "$selected"
+                  echo 'Published the verified candidate ZIP.' >> "$GITHUB_STEP_SUMMARY"
+                fi
                 ;;
               404)
                 cp -- "$candidate" "$selected"

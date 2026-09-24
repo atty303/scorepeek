@@ -2,7 +2,6 @@
 
 use super::absolute_path;
 use crate::artifact::{self};
-use crate::store::CatalogStore;
 use crate::{CatalogSync, CatalogSyncSource, QuarantineReason};
 use clap::Args;
 use scorepeek_resources::artifact::ArtifactManifest;
@@ -44,42 +43,54 @@ pub(crate) fn run(options: BuildOptions) -> Result<(), String> {
     if !metadata.is_dir() {
         return Err("work directory must be an existing directory".to_owned());
     }
-    let store_root = options.work_directory.join("catalog-store");
     let cache_root = options.work_directory.join("source-cache");
-    let result = CatalogSync::new(&store_root, cache_root)
+    let result = CatalogSync::new(&options.work_directory, cache_root)
         .sync()
         .map_err(|error| error.to_string())?;
-    if !result.activated {
-        return Err("candidate was rejected by whole-catalog policy".to_owned());
-    }
-    let active = CatalogStore::new(&store_root)
-        .load_active()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "generation completed without an active candidate".to_owned())?;
-    let semantic_digest = active.catalog.semantic_digest();
+    let catalog = result
+        .catalog
+        .as_ref()
+        .ok_or_else(|| "candidate was rejected by whole-catalog policy".to_owned())?;
+    let snapshot = tempfile::tempdir_in(&options.work_directory)
+        .map_err(|error| format!("snapshot staging failed: {error}"))?;
+    let catalog_path = snapshot.path().join("catalog.sqlite3");
+    crate::snapshot::write_snapshot(&catalog_path, catalog).map_err(|error| error.to_string())?;
+    let sqlite_sha256 = artifact::digest_bounded(&catalog_path, 128 * 1024 * 1024)
+        .map_err(|error| error.to_string())?;
+    let semantic_digest = catalog.semantic_digest();
     let manifest = ArtifactManifest {
         schema: artifact::ARTIFACT_SCHEMA.to_owned(),
-        sqlite_sha256: active.digest.clone(),
+        sqlite_sha256: sqlite_sha256.clone(),
         semantic_digest: semantic_digest.clone(),
         artifact_revision: options.artifact_revision,
         generator_commit: options.generator_commit,
         workflow_run_url: Some(options.workflow_run_url),
     };
-    let catalog_path = CatalogStore::new(&store_root)
-        .snapshot_path(&active.digest)
+    let output_parent = options.output.parent().ok_or("output has no parent")?;
+    let candidate = tempfile::tempdir_in(output_parent)
+        .map_err(|error| format!("candidate staging failed: {error}"))?;
+    let candidate_path = candidate.path().join("candidate.zip");
+    artifact::build(&catalog_path, &options.notices, &candidate_path, &manifest)
         .map_err(|error| error.to_string())?;
-    artifact::build(&catalog_path, &options.notices, &options.output, &manifest)
+    let verification = tempfile::tempdir_in(&options.work_directory)
+        .map_err(|error| format!("verification staging failed: {error}"))?;
+    artifact::verify_publisher(&candidate_path, &verification.path().join("extracted"))
         .map_err(|error| error.to_string())?;
-    let verification = options.work_directory.join("publisher-verification");
-    artifact::verify_publisher(&options.output, &verification)
-        .map_err(|error| error.to_string())?;
+    std::fs::hard_link(&candidate_path, &options.output)
+        .map_err(|error| format!("candidate output failed: {error}"))?;
+    if let Err(error) = std::fs::File::open(output_parent).and_then(|parent| parent.sync_all()) {
+        std::fs::remove_file(&options.output).map_err(|remove| {
+            format!("candidate output sync failed: {error}; cleanup failed: {remove}")
+        })?;
+        return Err(format!("candidate output sync failed: {error}"));
+    }
     let summary = result.into_summary();
     println!(
         "{}",
         serde_json::to_string(&BuildSummary {
             schema: "scorepeek-catalog-publisher-build-v1",
             published_candidate: true,
-            sqlite_sha256: active.digest,
+            sqlite_sha256,
             semantic_digest,
             artifact_revision: options.artifact_revision,
             sources: summary.sources,

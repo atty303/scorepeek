@@ -56,13 +56,14 @@ reproducible offline OCR preparation, training, and export tooling.
 
 Catalog generation is not part of the distributed CLI. The separate
 `scorepeek-catalog-publisher` workspace crate owns live-source acquisition,
-source observation types and federation, SQLite snapshot writing and publication,
-ZIP creation, publisher validation, and no-op selection. `scorepeek-core` owns
-completed catalog types and validation, including the versioned `SourcePolicy`;
-`scorepeek-resources` owns client ZIP verification, verified snapshot installation,
-and catalog reading. GitHub
-Actions publishes the selected three-file ZIP through the single Pages
-workflow.
+source observation types and federation, SQLite candidate writing, and
+ZIP creation at the requested output path. It reads the candidate ZIP back through
+`scorepeek-resources` verification and catalog loading. `scorepeek-core` owns
+completed catalog types and validation, including the versioned `SourcePolicy`.
+`scorepeek-resources` remains a shared crate for client ZIP verification, local
+verified snapshot generations and activation, catalog reading, and registered OCR
+model file loading. GitHub Actions protects the previous published ZIP and selects
+the three-file ZIP published through the single Pages workflow.
 
 On first use, `scorepeek run` synchronously acquires and atomically activates
 the effective catalog URL before capture starts. With a matching active URL it
@@ -276,8 +277,11 @@ approved repository artifact. See [private corpus](private-corpus.md).
 | Concern | Current owner |
 | --- | --- |
 | External source bytes and catalog generation | `scorepeek-catalog-publisher` in GitHub Actions |
-| Pages packaging, validation, and no-op selection | `scorepeek-catalog-publisher` and `.github/workflows/catalog-pages.yml` |
-| Client ZIP verification, content store, and activation | `scorepeek-resources` plus `scorepeek-runtime::resources::catalog` |
+| Candidate SQLite and ZIP writing | `scorepeek-catalog-publisher` |
+| Candidate ZIP read-back and client ZIP verification | `scorepeek-resources` reader, called by the publisher |
+| Published ZIP protection and selection | `.github/workflows/catalog-pages.yml` |
+| Client local catalog generations and activation | `scorepeek-resources` plus `scorepeek-runtime::resources::catalog` |
+| Registered OCR model file verification and loading | `scorepeek-resources` |
 | PipeWire or Vulkan producer lifetime and frame reception | Capture provider and receiver |
 | Runtime source identity, edge crop, and canonical normalization | Capture admission and session-start diagnostics |
 | Canonical game coordinates | Versioned layout resources in `crates/scorepeek-core/src` |

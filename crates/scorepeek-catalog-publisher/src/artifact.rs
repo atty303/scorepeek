@@ -1,15 +1,13 @@
-//! Publisher-side ZIP creation, validation, and no-op selection.
+//! Publisher-side ZIP creation and validation.
 
 pub use scorepeek_resources::artifact::{ARTIFACT_SCHEMA, ArtifactManifest};
 use scorepeek_resources::artifact::{
     ArtifactError, CATALOG_ENTRY, MANIFEST_ENTRY, NOTICES_ENTRY, extract_client_verified,
 };
 use scorepeek_resources::validate_publisher_snapshot;
-use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 use tempfile::Builder;
 use zip::write::SimpleFileOptions;
@@ -18,13 +16,6 @@ use zip::{CompressionMethod, ZipWriter};
 const MAX_CATALOG_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const MAX_NOTICES_BYTES: u64 = 1024 * 1024;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Selection {
-    Candidate,
-    Current,
-}
 
 /// Packages the exact `SQLite` snapshot and notices into the three-entry distribution ZIP.
 ///
@@ -98,44 +89,6 @@ pub fn verify_publisher(
     Ok(extracted.manifest)
 }
 
-/// Selects the current bytes for a semantic/artifact/notices no-op, otherwise the candidate.
-///
-/// # Errors
-/// Returns an error if either artifact is invalid or output publication fails.
-pub fn select(
-    candidate_path: &Path,
-    current_path: &Path,
-    output: &Path,
-    scratch: &Path,
-) -> Result<Selection, ArtifactError> {
-    let candidate_dir = scratch.join("candidate");
-    let current_dir = scratch.join("current");
-    let candidate = extract_client_verified(candidate_path, &candidate_dir)?;
-    let current = extract_client_verified(current_path, &current_dir)?;
-    let unchanged = candidate.manifest.semantic_digest == current.manifest.semantic_digest
-        && candidate.manifest.artifact_revision == current.manifest.artifact_revision
-        && fs::read(&candidate.notices_path)? == fs::read(&current.notices_path)?;
-    let (source, selection) = if unchanged {
-        (current_path, Selection::Current)
-    } else {
-        (candidate_path, Selection::Candidate)
-    };
-    copy_noclobber(source, output)?;
-    Ok(selection)
-}
-
-fn copy_noclobber(source: &Path, output: &Path) -> Result<(), ArtifactError> {
-    let mut input = File::open(source)?;
-    let mut target = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(output)?;
-    io::copy(&mut input, &mut target)?;
-    target.sync_all()?;
-    Ok(())
-}
-
 fn read_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>, ArtifactError> {
     let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() > maximum {
@@ -157,7 +110,7 @@ fn read_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>, ArtifactError> {
     Ok(bytes)
 }
 
-fn digest_bounded(path: &Path, maximum: u64) -> Result<String, ArtifactError> {
+pub(crate) fn digest_bounded(path: &Path, maximum: u64) -> Result<String, ArtifactError> {
     let bytes = read_bounded(path, maximum)?;
     Ok(hex(&Sha256::digest(bytes)))
 }
@@ -196,7 +149,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::fs;
 
     #[test]
     fn published_zip_is_readable_by_client_verification_and_catalog_reader() {
@@ -204,7 +157,6 @@ mod tests {
         use scorepeek_core::catalog::{Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType};
 
         let root = tempfile::tempdir().unwrap();
-        let store = crate::store::CatalogStore::new(root.path().join("store"));
         let catalog = catalog_from_tachi(&[SyntheticTachiRecord {
             id: "synthetic-song",
             title: "SYNTHETIC SONG",
@@ -221,14 +173,15 @@ mod tests {
             }],
             primary_infinitas: true,
         }]);
-        let active = store.begin_update().unwrap().publish(&catalog).unwrap();
-        let catalog_path = store.snapshot_path(&active.digest).unwrap();
+        let catalog_path = root.path().join("catalog.sqlite3");
+        crate::snapshot::write_snapshot(&catalog_path, &catalog).unwrap();
+        let digest = digest_bounded(&catalog_path, MAX_CATALOG_BYTES).unwrap();
         let notices = root.path().join("notices.md");
         fs::write(&notices, b"synthetic notice\n").unwrap();
         let zip = root.path().join("catalog.zip");
         let manifest = ArtifactManifest {
             schema: ARTIFACT_SCHEMA.to_owned(),
-            sqlite_sha256: active.digest.clone(),
+            sqlite_sha256: digest.clone(),
             semantic_digest: catalog.semantic_digest(),
             artifact_revision: 1,
             generator_commit: "a".repeat(40),
@@ -244,70 +197,5 @@ mod tests {
         let loaded =
             validate_publisher_snapshot(&extracted.catalog_path, &manifest.sqlite_sha256).unwrap();
         assert_eq!(loaded, catalog);
-    }
-
-    #[test]
-    fn no_op_selection_preserves_the_current_zip_bytes() {
-        let root = tempfile::tempdir().unwrap();
-        let current = test_package(root.path(), "current", "a".repeat(40), 1, b"notice\n");
-        let candidate = test_package(root.path(), "candidate", "b".repeat(40), 1, b"notice\n");
-        let output = root.path().join("selected.zip");
-        let scratch = root.path().join("scratch");
-        fs::create_dir(&scratch).unwrap();
-        assert_eq!(
-            select(&candidate, &current, &output, &scratch).unwrap(),
-            Selection::Current
-        );
-        assert_eq!(fs::read(output).unwrap(), fs::read(current).unwrap());
-    }
-
-    #[test]
-    fn artifact_revision_or_notices_change_selects_the_candidate() {
-        let root = tempfile::tempdir().unwrap();
-        let current = test_package(root.path(), "current", "a".repeat(40), 1, b"notice\n");
-        let candidate = test_package(
-            root.path(),
-            "candidate",
-            "b".repeat(40),
-            2,
-            b"updated notice\n",
-        );
-        let output = root.path().join("selected.zip");
-        let scratch = root.path().join("scratch");
-        fs::create_dir(&scratch).unwrap();
-        assert_eq!(
-            select(&candidate, &current, &output, &scratch).unwrap(),
-            Selection::Candidate
-        );
-        assert_eq!(fs::read(output).unwrap(), fs::read(candidate).unwrap());
-    }
-
-    fn test_package(
-        root: &Path,
-        name: &str,
-        generator_commit: String,
-        artifact_revision: u64,
-        notices: &[u8],
-    ) -> PathBuf {
-        let catalog = root.join(format!("{name}.sqlite3"));
-        fs::write(&catalog, b"synthetic sqlite bytes").unwrap();
-        let notices_path = root.join(format!("{name}-notices.md"));
-        fs::write(&notices_path, notices).unwrap();
-        let output = root.join(format!("{name}.zip"));
-        build(
-            &catalog,
-            &notices_path,
-            &output,
-            &ArtifactManifest {
-                schema: ARTIFACT_SCHEMA.to_owned(),
-                sqlite_sha256: digest_bounded(&catalog, MAX_CATALOG_BYTES).unwrap(),
-                semantic_digest: "c".repeat(64),
-                artifact_revision,
-                generator_commit,
-                workflow_run_url: None,
-            },
-        )
-        .unwrap();
-        output
     }
 }

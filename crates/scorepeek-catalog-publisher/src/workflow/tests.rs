@@ -4,9 +4,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
-    AdapterError, Catalog, CatalogStore, DisplayVariantKind, DqnLiveAdapter, FederationInput,
-    InfinitasStatus, QuarantineReason, SourceRevision, TachiFixtureAdapter, TachiLiveAdapter,
-    TextageFixtureAdapter,
+    AdapterError, Catalog, DisplayVariantKind, DqnLiveAdapter, FederationInput, InfinitasStatus,
+    QuarantineReason, SourceRevision, TachiFixtureAdapter, TachiLiveAdapter, TextageFixtureAdapter,
 };
 
 const GIT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -752,17 +751,11 @@ fn dqn_nullable_pack_evidence_survives_catalog_snapshot_round_trip() {
         })
         .catalog;
     let root = TempDir::new().unwrap();
-    let active = CatalogStore::new(root.path())
-        .begin_update()
-        .unwrap()
-        .publish(&catalog)
-        .unwrap();
-    let loaded = CatalogStore::new(root.path())
-        .load_active()
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded.digest, active.digest);
-    assert_eq!(loaded.catalog, catalog);
+    let snapshot = root.path().join("catalog.sqlite3");
+    crate::snapshot::write_snapshot(&snapshot, &catalog).unwrap();
+    let digest = crate::artifact::digest_bounded(&snapshot, 128 * 1024 * 1024).unwrap();
+    let loaded = scorepeek_resources::validate_publisher_snapshot(&snapshot, &digest).unwrap();
+    assert_eq!(loaded, catalog);
 }
 
 #[test]

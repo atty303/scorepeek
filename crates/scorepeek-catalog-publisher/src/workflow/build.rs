@@ -8,7 +8,6 @@ use serde::Serialize;
 use super::domain::{
     Catalog, CatalogFederationExt, FederationInput, QuarantineEntry, QuarantineReason, SourceId,
 };
-use super::store::{CatalogStore, CatalogStoreError};
 use crate::source::dqn::acquire::{
     DqnAcquisitionError, DqnTransport, UreqDqnTransport, acquire_dqn,
 };
@@ -18,17 +17,17 @@ use crate::source::tachi::acquire::{
 use crate::source::textage::acquire::{
     TextageAcquisitionError, TextageTransport, UreqTextageTransport, acquire_textage,
 };
+use crate::store::WorkspaceLock;
 
 #[derive(Clone, Debug)]
 pub struct CatalogSync {
-    store: CatalogStore,
+    work_directory: PathBuf,
     cache_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogSyncResult {
-    pub activated: bool,
-    pub active_catalog_digest: Option<String>,
+    pub catalog: Option<Catalog>,
     pub sources: BTreeMap<SourceId, CatalogSyncSource>,
     pub quarantine: Vec<QuarantineEntry>,
 }
@@ -42,15 +41,14 @@ pub struct CatalogSyncSource {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogSyncSummary {
-    pub activated: bool,
-    pub active_catalog_digest: Option<String>,
+    pub candidate_accepted: bool,
     pub sources: BTreeMap<SourceId, CatalogSyncSource>,
     pub quarantine_counts: BTreeMap<QuarantineReason, usize>,
 }
 
 #[derive(Debug)]
 pub enum CatalogSyncError {
-    Store(CatalogStoreError),
+    Workspace(std::io::Error),
     TachiAcquisition(TachiAcquisitionError),
     TextageAcquisition(TextageAcquisitionError),
     DqnAcquisition(DqnAcquisitionError),
@@ -59,7 +57,7 @@ pub enum CatalogSyncError {
 impl fmt::Display for CatalogSyncError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Store(error) => error.fmt(formatter),
+            Self::Workspace(error) => error.fmt(formatter),
             Self::TachiAcquisition(error) => error.fmt(formatter),
             Self::TextageAcquisition(error) => error.fmt(formatter),
             Self::DqnAcquisition(error) => error.fmt(formatter),
@@ -70,7 +68,7 @@ impl fmt::Display for CatalogSyncError {
 impl Error for CatalogSyncError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Store(error) => Some(error),
+            Self::Workspace(error) => Some(error),
             Self::TachiAcquisition(error) => Some(error),
             Self::TextageAcquisition(error) => Some(error),
             Self::DqnAcquisition(error) => Some(error),
@@ -78,9 +76,9 @@ impl Error for CatalogSyncError {
     }
 }
 
-impl From<CatalogStoreError> for CatalogSyncError {
-    fn from(error: CatalogStoreError) -> Self {
-        Self::Store(error)
+impl From<std::io::Error> for CatalogSyncError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Workspace(error)
     }
 }
 
@@ -104,22 +102,17 @@ impl From<TextageAcquisitionError> for CatalogSyncError {
 
 impl CatalogSync {
     #[must_use]
-    pub fn new(store_root: impl Into<PathBuf>, cache_root: impl Into<PathBuf>) -> Self {
+    pub fn new(work_directory: impl Into<PathBuf>, cache_root: impl Into<PathBuf>) -> Self {
         Self {
-            store: CatalogStore::new(store_root),
+            work_directory: work_directory.into(),
             cache_root: cache_root.into(),
         }
     }
 
-    /// Acquires, validates, caches, federates, and conditionally activates all live catalog inputs.
-    ///
-    /// The per-host writer lock is acquired before network access and remains held through
-    /// activation. Snapshot-wide health regressions leave the active catalog unchanged.
+    /// Acquires, validates, caches, and federates all live catalog inputs.
     ///
     /// # Errors
-    ///
-    /// Returns an error when locking, acquisition, validation, private cache persistence, or
-    /// catalog activation fails.
+    /// Returns an error when locking, acquisition, or cache persistence fails.
     pub fn sync(&self) -> Result<CatalogSyncResult, CatalogSyncError> {
         self.sync_with(
             &UreqTachiTransport::new(),
@@ -134,12 +127,11 @@ impl CatalogSync {
         textage_transport: &impl TextageTransport,
         dqn_transport: &impl DqnTransport,
     ) -> Result<CatalogSyncResult, CatalogSyncError> {
-        let update = self.store.begin_update()?;
+        let _lock = WorkspaceLock::acquire(&self.work_directory)?;
         let tachi = acquire_tachi(tachi_transport, &self.cache_root)?;
         let textage = acquire_textage(textage_transport, &self.cache_root)?;
         let dqn = acquire_dqn(dqn_transport, &self.cache_root)?;
-        // Every candidate is rebuilt from the three current snapshots. The active catalog is an
-        // availability fallback only; it is never an input to identity, deletion, or evidence.
+        // Every candidate is rebuilt from the three current snapshots.
         let output = Catalog::default().federate(FederationInput {
             tachi: Some(tachi.snapshot),
             textage: Some(textage.snapshot),
@@ -153,15 +145,10 @@ impl CatalogSync {
                     | QuarantineReason::ConflictingChart
             )
         });
-        let active_catalog_digest = if blocked {
-            update.base_digest().map(str::to_owned)
-        } else {
-            Some(update.publish(&output.catalog)?.digest)
-        };
+        let catalog = (!blocked).then_some(output.catalog);
 
         Ok(CatalogSyncResult {
-            activated: !blocked,
-            active_catalog_digest,
+            catalog,
             sources: BTreeMap::from([
                 (
                     SourceId::Tachi,
@@ -201,8 +188,7 @@ impl CatalogSyncResult {
             *quarantine_counts.entry(entry.reason).or_default() += 1;
         }
         CatalogSyncSummary {
-            activated: self.activated,
-            active_catalog_digest: self.active_catalog_digest,
+            candidate_accepted: self.catalog.is_some(),
             sources: self.sources,
             quarantine_counts,
         }
@@ -211,7 +197,6 @@ impl CatalogSyncResult {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::fs::OpenOptions;
     use std::path::Path;
 
@@ -316,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn healthy_dqn_response_is_cached_federated_and_activated() {
+    fn healthy_dqn_response_is_cached_and_federated() {
         let roots = Roots::new();
         let bytes = dqn_bytes("ALPHA", "ARTIST A");
         let result = roots
@@ -338,7 +323,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(result.activated);
+        assert!(result.catalog.is_some());
         assert_eq!(result.sources[&SourceId::DqnIidxapi].record_count, 1);
         assert!(result.quarantine.is_empty());
         let dqn_digest = &result.sources[&SourceId::DqnIidxapi].content_sha256;
@@ -357,11 +342,7 @@ mod tests {
         ] {
             assert!(tachi_cache.join(filename).is_file());
         }
-        let active = CatalogStore::new(&roots.store)
-            .load_active()
-            .unwrap()
-            .unwrap();
-        assert_eq!(Some(active.digest), result.active_catalog_digest);
+        assert!(!roots.store.join("catalog-store").exists());
         let textage = &result.sources[&SourceId::Textage];
         let textage_cache = roots.cache.join("textage").join(&textage.content_sha256);
         assert!(textage_cache.is_dir());
@@ -388,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_status_and_declared_or_actual_size_fail_before_activation() {
+    fn transport_status_and_declared_or_actual_size_reject_candidates() {
         let roots = Roots::new();
         let bytes = dqn_bytes("ALPHA", "ARTIST A");
         let status = sync_with_dqn(
@@ -418,86 +399,26 @@ mod tests {
         )
         .unwrap_err();
         assert!(actual.to_string().contains("maximum"));
-        assert!(
-            CatalogStore::new(&roots.store)
-                .load_active()
-                .unwrap()
-                .is_none()
-        );
+        assert!(!roots.store.join("catalog-store").exists());
     }
 
     #[test]
-    fn timeout_and_cache_write_failure_leave_active_catalog_unchanged() {
-        let roots = Roots::new();
-        let initial = dqn_bytes("ALPHA", "ARTIST A");
-        let before = sync_with_dqn(&roots, &response(200, Some(initial.len() as u64), initial))
-            .unwrap()
-            .active_catalog_digest
-            .unwrap();
-        let timeout =
-            sync_with_dqn(&roots, &FakeTransport(Err(DqnAcquisitionError::Timeout))).unwrap_err();
-        assert!(timeout.to_string().contains("timed out"));
-
-        let dqn_cache = roots.cache.join("dqn");
-        fs::remove_dir_all(&dqn_cache).unwrap();
-        fs::write(&dqn_cache, b"not a directory").unwrap();
-        let bytes = dqn_bytes("ALPHA", "ARTIST A");
-        let cache_error =
-            sync_with_dqn(&roots, &response(200, Some(bytes.len() as u64), bytes)).unwrap_err();
-        assert!(cache_error.to_string().contains("cache write failed"));
-        let after = CatalogStore::new(&roots.store)
-            .load_active()
-            .unwrap()
-            .unwrap()
-            .digest;
-        assert_eq!(before, after);
-    }
-
-    #[test]
-    fn every_snapshot_is_zero_built_and_current_removals_activate() {
+    fn every_snapshot_is_zero_built_and_current_removals_change_candidate() {
         let roots = Roots::new();
         let alpha = dqn_bytes("ALPHA", "ARTIST A");
-        let accepted =
-            sync_with_dqn(&roots, &response(200, Some(alpha.len() as u64), alpha)).unwrap();
-        let accepted_digest = accepted.active_catalog_digest.unwrap();
-
+        let first = sync_with_dqn(&roots, &response(200, Some(alpha.len() as u64), alpha))
+            .unwrap()
+            .catalog
+            .unwrap()
+            .semantic_digest();
         let beta = dqn_bytes("BETA", "ARTIST B");
-        let replacement =
-            sync_with_dqn(&roots, &response(200, Some(beta.len() as u64), beta)).unwrap();
-        assert!(replacement.activated);
-        assert_ne!(
-            replacement.active_catalog_digest.as_deref(),
-            Some(accepted_digest.as_str())
-        );
-        assert!(
-            replacement
-                .quarantine
-                .iter()
-                .all(|entry| { entry.reason == QuarantineReason::ProvisionalWithoutTachiAnchor })
-        );
-
-        let two_records = serde_json::to_vec(&json!([
-            { "title": "ALPHA", "artist": "ARTIST A", "packName": null },
-            { "title": "MISSING", "artist": "ARTIST M", "packName": null }
-        ]))
-        .unwrap();
-        let larger = sync_with_dqn(
-            &roots,
-            &response(200, Some(two_records.len() as u64), two_records),
-        )
-        .unwrap();
-        assert!(larger.activated);
-        let larger_digest = larger.active_catalog_digest.unwrap();
-
-        let alpha = dqn_bytes("ALPHA", "ARTIST A");
-        let reduced =
-            sync_with_dqn(&roots, &response(200, Some(alpha.len() as u64), alpha)).unwrap();
-        assert!(reduced.activated);
-        assert_ne!(
-            reduced.active_catalog_digest.as_deref(),
-            Some(larger_digest.as_str())
-        );
-        assert!(reduced.quarantine.is_empty());
+        let second = sync_with_dqn(&roots, &response(200, Some(beta.len() as u64), beta))
+            .unwrap()
+            .catalog
+            .unwrap()
+            .semantic_digest();
+        assert_ne!(first, second);
+        assert!(!roots.store.join("catalog-store").exists());
     }
 
     struct Roots {

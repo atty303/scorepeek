@@ -5,7 +5,8 @@ use scorepeek_core::catalog::{
     Catalog, CatalogSong, Completeness, Difficulty, DisplayVariantKind, EvidenceId,
     InfinitasStatus, LineageId, PlayType, RevisionStrategy, SourceId,
 };
-use scorepeek_resources::CatalogStoreError;
+use std::error::Error;
+use std::fmt;
 use std::path::Path;
 
 const SNAPSHOT_SCHEMA: &str = "scorepeek-catalog-snapshot-v1";
@@ -139,13 +140,34 @@ fn create_song_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     )
 }
 
+#[derive(Debug)]
+pub enum SnapshotError {
+    Invalid(String),
+    Sqlite(rusqlite::Error),
+}
+
+impl fmt::Display for SnapshotError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid(detail) => write!(formatter, "invalid catalog snapshot: {detail}"),
+            Self::Sqlite(error) => write!(formatter, "catalog SQLite operation failed: {error}"),
+        }
+    }
+}
+
+impl Error for SnapshotError {}
+
+impl From<rusqlite::Error> for SnapshotError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
+    }
+}
+
 /// Writes one complete publisher snapshot using the versioned catalog schema.
 /// # Errors
 /// Returns domain validation, `SQLite`, or I/O errors.
-pub fn write_snapshot(path: &Path, catalog: &Catalog) -> Result<(), CatalogStoreError> {
-    catalog
-        .validate()
-        .map_err(CatalogStoreError::InvalidSnapshot)?;
+pub fn write_snapshot(path: &Path, catalog: &Catalog) -> Result<(), SnapshotError> {
+    catalog.validate().map_err(SnapshotError::Invalid)?;
     let mut connection = Connection::open(path)?;
     create_snapshot_schema(&connection)?;
     let transaction = connection.transaction()?;

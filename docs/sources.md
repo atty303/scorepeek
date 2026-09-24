@@ -98,10 +98,13 @@ zero-built candidate without inferring a rename.
 ## Generation and distribution
 
 The daily and manual publisher workflow resolves all three current snapshots,
-strictly parses them, federates from `Catalog::default()`, writes SQLite, and
-runs the production loader plus complete catalog invariants in a fresh
-directory. A failure in acquisition, parsing, source policy, or whole-catalog
-validation prevents deployment. Individual
+strictly parses them, federates from `Catalog::default()`, writes one
+SQLite candidate and the requested ZIP, then reads that ZIP through the
+`scorepeek-resources` client extraction path and complete catalog loader in a
+fresh directory. The publisher workspace retains source caches and serializes
+source acquisition; it does not retain or activate catalog generations. A
+failure in acquisition, parsing, source policy, or whole-catalog validation
+prevents deployment. Individual
 `provisional_without_tachi_anchor`, `ambiguous_identity`, and
 `conflicting_chart` records may be excluded; every other quarantine reason
 blocks publication. Counts and source lineage are written to the Actions run
@@ -116,8 +119,9 @@ hashes, provenance, and evidence remain in SQLite. The workflow URL is a
 best-effort human reference, not permanent proof.
 
 Every candidate is generated and completely validated even when it is a
-publication no-op. The existing ZIP bytes are retained when runtime semantics,
-`artifact_revision`, and notices are all unchanged. Source-only lineage,
+publication no-op. GitHub Actions protects the existing publication and
+retains its ZIP bytes when runtime semantics, `artifact_revision`, and notices
+are all unchanged. Source-only lineage,
 quarantine detail, timestamps, storage layout, and other non-runtime metadata
 do not affect the semantic digest. A schema's artifact revision is incremented
 when logically invisible SQLite storage changes must be distributed.

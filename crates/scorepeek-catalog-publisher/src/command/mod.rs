@@ -1,7 +1,4 @@
-#[cfg(test)]
-use std::ffi::OsString;
 pub mod build;
-pub mod select;
 pub mod verify;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -19,7 +16,6 @@ pub fn run(arguments: impl IntoIterator<Item = impl Into<std::ffi::OsString> + C
     };
     let result = match cli.command {
         Command::Build(options) => build::run(options),
-        Command::Select(options) => select::run(&options),
         Command::Verify(options) => verify::run(&options),
     };
     match result {
@@ -41,7 +37,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Build(build::BuildOptions),
-    Select(select::SelectOptions),
     Verify(verify::VerifyOptions),
 }
 
@@ -55,28 +50,6 @@ pub(crate) fn absolute_path(value: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn publisher_commands_accept_order_independent_named_options() {
-        let args = [
-            "scorepeek-catalog-publisher",
-            "select",
-            "--candidate",
-            "/tmp/candidate.zip",
-            "--current",
-            "/tmp/current.zip",
-            "--output",
-            "/tmp/output.zip",
-            "--work-directory",
-            "/tmp/work",
-        ]
-        .map(OsString::from);
-        assert!(Cli::try_parse_from(args.clone()).is_ok());
-        let mut swapped = args;
-        swapped.swap(2, 4);
-        assert!(Cli::try_parse_from(swapped).is_ok());
-    }
 
     #[test]
     fn distribution_notices_retain_each_source_policy() {
