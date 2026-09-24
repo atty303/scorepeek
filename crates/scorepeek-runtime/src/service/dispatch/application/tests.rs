@@ -324,33 +324,18 @@ fn run_diagnostics_start_before_config_loading_and_keep_the_failure_stage() {
 }
 
 #[test]
-fn config_json_rejects_non_utf8_paths_without_panicking() {
+fn config_result_preserves_non_utf8_paths() {
     use std::os::unix::ffi::OsStringExt as _;
 
     let path = PathBuf::from(OsString::from_vec(b"/tmp/scorepeek-\xff".to_vec()));
-    let error = run_config_command(
-        super::ConfigCommand::Path(super::FormatArgs {
-            format: super::OutputFormat::Json,
-        }),
-        &path,
-    )
-    .unwrap_err();
-    assert_eq!(error, "config path must be UTF-8 for JSON output");
-
-    let result = run_config_command(
-        super::ConfigCommand::Path(super::FormatArgs {
-            format: super::OutputFormat::Human,
-        }),
-        &path,
-    )
-    .expect("human output must preserve displayable non-UTF-8 paths");
-    assert!(matches!(
-        result,
-        scorepeek_frontend_api::CommandResult::Config {
-            format: scorepeek_frontend_api::OutputFormat::Human,
-            result: scorepeek_frontend_api::ConfigResult::Path { .. }
-        }
-    ));
+    let result = run_config_command(&super::ConfigCommand::Path, &path).unwrap();
+    let scorepeek_frontend_api::CommandResult::Config {
+        result: scorepeek_frontend_api::ConfigResult::Path { path: actual },
+    } = result
+    else {
+        panic!("expected config path result")
+    };
+    assert_eq!(actual, path.into_os_string());
 }
 
 #[test]

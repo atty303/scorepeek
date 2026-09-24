@@ -39,9 +39,11 @@ The installed `scorepeek` executable is provided by the binary-only `scorepeek-c
 classifies CLI requests into the transport-neutral `scorepeek-frontend-api` protocol and dispatches
 them to the in-process Linux `scorepeek-runtime` service. Portable catalog, recognition, temporal,
 and event authority lives in `scorepeek-core`; SQLite score persistence and queries live in
-`scorepeek-scores`. The CLI owns terminal lifecycle and Ratatui
-rendering; the runtime publishes typed frontend snapshots, inspection events, and warnings and
+`scorepeek-scores`. The CLI owns terminal lifecycle, human and JSON command-result output, and Ratatui
+rendering; the runtime publishes typed frontend snapshots, command results, inspection events, and warnings and
 does not depend on a TUI toolkit.
+Config and installed-skin result paths cross the frontend protocol as native OS strings. The CLI
+displays them for human output and requires UTF-8 only when rendering JSON.
 The frontend protocol also delivers validated diagnostic inspection headers and records one at a
 time. CLI formats human inspection output and operational warnings. The runtime owns diagnostic
 run selection, validation, JSON and NDJSON serialization, health, and warning facts; frontend

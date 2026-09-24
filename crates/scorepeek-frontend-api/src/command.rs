@@ -47,9 +47,9 @@ pub struct RunCommand {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ConfigAction {
-    Path { format: OutputFormat },
-    Show { format: OutputFormat },
-    Check { format: OutputFormat },
+    Path,
+    Show,
+    Check,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -69,7 +69,7 @@ pub enum DiagnosticAction {
 pub enum SkinAction {
     Install { package: String },
     Uninstall { id: String },
-    List { format: OutputFormat },
+    List,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,7 +89,6 @@ pub enum FrontendCommand {
     },
     Doctor {
         request_id: RequestId,
-        format: OutputFormat,
     },
     Config {
         request_id: RequestId,

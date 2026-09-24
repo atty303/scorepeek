@@ -4240,6 +4240,7 @@ dependencies = [
  "scorepeek-overlay",
  "scorepeek-overlay-runtime",
  "scorepeek-runtime",
+ "serde",
  "serde_json",
  "tempfile",
  "zip",

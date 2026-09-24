@@ -16,11 +16,12 @@ clap_complete_nushell.workspace = true
 ratatui.workspace = true
 scorepeek-frontend-api = { path = "../scorepeek-frontend-api" }
 scorepeek-runtime = { path = "../scorepeek-runtime" }
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 scorepeek-overlay = { path = "../scorepeek-overlay" }
 scorepeek-overlay-runtime = { path = "../scorepeek-overlay-runtime" }
-serde_json.workspace = true
 tempfile.workspace = true
 zip.workspace = true
 

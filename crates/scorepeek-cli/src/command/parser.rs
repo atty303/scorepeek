@@ -53,7 +53,7 @@ enum Command {
 }
 
 pub enum Action {
-    Dispatch(api::FrontendCommand),
+    Dispatch(api::FrontendCommand, OutputFormat),
     Complete(CompletionShell),
     Help,
 }
@@ -63,6 +63,18 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Action, clap::Error> {
         return Ok(Action::Help);
     }
     let cli = Cli::try_parse_from(arguments)?;
+    let format = match &cli.command {
+        Command::Doctor(args)
+        | Command::Skin {
+            command: SkinCommand::List(args),
+        } => args.format,
+        Command::Config { command } => match command {
+            ConfigCommand::Path(args) | ConfigCommand::Show(args) | ConfigCommand::Check(args) => {
+                args.format
+            }
+        },
+        _ => OutputFormat::Human,
+    };
     let request_id = api::RequestId(format!("cli-{}", std::process::id()));
     let config = cli
         .config
@@ -107,14 +119,11 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Action, clap::Error> {
                     .map_err(value_error)?,
             },
         },
-        Command::Doctor(args) => api::FrontendCommand::Doctor {
-            request_id,
-            format: output_format(args.format),
-        },
+        Command::Doctor(_) => api::FrontendCommand::Doctor { request_id },
         Command::Config { command } => api::FrontendCommand::Config {
             request_id,
             config,
-            action: config_action(command),
+            action: config_action(&command),
         },
         Command::Diagnostic { command } => api::FrontendCommand::Diagnostic {
             request_id,
@@ -133,7 +142,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Action, clap::Error> {
         },
         Command::Completion { shell } => return Ok(Action::Complete(shell)),
     };
-    Ok(Action::Dispatch(command))
+    Ok(Action::Dispatch(command, format))
 }
 
 fn path_string(path: PathBuf) -> Result<String, &'static str> {
@@ -153,17 +162,11 @@ const fn output_format(value: OutputFormat) -> api::OutputFormat {
     }
 }
 
-fn config_action(value: ConfigCommand) -> api::ConfigAction {
+fn config_action(value: &ConfigCommand) -> api::ConfigAction {
     match value {
-        ConfigCommand::Path(value) => api::ConfigAction::Path {
-            format: output_format(value.format),
-        },
-        ConfigCommand::Show(value) => api::ConfigAction::Show {
-            format: output_format(value.format),
-        },
-        ConfigCommand::Check(value) => api::ConfigAction::Check {
-            format: output_format(value.format),
-        },
+        ConfigCommand::Path(_) => api::ConfigAction::Path,
+        ConfigCommand::Show(_) => api::ConfigAction::Show,
+        ConfigCommand::Check(_) => api::ConfigAction::Check,
     }
 }
 
@@ -188,9 +191,7 @@ fn skin_action(value: SkinCommand) -> Result<api::SkinAction, &'static str> {
             package: path_string(package)?,
         },
         SkinCommand::Uninstall { id } => api::SkinAction::Uninstall { id },
-        SkinCommand::List(value) => api::SkinAction::List {
-            format: output_format(value.format),
-        },
+        SkinCommand::List(_) => api::SkinAction::List,
     })
 }
 

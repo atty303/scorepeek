@@ -52,9 +52,7 @@ pub(super) fn collect_doctor_report() -> Result<serde_json::Value, String> {
     }))
 }
 
-pub(super) fn collect_frontend_doctor(
-    format: OutputFormat,
-) -> Result<scorepeek_frontend_api::CommandResult, String> {
+pub(super) fn collect_frontend_doctor() -> Result<scorepeek_frontend_api::CommandResult, String> {
     let report = collect_doctor_report()?;
     let field = |name: &str| {
         report
@@ -63,7 +61,6 @@ pub(super) fn collect_frontend_doctor(
             .ok_or_else(|| format!("doctor report is missing {name}"))
     };
     Ok(scorepeek_frontend_api::CommandResult::Doctor {
-        format: frontend_api_output_format(format),
         report: scorepeek_frontend_api::DoctorReport {
             schema: report["schema"].as_str().unwrap_or_default().to_owned(),
             target_inventory: field("target_inventory")?,

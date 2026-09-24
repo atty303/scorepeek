@@ -123,7 +123,7 @@ enum PublicCommand {
     /// Run live capture, recognition, score persistence, and overlays.
     Run(RunArgs),
     /// Inspect installation and runtime prerequisites.
-    Doctor(FormatArgs),
+    Doctor,
     /// Inspect or validate the optional configuration file.
     Config { command: ConfigCommand },
     /// Observe or inspect the out-of-band diagnostic stream.
@@ -148,11 +148,11 @@ struct FormatArgs {
 
 enum ConfigCommand {
     /// Print the resolved optional config-file path.
-    Path(FormatArgs),
+    Path,
     /// Show only the content written in the config file, without merging environment or CLI values.
-    Show(FormatArgs),
+    Show,
     /// Validate only the content written in the config file.
-    Check(FormatArgs),
+    Check,
 }
 
 enum DiagnosticCommand {
@@ -171,7 +171,7 @@ struct DiagnosticInspectArgs {
 enum SkinCommand {
     Install { package: PathBuf },
     Uninstall { id: String },
-    List(FormatArgs),
+    List,
 }
 
 #[derive(Clone, Copy)]
@@ -208,10 +208,10 @@ fn dispatch_public(
     let PublicCli { config, command } = cli;
     match command {
         PublicCommand::Run(args) => run_public(args, config).map(|()| None),
-        PublicCommand::Doctor(format) => collect_frontend_doctor(format.format).map(Some),
+        PublicCommand::Doctor => collect_frontend_doctor().map(Some),
         PublicCommand::Config { command } => {
             let config_path = config_paths::resolve(config)?;
-            run_config_command(command, &config_path).map(Some)
+            run_config_command(&command, &config_path).map(Some)
         }
         PublicCommand::Diagnostic { command } => run_diagnostic_command(command).map(|()| None),
         PublicCommand::Skin { command } => run_skin_command(command).map(Some),
@@ -259,25 +259,17 @@ pub(crate) fn dispatch_frontend(
                 overlay_config: command.overlay_config.map(PathBuf::from),
             }),
         },
-        api::FrontendCommand::Doctor { format, .. } => PublicCli {
+        api::FrontendCommand::Doctor { .. } => PublicCli {
             config: None,
-            command: PublicCommand::Doctor(FormatArgs {
-                format: frontend_output_format(format),
-            }),
+            command: PublicCommand::Doctor,
         },
         api::FrontendCommand::Config { config, action, .. } => PublicCli {
             config: config.map(PathBuf::from),
             command: PublicCommand::Config {
                 command: match action {
-                    api::ConfigAction::Path { format } => ConfigCommand::Path(FormatArgs {
-                        format: frontend_output_format(format),
-                    }),
-                    api::ConfigAction::Show { format } => ConfigCommand::Show(FormatArgs {
-                        format: frontend_output_format(format),
-                    }),
-                    api::ConfigAction::Check { format } => ConfigCommand::Check(FormatArgs {
-                        format: frontend_output_format(format),
-                    }),
+                    api::ConfigAction::Path => ConfigCommand::Path,
+                    api::ConfigAction::Show => ConfigCommand::Show,
+                    api::ConfigAction::Check => ConfigCommand::Check,
                 },
             },
         },
@@ -309,9 +301,7 @@ pub(crate) fn dispatch_frontend(
                         package: PathBuf::from(package),
                     },
                     api::SkinAction::Uninstall { id } => SkinCommand::Uninstall { id },
-                    api::SkinAction::List { format } => SkinCommand::List(FormatArgs {
-                        format: frontend_output_format(format),
-                    }),
+                    api::SkinAction::List => SkinCommand::List,
                 },
             },
         },
@@ -436,64 +426,31 @@ fn load_run_options(
 }
 
 fn run_config_command(
-    command: ConfigCommand,
+    command: &ConfigCommand,
     path: &Path,
 ) -> Result<scorepeek_frontend_api::CommandResult, String> {
-    let (format, result) = match command {
-        ConfigCommand::Path(format) => {
-            let rendered_path = frontend_path(path, format.format)?;
-            (
-                frontend_api_output_format(format.format),
-                scorepeek_frontend_api::ConfigResult::Path {
-                    path: rendered_path,
-                },
-            )
-        }
-        ConfigCommand::Show(format) => {
+    let result = match command {
+        ConfigCommand::Path => scorepeek_frontend_api::ConfigResult::Path {
+            path: path.as_os_str().to_owned(),
+        },
+        ConfigCommand::Show => {
             let content = config_document::read_text(path)?;
-            let rendered_path = frontend_path(path, format.format)?;
-            (
-                frontend_api_output_format(format.format),
-                scorepeek_frontend_api::ConfigResult::Show {
-                    path: rendered_path,
-                    present: content.is_some(),
-                    content,
-                },
-            )
+            scorepeek_frontend_api::ConfigResult::Show {
+                path: path.as_os_str().to_owned(),
+                present: content.is_some(),
+                content,
+            }
         }
-        ConfigCommand::Check(format) => {
+        ConfigCommand::Check => {
             let present = config_document::read(path)?.is_some();
-            let rendered_path = frontend_path(path, format.format)?;
-            (
-                frontend_api_output_format(format.format),
-                scorepeek_frontend_api::ConfigResult::Check {
-                    path: rendered_path,
-                    present,
-                    valid: true,
-                },
-            )
+            scorepeek_frontend_api::ConfigResult::Check {
+                path: path.as_os_str().to_owned(),
+                present,
+                valid: true,
+            }
         }
     };
-    Ok(scorepeek_frontend_api::CommandResult::Config { format, result })
-}
-
-fn frontend_path(path: &Path, format: OutputFormat) -> Result<String, String> {
-    match format {
-        OutputFormat::Human => Ok(path.display().to_string()),
-        OutputFormat::Json => config_path_for_json(path).map(ToOwned::to_owned),
-    }
-}
-
-const fn frontend_api_output_format(format: OutputFormat) -> scorepeek_frontend_api::OutputFormat {
-    match format {
-        OutputFormat::Human => scorepeek_frontend_api::OutputFormat::Human,
-        OutputFormat::Json => scorepeek_frontend_api::OutputFormat::Json,
-    }
-}
-
-fn config_path_for_json(path: &Path) -> Result<&str, String> {
-    path.to_str()
-        .ok_or_else(|| "config path must be UTF-8 for JSON output".to_owned())
+    Ok(scorepeek_frontend_api::CommandResult::Config { result })
 }
 
 fn run_diagnostic_command(command: DiagnosticCommand) -> Result<(), String> {
@@ -515,7 +472,7 @@ fn run_diagnostic_command(command: DiagnosticCommand) -> Result<(), String> {
 
 fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::CommandResult, String> {
     let store = scorepeek_overlay_runtime::skin::StoreRoot::discover();
-    let (format, result) = match command {
+    let result = match command {
         SkinCommand::Install { package } => {
             let outcome = store.install(&package)?;
             let outcome = match outcome {
@@ -529,50 +486,27 @@ fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::Comm
                     scorepeek_frontend_api::SkinInstallResult::Unchanged
                 }
             };
-            (
-                scorepeek_frontend_api::OutputFormat::Human,
-                scorepeek_frontend_api::SkinResult::Installed { outcome },
-            )
+            scorepeek_frontend_api::SkinResult::Installed { outcome }
         }
         SkinCommand::Uninstall { id } => {
             store.uninstall(&id)?;
-            (
-                scorepeek_frontend_api::OutputFormat::Human,
-                scorepeek_frontend_api::SkinResult::Uninstalled,
-            )
+            scorepeek_frontend_api::SkinResult::Uninstalled
         }
-        SkinCommand::List(format) => {
+        SkinCommand::List => {
             let installed = store.list()?;
-            let output_format = format.format;
             let skins = installed
                 .into_iter()
-                .map(|skin| {
-                    let path = match output_format {
-                        OutputFormat::Human => skin.path.display().to_string(),
-                        OutputFormat::Json => skin
-                            .path
-                            .to_str()
-                            .ok_or_else(|| {
-                                "skin list serialization failed: path contains invalid UTF-8 characters"
-                                    .to_owned()
-                            })?
-                            .to_owned(),
-                    };
-                    Ok(scorepeek_frontend_api::InstalledSkin {
-                        id: skin.id,
-                        release: skin.release,
-                        name: skin.name,
-                        path,
-                    })
+                .map(|skin| scorepeek_frontend_api::InstalledSkin {
+                    id: skin.id,
+                    release: skin.release,
+                    name: skin.name,
+                    path: skin.path.into_os_string(),
                 })
-                .collect::<Result<Vec<_>, String>>()?;
-            (
-                frontend_api_output_format(output_format),
-                scorepeek_frontend_api::SkinResult::Listed { skins },
-            )
+                .collect();
+            scorepeek_frontend_api::SkinResult::Listed { skins }
         }
     };
-    Ok(scorepeek_frontend_api::CommandResult::Skin { format, result })
+    Ok(scorepeek_frontend_api::CommandResult::Skin { result })
 }
 
 fn run_vulkan_layer_command(

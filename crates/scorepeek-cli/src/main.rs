@@ -11,12 +11,12 @@ fn main() -> ExitCode {
         return exit;
     }
     match command::parse(arguments) {
-        Ok(command::Action::Dispatch(command)) => {
+        Ok(command::Action::Dispatch(command, format)) => {
             let mut renderer = output::Renderer::new();
             let reply = scorepeek_runtime::ServiceHandle::in_process()
                 .dispatch(command, |event| renderer.render_event(event));
             drop(renderer);
-            output::render_reply(reply)
+            output::render_reply(reply, format)
         }
         Ok(command::Action::Complete(shell)) => {
             command::generate_completion(shell);

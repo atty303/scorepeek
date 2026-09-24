@@ -1,7 +1,7 @@
 use clap::{Args, ValueEnum};
 
 #[derive(Clone, Copy, Default, ValueEnum)]
-pub(super) enum OutputFormat {
+pub(crate) enum OutputFormat {
     #[default]
     Human,
     Json,
