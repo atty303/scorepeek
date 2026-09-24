@@ -5,10 +5,6 @@ use std::path::Path;
 ///
 /// # Errors
 /// Returns an error when the artifact is invalid or output publication fails.
-pub fn verify(
-    artifact: &Path,
-    output: &Path,
-) -> Result<scorepeek_resources::artifact::ArtifactManifest, String> {
-    scorepeek_resources::artifact::verify_publisher(artifact, output)
-        .map_err(|error| error.to_string())
+pub fn verify(artifact: &Path, output: &Path) -> Result<crate::artifact::ArtifactManifest, String> {
+    crate::artifact::verify_publisher(artifact, output).map_err(|error| error.to_string())
 }

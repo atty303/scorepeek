@@ -133,11 +133,11 @@ fn skin_install_stdout_remains_one_result_line() {
 fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let isolated = IsolatedHome::new();
     let skin_store = scorepeek_overlay_wayland::skin::StoreRoot::new(isolated.path("skins"));
-    skin_store
-        .install(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
-        )
-        .unwrap();
+    scorepeek_overlay_wayland::skin::install(
+        &skin_store,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
+    )
+    .unwrap();
     let address = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()

@@ -1,10 +1,11 @@
 //! Catalog build command.
 
 use super::absolute_path;
+use crate::artifact::{self};
+use crate::store::CatalogStore;
 use crate::{CatalogSync, CatalogSyncSource, QuarantineReason};
 use clap::Args;
-use scorepeek_resources::CatalogStore;
-use scorepeek_resources::artifact::{self, ArtifactManifest};
+use scorepeek_resources::artifact::ArtifactManifest;
 use serde::Serialize;
 use std::path::PathBuf;
 

@@ -1,3 +1,6 @@
+use crate::federation::{
+    SourceChartObservation, SourceObservation, SourceSnapshot, TextageObservation,
+};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -16,8 +19,7 @@ use crate::source::common::{
     AdapterError, SourceRevision, snapshot_from_parts, validate_source_id, validate_text,
 };
 use scorepeek_core::catalog::{
-    Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType, SourceChartObservation,
-    SourceObservation, SourcePolicy, SourceSnapshot, TextageObservation,
+    Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType, SourcePolicy,
 };
 
 pub(crate) const MAX_TEXTAGE_FILE_BYTES: usize = 1024 * 1024;

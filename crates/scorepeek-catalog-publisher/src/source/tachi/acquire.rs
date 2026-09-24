@@ -9,9 +9,9 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::cache::atomic::create_private_directory;
+use crate::federation::SourceSnapshot;
 use crate::source::common::{AdapterError, SourceRevision};
 use crate::source::tachi::decode::{MAX_TACHI_CHART_BYTES, MAX_TACHI_SONG_BYTES, TachiLiveAdapter};
-use scorepeek_core::catalog::SourceSnapshot;
 
 const TACHI_REF_ENDPOINT: &str = "https://api.github.com/repos/zkldi/Tachi/git/ref/heads/main";
 const TACHI_RAW_ROOT: &str = "https://raw.githubusercontent.com/zkldi/Tachi";

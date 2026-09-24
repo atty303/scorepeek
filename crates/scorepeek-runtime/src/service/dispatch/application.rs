@@ -506,7 +506,7 @@ fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::Comm
     let store = scorepeek_overlay_wayland::skin::StoreRoot::discover();
     let (format, result) = match command {
         SkinCommand::Install { package } => {
-            let outcome = store.install(&package)?;
+            let outcome = scorepeek_overlay_wayland::skin::install(&store, &package)?;
             let outcome = match outcome {
                 scorepeek_overlay_wayland::skin::InstallOutcome::Installed => {
                     scorepeek_frontend_api::SkinInstallResult::Installed

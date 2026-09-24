@@ -40,6 +40,7 @@ smithay-client-toolkit = { version = "0.21.1", default-features = false, feature
 wayland-client = { version = "0.31.11", features = ["system", "dlopen"] }
 wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
 scorepeek-overlay = { path = "../scorepeek-overlay" }
+scorepeek-overlay-runtime = { path = "../scorepeek-overlay-runtime" }
 scorepeek-core = { path = "../scorepeek-core" }
 scorepeek-scores = { path = "../scorepeek-scores" }
 scorepeek-skin-sdk = { path = "../scorepeek-skin-sdk" }

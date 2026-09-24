@@ -1,0 +1,20 @@
+[package]
+name = "scorepeek-overlay-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+scorepeek-overlay = { path = "../scorepeek-overlay" }
+scorepeek-scores = { path = "../scorepeek-scores" }
+scorepeek-skin-sdk = { path = "../scorepeek-skin-sdk" }
+chrono.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

@@ -1,4 +1,8 @@
 //! Tachi response and fixture schema decoders.
+use crate::federation::{
+    SourceChartObservation, SourceObservation, SourceSnapshot, SourceTitleObservation,
+    TachiObservation,
+};
 
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer};
@@ -14,8 +18,7 @@ use crate::source::common::{
     Fixture, FixtureChart, parse_fixture, snapshot, validate_charts, validate_source_id,
 };
 use scorepeek_core::catalog::{
-    Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType, SourceChartObservation,
-    SourceObservation, SourcePolicy, SourceSnapshot, SourceTitleObservation, TachiObservation,
+    Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType, SourcePolicy,
 };
 
 pub(crate) const MAX_TACHI_SONG_BYTES: usize = 2 * 1024 * 1024;

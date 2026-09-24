@@ -140,7 +140,7 @@ impl Fixture {
                     .collect(),
             ),
             control_socket: controller.path().to_owned(),
-            feed: Feed::start(config, Arc::new(|| {})).unwrap(),
+            feed: Feed::start(config.into(), Arc::new(|| {}), Arc::new(|_, _| {})).unwrap(),
             changed,
             skins,
         });

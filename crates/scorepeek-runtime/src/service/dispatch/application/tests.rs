@@ -15,19 +15,14 @@ use scorepeek::capture::{
     CaptureDiagnosticStatus,
 };
 use scorepeek_core::catalog::Catalog;
-use scorepeek_core::catalog::FederationInput;
-use scorepeek_core::catalog::{
-    Chart, ChartKey, Difficulty, DisplayVariantKind, LineageId, PlayType, RevisionStrategy,
-    SourceChartObservation, SourceEvidence, SourceId, SourceObservation, SourcePolicy,
-    SourceSnapshot, SourceTitleObservation, TachiObservation,
-};
+use scorepeek_core::catalog::test_support::{SyntheticTachiRecord, catalog_from_tachi};
+use scorepeek_core::catalog::{Chart, ChartKey, Difficulty, DisplayVariantKind, PlayType};
 use scorepeek_core::event::{RunEvent, RunEventKind};
 use scorepeek_core::model::session::RegisteredScreenFieldObservation;
 use scorepeek_core::recognition::screen as recognition;
 use scorepeek_core::recognition::screen::{ResultScreenFieldObservations, ScreenFieldObservations};
 use scorepeek_core::recognition::shared::CatalogCandidateDomain;
 use scorepeek_core::recognition::title::DynamicTextObservation;
-use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1129,65 +1124,41 @@ fn project_fields_with_catalog(
     projected.complete(None, timing)
 }
 
-fn catalog_from_records(records: &[SourceObservation]) -> Catalog {
-    let policy = SourcePolicy::tachi();
-    let mut field_authority = policy
-        .field_authority
-        .iter()
-        .map(|value| (*value).to_owned())
-        .collect::<Vec<_>>();
-    field_authority.sort();
-    let snapshot = SourceSnapshot {
-        policy: policy.clone(),
-        evidence: SourceEvidence {
-            source_id: SourceId::Tachi,
-            lineage_id: LineageId::GameMdb,
-            revision_strategy: RevisionStrategy::GitCommit,
-            revision: "0123456789abcdef0123456789abcdef01234567".to_owned(),
-            content_sha256: "a".repeat(64),
-            byte_size: records.len(),
-            record_count: records.len(),
-            parser_version: policy.parser_version.to_owned(),
-            declared_scope: policy.declared_scope.to_owned(),
-            completeness: policy.completeness,
-            field_authority,
-            freshness: policy.freshness.to_owned(),
-            rights_and_provenance: policy.rights_and_provenance.to_owned(),
-        },
-        observations: records.to_vec(),
-    };
-    Catalog::default()
-        .federate(FederationInput {
-            tachi: Some(snapshot),
-            ..FederationInput::default()
-        })
-        .catalog
+struct TestTachiRecord {
+    id: String,
+    title: String,
+    artist: String,
 }
 
-fn tachi_record(id: &str, title: &str, artist: &str) -> SourceObservation {
-    SourceObservation::Tachi(TachiObservation {
-        source_song_id: id.to_owned(),
-        title_variants: BTreeSet::from([SourceTitleObservation {
-            value: title.to_owned(),
-            kind: DisplayVariantKind::InGameDisplay,
-        }]),
-        artist: artist.to_owned(),
-        version: "SYNTHETIC".to_owned(),
-        charts: vec![SourceChartObservation {
-            chart: Chart {
+fn catalog_from_records(records: &[TestTachiRecord]) -> Catalog {
+    let synthetic = records
+        .iter()
+        .map(|record| SyntheticTachiRecord {
+            id: &record.id,
+            title: &record.title,
+            title_kind: DisplayVariantKind::InGameDisplay,
+            artist: &record.artist,
+            version: "SYNTHETIC",
+            charts: vec![Chart {
                 key: ChartKey {
                     play_type: PlayType::Single,
                     difficulty: Difficulty::Normal,
                 },
                 level: 1,
                 notes: 1,
-            },
-            source_chart_id: "spn".to_owned(),
-            product_versions: BTreeSet::from(["synthetic-v1".to_owned()]),
-            primary: true,
-        }],
-        primary_infinitas: true,
-    })
+            }],
+            primary_infinitas: true,
+        })
+        .collect::<Vec<_>>();
+    catalog_from_tachi(&synthetic)
+}
+
+fn tachi_record(id: &str, title: &str, artist: &str) -> TestTachiRecord {
+    TestTachiRecord {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        artist: artist.to_owned(),
+    }
 }
 
 fn text(value: &str) -> DynamicTextObservation {

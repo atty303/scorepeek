@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::cache::atomic::create_private_directory;
+use crate::federation::SourceSnapshot;
 use crate::source::common::{AdapterError, SourceRevision};
 use crate::source::textage::decode::{
     MAX_TEXTAGE_FILE_BYTES, TextageLiveAdapter, textage_bundle_digest,
 };
-use scorepeek_core::catalog::SourceSnapshot;
 
 const TEXTAGE_ROOT: &str = "https://textage.cc/score";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);

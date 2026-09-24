@@ -1,3 +1,4 @@
+use crate::federation::CatalogFederationExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;

@@ -1,4 +1,5 @@
 //! DQN response schema decoder.
+use crate::federation::{DqnObservation, SourceObservation, SourceSnapshot};
 
 use std::collections::BTreeSet;
 
@@ -8,7 +9,7 @@ use crate::source::common::{
     AdapterError, SourceRevision, snapshot, validate_record_count, validate_source_size,
     validate_text,
 };
-use scorepeek_core::catalog::{DqnObservation, SourceObservation, SourcePolicy, SourceSnapshot};
+use scorepeek_core::catalog::SourcePolicy;
 
 pub struct DqnLiveAdapter;
 

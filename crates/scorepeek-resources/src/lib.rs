@@ -7,4 +7,5 @@ pub mod recognition;
 mod store;
 
 pub use activation::{ActiveCatalog, CatalogOrigin, CatalogUpdate};
+pub use store::validate_publisher_snapshot;
 pub use store::{CatalogStore, CatalogStoreError};

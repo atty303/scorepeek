@@ -4216,13 +4216,16 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "encoding_rs",
+ "rusqlite",
  "scorepeek-core",
  "scorepeek-resources",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "unicode-normalization",
  "ureq",
+ "zip",
 ]
 
 [[package]]
@@ -4288,6 +4291,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "scorepeek-overlay-runtime"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "image",
+ "scorepeek-overlay",
+ "scorepeek-scores",
+ "scorepeek-skin-sdk",
+ "serde",
+ "serde_json",
+ "toml",
+ "zip",
+]
+
+[[package]]
 name = "scorepeek-overlay-wayland"
 version = "0.1.0"
 dependencies = [
@@ -4305,6 +4323,7 @@ dependencies = [
  "peniko",
  "scorepeek-core",
  "scorepeek-overlay",
+ "scorepeek-overlay-runtime",
  "scorepeek-overlay-wayland-handles",
  "scorepeek-scores",
  "scorepeek-skin-sdk",
@@ -4352,6 +4371,7 @@ dependencies = [
  "rust-embed",
  "scorepeek-core",
  "scorepeek-overlay",
+ "scorepeek-overlay-runtime",
  "scorepeek-scores",
  "scorepeek-skin-sdk",
  "serde",
@@ -4359,7 +4379,6 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "toml",
- "wasmtime",
  "zip",
 ]
 

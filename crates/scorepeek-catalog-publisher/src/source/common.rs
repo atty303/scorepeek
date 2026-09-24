@@ -1,4 +1,7 @@
 //! Shared source revision, validation, and snapshot assembly contracts.
+#[cfg(test)]
+use crate::federation::SourceChartObservation;
+use crate::federation::{SourceObservation, SourceSnapshot};
 
 #[cfg(test)]
 use std::collections::BTreeSet;
@@ -12,10 +15,9 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
-use scorepeek_core::catalog::{Chart, Difficulty, PlayType, SourceChartObservation};
+use scorepeek_core::catalog::{Chart, Difficulty, PlayType};
 use scorepeek_core::catalog::{
-    ChartKey, LineageId, RevisionStrategy, SourceEvidence, SourceId, SourceObservation,
-    SourcePolicy, SourceSnapshot,
+    ChartKey, LineageId, RevisionStrategy, SourceEvidence, SourceId, SourcePolicy,
 };
 
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;

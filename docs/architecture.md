@@ -56,7 +56,11 @@ reproducible offline OCR preparation, training, and export tooling.
 
 Catalog generation is not part of the distributed CLI. The separate
 `scorepeek-catalog-publisher` workspace crate owns live-source acquisition,
-zero-build federation, package creation, and publisher validation. GitHub
+source observation types and federation, SQLite snapshot writing and publication,
+ZIP creation, publisher validation, and no-op selection. `scorepeek-core` owns
+completed catalog types and validation, including the versioned `SourcePolicy`;
+`scorepeek-resources` owns client ZIP verification, verified snapshot installation,
+and catalog reading. GitHub
 Actions publishes the selected three-file ZIP through the single Pages
 workflow.
 
@@ -195,6 +199,11 @@ Wayland and OBS are independent consumers of the same public event and SQLite
 state. They share the Dioxus editor model, semantic presentation, installable
 skin ABI, and canvas/widget document. Backend adapters own only transport,
 surface lifecycle, input normalization, and rendering differences.
+The portable `scorepeek-overlay` crate also serves the browser Wasm client.
+`scorepeek-overlay-runtime` owns the shared native Event API feed and reconnection,
+SQLite history projection, configuration storage, skin package storage, and ZIP
+structure checks. The Wayland adapter owns native Wasmtime execution and
+installation smoke validation; the browser client executes skins in a Web Worker.
 
 Each installed skin is a self-contained ZIP with manifest, Wasm DOM producer,
 CSS, preview, and package-relative resources. Native executes the Wasm module
@@ -256,7 +265,9 @@ approved repository artifact. See [private corpus](private-corpus.md).
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
 | Public live compatibility | Event API v5 typed projection |
 | Durable local score state | `scorepeek-scores` SQLite consumer |
-| Canvas/editor state and skin execution | Overlay crates and skin SDK |
+| Portable canvas/editor state and skin ABI | `scorepeek-overlay` and `scorepeek-skin-sdk` |
+| Native overlay feed, configuration, and skin storage | `scorepeek-overlay-runtime` |
+| Native skin execution and DOM rendering | `scorepeek-overlay-wayland` |
 | Private replay evidence | Canonical recording and external private corpus |
 
 Git history owns superseded designs, experiments, rejected alternatives, and

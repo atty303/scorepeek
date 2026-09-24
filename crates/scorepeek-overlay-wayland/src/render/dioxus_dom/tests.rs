@@ -2318,7 +2318,10 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     let package_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
     for package in ["cyan-system.zip", "result-aurora.zip", "dj-blackbox.zip"] {
         store
-            .install(&package_root.join(package))
+            .install_with(
+                &package_root.join(package),
+                crate::skin::runtime::validate_and_smoke_test,
+            )
             .unwrap_or_else(|error| panic!("install test skin {package}: {error}"));
     }
     let assets = Arc::new(SkinAssetCache::new(store));

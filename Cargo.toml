@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/scorepeek-cli", "crates/scorepeek-core", "crates/scorepeek-runtime", "crates/scorepeek-scores", "crates/scorepeek-resources", "crates/scorepeek-frontend-api", "crates/scorepeek-corpus", "crates/scorepeek-catalog-publisher", "crates/scorepeek-overlay", "crates/scorepeek-overlay-wayland", "crates/scorepeek-overlay-wayland-handles", "crates/scorepeek-overlay-web-host", "crates/scorepeek-overlay-web-client", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/shared", "skins/cyan-system", "skins/result-aurora", "skins/dj-blackbox"]
+members = ["crates/scorepeek-cli", "crates/scorepeek-core", "crates/scorepeek-runtime", "crates/scorepeek-scores", "crates/scorepeek-resources", "crates/scorepeek-frontend-api", "crates/scorepeek-corpus", "crates/scorepeek-catalog-publisher", "crates/scorepeek-overlay", "crates/scorepeek-overlay-runtime", "crates/scorepeek-overlay-wayland", "crates/scorepeek-overlay-wayland-handles", "crates/scorepeek-overlay-web-host", "crates/scorepeek-overlay-web-client", "crates/scorepeek-skin-sdk", "crates/scorepeek-vulkan-capture", "skins/shared", "skins/cyan-system", "skins/result-aurora", "skins/dj-blackbox"]
 resolver = "3"
 
 [workspace.package]

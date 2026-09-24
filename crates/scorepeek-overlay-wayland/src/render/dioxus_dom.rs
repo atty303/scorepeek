@@ -971,7 +971,7 @@ pub(crate) fn run_with_editor_scenario(
     let canvas_wakes = Arc::new(std::sync::Mutex::new(BTreeMap::<String, Ping>::new()));
     let waking = Arc::clone(&canvas_wakes);
     let feed = Feed::start(
-        config.clone(),
+        config.clone().into(),
         Arc::new(move || {
             for wake in waking
                 .lock()
@@ -981,6 +981,7 @@ pub(crate) fn run_with_editor_scenario(
                 wake.ping();
             }
         }),
+        Arc::new(crate::diagnostics::emit),
     )
     .map_err(|error| error.to_string())?;
     let feed_state = Arc::clone(&feed.state);

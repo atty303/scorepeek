@@ -1,8 +1,8 @@
 //! Catalog artifact verification command.
 
 use super::absolute_path;
+use crate::artifact;
 use clap::Args;
-use scorepeek_resources::artifact;
 use std::path::PathBuf;
 
 #[derive(Args)]

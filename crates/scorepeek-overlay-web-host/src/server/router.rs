@@ -21,8 +21,12 @@ pub(crate) async fn serve(
     }
     let changed = Arc::new(Notify::new());
     let wake = Arc::clone(&changed);
-    let feed = Feed::start(config.clone(), Arc::new(move || wake.notify_waiters()))
-        .map_err(|error| error.to_string())?;
+    let feed = Feed::start(
+        config.clone().into(),
+        Arc::new(move || wake.notify_waiters()),
+        Arc::new(crate::diagnostics::emit),
+    )
+    .map_err(|error| error.to_string())?;
     let stop = Arc::clone(&feed.stop);
     crate::host::shutdown::watch_parent(input, Arc::clone(&stop))?;
     let managed_canvases = config

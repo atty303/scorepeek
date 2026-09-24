@@ -10,6 +10,7 @@ build = "../../scripts/overlay-build.rs"
 scorepeek-core = { path = "../scorepeek-core" }
 scorepeek-scores = { path = "../scorepeek-scores" }
 scorepeek-overlay = { path = "../scorepeek-overlay" }
+scorepeek-overlay-runtime = { path = "../scorepeek-overlay-runtime" }
 scorepeek-skin-sdk = { path = "../scorepeek-skin-sdk" }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 chrono.workspace = true
@@ -19,7 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "sync", "macros", "rt-multi-thread"] }
 toml.workspace = true
-wasmtime.workspace = true
 zip.workspace = true
 
 [build-dependencies]

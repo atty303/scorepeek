@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use super::domain::{Catalog, FederationInput, QuarantineEntry, QuarantineReason, SourceId};
+use super::domain::{
+    Catalog, CatalogFederationExt, FederationInput, QuarantineEntry, QuarantineReason, SourceId,
+};
 use super::store::{CatalogStore, CatalogStoreError};
 use crate::source::dqn::acquire::{
     DqnAcquisitionError, DqnTransport, UreqDqnTransport, acquire_dqn,

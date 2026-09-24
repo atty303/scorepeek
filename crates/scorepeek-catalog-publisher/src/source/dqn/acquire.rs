@@ -5,9 +5,9 @@ use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::federation::SourceSnapshot;
 use crate::source::common::{AdapterError, MAX_SOURCE_BYTES, SourceRevision};
 use crate::source::dqn::decode::DqnLiveAdapter;
-use scorepeek_core::catalog::SourceSnapshot;
 
 use crate::cache::atomic::create_private_directory;
 

@@ -3,11 +3,12 @@ pub mod select;
 pub mod verify;
 
 mod domain {
+    pub use crate::federation::*;
     pub use scorepeek_core::catalog::*;
 }
 
 mod store {
-    pub use scorepeek_resources::{CatalogStore, CatalogStoreError};
+    pub use crate::store::{CatalogStore, CatalogStoreError};
 }
 
 #[cfg(test)]

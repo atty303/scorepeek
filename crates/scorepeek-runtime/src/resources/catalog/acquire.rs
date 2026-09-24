@@ -1204,37 +1204,152 @@ mod tests {
             }],
             primary_infinitas: true,
         }]);
-        let store_root = root.join(format!("producer-{title}"));
-        let active = CatalogStore::new(&store_root)
-            .begin_update()
-            .unwrap()
-            .publish(&catalog)
-            .unwrap();
-        let notices = root.join(format!("notices-{title}.md"));
-        fs::write(&notices, b"synthetic notice\n").unwrap();
+        let snapshot_path = root.join(format!("catalog-{title}.sqlite3"));
+        write_synthetic_snapshot(&snapshot_path, &catalog);
+        let digest = hex(&Sha256::digest(fs::read(&snapshot_path).unwrap()));
+        let manifest = ArtifactManifest {
+            schema: ARTIFACT_SCHEMA.to_owned(),
+            sqlite_sha256: digest,
+            semantic_digest: catalog.semantic_digest(),
+            artifact_revision: 1,
+            generator_commit: "a".repeat(40),
+            workflow_run_url: None,
+        };
         let artifact_path = root.join(format!("catalog-{title}.zip"));
-        artifact::build(
-            &CatalogStore::new(&store_root)
-                .snapshot_path(&active.digest)
-                .unwrap(),
-            &notices,
-            &artifact_path,
-            &ArtifactManifest {
-                schema: ARTIFACT_SCHEMA.to_owned(),
-                sqlite_sha256: active.digest,
-                semantic_digest: catalog.semantic_digest(),
-                artifact_revision: 1,
-                generator_commit: "a".repeat(40),
-                workflow_run_url: None,
-            },
-        )
-        .unwrap();
-        artifact::verify_publisher(
-            &artifact_path,
-            &root.join(format!("publisher-verify-{title}")),
-        )
-        .unwrap();
+        let mut archive = zip::ZipWriter::new(File::create(&artifact_path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        archive
+            .start_file(artifact::CATALOG_ENTRY, options)
+            .unwrap();
+        archive
+            .write_all(&fs::read(&snapshot_path).unwrap())
+            .unwrap();
+        archive
+            .start_file(artifact::MANIFEST_ENTRY, options)
+            .unwrap();
+        serde_json::to_writer(&mut archive, &manifest).unwrap();
+        archive
+            .start_file(artifact::NOTICES_ENTRY, options)
+            .unwrap();
+        archive.write_all(b"synthetic notice\n").unwrap();
+        archive.finish().unwrap();
+        artifact::extract_client_verified(&artifact_path, &root.join(format!("verify-{title}")))
+            .unwrap();
         artifact_path
+    }
+
+    fn write_synthetic_snapshot(path: &Path, catalog: &scorepeek_core::catalog::Catalog) {
+        use rusqlite::params;
+        let connection = rusqlite::Connection::open(path).unwrap();
+        create_synthetic_schema(&connection);
+        connection
+            .execute(
+                "INSERT INTO metadata VALUES ('schema', 'scorepeek-catalog-snapshot-v1')",
+                [],
+            )
+            .unwrap();
+        let evidence = catalog.source_evidence.values().next().unwrap();
+        let evidence_key = format!("{}:{}", evidence.revision, evidence.content_sha256);
+        connection.execute("INSERT INTO source_evidence VALUES (?1,'game_mdb','git_commit',?2,?3,?4,?5,?6,?7,'non_exhaustive',?8,?9)", params!["tachi", evidence.revision, evidence.content_sha256, i64::try_from(evidence.byte_size).unwrap(), i64::try_from(evidence.record_count).unwrap(), evidence.parser_version, evidence.declared_scope, evidence.freshness, evidence.rights_and_provenance]).unwrap();
+        for field in &evidence.field_authority {
+            connection
+                .execute(
+                    "INSERT INTO source_authority VALUES ('tachi',?1,?2,?3)",
+                    params![evidence.revision, evidence.content_sha256, field],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO latest_evidence VALUES ('tachi',?1,?2)",
+                params![evidence.revision, evidence.content_sha256],
+            )
+            .unwrap();
+        let song = catalog.songs.values().next().unwrap();
+        let song_id = song.song_id.as_uuid().to_string();
+        connection
+            .execute(
+                "INSERT INTO songs VALUES (?1,?2,?3,?4,'confirmed_present',1)",
+                params![song_id, song.tachi_source_id, song.artist, song.version],
+            )
+            .unwrap();
+        for variant in &song.title_variants {
+            connection
+                .execute(
+                    "INSERT INTO title_variants VALUES (?1,'tachi',?2,'in_game_display',?3)",
+                    params![song_id, evidence_key, variant.value],
+                )
+                .unwrap();
+        }
+        for (key, chart) in &song.charts {
+            let play_type = match key.play_type {
+                PlayType::Single => "single",
+                PlayType::Double => "double",
+            };
+            let difficulty = match key.difficulty {
+                Difficulty::Beginner => "beginner",
+                Difficulty::Normal => "normal",
+                Difficulty::Hyper => "hyper",
+                Difficulty::Another => "another",
+                Difficulty::Leggendaria => "leggendaria",
+            };
+            connection
+                .execute(
+                    "INSERT INTO charts VALUES (?1,?2,?3,?4,?5)",
+                    params![song_id, play_type, difficulty, chart.level, chart.notes],
+                )
+                .unwrap();
+            for assertion in &song.chart_assertions[key] {
+                connection
+                    .execute(
+                        "INSERT INTO chart_assertions VALUES (?1,?2,?3,'tachi',?4,?5,1)",
+                        params![
+                            song_id,
+                            play_type,
+                            difficulty,
+                            evidence_key,
+                            assertion.source_chart_id
+                        ],
+                    )
+                    .unwrap();
+                for version in &assertion.product_versions {
+                    connection.execute("INSERT INTO chart_assertion_products VALUES (?1,?2,?3,'tachi',?4,?5,?6)", params![song_id, play_type, difficulty, evidence_key, assertion.source_chart_id, version]).unwrap();
+                }
+            }
+        }
+        connection
+            .execute(
+                "INSERT INTO source_bindings VALUES (?1,'tachi',?2)",
+                params![song_id, song.tachi_source_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO binding_evidence VALUES (?1,'tachi',?2,?3)",
+                params![song_id, song.tachi_source_id, evidence_key],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO binding_attributes VALUES (?1,'tachi',?2,?3,'primary_infinitas','true')", params![song_id, song.tachi_source_id, evidence_key]).unwrap();
+        connection.close().unwrap();
+    }
+
+    fn create_synthetic_schema(connection: &rusqlite::Connection) {
+        connection.execute_batch("PRAGMA application_id = 0x5343504b; PRAGMA user_version = 1;
+            CREATE TABLE metadata (key TEXT, value TEXT);
+            CREATE TABLE source_evidence (source_id TEXT, lineage_id TEXT, revision_strategy TEXT, revision TEXT, content_sha256 TEXT, byte_size INTEGER, record_count INTEGER, parser_version TEXT, declared_scope TEXT, completeness TEXT, freshness TEXT, rights_and_provenance TEXT);
+            CREATE TABLE source_authority (source_id TEXT, revision TEXT, content_sha256 TEXT, field_name TEXT);
+            CREATE TABLE latest_evidence (source_id TEXT, revision TEXT, content_sha256 TEXT);
+            CREATE TABLE songs (song_id TEXT, tachi_source_id TEXT, artist TEXT, version TEXT, infinitas_status TEXT, tachi_primary_infinitas INTEGER);
+            CREATE TABLE title_variants (song_id TEXT, source_id TEXT, evidence_digest TEXT, variant_kind TEXT, value TEXT);
+            CREATE TABLE charts (song_id TEXT, play_type TEXT, difficulty TEXT, level INTEGER, notes INTEGER);
+            CREATE TABLE chart_assertions (song_id TEXT, play_type TEXT, difficulty TEXT, source_id TEXT, evidence_digest TEXT, source_chart_id TEXT, is_primary INTEGER);
+            CREATE TABLE chart_assertion_products (song_id TEXT, play_type TEXT, difficulty TEXT, source_id TEXT, evidence_digest TEXT, source_chart_id TEXT, product_version TEXT);
+            CREATE TABLE source_bindings (song_id TEXT, source_id TEXT, source_key TEXT);
+            CREATE TABLE binding_evidence (song_id TEXT, source_id TEXT, source_key TEXT, evidence_digest TEXT);
+            CREATE TABLE binding_attributes (song_id TEXT, source_id TEXT, source_key TEXT, evidence_digest TEXT, attribute_key TEXT, attribute_value TEXT);
+            CREATE TABLE dqn_bindings (title TEXT, artist TEXT, song_id TEXT);
+            CREATE TABLE dqn_binding_evidence (title TEXT, artist TEXT, evidence_digest TEXT, availability_kind TEXT, pack_name TEXT);") .unwrap();
     }
 
     fn age_active_origin(client: &Path, effective: &EffectiveUrl) {
