@@ -828,7 +828,7 @@ fn live_serializer_and_reducer_keep_one_recording_schema() {
         1,
         "the corpus reader rejects mixed-schema sessions"
     );
-    assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v18"));
+    assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v19"));
 }
 
 #[test]
@@ -849,7 +849,7 @@ fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
         },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-run-event-v18");
+    assert_eq!(value["schema"], "scorepeek-run-event-v19");
     assert_eq!(value["event"], "raw_screen_observed");
     assert_eq!(value["semantic_episode_id"], 1);
     assert_eq!(value["session_id"], "invocation-session-2");
@@ -992,7 +992,7 @@ fn routine_observation_binds_session_without_generation() {
         },
     )
     .unwrap();
-    assert_eq!(value["schema"], "scorepeek-run-event-v18");
+    assert_eq!(value["schema"], "scorepeek-run-event-v19");
     assert_eq!(value["session_id"], "invocation-session-2");
     assert!(value.get("capture_generation").is_none());
     assert_eq!(value["sequence"], 1);

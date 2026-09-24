@@ -25,7 +25,6 @@ impl RunEventReducer {
                 }
                 Ok(())
             }
-            RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),
             RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
             RunEventKind::RawScreenObserved {
                 session_id,
@@ -83,6 +82,7 @@ impl RunEventReducer {
             | RunEventKind::ResultPanelSideChanged { .. }
             | RunEventKind::ResultSelectContextMismatch { .. }
             | RunEventKind::OverlayObserved { .. } => self.publish_one(event),
+            RunEventKind::WatcherStopped { .. } => unreachable!("watcher state is runtime-owned"),
         }
     }
 
@@ -168,18 +168,18 @@ impl RunEventReducer {
                         .best
                         .hold(SelectIdentityStatus::AwaitingEvidence);
                 }
-                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
-                self.refresh()
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
+                Ok(())
             }
             SemanticEpisodePhase::Resumed => {
                 self.semantic_episode_suspended = false;
-                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
-                self.refresh()
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
+                Ok(())
             }
             SemanticEpisodePhase::Closing => {
                 self.result_episode_finalizing = screen == "result";
-                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
-                self.refresh()
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
+                Ok(())
             }
             SemanticEpisodePhase::Finalized => {
                 if screen == "music_select" {
@@ -199,8 +199,8 @@ impl RunEventReducer {
                 }
                 self.result_episode_finalizing = false;
                 self.semantic_episode_suspended = false;
-                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
-                self.refresh()
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
+                Ok(())
             }
         }
     }
@@ -210,23 +210,15 @@ impl RunEventReducer {
         sequence: u64,
         monotonic_end_ms: u64,
     ) -> Result<(), RunEventReductionError> {
-        let previous_second = self.resolver_now_ms / 1_000;
-        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), None)?;
-        if monotonic_end_ms / 1_000 != previous_second {
-            self.refresh()?;
-        }
+        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), false)?;
         Ok(())
     }
 
-    pub(super) fn publish_watcher_stopped(
-        &mut self,
-        event: &RunEvent,
-    ) -> Result<(), RunEventReductionError> {
+    pub(crate) fn finish_watcher(&mut self) -> Result<(), RunEventReductionError> {
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(self.active_session_id.clone(), None, state)?;
         }
-        self.effects.push(RunReducerEffect::FinishScores);
-        self.publish_one(event)
+        Ok(())
     }
 
     pub(super) fn publish_field_observation(
@@ -242,7 +234,6 @@ impl RunEventReducer {
             fields,
             parsed_result_fields,
             joint_evidence,
-            song_resolution_presentation,
             ..
         } = &event.kind
         else {
@@ -278,7 +269,6 @@ impl RunEventReducer {
                 fields,
                 parsed_result_fields.as_ref(),
                 joint_evidence,
-                song_resolution_presentation,
             ),
             "music_select" => self.reduce_music_select_observation(
                 session_id.as_ref(),
@@ -286,17 +276,14 @@ impl RunEventReducer {
                 *monotonic_end_ms,
                 fields,
                 joint_evidence,
-                song_resolution_presentation,
             ),
             _ => Ok(()),
         }
     }
 
     pub(super) fn clear_field_observation(&mut self) {
-        self.raw_fields.clear();
         self.latest_field_sequence = None;
         self.latest_field_ms = None;
-        self.effects.push(RunReducerEffect::ClearFieldObservation);
     }
 
     pub(super) fn reset_numeric_result(&mut self) {
@@ -549,8 +536,8 @@ impl RunEventReducer {
             self.numeric_evidence.clear();
             self.play_options = PlayOptionsEpisodeAccumulator::default();
         }
-        self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
-        self.refresh()
+        self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), false)?;
+        Ok(())
     }
 
     pub(super) fn publish_session_finished(
@@ -578,7 +565,9 @@ impl RunEventReducer {
         }
         self.result_panel_side.clear();
         self.result_select_context_detached = false;
-        self.publish_one(event)?;
+        self.effects.push(RunReducerEffect::SessionEnded);
+        self.active_session_id = None;
+        self.current_screen = None;
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(Some(session_id.clone()), None, state)?;
         }

@@ -239,6 +239,12 @@ pixels; `--record-all` retains every canonical 10 Hz due tick, including TITLE. 
 v5 canonical manifest with the final session version state and neither changes recognition or event authority. The separate live socket, 128 MiB ring,
 disk degradation, and ten-generation policy are defined in [runtime diagnostics](diagnostics.md).
 
+The core domain coordinator accepts only semantic screen and field observations, session
+boundaries, watcher domain termination, and an explicit `GameVersionState`. Runtime combines
+its ordered outputs with capture, recording, watcher, and overlay events for diagnostics and
+public projection. Runtime completes the score worker after processing all watcher-stop domain
+outputs. Field processing timing remains in runtime diagnostics and is not a domain input.
+
 The private corpus imports a complete canonical recording directory read-only,
 copies its verified segments into a local generation, and activates a regression
 session only after a separate review apply operation. Its replay reads canonical

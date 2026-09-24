@@ -88,12 +88,6 @@ fn conflicting_result_panel_side_detaches_retained_select_context() {
                 catalog_song_count: 0,
                 candidates: Vec::new(),
             },
-            &SongResolutionPresentation::Unknown {
-                reason: json!("synthetic"),
-                selected: None,
-                runner_up: None,
-                evidence_summary: None,
-            },
         )
         .unwrap();
     assert!(reducer.result_select_context_detached);

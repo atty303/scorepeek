@@ -1095,11 +1095,26 @@ mod tests {
                     screen: "result".into(),
                 },
             };
-            coordinator.step(1, &start).unwrap();
-            coordinator.step(2, &screen).unwrap();
+            coordinator
+                .step(
+                    1,
+                    &crate::event::DomainInput::from_run_event(&start).unwrap(),
+                )
+                .unwrap();
+            coordinator
+                .step(
+                    2,
+                    &crate::event::DomainInput::from_run_event(&screen).unwrap(),
+                )
+                .unwrap();
             let event =
                 run_event_from_field_observation("session", 1, 2, 200, 200, &observation).unwrap();
-            let outputs = coordinator.step(3, &event).unwrap();
+            let outputs = coordinator
+                .step(
+                    3,
+                    &crate::event::DomainInput::from_run_event(&event).unwrap(),
+                )
+                .unwrap();
             let semantic_outputs = outputs
                 .effects()
                 .iter()

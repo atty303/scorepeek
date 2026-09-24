@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 use scorepeek_core::canonical_recording::{CanonicalTick, TickDisposition};
 use scorepeek_core::event::coordinator::{CoordinatorError, CoordinatorPolicy, DomainCoordinator};
 use scorepeek_core::event::{
-    RUN_EVENT_SCHEMA, RunEvent, RunEventKind, RunReducerEffect, run_event_from_field_observation,
+    DomainInput, RUN_EVENT_SCHEMA, RunEvent, RunEventKind, RunReducerEffect,
+    run_event_from_field_observation,
 };
 use scorepeek_core::frame::{CANONICAL_BYTES, CanonicalFrameView};
 use scorepeek_core::recognition::screen::{
@@ -271,7 +272,9 @@ fn apply_event(
         schema: RUN_EVENT_SCHEMA.into(),
         kind,
     };
-    let output = coordinator.step(*next_sequence, &event)?;
+    let input = DomainInput::from_run_event(&event)
+        .ok_or(ReplayError::Invalid("replay event is not a domain input"))?;
+    let output = coordinator.step(*next_sequence, &input)?;
     consume_outputs(report, output.effects(), observer)?;
     *next_sequence += 1;
     Ok(())
@@ -413,7 +416,10 @@ fn replay_recording_observed(
         },
         observer,
     )?;
-    coordinator.step_canonical_game_version(core_sequence, &recording.manifest.game_version)?;
+    coordinator.step(
+        core_sequence,
+        &DomainInput::GameVersionState(recording.manifest.game_version.clone()),
+    )?;
     core_sequence += 1;
     let mut segment_index = 0_usize;
     publish_progress(ReplayPhase::Processing, &report, segment_index);
@@ -539,7 +545,9 @@ fn replay_recording_observed(
                 observed.as_ref(),
                 &recording.manifest.session_id,
             );
-            let output = coordinator.step(core_sequence, &input)?;
+            let domain_input = DomainInput::from_run_event(&input)
+                .ok_or(ReplayError::Invalid("raw screen is not a domain input"))?;
+            let output = coordinator.step(core_sequence, &domain_input)?;
             consume_outputs(&mut report, output.effects(), observer)?;
             core_sequence += 1;
             apply_timeline_actions(
@@ -572,7 +580,9 @@ fn replay_recording_observed(
                     &field_output,
                 )
                 .map_err(ReplayError::Field)?;
-                let output = coordinator.step(core_sequence, &field_event)?;
+                let input = DomainInput::from_run_event(&field_event)
+                    .ok_or(ReplayError::Invalid("field event is not a domain input"))?;
+                let output = coordinator.step(core_sequence, &input)?;
                 consume_outputs(&mut report, output.effects(), observer)?;
                 core_sequence += 1;
             }

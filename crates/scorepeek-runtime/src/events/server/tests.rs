@@ -77,7 +77,74 @@ fn live_output_uses_one_ordered_core_coordinator_across_two_sessions() {
         }))
         .unwrap();
     assert!(output.core_reducer.state().is_finished());
-    assert_eq!(output.core_reducer.state().last_input_sequence(), Some(6));
+    assert_eq!(output.core_reducer.state().last_input_sequence(), Some(5));
+}
+
+#[test]
+fn operational_events_share_channel_order_without_consuming_core_input_numbers() {
+    let temporary = tempfile::tempdir().unwrap();
+    let diagnostics = RunDiagnostics::start(temporary.path(), "ordered-inputs");
+    let mut output = RoutineOutput::start_headless_with_diagnostics(
+        "invocation-ordered".into(),
+        "a".repeat(64),
+        diagnostics,
+    );
+    let event = |kind| RunEvent {
+        schema: RUN_EVENT_SCHEMA.into(),
+        kind,
+    };
+    output
+        .publish(&event(RunEventKind::WatcherStarted {
+            invocation_id: "invocation-ordered".into(),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::OverlayObserved {
+            observation: json!({"source":"test"}),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::SessionStarted {
+            session_id: Some("session-1".into()),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::SessionFinished {
+            session_id: "session-1".into(),
+            outcome: "complete".into(),
+            report: json!({"field_rejected": 2}),
+        }))
+        .unwrap();
+    output
+        .publish(&event(RunEventKind::WatcherStopped {
+            invocation_id: "invocation-ordered".into(),
+            reason: "complete".into(),
+        }))
+        .unwrap();
+    output.finish_diagnostics("success");
+    assert_eq!(output.core_reducer.state().last_input_sequence(), Some(3));
+
+    let stream =
+        fs::read_to_string(temporary.path().join("ordered-inputs/diagnostics.ndjson")).unwrap();
+    let events: Vec<Value> = stream
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| record["operation"] == "run_event")
+        .map(|record| record["data"].clone())
+        .collect();
+    let find = |kind| events.iter().find(|value| value["event"] == kind).unwrap();
+    assert!(find("watcher_started").get("input_sequence").is_none());
+    assert!(find("overlay_observed").get("input_sequence").is_none());
+    assert_eq!(find("session_started")["input_sequence"], 1);
+    assert_eq!(find("session_finished")["input_sequence"], 2);
+    assert_eq!(find("watcher_stopped")["input_sequence"], 3);
+    assert_eq!(find("session_finished")["report"]["field_rejected"], 2);
+    assert!(
+        events
+            .windows(2)
+            .all(|pair| pair[0]["channel_sequence"].as_u64().unwrap()
+                < pair[1]["channel_sequence"].as_u64().unwrap())
+    );
 }
 
 #[test]
@@ -386,7 +453,12 @@ fn scores_select_only_uses_production_projection_without_creating_a_play() {
 fn watcher_stop_publishes_store_changes_drained_during_shutdown() {
     let temporary = tempfile::tempdir().unwrap();
     let path = temporary.path().join("scores.sqlite3");
-    let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+    let diagnostics = RunDiagnostics::start(temporary.path(), "score-shutdown-order");
+    let mut output = RoutineOutput::start_headless_with_diagnostics(
+        "invocation-1".into(),
+        "a".repeat(64),
+        diagnostics,
+    );
     output.enable_scores(&path).unwrap();
     let session = "invocation-1-session-1".to_owned();
     output
@@ -423,6 +495,31 @@ fn watcher_stop_publishes_store_changes_drained_during_shutdown() {
     let snapshot = serde_json::to_value(&output.state.lock().unwrap().public).unwrap();
     assert_eq!(snapshot["status"]["watcher"], "stopped");
     assert_eq!(snapshot["next_sequence"], before_stop + 2);
+    output.finish_diagnostics("success");
+    let stream = fs::read_to_string(
+        temporary
+            .path()
+            .join("score-shutdown-order/diagnostics.ndjson"),
+    )
+    .unwrap();
+    let shutdown_events: Vec<Value> = stream
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| {
+            record["operation"] == "public_event"
+                && record["data"]["public_event_sequence"]
+                    .as_u64()
+                    .is_some_and(|sequence| sequence >= before_stop)
+        })
+        .map(|record| record["data"]["public_event"].clone())
+        .collect();
+    assert_eq!(
+        shutdown_events
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["score_store_changed", "status_changed"]
+    );
     assert_eq!(
         rusqlite::Connection::open(path)
             .unwrap()
@@ -2183,18 +2280,6 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
         .unwrap();
     let snapshot = shared.lock().unwrap().resolver.clone();
     assert_eq!(snapshot.latest_field_sequence, Some(42));
-    assert!(
-        snapshot
-            .raw_fields
-            .iter()
-            .any(|(key, value)| { key == "artist" && value.contains("HuΣeR") })
-    );
-    assert!(
-        snapshot
-            .raw_fields
-            .iter()
-            .any(|(key, value)| { key == "marker" && value.contains("known:hyper") })
-    );
     assert_eq!(snapshot.local.unwrap().top_candidates.len(), 1);
     output
         .publish(&RunEvent {
@@ -2210,7 +2295,6 @@ fn music_select_fields_update_the_typed_tui_snapshot() {
         })
         .unwrap();
     let snapshot = shared.lock().unwrap().resolver.clone();
-    assert!(snapshot.raw_fields.is_empty());
     assert_eq!(snapshot.latest_field_sequence, None);
     assert_eq!(snapshot.latest_field_ms, None);
 }

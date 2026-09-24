@@ -19,7 +19,6 @@ impl RunEventReducer {
         fields: &Value,
         parsed_result_fields: Option<&ParsedResultFields>,
         joint_evidence: &JointEvidenceObservation,
-        _song_resolution_presentation: &SongResolutionPresentation,
     ) -> Result<(), RunEventReductionError> {
         self.engine.result_hypotheses.observe_at(
             sequence,
@@ -141,8 +140,8 @@ impl RunEventReducer {
         }
         self.sync_result_provisional(session_id.cloned(), sequence)?;
         self.try_emit_result(session_id.cloned(), sequence)?;
-        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
-        self.refresh()
+        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), true)?;
+        Ok(())
     }
 
     pub(super) fn observe_numeric_result(

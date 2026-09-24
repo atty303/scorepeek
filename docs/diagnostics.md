@@ -8,7 +8,13 @@ The stream records lifecycle, capture scheduling and failures, domain transition
 public event delivery in order. It omits individual raw screen, screen tick, and field
 observation records. Their canonical sequence and pixels live in the separate recording.
 The runtime emits `domain_summary` after every 256 core inputs and at session or watcher
-finish. The summary includes cumulative input, no-op, transition, and output counts,
+finish. `input_sequence` counts only values actually passed to the core domain coordinator;
+runtime-owned watcher startup, overlay, and recording events do not consume a number.
+The `scorepeek-run-event-v19` diagnostic records retain one ordered `channel_sequence`
+across domain outputs and runtime events. Records emitted while processing a core input
+carry that input's `input_sequence`; runtime events outside a core step omit it. The summary's
+`inputs` and 256-input cadence use the same core-only count. The summary includes
+cumulative no-op, transition, and output counts,
 admitted frame and completed field counts, source sequence gaps, bounded screen and output-kind counts,
 and a small state snapshot; it does not repeat canonical pixels or tick metadata.
 The summary includes count, sum, and maximum microseconds for completed field processing,

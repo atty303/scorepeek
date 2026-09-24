@@ -30,8 +30,9 @@ use crate::diagnostics::inspect::{DiagnosticSink, RunDiagnostics};
 use scorepeek_core::catalog::{Difficulty, PlayType};
 use scorepeek_core::event::coordinator::{CoordinatorPolicy, DomainCoordinator};
 use scorepeek_core::event::{
-    MusicSelectResolverState, MusicSelectionState, RUN_EVENT_SCHEMA, ResultDomainEvent,
-    ResultState, RunEvent, RunEventKind, SongPresentation, diagnostic_run_event_value,
+    DomainInput, MusicSelectResolverState, MusicSelectionState, RUN_EVENT_SCHEMA,
+    ResultDomainEvent, ResultState, RunEvent, RunEventKind, SongPresentation,
+    diagnostic_run_event_value,
 };
 #[cfg(test)]
 use scorepeek_core::event::{
@@ -829,11 +830,15 @@ impl RoutineOutput {
         &mut self,
         event: &RunEvent,
     ) -> Result<RoutineEventProcessingTiming, String> {
+        let Some(input) = DomainInput::from_run_event(event) else {
+            self.publish_one(event)?;
+            return Ok(RoutineEventProcessingTiming::default());
+        };
         self.timing_active = true;
         self.output_us = 0;
         let started = Instant::now();
         let input_sequence = self.next_core_input_sequence;
-        let reduced = match self.core_reducer.step(input_sequence, event) {
+        let reduced = match self.core_reducer.step(input_sequence, &input) {
             Ok(reduced) => reduced,
             Err(error) => return Err(self.record_core_error(input_sequence, error)),
         };
@@ -841,7 +846,7 @@ impl RoutineOutput {
         self.active_core_input_sequence = Some(input_sequence);
         let transition_count = reduced.effects().iter().filter(|effect| {
             matches!(effect, RunReducerEffect::Event(output) if trace_domain_transition(&output.kind))
-        }).count() as u64;
+        }).count() as u64 + u64::from(matches!(input, DomainInput::GameVersionState(_)));
         let output_count = reduced
             .effects()
             .iter()
@@ -870,33 +875,20 @@ impl RoutineOutput {
         if transition_count == 0 {
             self.trace_counters.no_op_inputs = self.trace_counters.no_op_inputs.saturating_add(1);
         }
-        for effect in reduced.into_effects() {
-            match effect {
-                RunReducerEffect::Event(event) => self.publish_one(&event)?,
-                RunReducerEffect::ClearFieldObservation => {
-                    let mut state = self
-                        .state
-                        .lock()
-                        .map_err(|_| "run view state lock was poisoned".to_owned())?;
-                    state.resolver.raw_fields.clear();
-                    state.resolver.latest_field_sequence = None;
-                    state.resolver.latest_field_ms = None;
-                }
-                RunReducerEffect::Snapshot(snapshot) => {
-                    self.state
-                        .lock()
-                        .map_err(|_| "run view state lock was poisoned".to_owned())?
-                        .resolver = snapshot;
-                }
-                RunReducerEffect::Refresh => self.refresh()?,
-                RunReducerEffect::FinishScores => {
-                    if let Some(scores) = &mut self.scores {
-                        scores.finish();
-                    }
-                    self.refresh_scores()?;
-                }
+        self.publish_domain_outputs(event, reduced.into_effects())?;
+        if matches!(input, DomainInput::WatcherFinished) {
+            if let Some(scores) = &mut self.scores {
+                scores.finish();
             }
+            self.refresh_scores()?;
         }
+        if matches!(
+            input,
+            DomainInput::GameVersionState(_) | DomainInput::WatcherFinished
+        ) {
+            self.publish_one(event)?;
+        }
+        self.refresh()?;
         self.active_core_input_sequence = None;
         if self.trace_counters.inputs.is_multiple_of(256)
             || matches!(
@@ -927,6 +919,34 @@ impl RoutineOutput {
             attempt_resolver_us,
             output_us: Some(output_us),
         })
+    }
+
+    fn publish_domain_outputs(
+        &mut self,
+        input_event: &RunEvent,
+        effects: Vec<RunReducerEffect>,
+    ) -> Result<(), String> {
+        for effect in effects {
+            match effect {
+                RunReducerEffect::Event(output) => {
+                    if std::mem::discriminant(&output.kind)
+                        == std::mem::discriminant(&input_event.kind)
+                    {
+                        self.publish_one(input_event)?;
+                    } else {
+                        self.publish_one(&output)?;
+                    }
+                }
+                RunReducerEffect::SessionEnded => self.publish_one(input_event)?,
+                RunReducerEffect::Snapshot(snapshot) => {
+                    self.state
+                        .lock()
+                        .map_err(|_| "run view state lock was poisoned".to_owned())?
+                        .resolver = snapshot;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn record_core_error(

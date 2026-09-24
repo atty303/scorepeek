@@ -68,7 +68,6 @@ impl RunEventReducer {
         monotonic_end_ms: u64,
         fields: &Value,
         joint_evidence: &JointEvidenceObservation,
-        _presentation: &SongResolutionPresentation,
     ) -> Result<(), RunEventReductionError> {
         self.music_select_resolver.observe(
             sequence,
@@ -150,7 +149,7 @@ impl RunEventReducer {
             }
         }
         self.sync_music_selection(session_id, sequence)?;
-        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
-        self.refresh()
+        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), true)?;
+        Ok(())
     }
 }

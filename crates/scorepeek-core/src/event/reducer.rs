@@ -23,7 +23,7 @@ use crate::event::{
     ResolverResolutionState, ResolverScope, ResultDomainEvent, ResultPanelSideEpisodeState,
     ResultPanelSideTransitionReason, ResultRetractionReason, ResultState, RunEvent, RunEventKind,
     SelectFrameIdentity, SelectIdentityStatus, SelectionDifficultyTarget,
-    SelectionDifficultyTransitionReason, SongPresentation, SongResolutionPresentation,
+    SelectionDifficultyTransitionReason, SongPresentation,
 };
 use crate::recognition::music_select::PlaySide;
 use crate::recognition::result::{
@@ -277,131 +277,6 @@ fn family_contribution_labels(
     values
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the snapshot projection enumerates a fixed set of diagnostic fields"
-)]
-fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
-    let marker = fields.get("selected_difficulty").and_then(|observation| {
-        let state = observation.get("state")?;
-        let status = state.get("status")?.as_str()?;
-        let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
-        let winner = observation
-            .get("winner_score_ppm")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let margin = observation
-            .get("margin_ppm")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        Some((
-            "marker".to_owned(),
-            format!("{status}:{value} score={winner} margin={margin}"),
-        ))
-    });
-    let select_play_type = fields.get("play_type").and_then(|observation| {
-        let state = observation.get("state")?;
-        let status = state.get("status")?.as_str()?;
-        let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
-        let single = observation
-            .get("single_score_ppm")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let double = observation
-            .get("double_score_ppm")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        Some((
-            "select_play_type".to_owned(),
-            format!("{status}:{value} sp={single} dp={double}"),
-        ))
-    });
-    let play_side = fields.get("play_side").and_then(|observation| {
-        let state = observation.get("state")?;
-        let status = state.get("status")?.as_str()?;
-        let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
-        let winner = observation
-            .get("winner_bright_pixels")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let margin = observation
-            .get("margin")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        Some((
-            "play_side".to_owned(),
-            format!("{status}:{value} bright={winner} margin={margin}"),
-        ))
-    });
-    let title_foreground = fields.get("title_evidence").map(|evidence| {
-        let raw = evidence
-            .pointer("/foreground/open_text")
-            .and_then(Value::as_str)
-            .unwrap_or("-");
-        let scalar_count = evidence
-            .get("normalized_scalar_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let width = evidence
-            .pointer("/geometry/occupancy_width_ppm")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let edge = evidence
-            .get("geometry")
-            .map(|geometry| {
-                format!(
-                    "{}{}",
-                    if geometry["touches_left_edge"].as_bool().unwrap_or(false) {
-                        "L"
-                    } else {
-                        ""
-                    },
-                    if geometry["touches_right_edge"].as_bool().unwrap_or(false) {
-                        "R"
-                    } else {
-                        ""
-                    }
-                )
-            })
-            .unwrap_or_default();
-        (
-            "title_fg".to_owned(),
-            format!("{raw} chars={scalar_count} width_ppm={width} edge={edge}"),
-        )
-    });
-    marker
-        .into_iter()
-        .chain(select_play_type)
-        .chain(play_side)
-        .chain(title_foreground)
-        .chain(
-            [
-                "title",
-                "central_title",
-                "active_list_title",
-                "artist",
-                "play_type",
-                "difficulty",
-                "current_score",
-                "pgreat",
-                "great",
-                "good",
-                "bad",
-                "poor",
-            ]
-            .into_iter()
-            .filter_map(|key| {
-                fields
-                    .get(key)
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| (key.to_owned(), value.to_owned()))
-            }),
-        )
-        .take(8)
-        .collect()
-}
-
 /// A transport-neutral action produced by [`RunEventReducer`].
 #[allow(
     clippy::large_enum_variant,
@@ -410,10 +285,8 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
 #[derive(Clone, Debug)]
 pub enum RunReducerEffect {
     Event(RunEvent),
-    ClearFieldObservation,
+    SessionEnded,
     Snapshot(RunReducerSnapshot),
-    Refresh,
-    FinishScores,
 }
 
 /// Ordered output from one reducer input.
@@ -443,7 +316,6 @@ pub struct RunReducerSnapshot {
     pub attempt: Option<AttemptNodeSnapshot>,
     pub gate: String,
     pub gates: Vec<GateSnapshot>,
-    pub raw_fields: Vec<(String, String)>,
     pub play_options: Option<PlayOptionsDebugSnapshot>,
 }
 
@@ -532,7 +404,7 @@ impl ReducedRunEvents {
     reason = "these booleans are independent reducer facts rather than one state machine axis"
 )]
 #[derive(Clone, Default)]
-pub struct RunEventReducer {
+pub(crate) struct RunEventReducer {
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
     pending_supplemental_result: Option<PendingSupplementalResult>,
@@ -567,11 +439,11 @@ pub struct RunEventReducer {
     resolver_source_sequence: Option<u64>,
     latest_field_sequence: Option<u64>,
     latest_field_ms: Option<u64>,
-    raw_fields: Vec<(String, String)>,
     effects: Vec<RunReducerEffect>,
 }
 
 impl RunEventReducer {
+    #[cfg(test)]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -620,7 +492,7 @@ impl RunEventReducer {
         Ok(())
     }
 
-    fn finish(&mut self) -> ReducedRunEvents {
+    pub(super) fn finish(&mut self) -> ReducedRunEvents {
         ReducedRunEvents {
             effects: std::mem::take(&mut self.effects),
         }
@@ -628,15 +500,6 @@ impl RunEventReducer {
 
     fn publish_one(&mut self, event: &RunEvent) -> Result<(), RunEventReductionError> {
         self.emit(event.clone())
-    }
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "refresh effects share the reducer's uniform fallible pipeline contract"
-    )]
-    fn refresh(&mut self) -> Result<(), RunEventReductionError> {
-        self.effects.push(RunReducerEffect::Refresh);
-        Ok(())
     }
 
     fn sync_music_select_resolver_state(&mut self) -> Result<(), RunEventReductionError> {
@@ -675,15 +538,14 @@ impl RunEventReducer {
         &mut self,
         now_ms: u64,
         source_sequence: Option<u64>,
-        raw_fields: Option<&Value>,
+        field_observed: bool,
     ) -> Result<(), RunEventReductionError> {
         self.screen_episode_last_ms = Some(now_ms);
         self.resolver_now_ms = now_ms;
         self.resolver_source_sequence = source_sequence;
-        if let Some(fields) = raw_fields {
+        if field_observed {
             self.latest_field_sequence = source_sequence;
             self.latest_field_ms = Some(now_ms);
-            self.raw_fields = important_raw_fields(fields);
         }
         self.sync_music_select_resolver_state()?;
         self.effects
@@ -696,9 +558,34 @@ impl RunEventReducer {
     /// # Errors
     /// This reducer is currently infallible. The result keeps the boundary explicit for future
     /// schema-level validation without coupling consumers to implementation state.
-    pub fn reduce(&mut self, event: &RunEvent) -> Result<ReducedRunEvents, RunEventReductionError> {
+    pub(crate) fn reduce(
+        &mut self,
+        event: &RunEvent,
+    ) -> Result<ReducedRunEvents, RunEventReductionError> {
         debug_assert!(self.effects.is_empty());
         self.publish_internal(event)?;
+        Ok(self.finish())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reduce_raw_screen(
+        &mut self,
+        event: &RunEvent,
+        session_id: Option<&String>,
+        semantic_episode_id: Option<u64>,
+        sequence: u64,
+        monotonic_end_ms: u64,
+        screen: &str,
+        result_panel_side: Option<ResultPanelSide>,
+    ) -> Result<ReducedRunEvents, RunEventReductionError> {
+        debug_assert!(self.effects.is_empty());
+        self.publish_one(event)?;
+        if screen == "result"
+            && let (Some(episode_id), Some(side)) = (semantic_episode_id, result_panel_side)
+        {
+            self.observe_result_panel_side(session_id, episode_id, sequence, side)?;
+        }
+        self.publish_screen_tick(sequence, monotonic_end_ms)?;
         Ok(self.finish())
     }
 
@@ -845,7 +732,6 @@ impl RunEventReducer {
             attempt,
             gate,
             gates,
-            raw_fields: self.raw_fields.clone(),
             play_options: self.play_options.latest().cloned().map(|latest| {
                 PlayOptionsDebugSnapshot {
                     latest,
@@ -877,7 +763,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semantic_episode_preserves_event_then_snapshot_checkpoint_order() {
+    fn semantic_episode_preserves_event_and_snapshot_checkpoint_order() {
         let mut reducer = RunEventReducer::new();
         let input = RunEvent {
             schema: crate::event::RUN_EVENT_SCHEMA.to_owned(),
@@ -899,12 +785,7 @@ mod tests {
                 ..
             }))
         ));
-        assert!(matches!(
-            effects.get(1),
-            Some(RunReducerEffect::ClearFieldObservation)
-        ));
-        assert!(matches!(effects.last(), Some(RunReducerEffect::Refresh)));
-        assert!(effects.iter().rev().skip(1).any(|effect| matches!(
+        assert!(effects.iter().any(|effect| matches!(
             effect,
             RunReducerEffect::Snapshot(snapshot)
                 if snapshot.screen_episode_id == 7

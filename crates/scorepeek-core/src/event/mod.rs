@@ -2,6 +2,7 @@
 
 pub mod coordinator;
 pub mod domain;
+pub mod input;
 pub mod projection;
 mod reducer;
 pub mod run;
@@ -17,13 +18,13 @@ pub use domain::{
     SelectIdentityStatus, SelectionDifficultyTarget, SelectionDifficultyTransitionReason,
     SongPresentation, SongResolutionPresentation,
 };
+pub use input::DomainInput;
 pub use projection::{
     ProjectionCursor, diagnostic_run_event_value, run_event_from_field_observation,
 };
 pub use reducer::{
     AttemptNodeSnapshot, GateSnapshot, GateState, PlayOptionsDebugSnapshot, ReducedRunEvents,
-    ResolverNodeSnapshot, RunEventReducer, RunEventReductionError, RunReducerEffect,
-    RunReducerSnapshot,
+    ResolverNodeSnapshot, RunReducerEffect, RunReducerSnapshot,
 };
 pub use run::{RunEvent, RunEventEnvelope, RunEventKind};
 pub use schema::RUN_EVENT_SCHEMA;
