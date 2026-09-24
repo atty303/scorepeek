@@ -1180,7 +1180,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 &self.assets,
                 &self.report,
                 &self.output,
-                &scorepeek_overlay::editor_sample_state(),
+                &scorepeek_overlay_runtime::sample::editor_sample_state(),
                 &mut self.skin_updates,
                 &mut self.runtime_creates,
                 &mut self.next_skin_render,
@@ -1382,7 +1382,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 &package,
                 &report,
                 Some(&canvas.output),
-                &scorepeek_overlay::editor_sample_state(),
+                &scorepeek_overlay_runtime::sample::editor_sample_state(),
             )?;
             Ok(Self {
                 canvas: canvas.clone(),
@@ -2995,7 +2995,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
     assert!(!closed_display_ids.is_empty());
-    let state = scorepeek_overlay::editor_sample_state();
+    let state = scorepeek_overlay_runtime::sample::editor_sample_state();
     let display = fake
         .displays
         .values_mut()

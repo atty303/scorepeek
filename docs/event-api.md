@@ -1,5 +1,9 @@
 # Event API v5
 
+The core supplies typed domain decisions. `scorepeek-runtime` projects their
+public contract names and derives RESULT `play_mode` from `play_type`. The
+MUSIC SELECT best observation ID, revision, and layout are determined by core.
+
 `scorepeek run` owns the stable Unix socket `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A connection
 receives one UTF-8 NDJSON `scorepeek-event-snapshot-v5` record followed by
 `scorepeek-event-v5` records. There is no request, handshake, subscription message, ACK, retained

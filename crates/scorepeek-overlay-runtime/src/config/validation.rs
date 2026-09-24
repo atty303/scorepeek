@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::{AspectRatio, Backend};
+use scorepeek_overlay::{AspectRatio, Backend};
 
 use super::PENDING_WAYLAND_OUTPUT_ID;
 use super::layout::Canvas;
@@ -22,7 +22,7 @@ pub fn validate_canvases(canvases: &[Canvas]) -> (Vec<Canvas>, Vec<ConfigIssue>)
     let mut issues = Vec::new();
     for canvas in canvases {
         match validate_canvas(canvas, &mut canvas_ids, &mut canvas_names)
-            .and_then(|()| crate::validate_skin_id(canvas.skin.name()))
+            .and_then(|()| scorepeek_overlay::skin::validate_id(canvas.skin.name()))
         {
             Ok(()) => valid.push(canvas.clone()),
             Err(message) => issues.push(ConfigIssue {

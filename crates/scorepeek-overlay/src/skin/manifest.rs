@@ -36,7 +36,7 @@ impl std::str::FromStr for Skin {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        crate::validate_skin_id(value)?;
+        super::validate_id(value)?;
         let mut ids = SKIN_IDS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

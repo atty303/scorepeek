@@ -2,9 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Backend, Skin};
+use scorepeek_overlay::{Backend, Skin};
 
-pub use crate::{AspectRatio, CanvasPresentation, WidgetKind, WidgetLayout, WidgetSettings};
+pub use scorepeek_overlay::{
+    AspectRatio, CanvasPresentation, WidgetKind, WidgetLayout, WidgetSettings,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -16,7 +18,7 @@ pub struct Canvas {
     #[serde(default)]
     pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(default)]
-    pub show_on: Option<Vec<crate::ScreenKind>>,
+    pub show_on: Option<Vec<scorepeek_overlay::ScreenKind>>,
     #[serde(default = "default_opacity_percent")]
     pub opacity_percent: u8,
     pub output: String,

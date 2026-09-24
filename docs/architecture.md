@@ -55,7 +55,7 @@ The ordinary game-session process is Rust. It loads one active catalog, the
 registered PP-OCRv6-small text bundle, the repository-registered numeric manifest and raw ONNX
 embedded in the binary, and one explicitly selected capture backend before admitting recognition
 work. Core owns shared bounded text and numeric OCR worker groups, their ORT sessions,
-field prefetch and assembly, bounded parallel catalog scoring, and domain projection.
+field prefetch and assembly, bounded parallel catalog scoring, and typed domain decisions.
 The pools are independent of session state; separate session handles share model workers
 while keeping pending inputs and catalog binding isolated. Runtime owns whole-frame admission,
 capture cadence, busy skips, and diagnostic transport. Corpus replay uses the same core field
@@ -198,6 +198,9 @@ transitions. Runtime owns the diagnostic event types, schema and display labels,
 as well as the projection of domain decisions into Event API v5 and SQLite score
 consumption. The diagnostic record contract is described in
 [runtime diagnostics](diagnostics.md).
+Core retains observation identity, revision, and recognition layout semantics.
+Runtime adds Event API contract names and derives RESULT `play_mode` from the
+typed `play_type` when projecting domain values into public records.
 
 ## Events and score persistence
 
@@ -217,14 +220,18 @@ not treat a live RESULT payload as committed history.
 
 ## Overlay boundary
 
-Wayland and OBS are independent consumers of the same public event and SQLite
-state. They share the Dioxus editor model, semantic presentation, installable
-skin ABI, and canvas/widget document. Backend adapters own only transport,
-surface lifecycle, input normalization, and rendering differences.
-The portable `scorepeek-overlay` crate also serves the browser Wasm client.
-`scorepeek-overlay-runtime` owns the shared native Event API feed and reconnection,
-SQLite history projection, the versioned overlay TOML document and migration,
-configuration storage, skin package storage, and ZIP structure checks. It passes
+Wayland and the OBS browser host use the same native Feed. It folds public Event
+API records, queries committed SQLite history, and converts that history to
+display state. The OBS host sends this state to the browser client; the client
+does not query SQLite or reinterpret Event API records. Both adapters share
+the Dioxus editor model, semantic presentation, installable skin ABI, and
+canvas/widget presentation types in `scorepeek-overlay`. That crate owns the
+types, editor model, and rendering used by the browser client Wasm.
+`scorepeek-overlay-runtime` owns the Feed and reconnection, SQLite history
+projection, persisted canvas/widget types and validation, native editor control
+protocol, editor sample state, shared CSS, the versioned overlay TOML document
+and migration, configuration storage, skin package storage, and ZIP structure
+checks. It passes
 shared child settings plus backend-specific startup settings to each child. The OBS
 listener address is validated as loopback when OBS starts; loading or saving the
 shared document and starting Wayland do not depend on that address. Installation checks ZIP and manifest structure
@@ -301,8 +308,8 @@ approved repository artifact. See [private corpus](private-corpus.md).
 | Screen, song/chart, and attempt semantics | Recognition and temporal Rust modules |
 | Public live compatibility | Event API v5 typed projection |
 | Durable local score state | `scorepeek-scores` SQLite consumer |
-| Portable canvas/editor state and skin ABI | `scorepeek-overlay` and `scorepeek-skin-sdk` |
-| Native overlay feed, configuration, and skin storage | `scorepeek-overlay-runtime` |
+| Browser Wasm canvas/editor presentation and skin identity | `scorepeek-overlay` and `scorepeek-skin-sdk` |
+| Native Feed, SQLite display projection, persisted configuration, control, CSS, and skin storage | `scorepeek-overlay-runtime` |
 | Native skin execution and DOM rendering | `scorepeek-overlay-wayland` |
 | Private replay evidence | Canonical recording and external private corpus |
 

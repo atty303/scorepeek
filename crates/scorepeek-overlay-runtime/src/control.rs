@@ -7,9 +7,8 @@ use std::{
     time::Duration,
 };
 
-pub use scorepeek_overlay::editor::protocol::{
-    CONTROL_MESSAGE_MAX_BYTES, Request, Response, decode_message, encode_message,
-};
+mod protocol;
+pub use protocol::{CONTROL_MESSAGE_MAX_BYTES, Request, Response, decode_message, encode_message};
 
 #[cfg(not(test))]
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);

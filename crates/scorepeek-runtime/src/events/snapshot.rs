@@ -2,9 +2,13 @@
 #[cfg(test)]
 use super::RUN_EVENT_SCHEMA;
 use super::{RunEvent, RunEventKind};
+use scorepeek_core::catalog::PlayType;
 #[cfg(test)]
 use scorepeek_core::event::MusicSelectionUnresolvedReason;
-use scorepeek_core::event::{MusicSelectBestSnapshot, MusicSelectionState, ResultState};
+use scorepeek_core::event::{
+    MusicSelectBestSnapshot, MusicSelectionState, ResultDomainEvent, ResultRetractionReason,
+    ResultState, SongPresentation,
+};
 use scorepeek_core::session::timeline::SemanticEpisodePhase;
 use serde::Serialize;
 use std::io::{self, Write};
@@ -101,7 +105,7 @@ enum EventKind {
     },
     ResultChanged {
         source_sequence: u64,
-        state: ResultState,
+        state: PublicResultState,
     },
     MusicSelectionChanged {
         screen_episode_id: u64,
@@ -110,7 +114,7 @@ enum EventKind {
         state: MusicSelectionState,
     },
     MusicSelectBestObserved {
-        snapshot: Option<Box<MusicSelectBestSnapshot>>,
+        snapshot: Option<Box<PublicMusicSelectBestSnapshot>>,
     },
     StatusChanged {
         status: Status,
@@ -119,6 +123,93 @@ enum EventKind {
         revision: u64,
         chart: crate::scores::ChartIdentity,
     },
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct PublicResultEvent {
+    contract: &'static str,
+    play_mode: &'static str,
+    #[serde(flatten)]
+    domain: ResultDomainEvent,
+}
+
+impl From<ResultDomainEvent> for PublicResultEvent {
+    fn from(domain: ResultDomainEvent) -> Self {
+        let play_mode = match domain.play_type {
+            PlayType::Single => "single_play",
+            PlayType::Double => "double_play",
+        };
+        Self {
+            contract: "scorepeek-result-detected-v4",
+            play_mode,
+            domain,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum PublicResultState {
+    Inactive,
+    Provisional {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<PublicResultEvent>,
+    },
+    Retracted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<PublicResultEvent>,
+        reason: ResultRetractionReason,
+    },
+    Confirmed {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<PublicResultEvent>,
+    },
+}
+
+impl From<ResultState> for PublicResultState {
+    fn from(state: ResultState) -> Self {
+        match state {
+            ResultState::Inactive => Self::Inactive,
+            ResultState::Provisional { song, result } => Self::Provisional {
+                song,
+                result: Box::new((*result).into()),
+            },
+            ResultState::Retracted {
+                song,
+                result,
+                reason,
+            } => Self::Retracted {
+                song,
+                result: Box::new((*result).into()),
+                reason,
+            },
+            ResultState::Confirmed { song, result } => Self::Confirmed {
+                song,
+                result: Box::new((*result).into()),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PublicMusicSelectBestSnapshot {
+    contract: &'static str,
+    source: &'static str,
+    #[serde(flatten)]
+    domain: MusicSelectBestSnapshot,
+}
+
+impl From<MusicSelectBestSnapshot> for PublicMusicSelectBestSnapshot {
+    fn from(domain: MusicSelectBestSnapshot) -> Self {
+        Self {
+            contract: "scorepeek-music-select-best-snapshot-v4",
+            source: "music_select",
+            domain,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -157,7 +248,7 @@ impl PublicState {
             capture: None,
             kind: EventKind::ResultChanged {
                 source_sequence: 0,
-                state: ResultState::Inactive,
+                state: PublicResultState::Inactive,
             },
         };
         Self {
@@ -329,7 +420,7 @@ impl PublicState {
             } => (
                 EventKind::ResultChanged {
                     source_sequence: *source_sequence,
-                    state: state.clone(),
+                    state: state.clone().into(),
                 },
                 Self::capture(Some(session_id)),
             ),
@@ -353,7 +444,7 @@ impl PublicState {
                 snapshot,
             } => (
                 EventKind::MusicSelectBestObserved {
-                    snapshot: Some(Box::new(snapshot.clone())),
+                    snapshot: Some(Box::new(snapshot.clone().into())),
                 },
                 Self::capture(Some(session_id)),
             ),

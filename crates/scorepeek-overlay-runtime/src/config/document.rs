@@ -2,7 +2,7 @@ use scorepeek_overlay::{Backend, ScreenKind, Skin, WidgetKind, WidgetSettings};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use scorepeek_overlay::config::{Canvas, Widget};
+use super::{Canvas, Widget};
 
 pub const SCHEMA_VERSION: u32 = 9;
 
@@ -69,16 +69,14 @@ impl OverlayConfig {
     /// Validates native settings and returns individually valid canvases.
     /// # Errors
     /// Returns an unsupported schema or invalid shared setting.
-    pub fn validated(
-        &self,
-    ) -> Result<(Vec<Canvas>, Vec<scorepeek_overlay::config::ConfigIssue>), String> {
+    pub fn validated(&self) -> Result<(Vec<Canvas>, Vec<super::ConfigIssue>), String> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
         }
         if self.unknown_grace_ms > 10_000 {
             return Err("overlay unknown_grace_ms must be at most 10000".into());
         }
-        Ok(scorepeek_overlay::config::validate_canvases(&self.canvases))
+        Ok(super::validate_canvases(&self.canvases))
     }
 
     /// Parses the OBS listener at the OBS startup boundary.
@@ -219,7 +217,7 @@ pub fn visual_debug_config(skin: Skin) -> OverlayConfig {
                 show_on,
                 opacity_percent: 100,
                 output: if backend == Backend::Obs {
-                    scorepeek_overlay::config::OBS_OUTPUT_ID.into()
+                    super::OBS_OUTPUT_ID.into()
                 } else {
                     "DP-1".into()
                 },

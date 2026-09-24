@@ -115,12 +115,12 @@ dx bundle --package scorepeek-overlay-web-client --web --release --locked --debu
 touch "$complete"
 '''
 sources = [
+  "crates/scorepeek-overlay-runtime/styles/**",
   "crates/scorepeek-overlay-wayland-handles/src/**",
   "crates/scorepeek-overlay-wayland/src/**",
   "crates/scorepeek-overlay-web-client/src/**",
   "crates/scorepeek-overlay-web-host/src/**",
   "crates/scorepeek-overlay/src/**",
-  "crates/scorepeek-overlay/styles/**",
   "Cargo.lock",
   "Cargo.toml",
   "crates/scorepeek-overlay-wayland-handles/Cargo.toml",

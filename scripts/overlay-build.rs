@@ -25,7 +25,7 @@ fn main() -> io::Result<()> {
         "crates/scorepeek-overlay-web-client/src",
         "crates/scorepeek-overlay/Cargo.toml",
         "crates/scorepeek-overlay/src",
-        "crates/scorepeek-overlay/styles",
+        "crates/scorepeek-overlay-runtime/styles",
         "crates/scorepeek-overlay-web-host/Cargo.toml",
         "crates/scorepeek-overlay-web-host/src",
         "crates/scorepeek-overlay-wayland/Cargo.toml",

@@ -78,16 +78,10 @@ fn build_result_domain_event(
         unreachable!("accepted numeric view stores accepted performance");
     };
     ResultDomainEvent {
-        contract: "scorepeek-result-detected-v4".to_owned(),
         attempt_id: attempt.attempt_id,
         parent_attempt_id: attempt.parent_attempt_id,
         scorepeek_song_id: numeric.song_id,
         play_side,
-        play_mode: match numeric.chart.key.play_type {
-            PlayType::Single => "single_play",
-            PlayType::Double => "double_play",
-        }
-        .to_owned(),
         play_type: numeric.chart.key.play_type,
         difficulty: numeric.chart.key.difficulty,
         level: numeric.chart.level,

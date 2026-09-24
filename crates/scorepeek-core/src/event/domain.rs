@@ -10,13 +10,6 @@ use crate::recognition::result::{
 use crate::recognition::screen::ResultPanelSide;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct DomainEvent {
-    pub event: String,
-    #[serde(flatten)]
-    pub data: serde_json::Value,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SongPresentation {
     pub scorepeek_song_id: ScorepeekSongId,
@@ -99,13 +92,11 @@ pub enum NumericResultEventSuppressionReason {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResultDomainEvent {
-    pub contract: String,
     pub attempt_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_attempt_id: Option<u64>,
     pub scorepeek_song_id: ScorepeekSongId,
     pub play_side: PlaySide,
-    pub play_mode: String,
     pub play_type: PlayType,
     pub difficulty: Difficulty,
     pub level: u8,
@@ -319,8 +310,6 @@ impl BestChart {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MusicSelectBestSnapshot {
-    pub contract: String,
-    pub source: String,
     pub layout: String,
     pub observation_id: String,
     pub session_id: String,
@@ -506,8 +495,6 @@ impl MusicSelectResolverState {
             _ => None,
         };
         let snapshot = MusicSelectBestSnapshot {
-            contract: "scorepeek-music-select-best-snapshot-v4".to_owned(),
-            source: "music_select".to_owned(),
             layout: "scorepeek-music-select-best-layout-v1".to_owned(),
             observation_id: format!(
                 "{session_id}:{}:{}:{}",

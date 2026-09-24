@@ -277,7 +277,7 @@ impl VisualDebugSession {
             .as_ref()
             .copied()
             .ok_or("native overlay did not publish its projection")?;
-        let state = scorepeek_overlay::editor_sample_state();
+        let state = scorepeek_overlay_runtime::sample::editor_sample_state();
         let mut skins = std::collections::BTreeMap::new();
         let mounted_canvases = match &*projection.borrow() {
             NativeDocumentProjection::Editor(editor_projection) => {

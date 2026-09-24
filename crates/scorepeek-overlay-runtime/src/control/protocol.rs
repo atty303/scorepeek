@@ -1,4 +1,4 @@
-use crate::{Backend, CanvasPresentation};
+use scorepeek_overlay::{Backend, CanvasPresentation};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Maximum wire size of one newline-delimited overlay control request or response.

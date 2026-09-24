@@ -266,14 +266,12 @@ pub fn validate_label(
 
 fn result_event_matches(event: &ResultDomainEvent, episode: &RegressionEpisode) -> bool {
     let expected = &episode.expected_result;
-    event.contract == "scorepeek-result-detected-v4"
-        && event.scorepeek_song_id.as_uuid().to_string() == episode.expected_song_id
+    event.scorepeek_song_id.as_uuid().to_string() == episode.expected_song_id
         && event.clear_type == episode.expected_clear_type
         && matches!(
             (event.play_side, expected.play_side.as_str()),
             (PlaySide::OnePlayer, "one_player") | (PlaySide::TwoPlayer, "two_player")
         )
-        && event.play_mode == expected.play_mode
         && event.play_type == expected.play_type
         && event.difficulty == expected.difficulty
         && event.level == expected.level

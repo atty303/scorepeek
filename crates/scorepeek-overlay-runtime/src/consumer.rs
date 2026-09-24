@@ -1,5 +1,5 @@
 //! Public snapshot/live fold. Recognition and score-writing authority remain upstream.
-use crate::{Chart, History, LampState, OverlayState, ScreenKind};
+use scorepeek_overlay::{Chart, History, LampState, OverlayState, ScreenKind};
 use serde::Deserialize;
 use serde_json::Value;
 

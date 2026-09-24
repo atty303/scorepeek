@@ -44,6 +44,11 @@ and reuse. Use the Event API for live recognition events and SQLite for recorded
 scores and history to build your own dashboards, analysis tools, or integrations.
 The included overlays are optional.
 
+The core returns typed recognition and play decisions. The runtime projects
+them into the versioned Event API and saves scores through the SQLite consumer.
+The native overlay feed reads public events and committed history for both
+Wayland and OBS; the browser client receives display state from its host.
+
 ### For your screen and your stream
 
 Show an overlay on your own screen, in an OBS broadcast, or both. It is just as

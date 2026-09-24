@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 mod components;
 pub mod effect;
 pub mod model;
-pub mod projection;
-pub mod protocol;
 pub mod runtime;
 pub use components::{
     Accordion, AccordionSection, Button, IconButton, ListPicker, ListPickerOption, NavigatorItem,

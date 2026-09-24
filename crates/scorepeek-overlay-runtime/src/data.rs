@@ -1,4 +1,4 @@
-use scorepeek_overlay::editor::projection::Consumer;
+use crate::consumer::Consumer;
 use scorepeek_overlay::{BestView, GraphPlay, History, HistoryPlay, OverlayState, ResultDetail};
 use serde::{Deserialize, Serialize};
 use std::{

@@ -78,8 +78,8 @@ pub(crate) async fn stage_editor_index(State(shared): State<Arc<Shared>>) -> Res
     };
     let initial = format!(
         "<head><script id=\"scorepeek-stage\" type=\"application/json\">{canvases}</script><script id=\"scorepeek-skins\" type=\"application/json\">{skins}</script><style>{}{} </style>",
-        scorepeek_overlay::EDITOR_CSS,
-        include_str!("../../../scorepeek-overlay/styles/stage.css")
+        scorepeek_overlay_runtime::style::EDITOR_CSS,
+        include_str!("../../../scorepeek-overlay-runtime/styles/stage.css")
     );
     let html = html.replacen("<head>", &initial, 1);
     (

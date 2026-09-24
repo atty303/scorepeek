@@ -21,6 +21,11 @@ change recognition or public event authority. Import selects the completed
 canonical directory itself; it never searches a run directory or reads the
 runtime diagnostic stream.
 
+Replay compares typed core transitions with reviewed result values and MUSIC
+SELECT state. Event API contract names and RESULT `play_mode` are added by the
+runtime projection and are not replay oracle outputs; the reviewed label still
+records `play_mode` alongside `play_type` and checks their consistency.
+
 ## Import and review
 
 Import verifies the manifest, tick chronology, complete segment coverage,

@@ -18,7 +18,7 @@ pub(crate) fn display_state(
     sample: bool,
 ) -> scorepeek_overlay::OverlayState {
     if sample && state.system == scorepeek_overlay::LampState::Inactive {
-        scorepeek_overlay::editor_sample_state()
+        scorepeek_overlay_runtime::sample::editor_sample_state()
     } else {
         state
     }

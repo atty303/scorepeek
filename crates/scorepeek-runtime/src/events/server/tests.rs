@@ -1123,7 +1123,20 @@ fn provisional_result_requires_two_numeric_observations_and_an_attempt_id() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(provisional.contract, "scorepeek-result-detected-v4");
+    assert_eq!(provisional.play_type, PlayType::Single);
+    let public = frontend_snapshot(&output);
+    assert_eq!(
+        public["result"]["state"]["result"]["contract"],
+        "scorepeek-result-detected-v4"
+    );
+    assert_eq!(
+        public["result"]["state"]["result"]["play_mode"],
+        "single_play"
+    );
+    let mut double = provisional.as_ref().clone();
+    double.play_type = PlayType::Double;
+    let double_public = serde_json::to_value(event_api::PublicResultEvent::from(double)).unwrap();
+    assert_eq!(double_public["play_mode"], "double_play");
     let encoded = output
         .headless_events
         .iter()
@@ -2216,12 +2229,10 @@ fn result_history_remains_bounded_and_survives_session_changes() {
             "session-1",
             source_sequence,
             ResultDomainEvent {
-                contract: "scorepeek-result-detected-v4".to_owned(),
                 attempt_id: source_sequence,
                 parent_attempt_id: None,
                 scorepeek_song_id: song_id,
                 play_side: PlaySide::OnePlayer,
-                play_mode: "single_play".to_owned(),
                 play_type: PlayType::Single,
                 difficulty: Difficulty::Normal,
                 level: 5,
@@ -2444,6 +2455,14 @@ fn assert_connected_best(output: &RoutineOutput, observation_id: &str) {
         connected["music_select_best"]["snapshot"]["observation_id"],
         observation_id
     );
+    assert_eq!(
+        connected["music_select_best"]["snapshot"]["contract"],
+        "scorepeek-music-select-best-snapshot-v4"
+    );
+    assert_eq!(
+        connected["music_select_best"]["snapshot"]["source"],
+        "music_select"
+    );
 }
 
 #[test]
@@ -2596,10 +2615,10 @@ fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot(
     let connected: Value =
         serde_json::from_slice(&snapshot_bytes(&output.state, &ChannelHealth::default()).unwrap())
             .unwrap();
-    assert_eq!(
-        connected["music_select_best"]["snapshot"],
-        serde_json::to_value(&published.snapshot).unwrap()
-    );
+    let mut expected = serde_json::to_value(&published.snapshot).unwrap();
+    expected["contract"] = json!("scorepeek-music-select-best-snapshot-v4");
+    expected["source"] = json!("music_select");
+    assert_eq!(connected["music_select_best"]["snapshot"], expected);
 }
 
 #[test]

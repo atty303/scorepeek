@@ -623,7 +623,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
     });
     match &*projection.borrow() {
         NativeDocumentProjection::Display { canvas, visible } => rsx! {
-            style { {scorepeek_overlay::HOST_CSS} }
+            style { {scorepeek_overlay_runtime::style::HOST_CSS} }
             EditorSurface { onaction:onsurface,
                 div { class:"canvas-content",style:format!("display:{};opacity:{}",if *visible{"block"}else{"none"},f32::from(canvas.opacity_percent)/100.0),
                     div { id:"scorepeek-skin-root", class:"scorepeek-skin-scope", "data-backend":"native", style:"position:absolute;inset:0" }
@@ -633,7 +633,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         NativeDocumentProjection::Editor(stage) => {
             let selected = stage.selected_canvas.as_ref();
             rsx! {
-                style { {scorepeek_overlay::HOST_CSS} }
+                style { {scorepeek_overlay_runtime::style::HOST_CSS} }
                 EditorSurface { onaction:onsurface,
                     div { id:"scorepeek-skin-root", style:"display:none" }
                     for canvas in &stage.canvases {
@@ -2287,7 +2287,7 @@ impl App {
                 let paint_started = Instant::now();
                 let editor_state =
                     if self.current_state.system == scorepeek_overlay::LampState::Inactive {
-                        scorepeek_overlay::editor_sample_state()
+                        scorepeek_overlay_runtime::sample::editor_sample_state()
                     } else {
                         self.current_state.clone()
                     };
@@ -2770,7 +2770,7 @@ fn document_config_inner_with_handle(
     }
     let config = DocumentConfig {
         font_ctx: Some(font_ctx),
-        ua_stylesheets: Some(vec![scorepeek_overlay::HOST_CSS.into()]),
+        ua_stylesheets: Some(vec![scorepeek_overlay_runtime::style::HOST_CSS.into()]),
         base_url: Some("http://scorepeek.invalid/".into()),
         net_provider: Some(Arc::new(EmbeddedSkinAssets {
             cache: Arc::clone(&cache),
