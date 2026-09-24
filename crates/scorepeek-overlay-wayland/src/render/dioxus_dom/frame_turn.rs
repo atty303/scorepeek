@@ -124,6 +124,7 @@ pub(super) fn run_native_display_turn(
     document: &mut DioxusDocument,
     assets: &Arc<SkinAssetCache>,
     full_layout_pending: &mut bool,
+    resolve_pending: &mut bool,
     surface_state: &mut NativeDisplaySurfaceState,
     work: &mut FrameWorkProfile,
     waker: &Waker,
@@ -160,11 +161,12 @@ pub(super) fn run_native_display_turn(
         return Ok(NativeDisplayTurnResult::default());
     }
     let dioxus_changed = poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    *resolve_pending |= dioxus_changed;
     render_native_frame(
         &mut document.inner.borrow_mut(),
         input.seconds,
-        true,
         full_layout_pending,
+        resolve_pending,
         presenter,
         assets,
         work,
@@ -197,6 +199,7 @@ pub(super) fn run_native_editor_stage_turn(
     runtime_create_count: &mut u64,
     next_skin_render: &mut Option<Instant>,
     full_layout_pending: &mut bool,
+    resolve_pending: &mut bool,
     work: &mut FrameWorkProfile,
     waker: &Waker,
     frame_start: &FrameWorkSample,
@@ -213,6 +216,7 @@ pub(super) fn run_native_editor_stage_turn(
     // frame callbacks.
     let dioxus_changed =
         frame && poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    *resolve_pending |= dioxus_changed;
     let dragging = matches!(&*projection.borrow(), NativeDocumentProjection::Editor(editor_projection) if editor_projection.drag.is_some());
     let mut reconciliation = EditorSkinReconciliation::default();
     let mut skin_changed = false;
@@ -240,6 +244,7 @@ pub(super) fn run_native_editor_stage_turn(
             runtime_create_count,
             work,
         )?;
+        *resolve_pending |= reconciliation.tree_changed;
         if reconciliation.retry_owner {
             updates.request();
         }
@@ -259,8 +264,8 @@ pub(super) fn run_native_editor_stage_turn(
         render_native_frame(
             &mut document.inner.borrow_mut(),
             input.seconds,
-            true,
             full_layout_pending,
+            resolve_pending,
             presenter,
             assets,
             work,
@@ -285,8 +290,8 @@ pub(super) fn run_native_editor_stage_turn(
 fn render_native_frame(
     document: &mut blitz_dom::BaseDocument,
     seconds: f64,
-    visible: bool,
     full_layout_pending: &mut bool,
+    resolve_pending: &mut bool,
     presenter: &mut impl NativeFramePresenter,
     assets: &SkinAssetCache,
     work: &mut FrameWorkProfile,
@@ -309,17 +314,27 @@ fn render_native_frame(
             .resource_lookup_ns
             .load(std::sync::atomic::Ordering::Relaxed),
     };
-    let _ = visible;
-    let incremental_layout = document.incremental_layout();
-    if *full_layout_pending {
-        document.set_incremental_layout(false);
-    }
-    work.measure("blitz_layout", || document.resolve(seconds));
-    work.measure("resource_decode", || document.handle_messages());
-    work.measure("blitz_layout", || document.resolve(seconds));
-    if *full_layout_pending {
-        document.set_incremental_layout(incremental_layout);
-        *full_layout_pending = false;
+    if *resolve_pending || document.is_animating() {
+        let incremental_layout = document.incremental_layout();
+        if *full_layout_pending {
+            document.set_incremental_layout(false);
+        }
+        *resolve_pending = false;
+        work.measure("blitz_layout", || document.resolve(seconds));
+        if *full_layout_pending {
+            document.set_incremental_layout(incremental_layout);
+            *full_layout_pending = false;
+        }
+        if assets
+            .resource_lookup_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > lookup_before.calls
+        {
+            // The embedded provider completes synchronously, but Blitz reads its response at
+            // the start of resolve. Keep its image/layout damage for the next compositor frame.
+            work.measure("resource_decode", || document.handle_messages());
+            *resolve_pending = true;
+        }
     }
     let (width, height) = document.viewport().window_size;
     let scale = document.viewport().scale_f64();

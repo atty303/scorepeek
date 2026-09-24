@@ -91,9 +91,18 @@ pub(crate) fn dispatch_native_event(
             consumer.pointer_scroll_event([dx, dy], [x, y]);
             outcome.input_damage = true;
         }
-        Event::Text(command) => consumer.text_event(&command),
-        Event::Ime(update) => consumer.ime_event(update),
-        Event::KeyboardFocus(focused) => consumer.keyboard_focus_event(focused),
+        Event::Text(command) => {
+            consumer.text_event(&command);
+            outcome.input_damage = true;
+        }
+        Event::Ime(update) => {
+            consumer.ime_event(update);
+            outcome.input_damage = true;
+        }
+        Event::KeyboardFocus(focused) => {
+            consumer.keyboard_focus_event(focused);
+            outcome.input_damage = true;
+        }
         Event::Frame => outcome.frame = true,
         Event::Closed => outcome.closed = true,
     }

@@ -1778,6 +1778,7 @@ struct App {
     paint_count: u32,
     render_calls: u32,
     full_layout_pending: bool,
+    resolve_pending: bool,
     editor_skin_updates: EditorSkinUpdates,
     report: Rc<RefCell<RunReport>>,
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
@@ -1794,6 +1795,7 @@ struct App {
     display_skin: Option<NativeDisplaySkin>,
     editor_skin_previews: std::collections::BTreeMap<String, EditorSkinPreview>,
     next_skin_render: Option<Instant>,
+    display_skin_update_pending: bool,
     skin_assets: Arc<SkinAssetCache>,
     skin_runtime_create_count: u64,
     frame_work: FrameWorkProfile,
@@ -2019,6 +2021,7 @@ impl App {
             paint_count: 0,
             render_calls: 0,
             full_layout_pending: false,
+            resolve_pending: true,
             editor_skin_updates,
             report,
             feed_state,
@@ -2039,6 +2042,7 @@ impl App {
             } else {
                 display_next_render
             },
+            display_skin_update_pending: false,
             skin_assets,
             skin_runtime_create_count: if role == SurfaceRole::DisplayCanvas {
                 1
@@ -2268,6 +2272,7 @@ impl App {
                 }
                 configured |= outcome.configured;
                 frame |= outcome.frame;
+                self.resolve_pending |= outcome.input_damage || outcome.configured;
             }
             let latest = self
                 .feed_state
@@ -2297,11 +2302,11 @@ impl App {
                     if self.editing() {
                         self.editor_skin_updates.request();
                     } else {
-                        self.render_skin(&latest)?;
+                        self.display_skin_update_pending = true;
                     }
                 }
             } else if visibility_changed && visible && !self.editing() {
-                self.render_skin(&latest)?;
+                self.display_skin_update_pending = true;
             }
             if visible
                 && self
@@ -2311,8 +2316,12 @@ impl App {
                 if self.editing() {
                     self.editor_skin_updates.request();
                 } else {
-                    self.render_skin(&latest)?;
+                    self.display_skin_update_pending = true;
                 }
+            }
+            if frame && visible && !self.editing() && self.display_skin_update_pending {
+                self.display_skin_update_pending = false;
+                self.render_skin(&latest)?;
             }
             let now = self.started.elapsed();
             if self.editing() {
@@ -2340,6 +2349,7 @@ impl App {
                     &mut self.skin_runtime_create_count,
                     &mut self.next_skin_render,
                     &mut self.full_layout_pending,
+                    &mut self.resolve_pending,
                     &mut self.frame_work,
                     &self.waker,
                     &frame_start,
@@ -2429,6 +2439,7 @@ impl App {
                         &mut self.document,
                         &self.skin_assets,
                         &mut self.full_layout_pending,
+                        &mut self.resolve_pending,
                         &mut self.surface_state,
                         &mut self.frame_work,
                         &self.waker,
@@ -2572,6 +2583,7 @@ impl App {
                 &serde_json::json!({"run_id":self.report.borrow().run_id,"output":self.surface_output,"session_id":session_id,"revision":revision}),
             );
         }
+        self.resolve_pending |= changed;
         changed
     }
 
@@ -2580,13 +2592,14 @@ impl App {
             .display_skin
             .as_mut()
             .ok_or("display skin runtime missing outside display role")?;
-        render_native_display_skin(
+        self.resolve_pending |= render_native_display_skin(
             &mut self.document,
             &self.canvas,
             display,
             state,
             &mut self.next_skin_render,
-        )
+        )?;
+        Ok(())
     }
 
     fn configure(

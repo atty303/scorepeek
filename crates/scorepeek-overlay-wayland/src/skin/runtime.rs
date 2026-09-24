@@ -368,6 +368,7 @@ struct Mounted {
     kind: MountedKind,
     node: blitz_dom::NodeId,
     attributes: BTreeMap<String, String>,
+    text: Option<String>,
     children: Vec<Mounted>,
 }
 
@@ -409,17 +410,21 @@ impl NativeTree {
     }
 
     /// Reconciles a validated full tree by stable key.
-    pub fn apply(&mut self, document: &mut blitz_dom::BaseDocument, output: &RenderOutput) {
+    pub fn apply(&mut self, document: &mut blitz_dom::BaseDocument, output: &RenderOutput) -> bool {
         let old = self.mounted.take();
+        let old_root = old.as_ref().map(|mounted| mounted.node);
         let mut mutator = document.mutate();
-        let mounted = reconcile(&mut mutator, old, &output.tree, false);
-        mutator.set_attribute(
-            mounted.node,
-            attribute_name("data-scorepeek-tree-root"),
-            &self.marker,
-        );
-        mutator.append_children(self.root, &[self.style, mounted.node]);
+        let (mounted, changed) = reconcile(&mut mutator, old, &output.tree, false);
+        if old_root != Some(mounted.node) {
+            mutator.set_attribute(
+                mounted.node,
+                attribute_name("data-scorepeek-tree-root"),
+                &self.marker,
+            );
+            mutator.append_children(self.root, &[mounted.node]);
+        }
         self.mounted = Some(mounted);
+        changed
     }
 
     pub fn replace(
@@ -474,7 +479,7 @@ fn reconcile(
     old: Option<Mounted>,
     next: &Node,
     parent_svg: bool,
-) -> Mounted {
+) -> (Mounted, bool) {
     let expected = match next {
         Node::Element { tag, .. } => MountedKind::Element(tag.clone()),
         Node::Text { .. } => MountedKind::Text,
@@ -490,18 +495,26 @@ fn reconcile(
     match next {
         Node::Text { key, text } => {
             if let Some(mut mounted) = reusable {
-                mutator.set_node_text(mounted.node, text);
+                let changed = mounted.text.as_deref() != Some(text);
+                if changed {
+                    mutator.set_node_text(mounted.node, text);
+                    mounted.text = Some(text.clone());
+                }
                 mounted.children.clear();
                 mounted.attributes.clear();
-                mounted
+                (mounted, changed)
             } else {
-                Mounted {
-                    key: key.clone(),
-                    kind: MountedKind::Text,
-                    node: mutator.create_text_node(text),
-                    attributes: BTreeMap::new(),
-                    children: Vec::new(),
-                }
+                (
+                    Mounted {
+                        key: key.clone(),
+                        kind: MountedKind::Text,
+                        node: mutator.create_text_node(text),
+                        attributes: BTreeMap::new(),
+                        text: Some(text.clone()),
+                        children: Vec::new(),
+                    },
+                    true,
+                )
             }
         }
         Node::Element {
@@ -512,13 +525,16 @@ fn reconcile(
         } => {
             let svg = parent_svg || tag == "svg";
             let children_are_svg = svg && tag != "foreignObject";
+            let reused = reusable.is_some();
             let mut mounted = reusable.unwrap_or_else(|| Mounted {
                 key: key.clone(),
                 kind: MountedKind::Element(tag.clone()),
                 node: mutator.create_element(element_name(tag, svg), Vec::new()),
                 attributes: BTreeMap::new(),
+                text: None,
                 children: Vec::new(),
             });
+            let mut changed = !reused;
             for removed in mounted
                 .attributes
                 .keys()
@@ -527,38 +543,68 @@ fn reconcile(
                 .collect::<Vec<_>>()
             {
                 mutator.clear_attribute(mounted.node, attribute_name(&removed));
+                changed = true;
             }
             for (name, value) in attributes {
                 if mounted.attributes.get(name) != Some(value) {
                     mutator.set_attribute(mounted.node, attribute_name(name), value);
+                    changed = true;
                 }
             }
-            let mut prior = std::mem::take(&mut mounted.children)
-                .into_iter()
-                .map(|child| (child.key.clone(), child))
-                .collect::<BTreeMap<_, _>>();
-            let mut reconciled = Vec::with_capacity(children.len());
-            for child in children {
-                reconciled.push(reconcile(
-                    mutator,
-                    prior.remove(child.key()),
-                    child,
-                    children_are_svg,
-                ));
-            }
-            for removed in prior.into_values() {
-                mutator.remove_and_drop_node(removed.node);
-            }
-            let ids = reconciled
-                .iter()
-                .map(|child| child.node)
-                .collect::<Vec<_>>();
-            mutator.append_children(mounted.node, &ids);
+            let (reconciled, children_changed) = reconcile_children(
+                mutator,
+                mounted.node,
+                std::mem::take(&mut mounted.children),
+                children,
+                children_are_svg,
+            );
+            changed |= children_changed;
             mounted.attributes.clone_from(attributes);
             mounted.children = reconciled;
-            mounted
+            (mounted, changed)
         }
     }
+}
+
+fn reconcile_children(
+    mutator: &mut blitz_dom::DocumentMutator<'_>,
+    parent: blitz_dom::NodeId,
+    previous: Vec<Mounted>,
+    next: &[Node],
+    svg: bool,
+) -> (Vec<Mounted>, bool) {
+    let mut prior = previous
+        .into_iter()
+        .map(|child| (child.key.clone(), child))
+        .collect::<BTreeMap<_, _>>();
+    let mut reconciled = Vec::with_capacity(next.len());
+    let mut changed = false;
+    for child in next {
+        let (child, child_changed) = reconcile(mutator, prior.remove(child.key()), child, svg);
+        changed |= child_changed;
+        reconciled.push(child);
+    }
+    for removed in prior.into_values() {
+        mutator.remove_and_drop_node(removed.node);
+        changed = true;
+    }
+    let mut current = mutator.child_ids(parent).into_iter().collect::<Vec<_>>();
+    for (index, child) in reconciled.iter().enumerate() {
+        if current.get(index) == Some(&child.node) {
+            continue;
+        }
+        if let Some(previous_index) = current.iter().position(|id| *id == child.node) {
+            current.remove(previous_index);
+        }
+        if let Some(anchor) = current.get(index) {
+            mutator.insert_nodes_before(*anchor, &[child.node]);
+        } else {
+            mutator.append_children(parent, &[child.node]);
+        }
+        current.insert(index, child.node);
+        changed = true;
+    }
+    (reconciled, changed)
 }
 
 fn html_name(tag: &str) -> blitz_dom::QualName {

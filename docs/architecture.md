@@ -254,8 +254,10 @@ its buffer and suspends only the GPU presentation renderer while retaining the w
 DOM, and skin runtime. Reactivation restores the complete double-buffered layer state before its
 bufferless remap commit, waits for the layer-shell configure, resumes the renderer, and presents the
 already-retained skin tree. OBS expresses the same
-active/inactive meaning by including or removing the canvas iframe from composition. Skin runtime
-schedules drive Wasm/DOM updates independently of either backend's presentation mechanism.
+active/inactive meaning by including or removing the canvas iframe from composition. On Wayland,
+the skin schedule determines when an update becomes due; both display canvases and editor previews
+run that update on the next compositor frame. The included skins request native updates at roughly
+60 Hz. CSS animation remains driven by Blitz separately from Wasm skin updates.
 
 Browser integration and fake Wayland are the routine overlay completion gates.
 The checked-in nested compositor scenario is an opt-in host-dependent gate. Real OBS or a live

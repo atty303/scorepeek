@@ -72,15 +72,17 @@ admission flag. When a display canvas becomes inactive, its current buffer is de
 immediately; it does not wait for a transparent paint. Its DOM, renderer and skin runtime remain
 allocated, but the renderer's GPU presentation state is suspended and both the callback-driven
 presenter and the skin runtime schedule are paused. Becoming
-active performs an immediate skin render, restores size, anchor, margin, exclusivity and keyboard
+active queues a skin render for the next frame, restores size, anchor, margin, exclusivity and keyboard
 interactivity, and makes a bufferless commit. It waits for the layer-shell configure, resumes GPU
 presentation, then presents the retained DOM to remap the surface and resumes both loops. Frame
 callbacks received before that configure cannot admit the remap paint. `native_surface_transition`
 records the visibility/configure/frame inputs, surface state, paint/unmap result, and renderer state
 on both sides of each lifecycle boundary.
-The skin schedule (`idle`, `next-frame`, or `after-ms`) drives Wasm/DOM updates and is independent of
-the presenter callback rate. Repeated configure events with unchanged logical size, physical size
-and scale update no state.
+The skin schedule (`idle`, `next-frame`, or `after-ms`) determines when Wasm/DOM work becomes due;
+both native surface roles run due work on the next compositor frame. The included skins request
+native work about every 14 ms, resolving on a roughly 60 Hz frame boundary. A paint resolves Blitz
+at most once when DOM or input state changed or Blitz reports an active animation. Repeated configure
+events with unchanged logical size, physical size and scale update no state.
 
 For the OBS route, give the server a new dedicated configuration path and optionally a loopback
 listen address. The configuration file must not already exist, and non-loopback addresses are

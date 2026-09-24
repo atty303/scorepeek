@@ -1009,6 +1009,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         motion_seconds: f64,
         elapsed: Duration,
         full_layout_pending: bool,
+        resolve_pending: bool,
         paint_count: u64,
         physical_size: [u32; 2],
         scale: f32,
@@ -1072,6 +1073,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 motion_seconds: 0.0,
                 elapsed: Duration::ZERO,
                 full_layout_pending: true,
+                resolve_pending: true,
                 paint_count: 0,
                 physical_size: [1, 1],
                 scale: 1.0,
@@ -1120,6 +1122,8 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         }
 
         fn turn(&mut self, outcome: NativeEventOutcome, hz: u32) -> Result<(), String> {
+            self.resolve_pending |= outcome.input_damage || outcome.configured;
+            let resource_decode_before = self.work.calls("resource_decode");
             let seconds = 1.0 / f64::from(hz);
             self.elapsed += Duration::from_secs_f64(seconds);
             if outcome.frame {
@@ -1196,6 +1200,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 &mut self.runtime_creates,
                 &mut self.next_skin_render,
                 &mut self.full_layout_pending,
+                &mut self.resolve_pending,
                 &mut self.work,
                 Waker::noop(),
                 &frame_start,
@@ -1227,6 +1232,9 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 .tree_updates
                 .saturating_add(result.reconciliation.tree_updates);
             if result.painted {
+                if self.work.calls("resource_decode") > resource_decode_before {
+                    assert!(self.resolve_pending, "loaded images need another resolve");
+                }
                 self.paint_count = self.paint_count.saturating_add(1);
                 self.layouts = self.layouts.saturating_add(1);
                 self.resource_resolves = self.resource_resolves.saturating_add(1);
@@ -1349,6 +1357,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         assets: Arc<SkinAssetCache>,
         work: FrameWorkProfile,
         full_layout_pending: bool,
+        resolve_pending: bool,
         surface_state: NativeDisplaySurfaceState,
         elapsed: Duration,
         motion_seconds: f64,
@@ -1406,6 +1415,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 assets,
                 work: FrameWorkProfile::default(),
                 full_layout_pending: true,
+                resolve_pending: true,
                 surface_state: NativeDisplaySurfaceState::AwaitingConfigure,
                 elapsed: Duration::ZERO,
                 motion_seconds: 0.0,
@@ -1427,6 +1437,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             hz: u32,
             visible: bool,
         ) -> Result<(), String> {
+            self.resolve_pending |= outcome.input_damage || outcome.configured;
             let seconds = 1.0 / f64::from(hz);
             self.elapsed += Duration::from_secs_f64(seconds);
             if outcome.frame {
@@ -1506,6 +1517,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 &mut self.document,
                 &self.assets,
                 &mut self.full_layout_pending,
+                &mut self.resolve_pending,
                 &mut self.surface_state,
                 &mut self.work,
                 Waker::noop(),
@@ -1539,13 +1551,14 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
 
         fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
             let mut next_skin_render = None;
-            render_native_display_skin(
+            self.resolve_pending |= render_native_display_skin(
                 &mut self.document,
                 &self.canvas,
                 &mut self.skin,
                 state,
                 &mut next_skin_render,
-            )
+            )?;
+            Ok(())
         }
 
         fn shutdown(mut self, operations: &mut Vec<String>) {
@@ -2674,8 +2687,9 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             (expected..=expected + u64::try_from(fake.stages.len()).unwrap())
                 .contains(&(work_after[0] - work_before[0]))
         );
-        assert_eq!(work_after[1] - work_before[1], expected * 2);
-        for index in 2..work_after.len() {
+        assert!(work_after[1] - work_before[1] <= expected);
+        assert_eq!(work_after[2] - work_before[2], 0);
+        for index in 3..work_after.len() {
             assert_eq!(work_after[index] - work_before[index], expected);
         }
         assert!(
@@ -2683,13 +2697,10 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 .contains(&(frame_after.0 - frame_before.0))
         );
         assert_eq!(
-            (
-                frame_after.1 - frame_before.1,
-                frame_after.2 - frame_before.2
-            ),
-            (expected, expected),
-            "the skin-owned native schedule must rerender each animated preview"
+            frame_after.1 - frame_before.1,
+            frame_after.2 - frame_before.2
         );
+        assert!(frame_after.1 - frame_before.1 <= expected);
         assert_eq!(frame_after.3 - frame_before.3, expected);
         assert_eq!(frame_after.4 - frame_before.4, expected);
         assert_eq!(frame_after.5 - frame_before.5, expected);
@@ -2729,10 +2740,10 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                     "json_tree",
                     "tree_reconciliation",
                 ] {
-                    assert_eq!(sample.phases[phase].calls, expected_live_canvases);
+                    assert!(sample.phases[phase].calls <= expected_live_canvases);
                 }
                 assert_eq!(sample.phases["dioxus_poll"].calls, 1);
-                assert_eq!(sample.phases["blitz_layout"].calls, 2);
+                assert!(sample.phases["blitz_layout"].calls <= 1);
                 assert_eq!(sample.phases["scene"].calls, 1);
                 assert_eq!(sample.phases["gpu_present"].calls, 1);
                 assert_eq!(sample.phases["surface_commit"].calls, 1);
@@ -2954,14 +2965,11 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             .values()
             .map(|stage| u64::try_from(stage.previews.len()).unwrap_or(u64::MAX))
             .sum::<u64>();
+    let actual_skin_calls = work_after_delete_frame.1 - work_before_delete_frame.1;
+    assert!(actual_skin_calls <= scheduled);
     assert_eq!(
-        (
-            work_after_delete_frame.0 - work_before_delete_frame.0,
-            work_after_delete_frame.1 - work_before_delete_frame.1,
-            work_after_delete_frame.2 - work_before_delete_frame.2,
-        ),
-        (scheduled, scheduled, scheduled),
-        "skin scheduling after deletion must visit only the remaining live previews"
+        work_after_delete_frame.2 - work_before_delete_frame.2,
+        actual_skin_calls
     );
     for (output, stage) in &fake.stages {
         let expected_live_canvases = u64::try_from(stage.previews.len()).unwrap_or(u64::MAX);
@@ -2978,13 +2986,10 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         for sample in samples {
             assert_eq!(sample.live_canvases, expected_live_canvases);
             assert_eq!(sample.live_widgets, expected_live_widgets);
-            assert_eq!(sample.phases["skin_input"].calls, expected_live_canvases);
-            assert_eq!(sample.phases["wasm_render"].calls, expected_live_canvases);
-            assert_eq!(sample.phases["json_tree"].calls, expected_live_canvases);
-            assert_eq!(
-                sample.phases["tree_reconciliation"].calls,
-                expected_live_canvases
-            );
+            assert!(sample.phases["skin_input"].calls <= expected_live_canvases);
+            assert!(sample.phases["wasm_render"].calls <= expected_live_canvases);
+            assert!(sample.phases["json_tree"].calls <= expected_live_canvases);
+            assert!(sample.phases["tree_reconciliation"].calls <= expected_live_canvases);
         }
     }
     fake.click_stage(&mut authority, "WL-1", ".add-canvas")
@@ -3335,8 +3340,27 @@ fn retained_skin_tree_can_restore_live_css_after_preview() {
         root,
         "#native-css-probe { display: block; width: 80px; height: 20px; }",
     );
-    tree.apply(&mut session.document.inner.borrow_mut(), &output);
+    assert!(tree.apply(&mut session.document.inner.borrow_mut(), &output));
     session.document.inner.borrow_mut().resolve(0.0);
+    let damage_before = session
+        .document
+        .inner
+        .borrow()
+        .get_node(root)
+        .unwrap()
+        .damage();
+    assert!(!tree.apply(&mut session.document.inner.borrow_mut(), &output));
+    assert_eq!(
+        session
+            .document
+            .inner
+            .borrow()
+            .get_node(root)
+            .unwrap()
+            .damage(),
+        damage_before,
+        "identical skin output must not damage the host root"
+    );
     let width = |session: &VisualDebugSession| {
         let inner = session.document.inner.borrow();
         let probe = inner.query_selector("#native-css-probe").unwrap().unwrap();
@@ -3350,6 +3374,63 @@ fn retained_skin_tree_can_restore_live_css_after_preview() {
     );
     session.document.inner.borrow_mut().resolve(0.0);
     assert!((width(&session) - 160.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn native_skin_reorder_preserves_existing_nodes_and_dom_order() {
+    let scenario: VisualDebugScenario = serde_json::from_str(include_str!(
+        "../../../../scorepeek-overlay/tests/fixtures/visual-composition.json"
+    ))
+    .unwrap();
+    let session = VisualDebugSession::new(&scenario, [1920, 1080]).unwrap();
+    let root = session
+        .document
+        .inner
+        .borrow()
+        .query_selector("#scorepeek-skin-root")
+        .unwrap()
+        .unwrap();
+    let mut tree = crate::skin::NativeTree::new(&mut session.document.inner.borrow_mut(), root, "");
+    let child = |key: &str| {
+        crate::skin::Node::element(
+            key,
+            "div",
+            std::collections::BTreeMap::from([("id".into(), key.into())]),
+            Vec::new(),
+        )
+    };
+    let output = |keys: &[&str]| crate::skin::RenderOutput {
+        schedule: crate::skin::Schedule::Idle,
+        tree: crate::skin::Node::element(
+            "parent",
+            "div",
+            std::collections::BTreeMap::new(),
+            keys.iter().map(|key| child(key)).collect(),
+        ),
+    };
+    assert!(tree.apply(
+        &mut session.document.inner.borrow_mut(),
+        &output(&["a", "b", "c"])
+    ));
+    let before = session.document.inner.borrow();
+    let ids =
+        ["a", "b", "c"].map(|key| before.query_selector(&format!("#{key}")).unwrap().unwrap());
+    drop(before);
+    assert!(tree.apply(
+        &mut session.document.inner.borrow_mut(),
+        &output(&["c", "a", "b"])
+    ));
+    let after = session.document.inner.borrow();
+    let parent = after.get_node(ids[0]).unwrap().parent.unwrap();
+    assert_eq!(
+        after.get_node(parent).unwrap().children.as_slice(),
+        &[ids[2], ids[0], ids[1]]
+    );
+    drop(after);
+    assert!(!tree.apply(
+        &mut session.document.inner.borrow_mut(),
+        &output(&["c", "a", "b"])
+    ));
 }
 
 fn resize_widget(

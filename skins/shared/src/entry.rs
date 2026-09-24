@@ -110,7 +110,7 @@ fn tree(input: Input, theme: Skin) -> Output {
     );
     Output {
         schedule: if native {
-            Schedule::NextFrame
+            Schedule::AfterMs { milliseconds: 14 }
         } else {
             Schedule::Idle
         },

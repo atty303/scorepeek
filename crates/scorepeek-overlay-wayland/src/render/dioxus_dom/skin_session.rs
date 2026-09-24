@@ -28,22 +28,22 @@ pub(super) fn render_native_display_skin(
     display: &mut NativeDisplaySkin,
     state: &OverlayState,
     next_skin_render: &mut Option<Instant>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let started = Instant::now();
     let mut output =
         display
             .runtime
             .render(&native_skin_input(canvas, state, &display.manifest))?;
     namespace_native_skin_output(&display.manifest.id, &mut output);
-    display
+    let changed = display
         .tree
         .apply(&mut document.inner.borrow_mut(), &output);
     *next_skin_render = skin_deadline(&output.schedule, false);
     crate::diagnostics::emit(
         "skin_render",
-        &serde_json::json!({"skin_id":canvas.skin.name(),"release":display.release,"canvas_id":canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true}),
+        &serde_json::json!({"skin_id":canvas.skin.name(),"release":display.release,"canvas_id":canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true,"tree_changed":changed}),
     );
-    Ok(())
+    Ok(changed)
 }
 
 pub(super) fn create_native_display_skin(
@@ -102,6 +102,7 @@ pub(super) struct EditorSkinReconciliation {
     pub(super) retry_owner: bool,
     pub(super) wasm_calls: u64,
     pub(super) tree_updates: u64,
+    pub(super) tree_changed: bool,
     pub(super) input_generations: u64,
 }
 
@@ -193,6 +194,7 @@ pub(super) fn reconcile_editor_skin_previews(
         if let Some(mut preview) = previews.remove(&id) {
             preview.tree.unmount(&mut document.inner.borrow_mut());
             skin_assets.release_editor_owner(&id, output);
+            reconciliation.tree_changed = true;
         }
     }
 
@@ -223,6 +225,7 @@ pub(super) fn reconcile_editor_skin_previews(
             reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
             reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
             reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+            reconciliation.tree_changed = true;
             continue;
         }
         let preview = previews
@@ -269,6 +272,7 @@ pub(super) fn reconcile_editor_skin_previews(
             reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
             reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
             reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+            reconciliation.tree_changed = true;
             continue;
         }
         let desired_skin = preview.canvas.skin.name();
@@ -313,6 +317,7 @@ pub(super) fn reconcile_editor_skin_previews(
             reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
             reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
             reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+            reconciliation.tree_changed = true;
             continue;
         }
         let due = preview
@@ -333,11 +338,12 @@ pub(super) fn reconcile_editor_skin_previews(
         work.record("wasm_render", timing.wasm);
         work.record("json_tree", timing.json_tree);
         namespace_native_skin_output(&preview.package.manifest.id, &mut rendered);
-        work.measure("tree_reconciliation", || {
+        let changed = work.measure("tree_reconciliation", || {
             preview
                 .tree
-                .apply(&mut document.inner.borrow_mut(), &rendered);
+                .apply(&mut document.inner.borrow_mut(), &rendered)
         });
+        reconciliation.tree_changed |= changed;
         preview.next_render = skin_deadline(&rendered.schedule, false);
         preview.last_input = input;
         preview.last_state = state.clone();
