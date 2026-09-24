@@ -1,0 +1,67 @@
+Task: Move command-result presentation to scorepeek-cli
+Anchor: 4a11f84d85a0142bffb54071ee6941e080b0338d
+Base: fd9725d4f352fb09ae776db39ce566f76171fc57
+Branch: main
+Commits: 4a11f84d85a0142bffb54071ee6941e080b0338d (CLI-owned command rendering, native result paths, format-free requests/results, tests and documentation)
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review; git-task-evidence
+Conditions: local main change only; no push, release or deploy; in-process frontend API; no new dependencies
+## Evidence
+Complete Codex Desktop session file 01a0d2c4-4665-7ce1-a6e9-ca6223a0bc4e was read for human-message enumeration: two user-role items, first injected plugin/AGENTS/environment context excluded, second the sole human message transcribed below.
+Initial HEAD fd9725d and clean main, origin/main behind by five; code fetch succeeded, remote notes fetched separately after non-fast-forward and local notes were found to contain a superset of remote notes.
+mise run test: 752 Rust tests and 3 browser tests passed; targeted cargo tests and Clippy passed; independent read-only review reported no actionable findings.
+Authority: user request; current repository source and tests; README.md and docs/architecture.md; repository AGENTS.md
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    `scorepeek` のコマンド結果について、JSON 表示処理を `scorepeek-frontend-api` から `scorepeek-cli` へ移し、表示形式による処理を CLI に集約してください。
+    
+    ## 目的
+    
+    - `scorepeek-frontend-api` は型付きの要求と結果を運び、CLI が端末への表示形式を決める。
+    
+    ## 成功条件
+    
+    - `CommandResult::to_json()` とその表示用テストが frontend API からなくなり、CLI が人間向け・JSON 向けの両方を描画する。
+    - config、skin list、doctor の要求と結果から、表示形式の再掲や runtime に不要な `OutputFormat` がなくなる。CLI は解析した形式を保持して描画に使う。
+    - config の結果と skin 一覧のパスは `OsString` のまま frontend API を通り、runtime は表示形式によるパス変換をしない。
+    - 既存の人間向け表示と公開 JSON の形を維持する。非 UTF-8 パスは人間向けでは表示でき、JSON 向けではエラーになる。
+    - 関連するテストと、現在の責務を説明する文書が変更後の実装に一致する。
+    
+    ## 決定事項
+    
+    - JSON 表示処理を CLI に置く。
+      - 理由: `CommandResult::to_json()` は CLI のみが呼び出し、公開 JSON の表示形を決めているため。
+      - 主な棄却案: frontend API に残す案。型付き結果と端末表示の責務が混在する。
+    - 表示形式は CLI が保持し、config・skin list・doctor の要求と結果から外す。
+      - 理由: これらの処理で runtime が表示形式を知る必要がなくなるため。
+      - 主な棄却案: 使わない形式を要求に残し、結果にも再掲する案。表示選択の責務が分散する。
+    - パスは `OsString` のまま結果に載せ、CLI で表示時に変換する。
+      - 理由: runtime で情報を失わず、現在の非 UTF-8 パスの挙動を維持できるため。
+      - 主な棄却案: runtime で表示用文字列に変換する案、および二種類の文字列表現を結果に持たせる案。いずれも不要な表示判断や重複を生む。
+    
+    ## 制約
+    
+    - 公開されるコマンド出力の形と終了状態を維持する。
+    - `diagnostic inspect` の形式指定は、runtime が届ける記録の形式を変えるため維持する。
+    - 未関連の変更、push、release、deploy は行わない。
+    
+    ## 対象外
+    
+    - doctor report 自体のデータ構造の再設計。
+    - diagnostic inspect の記録処理や出力契約の変更。
+    - 他の frontend API 契約の整理。
+    
+    ## 未検証の前提
+    
+    - 実装開始時のコードで、表示形式を参照する箇所と `OsString` の serde 経路が調査時から変わっていないこと。
+    
+    ## 実装時の指示
+    
+    - config の path・show・check、skin list、doctor の JSON 形を既存出力と照合する。
+    - 非 UTF-8 の config・skin パスについて、人間向け表示と JSON エラーを確認する。
+    - work on main
+    
+  - A: Inspected the current main and output contracts, moved JSON and human command-result rendering into CLI, removed presentation format from config, skin list and doctor frontend contracts while keeping diagnostic inspect format, passed OsString result paths through frontend API, added output and non-UTF-8 tests, updated architecture, verified full test suite and independent review, and committed locally without remote writes.
