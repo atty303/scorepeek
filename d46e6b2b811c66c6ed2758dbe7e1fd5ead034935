@@ -1,0 +1,72 @@
+Task: Separate overlay common runtime paths and remove install-time Wasmtime validation
+Anchor: d46e6b2b811c66c6ed2758dbe7e1fd5ead034935
+Base: 41567cd1db6ad5751d03ccd38c9d17d053c4ace3
+Branch: main
+Commits: d46e6b2b811c66c6ed2758dbe7e1fd5ead034935 refactors overlay common ownership and skin installation
+Guidance: supplied AGENTS.md, develop-repository, design-program-observability, review
+Conditions: local repository implementation only; no target apply, distribution, push, or live host change
+## Evidence
+- Repository started clean at base; code fetch succeeded. Local notes ref already diverged from remote by local-only notes; remote notes were fetched into a separate read-only ref.
+- cargo check --offline passed for affected crates. mise run test passed including 745 Rust tests, 3 browser tests, build, checks, and Vulkan artifact check. Independent review found no actionable findings.
+- The CLI integration test installed a structurally valid ZIP with an unusable skin.wasm and verified the stored bytes.
+Authority: current repository source, README, docs/architecture.md, docs/skin-plugin-api-v2.md, and user request
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    scorepeek の overlay 共通経路が Wayland アダプターの型や再公開を経由している実装を整理してください。スキン導入時の Wasmtime 検証も廃止してください。
+    
+    ## 目的
+    
+    - overlay の共通機能を、その責務を持つ既存 crate から直接利用できるようにする。
+    - スキン導入を特定の表示アダプターに依存させない。
+    
+    ## 成功条件
+    
+    - 親 runtime の設定読み込み、設定制御、スキン保存、子プロセス設定が、共通機能を Wayland crate 経由で参照しない。
+    - 子プロセス設定型は `scorepeek-overlay-runtime` に一つだけあり、親 runtime と Wayland・Web 両アダプターが使用する。
+    - 共通の制御ソケットクライアントは重複せず、両アダプターから利用できる。
+    - `scorepeek skin install` は既存の ZIP・マニフェスト等の構造検証を行い、Wasmtime によるモジュール検証と smoke 実行を行わない。
+    - 実行できない `skin.wasm` を含む構造上有効なパッケージは導入でき、使用時の失敗は各アダプターの既存のエラー・診断経路で扱われる。
+    - role 別入口と単一実行ファイルの動作を維持する。
+    - 変更した契約を所有する現行ドキュメントを更新し、関連する検証を通す。
+    
+    ## 決定事項
+    
+    - 共通機能には既存の共通 crate を使い、新しい専用 crate は作らない。
+      - 理由: 設定とスキン保存の所有先が既にある。
+      - 主な棄却案: 専用 crate の新設。今回の越境解消には不要な構成が増える。
+    - 親 runtime の role 別入口と、そのためのアダプター依存は残す。
+      - 理由: 現在の単一実行ファイルにおける意図した責務である。
+      - 主な棄却案: role 振り分けを CLI や別 crate に移す案。意図した境界を変更する。
+    - 導入時の Wasmtime 検証と smoke 実行を廃止し、既存のパッケージ構造検証は残す。
+      - 理由: 導入という共通経路を Wayland 固有の実行環境から切り離す。
+      - 主な棄却案: Wasmtime 検証の維持、および新たな軽量 Wasm 構文検証の追加。いずれも今回選んだ導入時契約に含めない。
+    - 子プロセス設定型を `scorepeek-overlay-runtime` で共有する。
+      - 理由: 親は現在 Wayland の型を OBS にも送っており、両アダプターの設定フィールドは重複している。
+      - 主な棄却案: アダプターごとの型を維持して親で組み立て分ける案。共通経路の重複が残る。
+    
+    ## 制約
+    
+    - 認識、Event API、スコア保存の契約は変更しない。
+    - 実機への適用、配布、push は行わない。
+    
+    ## 対象外
+    
+    - role 別入口の移動と単一実行ファイル構成の変更。
+    - overlay 以外の crate の予防的な再編。
+    - 新しい Wasm 構文検証器の導入。
+    
+    ## 未検証の前提
+    
+    - 現在の共通制御プロトコルと両アダプターの子プロセス設定型が、実装時にも共有可能な同一契約であることを確認する。
+    - 導入時検証を外した後の使用時エラーが、Wayland と Web の既存の診断・表示経路で適切に観測できることを確認する。
+    
+    ## 実装時の指示
+    
+    - `scorepeek-overlay-wayland` の設定・スキン保存の再公開を親 runtime の共通経路から参照しないようにする。
+    - 導入時の smoke validation に依存するテストと `docs/architecture.md` の記述を、新しい契約に合わせる。
+    - role 別入口に必要な Wayland・Web アダプター呼び出しは保持する。
+  - A: Inspected clean base and current contracts; moved shared child config and control client to scorepeek-overlay-runtime, routed parent common paths directly, removed install-time Wasmtime validation while retaining ZIP structure checks, updated tests and docs, passed standard validation and independent review, and committed locally without push.
