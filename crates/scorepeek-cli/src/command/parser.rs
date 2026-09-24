@@ -187,8 +187,9 @@ fn diagnostic_action(value: DiagnosticCommand) -> api::DiagnosticAction {
 
 fn skin_action(value: SkinCommand) -> Result<api::SkinAction, &'static str> {
     Ok(match value {
-        SkinCommand::Install { package } => api::SkinAction::Install {
+        SkinCommand::Install { package, force } => api::SkinAction::Install {
             package: path_string(package)?,
+            force: force.then_some(true),
         },
         SkinCommand::Uninstall { id } => api::SkinAction::Uninstall { id },
         SkinCommand::List(_) => api::SkinAction::List,

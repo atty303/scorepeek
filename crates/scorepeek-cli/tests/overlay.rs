@@ -130,10 +130,10 @@ fn skin_install_stdout_remains_one_result_line() {
 }
 
 #[test]
-fn structurally_valid_package_with_unusable_wasm_installs() {
+fn skin_install_force_replaces_same_release_package() {
     let isolated = IsolatedHome::new();
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
-    let file = std::fs::File::open(source).unwrap();
+    let file = std::fs::File::open(&source).unwrap();
     let mut original = zip::ZipArchive::new(file).unwrap();
     let package = isolated.path("unusable-wasm.zip");
     let mut rewritten = zip::ZipWriter::new(std::fs::File::create(&package).unwrap());
@@ -151,10 +151,39 @@ fn structurally_valid_package_with_unusable_wasm_installs() {
     }
     rewritten.finish().unwrap();
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
-    isolated.apply(&mut command);
-    let output = command
+    let mut initial = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
+    isolated.apply(&mut initial);
+    let output = initial
         .args(["skin", "install"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"installed\n");
+
+    let mut unchanged = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
+    isolated.apply(&mut unchanged);
+    let output = unchanged
+        .args(["skin", "install"])
+        .arg(&package)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"unchanged\n");
+    let store =
+        scorepeek_overlay_runtime::skin::StoreRoot::new(isolated.path("data/scorepeek/skins"));
+    let installed = store
+        .open("dev.atty303.scorepeek.skin.result-aurora")
+        .unwrap();
+    assert_ne!(
+        installed.resource("skin.wasm"),
+        Some(b"not a wasm module".as_slice())
+    );
+
+    let mut forced = Command::new(env!("CARGO_BIN_EXE_scorepeek"));
+    isolated.apply(&mut forced);
+    let output = forced
+        .args(["skin", "install", "--force"])
         .arg(&package)
         .output()
         .unwrap();
@@ -163,9 +192,8 @@ fn structurally_valid_package_with_unusable_wasm_installs() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(output.stdout, b"installed\n");
-    let store =
-        scorepeek_overlay_runtime::skin::StoreRoot::new(isolated.path("data/scorepeek/skins"));
+    assert!(output.stdout.starts_with(b"replaced "));
+    assert!(output.stdout.ends_with(b"\n"));
     let installed = store
         .open("dev.atty303.scorepeek.skin.result-aurora")
         .unwrap();
@@ -183,6 +211,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     skin_store
         .install(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
+            false,
         )
         .unwrap();
     let address = TcpListener::bind("127.0.0.1:0")

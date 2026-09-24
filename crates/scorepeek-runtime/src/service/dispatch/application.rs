@@ -169,7 +169,7 @@ struct DiagnosticInspectArgs {
 }
 
 enum SkinCommand {
-    Install { package: PathBuf },
+    Install { package: PathBuf, force: bool },
     Uninstall { id: String },
     List,
 }
@@ -297,8 +297,9 @@ pub(crate) fn dispatch_frontend(
             config: None,
             command: PublicCommand::Skin {
                 command: match action {
-                    api::SkinAction::Install { package } => SkinCommand::Install {
+                    api::SkinAction::Install { package, force } => SkinCommand::Install {
                         package: PathBuf::from(package),
+                        force: force.unwrap_or(false),
                     },
                     api::SkinAction::Uninstall { id } => SkinCommand::Uninstall { id },
                     api::SkinAction::List => SkinCommand::List,
@@ -473,8 +474,8 @@ fn run_diagnostic_command(command: DiagnosticCommand) -> Result<(), String> {
 fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::CommandResult, String> {
     let store = scorepeek_overlay_runtime::skin::StoreRoot::discover();
     let result = match command {
-        SkinCommand::Install { package } => {
-            let outcome = store.install(&package)?;
+        SkinCommand::Install { package, force } => {
+            let outcome = store.install(&package, force)?;
             let outcome = match outcome {
                 scorepeek_overlay_runtime::skin::InstallOutcome::Installed => {
                     scorepeek_frontend_api::SkinInstallResult::Installed

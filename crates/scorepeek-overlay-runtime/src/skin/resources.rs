@@ -68,7 +68,7 @@ impl StoreRoot {
     /// Installs or updates a validated ZIP package atomically.
     /// # Errors
     /// Returns package validation, compatibility, locking, or persistence errors.
-    pub fn install(&self, source: &Path) -> Result<InstallOutcome, String> {
+    pub fn install(&self, source: &Path, force: bool) -> Result<InstallOutcome, String> {
         create_dir_all_durable(&self.0)
             .map_err(|error| format!("create skin store {}: {error}", self.0.display()))?;
         let lock = OpenOptions::new()
@@ -124,9 +124,10 @@ impl StoreRoot {
             } else {
                 None
             };
-            if prior
-                .as_ref()
-                .is_some_and(|(old, current)| *current && old.release == package.manifest.release)
+            if !force
+                && prior.as_ref().is_some_and(|(old, current)| {
+                    *current && old.release == package.manifest.release
+                })
             {
                 return Ok(InstallOutcome::Unchanged);
             }

@@ -67,8 +67,14 @@ pub enum DiagnosticAction {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum SkinAction {
-    Install { package: String },
-    Uninstall { id: String },
+    Install {
+        package: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
+    Uninstall {
+        id: String,
+    },
     List,
 }
 
@@ -107,4 +113,23 @@ pub enum FrontendCommand {
         request_id: RequestId,
         action: VulkanLayerAction,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkinAction;
+
+    #[test]
+    fn skin_install_without_force_keeps_the_previous_wire_shape() {
+        let previous = serde_json::json!({"action":"install","package":"skin.zip"});
+        let action: SkinAction = serde_json::from_value(previous.clone()).unwrap();
+        assert_eq!(
+            action,
+            SkinAction::Install {
+                package: "skin.zip".into(),
+                force: None,
+            }
+        );
+        assert_eq!(serde_json::to_value(action).unwrap(), previous);
+    }
 }

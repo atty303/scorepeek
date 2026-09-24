@@ -4,7 +4,13 @@ use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub(super) enum SkinCommand {
-    Install { package: PathBuf },
-    Uninstall { id: String },
+    Install {
+        package: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    Uninstall {
+        id: String,
+    },
     List(FormatArgs),
 }

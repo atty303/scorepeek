@@ -187,12 +187,15 @@ Build the repository examples with `mise run overlay:skins:build`; ZIPs are writ
 
 ```text
 scorepeek skin install PATH.zip
+scorepeek skin install --force PATH.zip
 scorepeek skin list
 scorepeek skin uninstall dev.example.skin-name
 ```
 
 The store is `$XDG_DATA_HOME/scorepeek/skins` (or the corresponding home data directory). A package
 whose ID and release already match is reported as `unchanged` without replacing the stored ZIP.
+`--force` replaces the stored ZIP even when its ID and release match, after the usual package
+validation and property compatibility check. A replacement reports the previous release.
 Installation checks package structure and does not execute or validate `skin.wasm`. A package with
 an unusable module can be installed; its execution failure is reported when an overlay uses it.
 Changing the opaque release replaces that ID atomically after the v2 property compatibility check.
