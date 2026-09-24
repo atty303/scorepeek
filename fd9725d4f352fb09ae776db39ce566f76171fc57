@@ -1,0 +1,74 @@
+Task: Move diagnostic terminal presentation and operational warnings to scorepeek-cli
+Anchor: fd9725d4f352fb09ae776db39ce566f76171fc57
+Base: b0d4ab7eeedc2e5d1be23ff7f39ab60deb336991
+Branch: main
+Commits: fd9725d4f352fb09ae776db39ce566f76171fc57 (frontend diagnostic events, warnings, cancellation, CLI rendering and tests)
+Guidance: repository AGENTS.md; develop-repository; design-program-observability; review; git-task-evidence
+Conditions: local repository change only; main; no push, release, deploy or migration; Codex Desktop in-process runtime
+## Evidence
+Current thread session file 01a0d2a6-8847-7a91-ae21-5292894509ae was read completely for user-message enumeration; its first user-role item is injected plugin, AGENTS and environment context and is excluded from the human transcript.
+mise run test: 747 Rust tests passed, 3 browser tests passed; cargo clippy for scorepeek-cli and scorepeek-runtime passed; four CLI diagnostic integration tests passed. Independent review found and verified fixes for run output cancellation and startup warning drain.
+Authority: user request; current repository source and tests; README.md, docs/architecture.md and docs/diagnostics.md; repository AGENTS.md
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    `scorepeek-runtime` に残る端末向け診断表示と警告文の生成を `scorepeek-cli` へ移し、frontend protocol を通じて診断結果と運用上の失敗事実を型付きで渡してください。
+    
+    ## 目的
+    
+    - runtime は診断データの取得・検証と状態管理を、CLI は人間向け表示を所有する。
+    - 大きな診断 run を逐次表示でき、出力先が閉じたら処理を止められるようにする。
+    
+    ## 成功条件
+    
+    - `diagnostic inspect` の human 形式の見出し、状態、イベント行は CLI が整形する。runtime は検証済み header と record を順次渡し、全件を一つの結果へ集めない。
+    - 診断の JSON・NDJSON 契約と、保存済み run の選択・整合性検証は runtime が所有する。既存の machine-readable 出力、partial 判定、終了状態を維持する。
+    - `diagnostic observe` の replay 切り詰め、診断保存・socket の劣化、background catalog worker の起動失敗など、公開 CLI 経路の警告は型付き通知として CLI に届き、CLI が文言と出力先を決める。
+    - 診断 writer thread が検知した失敗は `RunDiagnostics` が型付きで保持し、runtime の通常の更新経路から一度だけ通知する。診断 stream 内の失敗事実と health 状態も維持する。
+    - frontend event callback は CLI の書き込み失敗を返せる。失敗時は inspection の配信を止め、成功として終了しない。
+    - 公開 CLI 経路の runtime に、`diagnostic inspect` の human formatter や直接 stderr へ警告文を書く処理が残らない。使われていない runtime 側の doctor 表示 helper も整理する。
+    
+    ## 決定事項
+    
+    - `diagnostic inspect` の human 表示は CLI が所有する。
+      - 理由: 通常の doctor・config・skin 結果と同じ表示責務に揃えるため。
+      - 主な棄却案: 診断 reader が取得・検証と human 表示を兼ねる案。runtime に端末表示の判断が残る。
+    - 公開 CLI 経路の運用警告は型付き通知にする。
+      - 理由: runtime は失敗の種類と値を伝え、CLI が文言を決められる。
+      - 主な棄却案: inspect だけを移して、observe と診断 writer の警告文を runtime に残す案。
+    - inspection の header と record は順次 frontend event で渡す。
+      - 理由: 保存済み run の総件数は小さな結果一つに収まるとは限らない。
+      - 主な棄却案: 全 record を一つの `CommandResult` に集める案。
+    - 診断 writer の通知は `RunDiagnostics` に保持し、runtime が取り出して frontend へ送る。
+      - 理由: writer thread から frontend protocol へ直接依存せず、通知済み管理ができる。
+      - 主な棄却案: writer thread へ frontend callback を渡して直接送る案。
+    - frontend callback は出力結果を返し、失敗を runtime へ伝える。
+      - 理由: stdout が閉じた後に残りの診断を読み続けず、失敗を終了状態へ反映できる。
+      - 主な棄却案: CLI が失敗を記録し、runtime の処理完了後に終了コードだけ変える案。
+    
+    ## 制約
+    
+    - 診断の保存形式、socket protocol、JSON・NDJSON 出力契約、ring・retention は目的なく変更しない。
+    - 診断が partial の場合は、取得できた record を表示したうえで失敗状態を返す既存の意味を維持する。
+    - この依頼は repository 内の実装・資料・検証までを対象とする。push、release、deploy は行わない。
+    
+    ## 対象外
+    
+    - private overlay 子プロセスの診断 stdout protocol と role 別入口。
+    - 認識、capture、score persistence、overlay 表示の機能変更。
+    
+    ## 未検証の前提
+    
+    - 実装開始時も frontend callback、診断 reader、runtime の警告発行箇所が調査時の構成から変わっていないこと。
+    
+    ## 実装時の指示
+    
+    - 現行の `FrontendEvent::Output`、`ServiceHandle::dispatch`、CLI renderer、`RunDiagnostics` の health・失敗経路を照合してから変更する。
+    - inspection の型付き配信は record 単位で行い、途中の出力失敗を配信側へ戻す。通常の snapshot や model download event の処理も維持する。
+    - 診断 writer の非同期失敗通知について、同じ失敗を繰り返し表示しないことを検証する。
+    - human／JSON inspection、observe replay 警告、partial run、閉じた出力先を確認し、変更した責務境界を現行の設計資料に反映する。
+    - mainで作業する
+  - A: Inspected main and repository contracts, implemented typed inspection records and operational warnings, moved human formatting into CLI, preserved runtime JSON and NDJSON, added failure acknowledgement and run cancellation, drained writer warnings once, removed unused doctor presentation, updated living docs, verified targeted and full tests, completed independent review, and committed locally without remote writes.
