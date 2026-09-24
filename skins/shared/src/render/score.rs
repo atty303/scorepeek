@@ -1,5 +1,4 @@
 use super::{chrome, label, metallic};
-use crate::motion::clear_motion_style;
 use crate::primitive::{el, heading, label_element, node_text};
 use crate::theme::Skin;
 use crate::value::{clear_role, path_text, shown};
@@ -100,7 +99,6 @@ pub(crate) fn score_widget(key: &str, widget: &Widget, state: &Value, skin: Skin
                                                 &[
                                                     ("class", "clear-value".into()),
                                                     ("data-clear", clear_role(&clear).into()),
-                                                    ("style", clear_motion_style(&clear)),
                                                 ],
                                                 vec![label(
                                                     &format!("{key}:clear:label"),

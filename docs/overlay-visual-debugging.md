@@ -79,9 +79,9 @@ callbacks received before that configure cannot admit the remap paint. `native_s
 records the visibility/configure/frame inputs, surface state, paint/unmap result, and renderer state
 on both sides of each lifecycle boundary.
 The skin schedule (`idle`, `next-frame`, or `after-ms`) determines when Wasm/DOM work becomes due;
-both native surface roles run due work on the next compositor frame. The included skins request
-native work about every 14 ms, resolving on a roughly 60 Hz frame boundary. A paint resolves Blitz
-at most once when DOM or input state changed or Blitz reports an active animation. Repeated configure
+both native surface roles run due work on the next compositor frame. The included skins return
+`idle` and rely on CSS for animation, so the skin Wasm runs again when its input changes. A paint
+resolves Blitz at most once when DOM or input state changed or Blitz reports an active animation. Repeated configure
 events with unchanged logical size, physical size and scale update no state.
 
 For the OBS route, give the server a new dedicated configuration path and optionally a loopback
@@ -108,6 +108,11 @@ these cover state transitions that a single drag does not.
 Native and browser images are evidence for human or Codex comparison; pixel equality is not an
 acceptance condition. Browser integration and fake Wayland are routine checks. Use the opt-in
 nested compositor scenario or actual Wayland or OBS when investigating a backend-specific failure.
+
+For motion comparisons, an `advance_animation` visual action with `seconds` resolves native CSS at
+that animation time and captures the result. Set browser animation `currentTime` to the same value
+in milliseconds before capturing its image. The native visual harness advances Blitz time directly;
+it does not measure compositor frame pacing or production Wasm scheduling.
 
 A scenario may set `skin` to any installed reverse-domain skin ID. The visual tasks build and
 install repository packages into an isolated XDG store before running the scenario. A skin receives

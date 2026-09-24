@@ -1,12 +1,7 @@
 use scorepeek_skin_sdk::{Input, Node, Output, Schedule, Widget};
 use serde_json::Value;
-use std::cell::Cell;
 
 use crate::theme::{Skin, Theme};
-
-thread_local! {
-    pub(crate) static MOTION: Cell<(bool, u64)> = const { Cell::new((false, 0)) };
-}
 
 use crate::primitive::{el, error_tree};
 #[cfg(test)]
@@ -89,8 +84,6 @@ pub fn render(pointer: i32, length: i32, theme: &'static Theme) -> i64 {
 }
 
 fn tree(input: Input, theme: Skin) -> Output {
-    let native = input.backend == "native";
-    MOTION.set((native, input.monotonic_ms));
     let (score, miss) = (theme.graph_score, theme.graph_miss);
     let background = input
         .canvas
@@ -109,11 +102,7 @@ fn tree(input: Input, theme: Skin) -> Output {
             .map(|widget| widget_slot(widget, &input.state, theme)),
     );
     Output {
-        schedule: if native {
-            Schedule::AfterMs { milliseconds: 14 }
-        } else {
-            Schedule::Idle
-        },
+        schedule: Schedule::Idle,
         tree: el(
             "canvas",
             "main",
@@ -219,6 +208,49 @@ mod tests {
         label_font: "Oxanium",
         label_descent: 6.2,
     };
+
+    #[test]
+    fn bundled_native_motion_uses_css_without_time_dependent_tree_updates() {
+        let input = |monotonic_ms| Input {
+            schema: "scorepeek-skin-input-v2".into(),
+            backend: "native".into(),
+            monotonic_ms,
+            canvas: Canvas {
+                id: "test".into(),
+                skin: "dev.example.skin".into(),
+                width: 560,
+                height: 60,
+                properties: BTreeMap::from([(
+                    "background".into(),
+                    Value::String("animated".into()),
+                )]),
+            },
+            widgets: vec![Widget {
+                id: "status".into(),
+                kind: "status".into(),
+                x: 8,
+                y: 8,
+                width: 544,
+                height: 44,
+                settings: Value::Null,
+                properties: BTreeMap::new(),
+            }],
+            state: serde_json::json!({"system":"active"}),
+        };
+        let first = tree(input(0), &TEST_THEME);
+        let later = tree(input(4500), &TEST_THEME);
+        assert_eq!(first.schedule, Schedule::Idle);
+        assert_eq!(first, later);
+        for class in [
+            "canvas-background-light",
+            "skin-energy",
+            "skin-glint",
+            "lamp",
+        ] {
+            let attributes = element_with_class(&first.tree, class).unwrap();
+            assert!(!attributes.contains_key("style"), "{class}");
+        }
+    }
 
     #[test]
     fn arbitrary_widget_ids_make_valid_distinct_svg_fragment_ids() {

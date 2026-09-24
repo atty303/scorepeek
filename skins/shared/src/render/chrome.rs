@@ -1,5 +1,4 @@
 use crate::entry::{GLYPHS, LABELS};
-use crate::motion::{energy_motion_style, glint_motion_style, lamp_motion_style};
 use crate::primitive::{el, frame_width, label_class, node_text, shape, text};
 use crate::theme::Skin;
 use scorepeek_skin_sdk::{Node, Widget};
@@ -16,19 +15,13 @@ pub(crate) fn chrome(key: &str, widget: &Widget, skin: Skin) -> Node {
             el(
                 &format!("{key}:energy"),
                 "div",
-                &[
-                    ("class", "skin-energy".into()),
-                    ("style", energy_motion_style()),
-                ],
+                &[("class", "skin-energy".into())],
                 vec![],
             ),
             el(
                 &format!("{key}:glint"),
                 "div",
-                &[
-                    ("class", "skin-glint".into()),
-                    ("style", glint_motion_style(&widget.kind)),
-                ],
+                &[("class", "skin-glint".into())],
                 vec![],
             ),
         ],
@@ -135,7 +128,6 @@ pub(crate) fn lamp(
             ("class", "lamp".into()),
             ("data-state", state.into()),
             ("aria-hidden", "true".into()),
-            ("style", lamp_motion_style(state)),
         ],
         vec![lamp_svg(key, state, vertical, skin)],
     )];

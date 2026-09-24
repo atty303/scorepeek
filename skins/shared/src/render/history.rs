@@ -1,10 +1,24 @@
 use super::{chrome, label};
-use crate::motion::{clear_motion_style, dot_style, time_ratio};
 use crate::primitive::{el, heading, label_class, label_element, node_text, polyline};
 use crate::theme::Skin;
 use crate::value::{clear_role, integer, number, string};
 use scorepeek_skin_sdk::{Node, Widget};
 use serde_json::Value;
+
+fn dot_style(value: &Value, ratio: f64, start: i64, end: i64) -> String {
+    format!(
+        "left:{:.2}%;top:{:.2}%",
+        time_ratio(integer(value, "received_unix_ms"), start, end) * 100.0,
+        100.0 - ratio.clamp(0.0, 1.0) * 100.0
+    )
+}
+
+fn time_ratio(time: i64, start: i64, end: i64) -> f64 {
+    let elapsed = time.saturating_sub(start).max(0).cast_unsigned();
+    let span = end.saturating_sub(start).max(1).cast_unsigned();
+    std::time::Duration::from_millis(elapsed).as_secs_f64()
+        / std::time::Duration::from_millis(span).as_secs_f64()
+}
 pub(crate) fn history_list(key: &str, widget: &Widget, state: &Value, skin: Skin) -> Node {
     let count = usize::try_from(
         widget
@@ -64,10 +78,7 @@ pub(crate) fn history_list(key: &str, widget: &Widget, state: &Value, skin: Skin
                     el(
                         &format!("{key}:history:{i}:clear"),
                         "span",
-                        &[
-                            ("data-clear", clear_role(&clear).into()),
-                            ("style", clear_motion_style(&clear)),
-                        ],
+                        &[("data-clear", clear_role(&clear).into())],
                         vec![label(
                             &format!("{key}:history:{i}:clear:label"),
                             &clear,

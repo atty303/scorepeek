@@ -275,7 +275,7 @@ fn editor_skin_updates_coalesce_while_dragging_and_flush_on_frame_or_release() {
 }
 
 #[test]
-fn native_animation_work_does_not_copy_skin_archives_per_frame() {
+fn repeated_skin_package_lookups_do_not_copy_archives() {
     let manifest: crate::skin::Manifest =
         toml::from_str(include_str!("../../../../../skins/cyan-system/skin.toml")).unwrap();
     let package = crate::skin::Package::test_with_entries(
@@ -286,7 +286,7 @@ fn native_animation_work_does_not_copy_skin_archives_per_frame() {
     let cache =
         SkinAssetCache::with_package(crate::skin::StoreRoot::discover(), Arc::clone(&package));
 
-    // Four live canvases at 120 Hz model one second of production editor animation.
+    // Repeated lookups should retain the same package even under excessive caller demand.
     for _ in 0..(4 * 120) {
         let resolved = cache.load(&package.manifest.id).unwrap();
         assert!(Arc::ptr_eq(&resolved, &package));

@@ -62,6 +62,9 @@ pub enum VisualDebugAction {
     Capture {
         name: String,
     },
+    AdvanceAnimation {
+        seconds: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -130,6 +133,7 @@ pub(super) struct VisualDebugSession {
     logical_size: [u32; 2],
     physical_size: [u32; 2],
     scale: f32,
+    animation_seconds: f64,
     pub(super) projection: Reactive<NativeDocumentProjection>,
     pub(super) authority: NativeEditorAuthority,
     pub(super) commands: std::sync::mpsc::Receiver<CoordinatorCommand>,
@@ -350,6 +354,7 @@ impl VisualDebugSession {
             logical_size: scenario.logical_size,
             physical_size,
             scale: scenario.scale,
+            animation_seconds: 0.0,
             projection,
             authority,
             commands,
@@ -408,8 +413,8 @@ impl VisualDebugSession {
             self.scale,
             ColorScheme::Dark,
         ));
-        inner.resolve(0.0);
-        resolve_with_loaded_resources(&mut inner, 1.0);
+        inner.resolve(self.animation_seconds);
+        resolve_with_loaded_resources(&mut inner, self.animation_seconds);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -738,7 +743,7 @@ impl VisualDebugSession {
     ) -> Result<(), String> {
         let mut pixels = Vec::new();
         let mut inner = self.document.inner.borrow_mut();
-        resolve_with_loaded_resources(&mut inner, 1.0);
+        resolve_with_loaded_resources(&mut inner, self.animation_seconds);
         renderer.render_to_vec(
             |scene| {
                 paint_native_scene(
@@ -897,6 +902,14 @@ pub fn run_visual_debug(
                 }
                 VisualDebugAction::Capture { name } => {
                     format!("capture-{}", sanitize_artifact_name(name))
+                }
+                VisualDebugAction::AdvanceAnimation { seconds } => {
+                    if !seconds.is_finite() || *seconds < 0.0 {
+                        return Err("animation time must be finite and nonnegative".into());
+                    }
+                    session.animation_seconds = *seconds;
+                    session.resolve();
+                    format!("animation-{seconds:.3}")
                 }
             };
             capture_visual_debug(

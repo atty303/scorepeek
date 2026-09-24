@@ -1,4 +1,3 @@
-use crate::motion::background_motion_style;
 use crate::primitive::{aperture_mask, el};
 use scorepeek_skin_sdk::{Node, Widget};
 pub(crate) fn canvas_background(mode: &str, widgets: &[Widget]) -> Node {
@@ -34,10 +33,7 @@ pub(crate) fn canvas_background(mode: &str, widgets: &[Widget]) -> Node {
             el(
                 "background:light",
                 "div",
-                &[
-                    ("class", "canvas-background-light".into()),
-                    ("style", background_motion_style(mode)),
-                ],
+                &[("class", "canvas-background-light".into())],
                 vec![],
             ),
         ],
