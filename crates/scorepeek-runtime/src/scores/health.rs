@@ -29,6 +29,7 @@ pub struct Health {
     pub committed: u64,
     pub duplicates: u64,
     pub rejected: u64,
+    pub failed: u64,
     pub pending: u64,
     pub queued_bytes: usize,
     pub last_committed_event_id: Option<String>,
@@ -36,6 +37,8 @@ pub struct Health {
     pub cause: Option<String>,
     pub flush: Option<String>,
     pub recovered_provisional: u64,
+    pub migration_unavailable_details: u64,
+    pub migration_backup: Option<String>,
 }
 
 impl Health {

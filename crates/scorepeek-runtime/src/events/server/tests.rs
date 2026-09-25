@@ -395,6 +395,10 @@ fn scores_consume_public_results_independently_of_socket_and_database_failures()
         } else {
             temporary.path().join("scores.sqlite3")
         };
+        if failing_database {
+            assert!(output.enable_scores(&path).is_err());
+            continue;
+        }
         output.enable_scores(&path).unwrap();
         prepare_accepted_attempt(&mut output);
         output.publish(&accepted_result_event(1)).unwrap();
@@ -427,9 +431,7 @@ fn scores_consume_public_results_independently_of_socket_and_database_failures()
                 .load(Ordering::Acquire)
         );
         let health = output.scores.as_mut().unwrap().finish();
-        if failing_database {
-            assert_eq!(health.failure.as_deref(), Some("database_open"));
-        } else {
+        {
             assert!(health.failure.is_none(), "{health:?}");
             assert_eq!(health.committed, 2);
             let database = rusqlite::Connection::open(&path).unwrap();
@@ -448,6 +450,49 @@ fn scores_consume_public_results_independently_of_socket_and_database_failures()
             assert_eq!(values, (1286, 3, 4));
         }
     }
+}
+
+#[test]
+fn score_write_failure_ends_the_run_output_with_distinct_counts() {
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("scores.sqlite3");
+    let mut output = test_output(state(), disconnected_test_channel());
+    output.publish_frontend_snapshots = false;
+    output.enable_scores(&path).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("CREATE TRIGGER reject_play BEFORE INSERT ON play_results BEGIN SELECT RAISE(FAIL, 'synthetic write failure'); END;").unwrap();
+    drop(connection);
+    prepare_accepted_attempt(&mut output);
+    output.publish(&accepted_result_event(1)).unwrap();
+    output.publish(&accepted_result_event(2)).unwrap();
+    output
+        .publish(&semantic_episode_event(
+            3,
+            "result",
+            SemanticEpisodePhase::Closing,
+        ))
+        .unwrap();
+    output
+        .publish(&semantic_episode_event(
+            3,
+            "result",
+            SemanticEpisodePhase::Finalized,
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while output.scores_health().unwrap().failure.is_none() && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let error = output.refresh_scores().unwrap_err();
+    let health = output.scores_health().unwrap();
+    assert_eq!(health.failed, 1);
+    assert_eq!(health.pending + health.rejected, 1);
+    assert_eq!(health.committed, 0);
+    assert!(
+        error.contains("failed=1") && error.contains("pending=") && error.contains("committed=0"),
+        "{error}"
+    );
 }
 
 #[test]

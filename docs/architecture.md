@@ -217,6 +217,21 @@ and confirmed RESULT transitions plus current MUSIC SELECT supplements in
 SQLite. Persistence is independent of socket clients and optional recording.
 Overlays query committed SQLite state for score/history presentation; they do
 not treat a live RESULT payload as committed history.
+SQLite schema v5 stores each accepted RESULT's semantic values as typed scalar
+attributes, with field status and option order intact. Per-play result facts
+support best recomputation without decoding retained evidence JSON. The
+`chart_bests` source columns retain result, previous-best, and MUSIC SELECT
+supplement origins. A play retains its original evidence JSON, but normal
+queries and updates do not parse it. Legacy details whose full shape cannot be
+recovered are marked `unavailable_at_migration` while scoring facts and the
+original evidence remain available.
+
+Scored startup takes the score writer lock, creates and verifies a versioned
+SQLite snapshot before changing an older database, migrates and checks play
+facts against existing bests in one transaction, and starts the bounded writer
+only after the database is ready. The snapshot remains beside the source DB.
+Writer errors stop the run; health distinguishes committed, failed, rejected,
+and pending results. Only `--no-scores` permits an unscored run.
 
 ## Overlay boundary
 

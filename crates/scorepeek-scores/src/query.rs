@@ -65,7 +65,7 @@ pub fn chart_history(
     connection.busy_timeout(Duration::from_millis(250))?;
     let transaction = connection.transaction()?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != 4 {
+    if version != super::migration::CURRENT_SCHEMA_VERSION {
         return Err(Error::UnsupportedDatabase(version));
     }
     let best = transaction.query_row(
@@ -101,7 +101,7 @@ pub fn chart_dashboard(
     connection.busy_timeout(Duration::from_millis(250))?;
     let tx = connection.transaction()?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != 4 {
+    if version != super::migration::CURRENT_SCHEMA_VERSION {
         return Err(Error::UnsupportedDatabase(version));
     }
     let row:Option<(Option<i64>,Option<i64>,Option<i64>)>=tx.query_row("SELECT score,miss,clear FROM chart_bests WHERE song_id=?1 AND play_type=?2 AND difficulty=?3",params![song_id,play_type,difficulty],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -111,7 +111,17 @@ pub fn chart_dashboard(
         miss,
         clear,
     });
-    let representative=tx.query_row("SELECT event_json FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY score DESC, miss IS NULL, miss ASC, received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 1",params![song_id,play_type,difficulty],|r|r.get::<_,String>(0)).optional()?.map(|v|serde_json::from_str(&v)).transpose()?;
+    let representative_row=tx.query_row("SELECT event_id,detail_state FROM play_results WHERE song_id=?1 AND play_type=?2 AND difficulty=?3 ORDER BY score DESC, miss IS NULL, miss ASC, received_unix_ms DESC, emitted_unix_ms DESC, event_id DESC LIMIT 1",params![song_id,play_type,difficulty],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;
+    let representative = match representative_row {
+        Some((_, state)) if state == "unavailable_at_migration" => {
+            Some(serde_json::json!({"detail_state":state}))
+        }
+        Some((event_id, state)) if state == "available" => Some(
+            serde_json::json!({"result":super::structured::load(&tx,&event_id)?.ok_or(Error::UnsupportedContract)?}),
+        ),
+        Some(_) => return Err(Error::UnsupportedContract),
+        None => None,
+    };
     let read = |sql: &str, extra: Option<i64>| -> Result<Vec<Play>, Error> {
         let mut stmt = tx.prepare(sql)?;
         if let Some(since) = extra {
@@ -166,17 +176,17 @@ mod tests {
             std::thread::current().name().unwrap_or("test")
         ));
         let mut connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 4).unwrap();
+        connection.pragma_update(None, "user_version", 5).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE chart_bests(song_id TEXT,play_type TEXT,difficulty TEXT,score INTEGER,miss INTEGER,clear INTEGER);
-                 CREATE TABLE play_results(event_id TEXT,emitted_unix_ms INTEGER,received_unix_ms INTEGER,play_side TEXT,score INTEGER,miss INTEGER,clear INTEGER,event_json TEXT,song_id TEXT,play_type TEXT,difficulty TEXT);",
+                 CREATE TABLE play_results(event_id TEXT,emitted_unix_ms INTEGER,received_unix_ms INTEGER,play_side TEXT,score INTEGER,miss INTEGER,clear INTEGER,event_json TEXT,song_id TEXT,play_type TEXT,difficulty TEXT,detail_state TEXT NOT NULL DEFAULT 'unavailable_at_migration');",
             )
             .unwrap();
         let tx = connection.transaction().unwrap();
         for sequence in 0_i64..4_100 {
             tx.execute(
-                "INSERT INTO play_results VALUES(?1,?2,?2,'one_player',?2,NULL,0,'{}','song','single','hyper')",
+                "INSERT INTO play_results(event_id,emitted_unix_ms,received_unix_ms,play_side,score,miss,clear,event_json,song_id,play_type,difficulty) VALUES(?1,?2,?2,'one_player',?2,NULL,0,'{}','song','single','hyper')",
                 params![format!("event-{sequence:04}"), sequence],
             )
             .unwrap();

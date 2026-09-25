@@ -24,6 +24,17 @@ are not yet ready for general use.
 
 Keep a local record of your play results without entering scores by hand. See
 your personal bests, recent results, history, and progress graphs in the overlay.
+Score recording is required when `scorepeek run` starts unless `--no-scores` is
+explicitly selected. The run checks that its SQLite database is ready before
+capture begins and stops with an error if saving fails later. A stopped run
+reports saved, failed, rejected, and still pending results separately.
+
+Existing score databases migrate automatically on the next scored run. Before
+changing a v3 or v4 database, Scorepeek creates and verifies a SQLite snapshot
+beside it, named with the source schema version and a unique suffix. The
+backup is retained for manual recovery. Do not remove it until you have
+verified your score history after upgrading. Normal history and detail views
+read structured SQLite data; retained per-play evidence is preserved separately.
 
 ### Screen recognition that keeps up
 

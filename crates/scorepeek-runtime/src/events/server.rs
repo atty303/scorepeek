@@ -811,11 +811,33 @@ impl RoutineOutput {
                 sink.record("public_event", &observation, false);
             }
         }
-        self.refresh()
+        self.refresh()?;
+        if let Some(health) = self.scores_health()
+            && let Some(failure) = health.failure
+        {
+            let cause = health.cause.unwrap_or_default();
+            self.record_diagnostic(
+                "scores_failure",
+                &json!({
+                    "error_type": failure,
+                    "cause": cause,
+                    "failed": health.failed,
+                    "rejected": health.rejected,
+                    "pending": health.pending,
+                    "committed": health.committed,
+                }),
+                true,
+            );
+            return Err(format!(
+                "score saving failed ({failure}): {cause}; failed={}, rejected={}, pending={}, committed={}",
+                health.failed, health.rejected, health.pending, health.committed
+            ));
+        }
+        Ok(())
     }
 
     pub fn enable_scores(&mut self, path: &Path) -> Result<(), String> {
-        self.scores = Some(crate::scores::Worker::start(path));
+        self.scores = Some(crate::scores::Worker::start(path)?);
         let mut state = self
             .state
             .lock()
@@ -1312,7 +1334,7 @@ impl RoutineOutput {
             && let Some(path) = &state.scores_summary
         {
             state.scores_summary = Some(format!(
-                "scores={} unsaved={} db={path}",
+                "scores={} failed={} rejected={} pending={} committed={} db={path}",
                 if health.failure.is_some() {
                     "degraded"
                 } else if health.flush.is_some() {
@@ -1320,7 +1342,10 @@ impl RoutineOutput {
                 } else {
                     "active"
                 },
-                health.pending + health.rejected
+                health.failed,
+                health.rejected,
+                health.pending,
+                health.committed
             ));
         }
         if !self.publish_frontend_snapshots {

@@ -9,6 +9,7 @@ pub enum Error {
     Json(serde_json::Error),
     UnsupportedContract,
     UnsupportedDatabase(i64),
+    Migration(&'static str, Box<Error>),
 }
 
 impl fmt::Display for Error {
@@ -21,6 +22,7 @@ impl fmt::Display for Error {
             Self::UnsupportedDatabase(version) => {
                 write!(f, "unsupported scores database version {version}")
             }
+            Self::Migration(stage, cause) => write!(f, "scores migration {stage} failed: {cause}"),
         }
     }
 }

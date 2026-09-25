@@ -12,6 +12,12 @@ record types share one `channel_sequence`. They are distinct from the public
 Event API v5 sequence and from the stream's own record sequence. Runtime omits
 individual raw screen, screen tick, and field observation records. Their
 canonical sequence and pixels live in the separate recording.
+Score startup failures prevent capture admission. The score health snapshot
+reports migration detail gaps, retained backup path, recovered provisional
+count, committed, failed, rejected, and pending write counts. A write failure
+records `scores_failure` with its error type, cause, and those counts, then ends
+the run with an error. Evidence JSON and player fields are not copied into this
+failure record.
 
 The runtime emits `domain_summary` after every 256 core inputs and at session or watcher
 finish. `input_sequence` counts only values actually passed to the core domain coordinator;

@@ -421,6 +421,20 @@ fn dj_level(score: Option<i64>, notes: Option<u32>) -> String {
     .into()
 }
 fn result_detail(raw: &serde_json::Value) -> ResultDetail {
+    if raw["detail_state"] == "unavailable_at_migration" {
+        let unavailable = "移行時に取得不能".to_owned();
+        return ResultDetail {
+            pgreat: unavailable.clone(),
+            great: unavailable.clone(),
+            good: unavailable.clone(),
+            bad: unavailable.clone(),
+            poor: unavailable.clone(),
+            fast: unavailable.clone(),
+            slow: unavailable.clone(),
+            combo_break: unavailable.clone(),
+            play_options: unavailable,
+        };
+    }
     let r = &raw["result"];
     let judgments = &r["judgments"];
     let value = |v: &serde_json::Value| display_value(v).unwrap_or_else(|| "—".into());

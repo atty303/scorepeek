@@ -155,6 +155,9 @@ pub(crate) fn merge_run_options(
         scores_enabled = true;
         scores_db = Some(path);
     }
+    if !cli.no_scores && !scores_enabled {
+        return Err("score recording can only be disabled with --no-scores".into());
+    }
 
     let mut recording = config.recording.enabled.unwrap_or(false);
     let mut recording_memory_mib = config.recording.memory_mib;

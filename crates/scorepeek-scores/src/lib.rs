@@ -6,6 +6,7 @@ pub mod facts;
 pub mod migration;
 pub mod query;
 pub mod store;
+mod structured;
 
 pub use error::Error;
 pub use facts::PlaySide;

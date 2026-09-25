@@ -67,7 +67,9 @@ fn downgrade_database_to_v3(path: &std::path::Path) {
         .unwrap();
     }
     tx.execute_batch(
-        "DROP INDEX plays_chart;
+        "DROP TABLE result_attributes;
+         DROP TABLE play_result_facts;
+         DROP INDEX plays_chart;
          DROP INDEX plays_attempt;
          ALTER TABLE play_results RENAME TO play_results_v4;
          CREATE TABLE play_results (event_id TEXT PRIMARY KEY, session_id TEXT, attempt_id INTEGER, state TEXT NOT NULL, latest_event_id TEXT NOT NULL, recovery_confirmed INTEGER NOT NULL DEFAULT 0, song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, score INTEGER NOT NULL, miss INTEGER, clear INTEGER NOT NULL, event_json TEXT NOT NULL);
@@ -137,7 +139,7 @@ fn opening_v3_migrates_play_side_and_stored_results_atomically() {
         .connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let play_side_not_null: i64 = store
         .connection
         .query_row(
@@ -171,9 +173,9 @@ fn opening_v3_migrates_play_side_and_stored_results_atomically() {
         };
         assert_eq!(play_side, expected);
         let stored: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(stored["schema"], "scorepeek-stored-result-v2");
-        assert_eq!(stored["result"]["contract"], "scorepeek-result-detected-v4");
-        assert_eq!(stored["result"]["play_side"], expected);
+        assert_eq!(stored["schema"], "scorepeek-stored-result-v1");
+        assert_eq!(stored["result"]["contract"], "scorepeek-result-detected-v3");
+        assert_ne!(stored["result"]["play_side"], serde_json::Value::Null);
     }
     drop(statement);
     drop(store);
@@ -191,6 +193,14 @@ fn opening_v3_migrates_play_side_and_stored_results_atomically() {
             .play_side,
         PlaySide::OnePlayer
     );
+    let representative = query::chart_dashboard(&path, "song-a", "single", "hyper", 5, 0)
+        .unwrap()
+        .representative
+        .unwrap();
+    assert_eq!(
+        representative["result"]["previous_best"]["miss_count"]["reason"],
+        "empty"
+    );
 }
 
 #[test]
@@ -207,10 +217,7 @@ fn malformed_v3_row_rolls_back_the_schema_migration() {
         .unwrap();
     drop(connection);
 
-    assert!(matches!(
-        Store::open(&path),
-        Err(Error::UnsupportedContract)
-    ));
+    assert!(matches!(Store::open(&path), Err(Error::Migration(_, _))));
     let connection = Connection::open(&path).unwrap();
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -224,6 +231,171 @@ fn malformed_v3_row_rolls_back_the_schema_migration() {
         )
         .unwrap();
     assert_eq!(play_side_columns, 0);
+}
+
+#[test]
+fn backup_creation_failure_leaves_legacy_database_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scores.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    assert!(apply(&mut store, &result_state(1, 1, 200, "confirmed")));
+    drop(store);
+    downgrade_database_to_v3(&path);
+    let original = std::fs::read(&path).unwrap();
+    let connection = Connection::open(&path).unwrap();
+    let nonexistent = dir.path().join("missing/scores.sqlite3");
+    assert!(crate::migration::backup_database(&connection, &nonexistent, 3).is_err());
+    drop(connection);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn missing_legacy_detail_is_marked_without_losing_score_or_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scores.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    assert!(apply(&mut store, &result_state(1, 1, 200, "confirmed")));
+    drop(store);
+    downgrade_database_to_v3(&path);
+    let connection = Connection::open(&path).unwrap();
+    let json: String = connection
+        .query_row("SELECT event_json FROM play_results", [], |row| row.get(0))
+        .unwrap();
+    let mut raw: Value = serde_json::from_str(&json).unwrap();
+    raw["result"].as_object_mut().unwrap().remove("judgments");
+    let original = serde_json::to_string(&raw).unwrap();
+    connection
+        .execute("UPDATE play_results SET event_json=?1", [&original])
+        .unwrap();
+    drop(connection);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.migration_unavailable_details(), 1);
+    let saved: String = store
+        .connection
+        .query_row("SELECT event_json FROM play_results", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(saved, original);
+    let dashboard = query::chart_dashboard(&path, "song-a", "single", "hyper", 5, 0).unwrap();
+    assert_eq!(dashboard.best.score, Some(200));
+    assert_eq!(
+        dashboard.representative.unwrap()["detail_state"],
+        "unavailable_at_migration"
+    );
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert!(apply(&mut store, &result_state(2, 1, 300, "confirmed")));
+    let updated = query::chart_dashboard(&path, "song-a", "single", "hyper", 5, 0).unwrap();
+    assert_eq!(
+        updated.representative.unwrap()["result"]["current_score"],
+        300
+    );
+}
+
+#[test]
+fn malformed_stored_evidence_does_not_block_new_scores_after_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scores.sqlite3");
+    let mut store = Store::open(&path).unwrap();
+    assert!(apply(&mut store, &result_state(1, 1, 200, "confirmed")));
+    drop(store);
+    downgrade_database_to_v3(&path);
+    let mut store = Store::open(&path).unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE play_results SET event_json='unreadable legacy evidence'",
+            [],
+        )
+        .unwrap();
+    assert!(apply(&mut store, &result_state(2, 2, 300, "confirmed")));
+    let dashboard = query::chart_dashboard(&path, "song-a", "single", "hyper", 5, 0).unwrap();
+    assert_eq!(dashboard.best.score, Some(300));
+    assert_eq!(dashboard.recent.len(), 2);
+    assert_eq!(
+        dashboard.representative.unwrap()["result"]["current_score"],
+        300
+    );
+}
+
+#[test]
+fn isolated_legacy_database_preserves_evidence_and_scores() {
+    type BestRow = (
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let Ok(source) = std::env::var("SCOREPEEK_LEGACY_DB_COPY") else {
+        return;
+    };
+    let original = std::fs::read(&source).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("scores.sqlite3");
+    std::fs::write(&path, &original).unwrap();
+    let before = Connection::open(&path).unwrap();
+    let plays_before: Vec<(String, String, i64, Option<i64>, i64)> = before
+        .prepare("SELECT event_id,event_json,score,miss,clear FROM play_results ORDER BY event_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let bests_before: Vec<BestRow> = before.prepare("SELECT song_id,play_type,difficulty,score,miss,clear FROM chart_bests ORDER BY song_id,play_type,difficulty").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    drop(before);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.migration_unavailable_details(), 0);
+    let backup = store.migration_backup().unwrap();
+    let saved = Connection::open(backup).unwrap();
+    assert_eq!(
+        saved
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        saved
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    drop(saved);
+    let plays_after: Vec<(String, String, i64, Option<i64>, i64)> = store
+        .connection
+        .prepare("SELECT event_id,event_json,score,miss,clear FROM play_results ORDER BY event_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let bests_after: Vec<BestRow> = store.connection.prepare("SELECT song_id,play_type,difficulty,score,miss,clear FROM chart_bests ORDER BY song_id,play_type,difficulty").unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(plays_before, plays_after);
+    assert_eq!(bests_before, bests_after);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
 }
 #[test]
 fn select_only_updates_without_history_and_result_later_supports_best() {

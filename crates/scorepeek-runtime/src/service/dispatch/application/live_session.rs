@@ -363,7 +363,7 @@ pub(super) fn run_routine_live_session(
         }
     };
     settle_output_startup_result(&mut output, monitor, Ok(()))?;
-    let scores_result = (|| {
+    let scores_result = run_startup_stage(&diagnostic_sink, "scores", || {
         if no_scores {
             return Ok(None);
         }
@@ -383,8 +383,32 @@ pub(super) fn run_routine_live_session(
             std::path::absolute(path).map_err(|error| format!("scores database path: {error}"))?;
         output.enable_scores(&path)?;
         Ok(Some(path))
-    })();
+    });
+    if let Err(error) = &scores_result
+        && error.starts_with("scores migration ")
+    {
+        output.record_diagnostic(
+            "scores_migration",
+            &serde_json::json!({
+                "status": "error",
+                "cause": error,
+            }),
+            true,
+        );
+    }
     let scores_path = settle_output_startup_result(&mut output, monitor, scores_result)?;
+    if let Some(health) = output.scores_health() {
+        output.record_diagnostic(
+            "scores_migration",
+            &serde_json::json!({
+                "status": if health.migration_backup.is_some() { "success" } else { "not_required" },
+                "backup": health.migration_backup,
+                "unavailable_details": health.migration_unavailable_details,
+                "recovered_provisional": health.recovered_provisional,
+            }),
+            true,
+        );
+    }
     let mut overlay_children = crate::overlay::supervisor::Children::default();
     let overlay_config_path = overlays
         .config_path

@@ -32,20 +32,28 @@ pub struct Worker {
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
-    /// Starts initialization on the worker; initialization failure is reported through health.
-    #[must_use]
-    pub fn start(path: &Path) -> Self {
+    /// Opens, migrates, and verifies the database before returning a worker ready for admission.
+    /// # Errors
+    /// Returns database, migration, backup, or worker-start failures before capture may begin.
+    pub fn start(path: &Path) -> Result<Self, String> {
+        let store = Store::open(path).map_err(|error| error.to_string())?;
         let (sender, receiver) = mpsc::sync_channel::<Message>(QUEUE_RECORDS);
         let (done_sender, done) = mpsc::channel();
         let (completion_sender, completions) = mpsc::channel();
-        let health = Arc::new(Mutex::new(Health::default()));
+        let health = Arc::new(Mutex::new(Health {
+            recovered_provisional: store.recovered_provisional_count(),
+            migration_unavailable_details: store.migration_unavailable_details(),
+            migration_backup: store
+                .migration_backup()
+                .map(|path| path.display().to_string()),
+            ..Health::default()
+        }));
         let worker_health = Arc::clone(&health);
-        let path = path.to_owned();
         let spawn = thread::Builder::new()
             .name("scorepeek-scores".into())
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(|| {
-                    run(&path, &receiver, &worker_health, &completion_sender);
+                    run(store, &receiver, &worker_health, &completion_sender);
                 });
                 if outcome.is_err() {
                     worker_health
@@ -55,23 +63,14 @@ impl Worker {
                 }
                 let _ = done_sender.send(());
             });
-        let thread = match spawn {
-            Ok(thread) => Some(thread),
-            Err(error) => {
-                health
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .fail("worker_start", &error);
-                None
-            }
-        };
-        Self {
+        let thread = spawn.map_err(|error| format!("scores worker start: {error}"))?;
+        Ok(Self {
             sender: Some(sender),
             health,
             done,
             completions,
-            thread,
-        }
+            thread: Some(thread),
+        })
     }
 
     /// Offers a public event without waiting for `SQLite`. Unrelated event kinds are ignored.
@@ -178,6 +177,10 @@ impl Worker {
                         if health.pending == 0 {
                             "drained"
                         } else {
+                            health.fail(
+                                "unsaved_pending",
+                                "scores worker stopped with pending results",
+                            );
                             "incomplete"
                         }
                         .to_owned(),
@@ -204,25 +207,11 @@ impl Drop for Worker {
 }
 
 fn run(
-    path: &Path,
+    mut store: Store,
     receiver: &Receiver<Message>,
     health: &Mutex<Health>,
     completions: &mpsc::Sender<Completion>,
 ) {
-    let mut store = match Store::open(path) {
-        Ok(store) => store,
-        Err(error) => {
-            health
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .fail("database_open", &error);
-            return;
-        }
-    };
-    health
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .recovered_provisional = store.recovered_provisional_count();
     while let Ok(message) = receiver.recv() {
         {
             let mut health = health
@@ -253,6 +242,8 @@ fn run(
                 });
             }
             Err(error) => {
+                health.pending -= 1;
+                health.failed += 1;
                 let kind = match error {
                     Error::Json(_) | Error::UnsupportedContract => "event_contract",
                     _ => "database_write",
@@ -304,7 +295,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.db");
         let other = dir.path().join("b.db");
-        let mut worker = Worker::start(&path);
+        let mut worker = Worker::start(&path).unwrap();
         worker.offer(&result(1, 100));
         let health = worker.finish();
         assert!(health.failure.is_none(), "{health:?}");
@@ -318,11 +309,10 @@ mod tests {
                 difficulty: "hyper".into(),
             })
         );
-        assert!(Store::open(&path).is_ok());
+        let reopened = Store::open(&path);
+        assert!(reopened.is_ok(), "{:?}", reopened.err());
         assert!(Store::open(&other).is_ok());
-        let mut worker = Worker::start(dir.path());
-        worker.offer(&result(2, 200));
-        assert_eq!(worker.finish().failure.as_deref(), Some("database_open"));
+        assert!(Worker::start(dir.path()).is_err());
     }
     #[test]
     fn queue_limits_stop_admission_without_blocking() {
@@ -345,6 +335,23 @@ mod tests {
         assert_eq!(health.rejected, 2);
         assert_eq!(health.failure.as_deref(), Some("queue_limit"));
         assert!(health.queued_bytes <= MAX_QUEUE_BYTES);
+    }
+    #[test]
+    fn database_write_failure_reports_failed_separately_from_pending_and_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scores.sqlite3");
+        drop(Store::open(&path).unwrap());
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_play BEFORE INSERT ON play_results BEGIN SELECT RAISE(FAIL, 'synthetic write failure'); END;").unwrap();
+        drop(connection);
+        let mut worker = Worker::start(&path).unwrap();
+        worker.offer(&result(1, 100));
+        let health = worker.finish();
+        assert_eq!(health.failure.as_deref(), Some("database_write"));
+        assert_eq!(health.failed, 1);
+        assert_eq!(health.rejected, 0);
+        assert_eq!(health.pending, 0);
+        assert_eq!(health.committed, 0);
     }
     #[test]
     fn drain_timeout_reports_pending_work_and_does_not_wait_for_worker_forever() {
