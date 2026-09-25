@@ -718,6 +718,14 @@ fn skin_monotonic_ms() -> u64 {
     u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn editor_skin_state(state: &OverlayState) -> OverlayState {
+    if state.system == scorepeek_overlay::LampState::Inactive {
+        scorepeek_overlay_runtime::sample::editor_sample_state()
+    } else {
+        state.clone()
+    }
+}
+
 fn skin_deadline(schedule: &crate::skin::Schedule, editing: bool) -> Option<Instant> {
     if editing {
         return None;
@@ -1969,6 +1977,7 @@ impl App {
             std::collections::BTreeMap::<String, EditorSkinPreview>::new();
         let mut editor_skin_updates = EditorSkinUpdates::default();
         let mut frame_work = FrameWorkProfile::default();
+        let editor_state = editor_skin_state(&current_state);
         for presentation in &editor_presentations {
             let Some(output) = shell.output_name.as_deref() else {
                 return Err("editor skin preview requires an output owner".into());
@@ -1983,7 +1992,7 @@ impl App {
                 &skin_assets,
                 &report,
                 shell.output_name.as_deref(),
-                &current_state,
+                &editor_state,
                 &mut frame_work,
             ) {
                 Ok(preview) => preview,
@@ -2325,12 +2334,7 @@ impl App {
             if self.editing() {
                 let first_paint = self.paint_count == 0;
                 let paint_started = Instant::now();
-                let editor_state =
-                    if self.current_state.system == scorepeek_overlay::LampState::Inactive {
-                        scorepeek_overlay_runtime::sample::editor_sample_state()
-                    } else {
-                        self.current_state.clone()
-                    };
+                let editor_state = editor_skin_state(&self.current_state);
                 let mut presenter = WindowPresenter {
                     shell: &mut self.shell,
                     renderer: &mut self.renderer,
