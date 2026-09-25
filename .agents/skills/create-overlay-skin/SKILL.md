@@ -5,7 +5,7 @@ description: scorepeekのoverlayスキンを、IIDXの意味に沿った複数�
 
 # Create overlay skin
 
-**責務:** 基本design systemを使う汎用制作工程を所有する。動作雛形、候補選択、
+**責務:** 基本design systemを使う汎用制作工程を所有する。候補選択、
 全widget実装、標準preview静止画・動画とnative/browser検証までを案内する。
 skin APIの技術契約、特定skinの世界観、任意シリーズの表現仕様、旧作比較はここで定義しない。
 
@@ -21,7 +21,7 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 ## 1. Compare directions
 
 1. 対象widget、用途、参考画像、希望する世界観、既存の承認を確認する。保存済みレイアウトは利用者が所有する。
-   [`starter`](starter/skin.toml) を `scripts/scaffold-skin.ts` で新しいIDへ複製し、全widgetと基準行列を動作させる。starterは完成デザインではない。候補選択後に素材、文字、色、動きを固有仕様へ置き換える。
+   API文書とSDKを使い、skinごとに独立したWasm実装、manifest、CSS、素材を制作する。共通のDOMやCSSを複製元として使わない。
 2. 指定がなければ異なる3案を作る。各案は同じ合成データ・サイズ・配置条件で、全体構成と代表widgetの詳細をセットにする。色だけ変えた案にせず、素材・輪郭・文字・光の性格に違いを作る。
 3. 画像が必要なら利用可能な画像生成toolとそのskillを使う。生成画像に焼き込まれた文字は、実装時にlive text/atlasへ置き換えるための視覚見本として扱う。
    生成後に全体と詳細を見比べ、widgetの欠落・勝手な項目追加・値や縦横比の不一致を確認する。不一致の画像を選択候補として合格にしない。修正生成で解消できなければ、生成素材を同一の決定的なレイアウトと文字へ組み合わせた比較見本を作るか、未達の比較条件を示してその段階で停止する。
@@ -54,7 +54,7 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 - PNGとWebMは同じsceneとproduction browser DOMから生成する。web catalogとbrowser editorは両方、native editorはPNGを使用する。これは制作・catalog掲載規格であり、任意の外部skinに対するinstall拒否条件へ拡張しない。
 - 生成時は全resource request、Wasm init/render、期待DOM、画像寸法、動画codec・duration・frame rate・audio absenceおよび成果物hashを機械的に検証する。欠落resource、skin failure、文字やwidgetの欠落を残したpreviewをpackageしない。
 - sceneのskin一覧は制作対象を明示してから生成する。同梱以外の作者も同じsceneと生成・検査処理を使用し、出力先を指定できる。
-- starterの`preview.png`はビルドを起動するためだけの仮画像である。実装後に`SCOREPEEK_SKIN_PREVIEW_SLUG=<slug> mise run overlay:skins:preview:generate`でproduction描画から置き換え、仮画像を完成packageとして出さない。
+- 実装後に`SCOREPEEK_SKIN_PREVIEW_SLUG=<slug> mise run overlay:skins:preview:generate`でproduction描画からpackage previewを生成する。
 
 ## 3. Expand and verify
 
