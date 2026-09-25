@@ -7,8 +7,17 @@ if (!nativeDirectory || !outputDirectory || !slug || Deno.args.length !== 3) {
   );
 }
 await Deno.mkdir(outputDirectory);
+const cases = JSON.parse(
+  await Deno.readTextFile(`${nativeDirectory}/cases.json`),
+) as {
+  id: string;
+  paint_padding: number;
+  media: { fps: number; duration_ms: number; motion_periods_ms: number[] };
+}[];
 for (let index = 1; index <= 8; index += 1) {
   const caseId = String(index).padStart(2, "0");
+  const reviewCase = cases.find((item) => item.id === caseId);
+  if (!reviewCase) throw new Error(`missing review case ${caseId}`);
   const scenario = JSON.parse(
     await Deno.readTextFile(`${nativeDirectory}/${caseId}.json`),
   );
@@ -25,10 +34,12 @@ for (let index = 1; index <= 8; index += 1) {
     canvas: {
       width: canvas.width,
       height: canvas.height,
-      background: canvas.skin_properties?.background ?? "none",
+      skin_properties: canvas.skin_properties ?? {},
+      paint_padding: reviewCase.paint_padding,
       widgets: canvas.widgets,
     },
     state,
+    media: reviewCase.media,
   };
   await Deno.writeTextFile(
     `${outputDirectory}/${caseId}.json`,

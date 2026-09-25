@@ -1,0 +1,88 @@
+# Cyan Abyssal Telemetry
+
+**Responsibility:** Record this skin's world, independently sourced materials and fonts, layout, meaning rules, verified rendering sizes and package evidence. The adopted concept is a direction, while rendered resources and live semantic values are the implementation.
+
+## Identity and world
+
+- ID: `dev.atty303.scorepeek.skin.cyan-abyssal-telemetry`.
+- Adopted direction: deep-sea observation equipment, etched acrylic, black titanium and sonar light. [design.png](design.png) is the selected concept illustration (SHA-256 `3b6a01826d96e83bd34b904b799ab72b55fe5e1d18d09e0c05968a801078dc4b`). It fixes the world and material direction, not the final placement, words or exact colors. The actual widget geometry, typography and contrast were adjusted at 420–600 px widths.
+- The skin has its own crate, ABI v2 guest, manifest, CSS and resources. It does not use a shared skin package.
+
+## Materials and construction
+
+The panel has a dark titanium rim, a smoked acrylic face with mid-scale scratches and reflection, four machined corner joints, and a slow sonar highlight. The canvas field is an independent acoustic chart texture without baked-in labels or game imagery. The first trial's thin line frame was replaced by the image-generated face and reflection at actual widget size.
+
+All generated art in the table below was created for this skin on 2026-09-25. The image generation inputs described texture or shape only; final text came from the DOM and exact glyph masks. There was no third-party game imagery. The retained `materials-src/` files are sources for adopted resources; unused trial candidates are excluded.
+
+| Adopted resource | Owned source and method | SHA-256 of adopted resource |
+| --- | --- | --- |
+| `panel-field.png` | `materials-src/panel-field-source.png` (`d1e970e5…`), imagegen prompt direction: black titanium instrument enclosure, translucent smoked acrylic, thick edge reflection, engraved measuring marks, no words. `magick panel-field-source.png -resize 1024x270! panel-field.png`. | `128e8ce61f906d0bad3861a725d8b651b5e9da06a753112dda0b21b7070b30cc` |
+| `sonar-field.png` | Direct imagegen output, prompt direction: dark bathymetric sonar field, concentric traces and sparse luminous cyan echoes at several scales, no text or UI. This package resource is its retained original. | `23d475b958109d6b6b539ce4603480acddc3e3c29ec993f4d9925ee51e436195` |
+| `corner-{tl,tr,bl,br}.png` | `materials-src/corner-tl.svg` is the drawn joint. Rasterize at 34×34; flip horizontally/vertically for the other corners. | TL `fab270882461cc6d6acb8950452c44514e63190b21e89e05b3ecced3d14427fb`; TR `ed75d05eeac01db54002d7d0bfba30c9b604f98ad8922d506d10f1da6fa36a42`; BL `d71941a6e728f2bd592024b86371e5c83ef643b5c3b67eabb4ce571c43681fba`; BR `0b5f077bbe76ed0958e0e90a08e6c23795ae4e849d7a5980f3074a93eedcdf77` |
+| `label-atlas.png` | `materials-src/label-text.mvg` and `label-text-extra.mvg` are exact fixed strings. Render 192 px wide, 16 px high cells with pinned IBM Plex Bold. The first 16 rows use point size 12, white fill/stroke width 0.3; the six secondary rows use point size 12 with no stroke. Extract glyph alpha and `CopyOpacity` onto resized `materials-src/glyph-material-source.png` (`90ed269a…`), an imagegen pearl/cyan luminous face. The first 16-row mask and face can be reconstructed byte-for-byte with this method. | `0f884ed839eacbf83a191ed2bb6e2bf49116bc75613842f201f59b24410a6a4c` |
+| `digit-atlas.png` | Ten 38×58 cells, 0–9 glyph masks rendered from the same pinned IBM Plex Bold, then filled with the luminous glyph material. The number remains live text in each DOM cell. | `f29d4e25be9d40b44bddcc216d6494968f8d6243d30de2575811eec8f4e7639a` |
+| `aaa-emblem.png`, `fc-emblem.png` | `materials-src/aaa-plaque.svg` and `fc-seal.svg` define the separate acrylic and warm metal plaques. Their AAA and FULL COMBO glyph masks use the same pinned Bold and imagegen glyph material. The bright overlay variants are `magick <base> -modulate 160,155,100` for AAA and `-modulate 160,145,100` for FC. | AAA `7da1e84e321e2aca9968a825eacb08e960ededd42333f664988c5439d97aa97e`; FC `6cd336b53538d402f2fdcadfa7083d4eb5cedc25717dc4b83e2af12df94d96f2`; bright AAA `526efa311252d046d5c34ee58fa8b2bca70094880e3ff0a098010abc57b247a7`; bright FC `a865bde6ff84359a65c6d2e7a42349439cad00c5ca74df0a641116a753dbf8c4` |
+| `sonar-sweep.png` | Analytic 86×270 cyan light sheet: `magick -size 86x270 xc:'#b8ffff' -alpha on -channel A -fx '0.22*exp(-0.5*pow((i-68)/10,2))' +channel sonar-sweep.png`. Alpha is bounded so text remains legible as it passes behind content. | `29825e9db08836ba3d508d4233158ecef3b9c2ef6d0f03d2223c403b886d863b` |
+| `scorepeek-logo-dark-transparent.png` | Approved repository artwork copied byte-for-byte from `docs/assets/scorepeek-logo-dark-transparent.png`, selected for this dark face. No redrawing. | `68c7660b4152a3c788bec308b4be3d6bb66b8cbe483cf8f70964320c4f2a65cc` |
+
+`skin.toml` declares every package resource once.
+
+## Typography and information hierarchy
+
+- Live Latin text: IBM Plex Sans Condensed Regular (`resources/IBM_Plex_Sans_Condensed.ttf`, SHA-256 `87aaee6ba9d2f80b8a3c1f6669e8c3d478b28b482f1d804917b3894694ccc12b`). Bold source for masks: `materials-src/IBMPlexSansCondensed-Bold.ttf`, SHA-256 `723e245902b45a49f8cf602d15891bae08c31309dce7c56d209d10cd471b88c7`. Both were fetched from [IBM Plex source at commit 763c36ef9117782905ae010056dfbe8fd2653a25](https://github.com/IBM/plex/tree/763c36ef9117782905ae010056dfbe8fd2653a25/packages/plex-sans-condensed). The precise raw font URLs end in `fonts/complete/ttf/IBMPlexSansCondensed-Regular.ttf` and `...-Bold.ttf`. License: bundled `resources/OFL-1.1.txt`, IBM Plex [SIL Open Font License 1.1](https://github.com/IBM/plex/blob/763c36ef9117782905ae010056dfbe8fd2653a25/packages/plex-sans-condensed/LICENSE.txt).
+- Live Japanese text: [Noto Sans JP variable TTF at Google Fonts commit 23e54b51ddffbc7713c583748e3bd86f62b1fa4a](https://github.com/google/fonts/tree/23e54b51ddffbc7713c583748e3bd86f62b1fa4a/ofl/notosansjp), raw file `ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf`. SHA-256 `c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f`; license is bundled `resources/NotoSansJP-OFL.txt` (SIL OFL 1.1). The font is package owned so Japanese title/artist do not depend on host fallback.
+- SCORE and MISS digits, fixed labels, AAA and FULL COMBO use material atlases. The actual meaning strings remain in the DOM. Arbitrary song/artist and PLAY OPTIONS text remain live text. Dynamic values are brighter than engraved fixed labels; the fixed label atlases are held at 0.76 opacity for main labels and 0.84 for judgment labels at 420 px. The stronger judgment opacity was checked in native and production browser at 420×194: PGREAT through PLAY OPTIONS are clearer on visual inspection while the colored numeric values and large score digits remain dominant. Negative/positive/timing colors are reserved for meanings.
+- At 420 px, a title estimated too wide for one row uses two live-text lines at 18 px/21 px, with artist below and the chart rail still independent. The 35-character mixed Japanese/Latin review title is fully visible. This is a responsive layout, not string abbreviation.
+
+## Meaning-specific presentation
+
+- Difficulty identity: green BEGINNER, blue NORMAL, yellow HYPER, red ANOTHER, purple LEGGENDARIA. SP/DP, level and notes keep separate rail cells.
+- AAA has its own acrylic badge, including a smaller history material treatment; AA is bright cyan text. FULL COMBO has a separate warm-metal badge in Score and a restrained warm cell in History. They can occur independently.
+- NO PLAY is muted; FAILED red; ASSIST/EASY weak positive; CLEAR green-cyan; HARD stronger cyan; EX HARD bright cyan; FULL COMBO warm metal. Score and History share these color roles. History rows have equal geometry without celebrating the newest row. `widget.settings.history_count` selects 5/10/20/50 supplied rows in order; a taller widget is needed to show more rows at the readable 27 px pitch.
+- PGREAT, GREAT and GOOD use positive tones; BAD, POOR and COMBO BREAK red. FAST blue and SLOW red remain equal timing peers. MISS COUNT is not COMBO BREAK.
+- SYSTEM and RESULT use exactly inactive (dark), active (cyan), error (rose) lamps. SELECT uses `history.recorded` only; true is active, false inactive. A RESULT active input is not treated as a newly achieved event.
+- The Score bar uses supplied EX SCORE/(2×notes), threshold positions from `rank_thresholds`, and a nearest rank distance from `score_progress`; invalid/mismatched derivations yield an unknown distance. No numeric rate label or group headings appear.
+- History Graph plots supplied score/miss ratios against timestamps. `widget.settings.graph_months` selects 1/3/6/12 months, mapped to the matching supplied `graph_start_unix_ms` boundary and `graph_end_unix_ms`; points and ticks outside that interval are omitted, and X positions use the interval itself. Its fixed F–AAA boundary labels and 0/25/50/75/100% MISS RATE axis are static. MISS RATE has 100% at the top and 0% at the bottom; the red line rises when the supplied miss ratio increases. Missing `miss_ratio` samples break only the red series. Time gaps over 35 days break the lines and show a dashed GAP band. Neither series geometry nor values animate.
+- `scorepeek_init` decodes its supplied scene and produces the same first tree as `scorepeek_render`, so native and editor initial paint includes the active widgets.
+- EMPTY opacity is an actual alpha opening. The canvas background is tiled around each EMPTY rectangle; the widget opening therefore reveals the canvas's outside compositing surface even when the field is enabled. Multiple EMPTY widgets can have independent 0 and 0.5 openings.
+
+## Motion
+
+All continuous loops are 8 seconds: an 86 px transparent sonar reflection crosses the panel face; a separate 4 s alternate acrylic glint, active-lamp breathing, AAA acrylic face and FULL COMBO warm face rise and fall within the same full loop. The bright layers never replace the state text. The reflection sits behind the information layer and its peak alpha is 0.22. The canvas field breathes from 0.90 to 1.00 opacity only in `animated` mode; `static` keeps the field fully opaque and still; `off` has no field art. The graph's axes and data stay fixed. If motion is disabled, the first frame remains a complete readable state.
+
+## Baseline adjustments and reasons
+
+| Widget | Implemented starting layout | Reason and evidence |
+| --- | --- | --- |
+| Status | 440×52 default: 145 px approved logo and three 72 px signal groups; 1840×52 review: 156 px logo and 152 px signal groups | The compact arrangement keeps all three named lamps inside 440 px without shrinking the logo into a tiny mark. |
+| Selection | 440×126 default; 420×126 compact and 544×124 preview. Title 21 px compact, long title 18 px on two lines; artist 13–15 px; 26 px rail | The rail retains four independent values. Two-line mode keeps the long synthetic title complete without overlapping artist or rail. The basic 31 px rail was reduced because the 126 px height must hold full text. |
+| Score | 440×194 default; 420×194 compact and 544×200 preview. At 420, 213 px left instrument and about 185 px judgment region; 16 px detail rows and 30 px final options area | The left/right proportion stays near the 54/46 starting structure. Score and DJ LEVEL lead, while the 100 px fixed judgment labels and numbers fit side by side. The CLEAR badge and bar gained separate vertical space after real-size inspection. |
+| History list | 600×200 for 5 rows; five columns 29/18/16/10/27%; 27 px row pitch | Date and clear receive the most width; each row remains directly comparable. Settings of 10/20/50 rows were verified at 600×330/600×600/600×1410 respectively. |
+| History graph | 600×200, 47 px left rank gutter, 36 px right rate gutter, 120 px plot and 22 px time label region | Both axes and 4–6 month tick labels remain readable while data lines lead. Preview also uses 544×208. |
+| Empty | 300×80 with 34 px corner joints, transparent opening inset 7 px and optional top-edge title | The center stays an aperture at zero fill. The 0.5 opacity option adds fill without baking in content. |
+
+The basic system's numerical starting values remain design baselines, not verified continuous size limits. The frame uses one 34 px corner source at these tested sizes; no S/M/L frame-width property is claimed.
+
+## Verified dimensions and states
+
+Only the exact rendered points below are claimed. Native output was inspected as PNG with matching `*` selector-layout JSON and complete manifest, not inferred from DOM rectangles. The package preview is a separate production browser rendering at its declared dimensions.
+
+| Widget / surface | Native rendered width×height and checked states |
+| --- | --- |
+| Status | 440×52: SYSTEM inactive / RESULT error / SELECT inactive; 1840×52: active/error/inactive combinations in the eight-case review |
+| Selection | 420×126: SP/DP, five difficulties, levels 1–12, notes 430–1782 and full long mixed title; 440×126: SP ANOTHER; 544×124: package preview |
+| Score | 420×194: A/AA/AAA, 8 clear types, 3–4 digit score, zero miss, varied judgment/options; 440×194: AAA/FULL COMBO; 544×200: AAA/FULL COMBO |
+| History list | 600×200: five supplied rows and the supplied order, including FULL COMBO and FAILED; 600×330/600×600/600×1410: settings 10/20/50, including the final requested row |
+| History graph | 600×200: F–AAA, 0–100%, month ticks, nullable miss sample, explicit time gap, settings 1/3/6/12 months with boundary-filtered points/ticks; 544×208: 6-month preview with a nullable miss sample |
+| Empty | 300×80: title present/absent, opacity 0/0.5, free/standard aspect setting |
+| Canvas | 900×340: background `off`, `static`, `animated`, two EMPTY openings with measured alpha; 1920×1440: animated review field |
+
+The status 440, canvas modes and EMPTY variants were tested in additional synthetic scenes, including the `history.recorded=false` state. Native and browser pixel samples at each EMPTY center measured alpha 0 for opacity 0 and approximately 0.5 for opacity 0.5, while the surrounding animated field remained visible. In `off` mode the field was alpha 0 and in `static` mode alpha 1. Unlisted widths, very long user titles and arbitrary non-ASCII option strings have not been visually certified.
+
+## Objective checks and visual review
+
+The crate passes `cargo check --locked --offline -p scorepeek-skin-cyan-abyssal-telemetry`, `cargo clippy --locked --offline -p scorepeek-skin-cyan-abyssal-telemetry --all-targets -- -D warnings`, and a Wasm release build. The isolated `scorepeek skin install --force` validated the manifest and resource inventory. The checked-in native visual runner rendered 8 synthetic variants at 1920×1440 and targeted real-size, long-title, background, EMPTY and motion scenes. The review scene generator was invoked with `8000` as its only motion period. Each final native matrix manifest is `complete`, including `000-initial.png` and its layout. Additional native settings scenes showed 10/20/50 history rows at 600×330/600×600/600×1410 and 1/3/12-month graphs at 600×200; the default 5-row/6-month case is in the eight-case matrix. Production browser checks also rendered 10/20/50 rows, including their final rows, and filtered 1/3/12-month graph points and ticks with the 100%-top MISS axis.
+
+The production browser preview generator rendered the installed self-contained package with all resources loaded and no failed resource requests. Its [preview.png](preview.png) is 640×640 at 2 s (SHA-256 `4b9518af0ad70c662141fe2ba102fff515f1d0cd908d6f5e0bd286a4810bab1b`). Its [preview.webm](preview.webm) is an 8 s, 25 fps, 640×640 VP9 loop without audio (SHA-256 `65f1acc500838a1b782a32b052b6fc9fc357724094397464ac3afd250032c345`). The production preview test passed with the 544×124 Selection, 544×200 Score and 544×208 graph, and the PNG was inspected at source resolution.
+
+With the adjusted label contrast, the production browser review passed all eight synthetic states, including resource loading, semantic text, widget geometry, paint bounds and synchronized motion frames. The final 1920×1440, 9-second browser review video has SHA-256 `f8039d5907de99c7a7cc4912de9dc8404a4b32daf1129604ec9f75f04ff24055`; the eighth second crosses the 8-second motion loop and the last second shows continuity after the boundary. `check-skin-review-scenes.ts` confirmed one 4:3 video, eight Selection/Score pairs and all common widgets against the corresponding final native captures, including the initial native DOM rectangles from `scorepeek_init`. Browser and native renderings were visually inspected at the start, intermediate motion and loop boundary. An independent browser probe checked that backdrop-dependent extraction preserves partial alpha over transparency and rejects ambiguous partial-alpha backdrops; the normal eight-state video contains no backdrop-dependent effect. The current ZIP passed `unzip -t` and isolated `scorepeek skin install --force`; packaged preview hashes match the source files and packaged Wasm SHA-256 `1fd00ef5eb2e410fa1f9d0adb6d2667c8f7c8113c52630167e1ca1af3374481e` matches the release build. ZIP entry timestamps vary with build time, so its digest is recorded in task evidence rather than as a permanent skin specification.

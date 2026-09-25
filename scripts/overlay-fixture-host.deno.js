@@ -68,7 +68,7 @@ const initialCanvases = backend === "wayland"
     name: skin.slug,
     backend: "obs",
     skin: skin.id,
-    skin_properties: { background: scene.canvas.background },
+    skin_properties: scene.canvas.skin_properties ?? {},
     opacity_percent: 100,
     output: "obs-output",
     x: 0,
@@ -77,11 +77,7 @@ const initialCanvases = backend === "wayland"
     height: scene.canvas.height,
     widgets: scene.canvas.widgets.map((widget) => ({
       ...widget,
-      skin_properties: {
-        "frame-width": "m",
-        "fill-opacity-percent": 0,
-        ...widget.skin_properties,
-      },
+      skin_properties: widget.skin_properties ?? {},
       settings: { history_count: 5, graph_months: 6, ...widget.settings },
     })),
   }))

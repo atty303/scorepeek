@@ -501,6 +501,7 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         canvases.push(extra);
     }
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: Some(canvases),
         skin: None,
         logical_size: [1280, 1080],
@@ -666,6 +667,7 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
 #[test]
 fn blitz_adapter_preserves_browser_interaction_identity_across_empty_vdom_diff() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1280, 720],
@@ -3651,6 +3653,7 @@ fn empty_geometry_uses_viewport_coordinates_for_every_visible_aperture() {
 #[test]
 fn visual_debug_surface_contains_every_visible_canvas_in_one_stage_projection() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3713,6 +3716,7 @@ fn visual_debug_surface_contains_every_visible_canvas_in_one_stage_projection() 
 #[test]
 fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3757,6 +3761,7 @@ fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
 #[test]
 fn visual_debug_new_canvas_mounts_its_skin_on_the_same_reactive_turn() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3810,6 +3815,7 @@ fn visual_debug_new_canvas_mounts_its_skin_on_the_same_reactive_turn() {
 #[test]
 fn visual_debug_role_transition_remounts_skin_content_in_the_display_root() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3838,6 +3844,7 @@ fn visual_debug_role_transition_remounts_skin_content_in_the_display_root() {
 #[test]
 fn display_context_menu_enters_through_the_shared_dioxus_surface_action() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3870,6 +3877,7 @@ fn display_context_menu_enters_through_the_shared_dioxus_surface_action() {
 #[test]
 fn native_keyboard_edits_the_focused_dioxus_number_field() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3897,6 +3905,7 @@ fn native_keyboard_edits_the_focused_dioxus_number_field() {
 #[test]
 fn native_keyboard_uses_the_shared_title_input_contract() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3938,6 +3947,7 @@ fn native_keyboard_uses_the_shared_title_input_contract() {
 #[test]
 fn native_ime_batch_uses_browser_order_and_shared_composition_state() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -3999,6 +4009,7 @@ fn native_ime_batch_uses_browser_order_and_shared_composition_state() {
 #[test]
 fn native_ime_targets_the_focused_shared_text_control() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -4076,6 +4087,7 @@ fn native_ime_targets_the_focused_shared_text_control() {
 #[test]
 fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -4170,6 +4182,7 @@ fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state(
 #[test]
 fn native_keyboard_drives_the_shared_list_picker_contract() {
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: None,
         skin: None,
         logical_size: [1920, 1080],
@@ -4282,6 +4295,7 @@ fn editor_input_region_covers_panel_and_canvas_but_leaves_blank_output_clear() {
     let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
     canvas.output = Some("WL-1".into());
     let scenario = VisualDebugScenario {
+        monotonic_base_ms: None,
         canvases: Some(vec![canvas]),
         skin: None,
         logical_size: [1920, 1080],

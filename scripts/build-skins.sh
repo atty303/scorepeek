@@ -78,3 +78,13 @@ if [[ "$found" != true ]]; then
   echo "no skins/*/skin.toml packages found" >&2
   exit 1
 fi
+
+# target/skins is the repository build inventory. A removed source skin must
+# not remain selectable through an older ZIP after a successful build.
+for archive in "$output"/*.zip; do
+  [[ -f "$archive" ]] || continue
+  name=$(basename "$archive" .zip)
+  if [[ ! -f "$root/skins/$name/skin.toml" ]]; then
+    rm -- "$archive"
+  fi
+done

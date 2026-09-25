@@ -130,8 +130,11 @@ nested compositor scenario or actual Wayland or OBS when investigating a backend
 
 For motion comparisons, an `advance_animation` visual action with `seconds` resolves native CSS at
 that animation time and captures the result. Set browser animation `currentTime` to the same value
-in milliseconds before capturing its image. The native visual harness advances Blitz time directly;
-it does not measure compositor frame pacing or production Wasm scheduling.
+in milliseconds before capturing its image. A scenario can set `monotonic_base_ms` to an unsigned
+integer to supply the same starting monotonic time to skin Wasm; each `advance_animation` adds its
+seconds to that input. Without this field, the harness uses host monotonic time. The native visual
+harness advances Blitz time directly and renders on scenario actions; it does not measure compositor
+frame pacing or production Wasm scheduling.
 
 A scenario may set `skin` to any installed reverse-domain skin ID. The visual tasks build and
 install repository packages into an isolated XDG store before running the scenario. A skin receives

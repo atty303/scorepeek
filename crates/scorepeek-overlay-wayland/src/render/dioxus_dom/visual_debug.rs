@@ -5,6 +5,8 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct VisualDebugScenario {
     #[serde(default)]
+    pub monotonic_base_ms: Option<u64>,
+    #[serde(default)]
     pub canvases: Option<Vec<scorepeek_overlay::CanvasPresentation>>,
     pub skin: Option<scorepeek_overlay::Skin>,
     #[serde(default = "visual_debug_default_size")]
@@ -36,7 +38,7 @@ const fn visual_debug_default_editing() -> bool {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VisualDebugAction {
     SetState {
-        state: scorepeek_overlay::OverlayState,
+        state: Box<scorepeek_overlay::OverlayState>,
     },
     TitleText {
         text: String,
@@ -137,6 +139,7 @@ pub(super) struct VisualDebugSession {
     physical_size: [u32; 2],
     scale: f32,
     animation_seconds: f64,
+    monotonic_base_ms: Option<u64>,
     pub(super) projection: Reactive<NativeDocumentProjection>,
     pub(super) authority: NativeEditorAuthority,
     pub(super) commands: std::sync::mpsc::Receiver<CoordinatorCommand>,
@@ -321,7 +324,11 @@ impl VisualDebugSession {
                 .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
             );
             let mut runtime = crate::skin::Runtime::new(&package)?;
+            if let Some(base) = scenario.monotonic_base_ms {
+                super::VISUAL_SKIN_MONOTONIC_MS.with(|clock| clock.set(Some(base)));
+            }
             let input = native_skin_input_presentation(&mounted, &state, &package.manifest);
+            super::VISUAL_SKIN_MONOTONIC_MS.with(|clock| clock.set(None));
             let mut initial = runtime.init(&input)?;
             namespace_native_skin_output(&package.manifest.id, &mut initial);
             let mut tree =
@@ -358,6 +365,7 @@ impl VisualDebugSession {
             physical_size,
             scale: scenario.scale,
             animation_seconds: 0.0,
+            monotonic_base_ms: scenario.monotonic_base_ms,
             projection,
             authority,
             commands,
@@ -412,7 +420,20 @@ impl VisualDebugSession {
                 break;
             }
         }
+        // Explicit review captures keep Wasm input time aligned with the browser clock.
+        if let Some(base) = self.monotonic_base_ms {
+            let review_ms = std::time::Duration::try_from_secs_f64(self.animation_seconds)
+                .ok()
+                .and_then(|duration| {
+                    u64::try_from((duration.as_nanos() + 500_000) / 1_000_000).ok()
+                })
+                .unwrap_or(u64::MAX);
+            super::VISUAL_SKIN_MONOTONIC_MS.with(|clock| {
+                clock.set(Some(base.saturating_add(review_ms)));
+            });
+        }
         let _ = self.render_skin();
+        super::VISUAL_SKIN_MONOTONIC_MS.with(|clock| clock.set(None));
         let mut inner = self.document.inner.borrow_mut();
         inner.set_viewport(Viewport::new(
             self.physical_size[0],
@@ -877,7 +898,7 @@ pub fn run_visual_debug(
         for (index, action) in scenario.actions.iter().enumerate() {
             let name = match action {
                 VisualDebugAction::SetState { state } => {
-                    session.state = state.clone();
+                    session.state = (**state).clone();
                     session.resolve();
                     "set-state".into()
                 }

@@ -1,0 +1,114 @@
+id = "dev.atty303.scorepeek.skin.cyan-abyssal-telemetry"
+name = "Cyan Abyssal Telemetry"
+release = "2026-09-25"
+api_version = 2
+description = "Deep-sea telemetry in black titanium, etched acrylic and sonar cyan"
+author = "atty303"
+license = "MIT AND OFL-1.1"
+
+[widget_defaults.status]
+width = 440
+height = 52
+
+[widget_defaults.selection]
+width = 440
+height = 126
+
+[widget_defaults.score]
+width = 440
+height = 194
+
+[widget_defaults.history-list]
+width = 600
+height = 200
+
+[widget_defaults.history-graph]
+width = 600
+height = 200
+
+[widget_defaults.empty]
+width = 300
+height = 80
+
+[canvas_properties.background]
+type = "enum"
+default = "animated"
+values = ["off", "static", "animated"]
+
+[widget_properties.empty.interior-opacity]
+type = "number"
+default = 0.0
+minimum = 0.0
+maximum = 1.0
+
+[[resources]]
+path = "panel-field.png"
+media_type = "image/png"
+
+[[resources]]
+path = "sonar-field.png"
+media_type = "image/png"
+
+[[resources]]
+path = "sonar-sweep.png"
+media_type = "image/png"
+
+[[resources]]
+path = "corner-tl.png"
+media_type = "image/png"
+
+[[resources]]
+path = "corner-tr.png"
+media_type = "image/png"
+
+[[resources]]
+path = "corner-bl.png"
+media_type = "image/png"
+
+[[resources]]
+path = "corner-br.png"
+media_type = "image/png"
+
+[[resources]]
+path = "aaa-emblem.png"
+media_type = "image/png"
+
+[[resources]]
+path = "aaa-emblem-glow.png"
+media_type = "image/png"
+
+[[resources]]
+path = "fc-emblem.png"
+media_type = "image/png"
+
+[[resources]]
+path = "fc-emblem-glow.png"
+media_type = "image/png"
+
+[[resources]]
+path = "digit-atlas.png"
+media_type = "image/png"
+
+[[resources]]
+path = "label-atlas.png"
+media_type = "image/png"
+
+[[resources]]
+path = "scorepeek-logo-dark-transparent.png"
+media_type = "image/png"
+
+[[resources]]
+path = "IBM_Plex_Sans_Condensed.ttf"
+media_type = "font/ttf"
+
+[[resources]]
+path = "OFL-1.1.txt"
+media_type = "text/plain"
+
+[[resources]]
+path = "NotoSansJP-VF.ttf"
+media_type = "font/ttf"
+
+[[resources]]
+path = "NotoSansJP-OFL.txt"
+media_type = "text/plain"

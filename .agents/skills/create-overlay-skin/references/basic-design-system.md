@@ -26,9 +26,9 @@ supplied best score and chart note count.
 | --- | --- | --- |
 | `status` | scorepeek identity; SYSTEM and RESULT signals with their supplied states; SELECT lamp reflecting `history.recorded` | All three signals remain distinct; SELECT means a record exists for the selected chart, not a RESULT confirmation; the wordmark is secondary |
 | `selection` | Song title, artist, SP/DP, difficulty kind, level number, notes | Title first; chart identity next; artist remains readable; no lamp occupies the title's leading edge |
-| `score` | SCORE (the supplied EX score), DJ LEVEL, nearest threshold distance, MISS COUNT, CLEAR, score rate bar with DJ LEVEL ticks; PGREAT, GREAT, GOOD, BAD, POOR, FAST, SLOW, COMBO BREAK, PLAY OPTIONS | SCORE and DJ LEVEL lead, CLEAR is independently prominent; rate and threshold distance explain progress; every detail row remains readable and comparable. Group headings are unnecessary |
-| `history-list` | HISTORY; DATE, SCORE, DJ LEVEL, MISS, CLEAR headers and each displayed row in supplied order | Comparison across columns; no newest-row celebration |
-| `history-graph` | HISTORY GRAPH; DJ LEVEL and MISS RATE legends, score-level and miss-rate axes, month/time ticks, supplied points and missing intervals | Data lines and legend lead; axes and units remain legible; surrounding material is subordinate |
+| `score` | SCORE (the supplied EX score), DJ LEVEL, nearest threshold distance, MISS COUNT, CLEAR, score rate bar with DJ LEVEL ticks; PGREAT, GREAT, GOOD, BAD, POOR, FAST, SLOW, COMBO BREAK, PLAY OPTIONS | SCORE and DJ LEVEL lead, CLEAR is independently prominent; rate and threshold distance explain progress; every detail row remains readable and comparable. Do not add BEST or RESULT DETAIL group headings or a score-rate label/value |
+| `history-list` | HISTORY; DATE, SCORE, DJ LEVEL, MISS, CLEAR headers and the number of supplied rows requested by `history_count`, in supplied order | Comparison across columns; no newest-row celebration |
+| `history-graph` | HISTORY GRAPH; DJ LEVEL and MISS RATE legends, F/E/D/C/B/A/AA/AAA and 0/25/50/75/100% axis stages, month/time ticks, supplied points and missing intervals within the requested `graph_months` range | Data lines and legend lead; all stages and units remain legible; surrounding material is subordinate |
 | `empty` | Optional user title, requested interior opacity and open aperture | The user's content in the aperture leads; title and frame do not obscure it |
 | Canvas | Requested background off/static/animated and EMPTY apertures | Widgets and user content lead over background material |
 
@@ -39,6 +39,10 @@ LEVEL are separate from CLEAR, and MISS COUNT is separate from COMBO BREAK.
 FAST and SLOW are equal peers. Unknown options remain visible as supplied.
 The SELECT lamp is on only when `history.recorded` is true. It does not infer
 the selected chart from song text or interpret the RESULT signal.
+History row count and graph time range come from each widget's standard host
+settings. A small five-row baseline does not authorize dropping rows when the
+user selects a larger count; a graph does not use all supplied months when a
+shorter range is selected.
 SCORE remains an EX score; renaming its display label does not change the
 numeric meaning. The rate is SCORE divided by twice the note count, bounded
 to 0–100% for the bar. DJ LEVEL ticks use the same rank thresholds as the
@@ -80,6 +84,9 @@ These semantic palette and motion rules are authoritative. In particular:
 - Graph data geometry, values, axes and missing intervals never animate. Only
   frame or surrounding material may move. Continuous motion describes the
   current state and never claims a newly achieved result.
+- On the graph, a larger MISS RATE is plotted higher on its own right-hand
+  axis. Its 0–100% labels and red data line must use the same direction;
+  missing samples do not become a zero-rate line.
 - Mixed Japanese/Latin song titles and dynamic values stay live, semantic text.
   Decoration does not replace accessible text or intercept input.
 - Labels and their values occupy visibly different color and luminance roles.
@@ -135,7 +142,7 @@ adjusting; prove readability at the new dimensions by rendering.
 | Score overall | left/right 54%/46% at 440×194; right judgment rows 16 px and final two-line options 30 px | The left contains the large score and state, while the right retains a compact but readable full detail set. Match the two columns' lower edges without adding empty space below detail. |
 | Score left | three rows of 66, 68 and 24 px: SCORE/DJ LEVEL at 54%/46%, MISS COUNT/CLEAR TYPE at 40%/60%, then a rank-ticked bar | Four-digit MISS COUNT needs less horizontal room than a long CLEAR TYPE; SCORE stays dominant; the bar occupies its own row without extra rate text or divider. These row heights sum to 158 px, matching the observed right detail density at the reviewed size. |
 | History list | DATE/SCORE/DJ LEVEL/MISS/CLEAR at 29/18/16/10/27%; header and rows 23 px | Date and clear text are the longest comparison fields; MISS can be narrow; fixed row height keeps columns aligned. The exact percentages remain provisional until boundary-size verification. |
-| History graph | title and two legends above plot; 32 px rank axis and 36 px MISS RATE axis, with a 22 px time axis | Distinct left/right scales and time labels need room without shrinking the central plot excessively. Both axes and plot must remain readable at the claimed minimum size. |
+| History graph | title and two legends above plot; 32 px rank axis and 36 px MISS RATE axis, with a 22 px time axis | Distinct left/right scales and time labels need room without shrinking the central plot excessively. F through AAA and 0% through 100% in 25% steps make the levels explicit. Both axes and plot must remain readable at the claimed minimum size. |
 | Empty | optional title over an open aperture; 300×80 in the review composition | A small empty widget proves aperture and title behavior without consuming the full review board. This review size is not a universal default or verified range. |
 | Frame | S/M/L corner sizes 21/27/34 px, edge sheets 88/112/142 px; 8 px vertical and 12 px horizontal content inset at M | A fixed-thickness frame lets the content area grow independently of material edges; every chosen frame must retain a usable content rectangle. These values describe the source composition's construction, not a mandatory frame shape. |
 
@@ -176,3 +183,20 @@ for a chosen world's type and material. Numerical choices below are measured
 from the accepted Cyan composition. Where the original decision rationale
 cannot be established from code or rendering, the stated reason is an
 engineering constraint to test, not a claim about the original designer's intent.
+
+## Finished material at display size
+
+Judge material with information rendered on it at the widget's actual size.
+Frames, surfaces, highlights and small lettering must share a deliberate
+construction: a richly rendered background cannot compensate for flat labels
+or numbers. Low- and high-cardinality text may use different techniques, but
+their weight, alignment, edge treatment and contrast must belong to the same
+world. Review the full state and size matrix before claiming this finish;
+material that only works in a concept mock is incomplete.
+
+Compare against the chosen concept for its intended world and against the
+quality criteria here for the finished skin. The concept sets a direction, not
+fixed coordinates, colors or a stopping point. Observe letterforms, surface
+depth, joint details, intentional light, information hierarchy and motion in
+native and browser renders. Record specific shortcomings and revise the
+material or typography before treating the skin as complete.

@@ -4444,6 +4444,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scorepeek-skin-cyan-abyssal-telemetry"
+version = "0.1.0"
+dependencies = [
+ "scorepeek-skin-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "scorepeek-skin-cyan-system"
 version = "0.1.0"
 dependencies = [

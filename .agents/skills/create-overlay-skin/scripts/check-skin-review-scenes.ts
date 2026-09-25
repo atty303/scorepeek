@@ -1,10 +1,10 @@
-// Check scene coverage, changing numeric data, and completed native captures.
-// Usage: deno run --allow-read scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <review-image>
+// Check scene coverage, changing numeric data, native captures and browser video.
+// Usage: deno run --allow-read scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <review-video>
 
-const [sceneDir, nativeRoot, reviewImage] = Deno.args;
-if (!sceneDir || !nativeRoot || !reviewImage || Deno.args.length !== 3) {
+const [sceneDir, nativeRoot, reviewVideo] = Deno.args;
+if (!sceneDir || !nativeRoot || !reviewVideo || Deno.args.length !== 3) {
   throw new Error(
-    "usage: check-skin-review-scenes.ts <scene-dir> <native-output-root> <review-image>",
+    "usage: check-skin-review-scenes.ts <scene-dir> <native-output-root> <review-video>",
   );
 }
 
@@ -14,6 +14,13 @@ type ReviewCase = {
   difficulty: string;
   rank: string;
   clear: string;
+  paint_padding: number;
+  media: {
+    fps: number;
+    duration_ms: number;
+    motion_periods_ms: number[];
+    native_motion_seconds: number[];
+  };
 };
 type ReviewState = {
   system: string;
@@ -33,7 +40,15 @@ type ReviewState = {
 };
 type ReviewScene = {
   logical_size: number[];
-  canvases: { widgets: { kind: string }[] }[];
+  canvases: {
+    widgets: {
+      kind: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }[];
+  }[];
   actions: { action: string; state?: ReviewState }[];
 };
 type NativeManifest = {
@@ -47,7 +62,7 @@ type NativeManifest = {
     layout?: string;
   }[];
 };
-type NativeLayout = { elements: { matches: number[][] }[] };
+type NativeLayout = { elements: { selector: string; matches: number[][] }[] };
 
 function requireCondition(
   condition: unknown,
@@ -196,6 +211,34 @@ for (const item of cases) {
     manifest.logical_size?.[0] === 1920 && manifest.logical_size?.[1] === 1440,
     `${id}: native size differs from scene`,
   );
+  const initial = manifest.operations?.find((operation) =>
+    operation.action === "initial"
+  );
+  requireCondition(
+    initial?.status === "success" && initial.image && initial.layout,
+    `${id}: missing native initial render`,
+  );
+  requireCondition(
+    (await Deno.stat(`${nativeRoot}/${id}/${initial.image}`)).size > 0,
+    `${id}: empty native initial image`,
+  );
+  const initialLayout = JSON.parse(
+    await Deno.readTextFile(`${nativeRoot}/${id}/${initial.layout}`),
+  ) as NativeLayout;
+  const initialRectangles =
+    initialLayout.elements?.find((element) => element.selector === "*")
+      ?.matches ?? [];
+  for (const widget of scene.canvases[0].widgets) {
+    requireCondition(
+      initialRectangles.some((rect) =>
+        [widget.x, widget.y, widget.width, widget.height].every((
+          value,
+          index,
+        ) => Number.isFinite(rect[index]) && Math.abs(rect[index] - value) <= 1)
+      ),
+      `${id}: no initial native DOM rectangle for ${widget.kind} widget bounds`,
+    );
+  }
   const capture = manifest.operations?.find((operation) =>
     operation.action === `capture-review-${id}`
   );
@@ -210,13 +253,39 @@ for (const item of cases) {
   const layout = JSON.parse(
     await Deno.readTextFile(`${nativeRoot}/${id}/${capture.layout}`),
   ) as NativeLayout;
-  requireCondition(layout.elements?.length > 0, `${id}: empty selector layout`);
-  requireCondition(
-    layout.elements.every((element) =>
-      element.matches?.every((rect: number[]) => rect[2] > 0 && rect[3] > 0)
-    ),
-    `${id}: invalid native rectangle`,
-  );
+  const rectangles =
+    layout.elements?.find((element) => element.selector === "*")
+      ?.matches ?? [];
+  requireCondition(rectangles.length > 0, `${id}: empty native DOM layout`);
+  for (const widget of scene.canvases[0].widgets) {
+    requireCondition(
+      rectangles.some((rect) =>
+        [widget.x, widget.y, widget.width, widget.height].every((
+          value,
+          index,
+        ) => Number.isFinite(rect[index]) && Math.abs(rect[index] - value) <= 1)
+      ),
+      `${id}: no native DOM rectangle for ${widget.kind} widget bounds`,
+    );
+  }
+  for (const seconds of item.media.native_motion_seconds) {
+    const motion = manifest.operations?.find((operation) =>
+      operation.action ===
+        `capture-review-${id}-at-${String(seconds).replaceAll(".", "-")}`
+    );
+    requireCondition(
+      motion?.status === "success" && motion.image && motion.layout,
+      `${id}: missing native motion capture at ${seconds}s`,
+    );
+    requireCondition(
+      (await Deno.stat(`${nativeRoot}/${id}/${motion.image}`)).size > 0,
+      `${id}: empty native motion image at ${seconds}s`,
+    );
+    requireCondition(
+      (await Deno.stat(`${nativeRoot}/${id}/${motion.layout}`)).size > 0,
+      `${id}: empty native motion layout at ${seconds}s`,
+    );
+  }
 }
 requireCondition(hasThreeDigitNotes, "missing three-digit NOTES variation");
 requireCondition(hasThreeDigitScore, "missing three-digit SCORE variation");
@@ -227,47 +296,72 @@ for (const [field, values] of numbers) {
     `${field}: repeated numeric value across cases`,
   );
 }
-const file = await Deno.open(reviewImage);
-const header = new Uint8Array(24);
-try {
-  requireCondition(
-    await file.read(header) === 24,
-    "incomplete review image header",
-  );
-} finally {
-  file.close();
-}
-const pngMagic = [137, 80, 78, 71, 13, 10, 26, 10];
-requireCondition(
-  pngMagic.every((byte, index) => header[index] === byte),
-  "review image is not PNG",
-);
-const view = new DataView(header.buffer);
-requireCondition(
-  view.getUint32(16) === 1920 && view.getUint32(20) === 1440,
-  "review image is not one 1920x1440 board",
-);
-const assembly = JSON.parse(await Deno.readTextFile(`${reviewImage}.json`)) as {
+requireCondition((await Deno.stat(reviewVideo)).size > 0, "empty review video");
+const assembly = JSON.parse(await Deno.readTextFile(`${reviewVideo}.json`)) as {
+  schema: string;
   source: string;
-  placements: { caseId: string; kind: string }[];
+  size: number[];
+  timing: {
+    fps: number;
+    duration_ms: number;
+    frame_count: number;
+    monotonic_base_ms: number;
+    paint_checks: number;
+  };
+  overlays: { id: string; kind: string }[];
+  video: { codec_name: string; width: number; height: number };
 };
 requireCondition(
-  assembly.source === "native captures only",
-  "non-native review source",
+  assembly.schema === "scorepeek-skin-browser-review-v1" &&
+    assembly.source === "production browser captures",
+  "non-browser review source",
 );
 requireCondition(
-  assembly.placements.length === 16,
-  "missing review placements",
+  assembly.size[0] === 1920 && assembly.size[1] === 1440 &&
+    assembly.video.codec_name === "vp9" && assembly.video.width === 1920 &&
+    assembly.video.height === 1440 && assembly.timing.duration_ms > 0 &&
+    assembly.timing.monotonic_base_ms === 0 &&
+    assembly.timing.paint_checks === 6 &&
+    assembly.timing.frame_count ===
+      assembly.timing.duration_ms * assembly.timing.fps / 1000,
+  "invalid review video metadata",
 );
-for (const { id } of cases) {
+for (const item of cases) {
+  requireCondition(
+    item.paint_padding >= 0 && Number.isInteger(item.paint_padding),
+    `${item.id}: invalid paint padding`,
+  );
+  requireCondition(
+    item.media.duration_ms === assembly.timing.duration_ms &&
+      item.media.fps === assembly.timing.fps,
+    `${item.id}: review timing mismatch`,
+  );
+  for (const period of item.media.motion_periods_ms) {
+    requireCondition(
+      period + 1000 <= assembly.timing.duration_ms,
+      `${item.id}: loop boundary outside video`,
+    );
+    requireCondition(
+      [
+        period - Math.round(1000 / item.media.fps),
+        period,
+        period + Math.round(1000 / item.media.fps),
+      ].every((ms) =>
+        item.media.native_motion_seconds.includes(
+          Number((ms / 1000).toFixed(3)),
+        )
+      ),
+      `${item.id}: missing loop-boundary native samples`,
+    );
+  }
+}
+for (const { id } of cases.filter((item) => item.id !== "01")) {
   exactly(
-    assembly.placements.filter((item) => item.caseId === id).map((item) =>
-      item.kind
-    ),
+    assembly.overlays.filter((item) => item.id === id).map((item) => item.kind),
     ["selection", "score"],
     `${id}: review placements`,
   );
 }
 console.log(
-  "one 4:3 native review image; eight selection/score pairs and all common widgets verified",
+  "one 4:3 browser review video; eight selection/score pairs and all common widgets verified against native captures",
 );

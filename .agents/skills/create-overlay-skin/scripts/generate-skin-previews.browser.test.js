@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { browserTest } from "../../../../tests/browser-test.js";
+import { widgetRect, widgetText } from "./browser-widget-regions.js";
 
 const baseURL = Deno.env.get("SCOREPEEK_SKIN_PREVIEW_URL");
 const outputRoot = Deno.env.get("SCOREPEEK_SKIN_PREVIEW_OUTPUT");
@@ -13,7 +14,10 @@ const skinsDirectory = Deno.env.get("SCOREPEEK_SKINS_DIRECTORY") ??
 const scene = JSON.parse(
   fs.readFileSync(
     Deno.env.get("SCOREPEEK_SKIN_PREVIEW_SCENE") ??
-      path.join(repositoryRoot, ".agents/skills/create-overlay-skin/preview-scene.json"),
+      path.join(
+        repositoryRoot,
+        ".agents/skills/create-overlay-skin/preview-scene.json",
+      ),
     "utf8",
   ),
 );
@@ -69,6 +73,30 @@ browserTest(
         reducedMotion: "no-preference",
       });
       const page = await context.newPage();
+      await page.clock.install({ time: new Date(0) });
+      await page.clock.pauseAt(new Date(0));
+      await page.addInitScript(() => {
+        const OriginalWorker = window.Worker;
+        window.__skinPreviewWorker = { lastCompletedMs: null };
+        window.Worker = class extends OriginalWorker {
+          constructor(...args) {
+            super(...args);
+            this.sentTimes = new Map();
+            this.addEventListener("message", (event) => {
+              const time = this.sentTimes.get(event.data?.id);
+              if (event.data?.output && time !== undefined) {
+                window.__skinPreviewWorker.lastCompletedMs = time;
+              }
+            });
+          }
+          postMessage(message, ...args) {
+            if (message?.input?.schema === "scorepeek-skin-input-v2") {
+              this.sentTimes.set(message.id, message.input.monotonic_ms);
+            }
+            return super.postMessage(message, ...args);
+          }
+        };
+      });
       page.on("pageerror", (error) => pageErrors.push(error.message));
       page.on("response", (response) => {
         if (response.url().includes("/skin/") && !response.ok()) {
@@ -79,7 +107,9 @@ browserTest(
       state.chart.title = manifestValue(skin.slug, "name");
       state.chart.artist = manifestValue(skin.slug, "author");
       const canvasId = `preview-${skin.slug}`;
+      let previewSocket;
       await page.routeWebSocket(`**/ws/${canvasId}`, (client) => {
+        previewSocket = client;
         client.send(JSON.stringify({ type: "state", state }));
         const server = client.connectToServer();
         client.onMessage((message) => server.send(message));
@@ -97,34 +127,36 @@ browserTest(
         waitUntil: "networkidle",
       });
       for (const widget of scene.canvas.widgets) {
-        await expect(page.locator(`.widget-slot[data-widget-id="${widget.id}"]`))
-          .toBeVisible();
+        await expect.poll(() => widgetRect(page, widget)).not.toBeNull();
       }
-      await expect(page.locator("body")).toContainText(state.chart.title);
-      await expect(page.locator("body")).toContainText(state.chart.artist);
-      await expect(page.locator("body")).toContainText("AAA");
-      await expect(page.locator("body")).toContainText("FULL COMBO");
-      await expect(page.locator("body")).toContainText("RANDOM");
-      await page.waitForFunction(() =>
-        [...document.images].every((image) =>
-          image.complete && image.naturalWidth > 0
-        )
+      const selection = scene.canvas.widgets.find((widget) =>
+        widget.kind === "selection"
       );
-      const geometry = await page.locator(".widget-slot").evaluateAll((nodes) =>
-        nodes.map((node) => {
-          const rect = node.getBoundingClientRect();
-          return {
-            id: node.dataset.widgetId,
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          };
-        })
+      const score = scene.canvas.widgets.find((widget) =>
+        widget.kind === "score"
       );
-      expect(geometry).toEqual(
-        scene.canvas.widgets.map(({ kind: _, ...widget }) => widget),
+      for (const value of [state.chart.title, state.chart.artist]) {
+        await expect.poll(() => widgetText(page, selection)).toContain(value);
+      }
+      for (const value of ["AAA", "FULL COMBO", "RANDOM"]) {
+        await expect.poll(() => widgetText(page, score)).toContain(value);
+      }
+      await page.evaluate(async () => {
+        await Promise.all([...document.images].map((image) => image.decode()));
+      });
+      const geometry = await Promise.all(
+        scene.canvas.widgets.map(async (widget) => ({
+          id: widget.id,
+          ...await widgetRect(page, widget),
+        })),
       );
+      for (const [index, widget] of scene.canvas.widgets.entries()) {
+        expect(geometry[index].id).toBe(widget.id);
+        for (const key of ["x", "y", "width", "height"]) {
+          expect(Math.abs(geometry[index][key] - widget[key]))
+            .toBeLessThanOrEqual(1);
+        }
+      }
       const overflow = await page.evaluate(() => ({
         width: document.documentElement.scrollWidth,
         height: document.documentElement.scrollHeight,
@@ -143,22 +175,41 @@ browserTest(
           }
         }, time);
 
-      await setMotionTime(scene.media.png_time_ms);
       const png = path.join(directory, "preview.png");
-      await page.screenshot({
-        path: png,
-        clip: {
-          x: 0,
-          y: 0,
-          width: scene.canvas.width,
-          height: scene.canvas.height,
-        },
-      });
       const frameCount = scene.media.video_duration_ms * scene.media.video_fps /
         1000;
       expect(Number.isInteger(frameCount)).toBe(true);
+      const pngFrame = scene.media.png_time_ms * scene.media.video_fps / 1000;
+      expect(
+        Number.isInteger(pngFrame) && pngFrame >= 0 && pngFrame < frameCount,
+      )
+        .toBe(true);
+      let previousTime = 0;
       for (let frame = 0; frame < frameCount; frame += 1) {
-        await setMotionTime(frame * 1000 / scene.media.video_fps);
+        const time = Math.round(frame * 1000 / scene.media.video_fps);
+        if (time > previousTime) await page.clock.runFor(time - previousTime);
+        previousTime = time;
+        await setMotionTime(time);
+        const actualTime = await page.evaluate(() =>
+          Math.round(performance.now())
+        );
+        expect(actualTime).toBeGreaterThanOrEqual(time);
+        expect(actualTime).toBeLessThanOrEqual(time + 10);
+        previewSocket.send(JSON.stringify({ type: "state", state }));
+        await expect.poll(() =>
+          page.evaluate(() => window.__skinPreviewWorker?.lastCompletedMs)
+        ).toBe(actualTime);
+        if (frame === pngFrame) {
+          await page.screenshot({
+            path: png,
+            clip: {
+              x: 0,
+              y: 0,
+              width: scene.canvas.width,
+              height: scene.canvas.height,
+            },
+          });
+        }
         await page.screenshot({
           path: path.join(
             frameDirectory,
@@ -174,6 +225,16 @@ browserTest(
           },
         });
       }
+      expect(
+        await page.evaluate(() => document.documentElement.dataset.skinFailure),
+      ).toBeUndefined();
+      expect(
+        await page.evaluate(() =>
+          [...document.images].every((image) =>
+            image.complete && image.naturalWidth > 0
+          )
+        ),
+      ).toBe(true);
       await context.close();
       expect(pageErrors).toEqual([]);
       expect(failures).toEqual([]);

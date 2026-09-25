@@ -28,7 +28,9 @@ trap 'exit 143' TERM
 
 deno run --allow-read --allow-write "$skill/scripts/prepare-browser-review-scenes.ts" \
   "$native_scenes" "$run_root/scenes" "$slug"
-bash "$root/scripts/build-skins.sh"
+if [[ "${SCOREPEEK_PREBUILT_SKINS:-0}" != 1 ]]; then
+  bash "$root/scripts/build-skins.sh"
+fi
 case_ids=(01 02 03 04 05 06 07 08)
 if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
   if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^0[1-8]$ ]]; then
@@ -36,6 +38,9 @@ if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
     exit 2
   fi
   case_ids=("$SCOREPEEK_REVIEW_CASE_ID")
+  if [[ "$SCOREPEEK_REVIEW_CASE_ID" != 01 ]]; then
+    case_ids=(01 "$SCOREPEEK_REVIEW_CASE_ID")
+  fi
 fi
 for case_id in "${case_ids[@]}"; do
   case_root="$run_root/$case_id"
@@ -66,3 +71,8 @@ for case_id in "${case_ids[@]}"; do
   exec 3>&-
   sha256sum "$output/$case_id.png" >> "$output/SHA256SUMS"
 done
+if [[ -z "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
+  deno run --allow-read --allow-write --allow-run=magick,ffmpeg,ffprobe \
+    "$skill/scripts/compose-browser-review-video.ts" \
+    "$native_scenes" "$output" "$output/review.webm"
+fi

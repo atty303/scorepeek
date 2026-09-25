@@ -3,7 +3,6 @@
   "canvas": {
     "width": 640,
     "height": 640,
-    "background": "animated",
     "widgets": [
       { "id": "selection", "kind": "selection", "x": 48, "y": 22, "width": 544, "height": 124 },
       { "id": "score", "kind": "score", "x": 48, "y": 178, "width": 544, "height": 200 },

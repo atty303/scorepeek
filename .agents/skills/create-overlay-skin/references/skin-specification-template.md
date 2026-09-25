@@ -5,7 +5,7 @@ world, materials, typography, motion, final measurements, justified baseline
 adjustments and verified range. It does not add common design rules or API
 requirements.
 
-Use these headings for each authored skin. Fill them from the selected master
+Use these headings for each authored skin. Fill them from the selected concept
 and verified implementation, rather than treating the template as evidence.
 
 ## Identity and world
@@ -18,9 +18,9 @@ traits chosen for this skin.
 Describe contours, frame segmentation, surfaces, joints, background, original
 assets, source/generation method, independently obtained font provenance,
 licenses and reproduction steps where applicable.
-Link the master and give hashes for skin-owned packaged art. Record each
-widget's principal regions, proportions, alignment, spacing and response
-to S/M/L frame widths.
+Link the selected concept and give hashes for skin-owned packaged art. Record
+each widget's principal regions, proportions, alignment and spacing. Record
+frame-width variants only when this skin actually offers them.
 
 ## Typography and information hierarchy
 

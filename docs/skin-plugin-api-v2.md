@@ -15,12 +15,6 @@ The archive contains one skin and normalized relative paths. Root files `skin.to
 package-relative resources. CSS `url('background.png')` addresses the ZIP root; `../`, absolute
 paths, remote URLs, filesystem, and network host calls are not package APIs.
 
-The bundled scorepeek skins use the repository's versioned 640×640 catalog scene and include both
-PNG and WebM previews. `mise run overlay:skins:preview:generate` renders their installed Wasm, CSS,
-fonts, and resources through the production browser canvas, verifies the output, and updates the
-source assets under `skins/<name>/`. This repository authoring rule does not make WebM mandatory for
-external v2 packages.
-
 `skin.toml` has this shape. `id` is a lowercase ASCII reverse-domain name, `release` is an opaque
 non-empty string, and property keys use lowercase ASCII letters, digits, and `-`. Properties may be
 omitted entirely; the example shows every supported type:
@@ -167,6 +161,15 @@ The complete input shape is:
 and `result`. Presentation strings may be empty when the value is unavailable; plugins must not
 recompute game meaning from them.
 
+The host supplies standard widget settings inside each widget: `title` (string),
+`aspect_ratio`, `history_count` (5, 10, 20 or 50) and `graph_months` (1, 3, 6 or 12).
+The history snapshot can contain up to 50 `plays`; each history-list widget chooses
+its requested row count. `history.graph_start_unix_ms` has four start timestamps
+for 1, 3, 6 and 12 calendar months in that order. `graph_end_unix_ms` is the
+common end timestamp; `graph_ticks` contains dated labels for filtering to
+the chosen range. These fields are existing input data, not new package
+acceptance requirements.
+
 Output contains `schedule` and one complete `tree`. Schedule kinds are `idle`, `next-frame`, and
 `after-ms` with `milliseconds` in the inclusive range `0..=2147483647`; larger values are
 rejected identically by native and OBS. Nodes are ordinary DOM data:
@@ -184,6 +187,10 @@ Rust reference types and buffer helpers live in `crates/scorepeek-skin-sdk`. Eac
 is a separate Wasm crate. The authoring guide is
 [`create-overlay-skin`](../.agents/skills/create-overlay-skin/SKILL.md); its design and preview
 procedures are production guidance, not package acceptance conditions.
+The SDK also offers `score_progress` and `rank_thresholds` for display-only
+arithmetic. They return numeric rate, rank and nearest-boundary data; the skin
+decides text padding, units, CSS values and visual treatment. These helpers do
+not change the v2 ABI or the host's supplied presentation data.
 The skin uses `backend` and `monotonic_ms` to choose its own native or browser scheduling and motion.
 
 ## Local package management

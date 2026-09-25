@@ -1,12 +1,49 @@
 // Generate synthetic, all-widget native review scenarios for any installed skin.
-// Usage: deno run --allow-write scripts/generate-skin-review-scenes.ts <skin-id> <new-output-dir>
+// Usage: deno run --allow-write scripts/generate-skin-review-scenes.ts <skin-id> <new-output-dir> [motion-periods-ms] [paint-padding-px]
 
-const [skinId, outputDir] = Deno.args;
-if (!skinId || !outputDir || Deno.args.length !== 2) {
+const [skinId, outputDir, periodsArgument = "", paddingArgument = "16"] =
+  Deno.args;
+if (!skinId || !outputDir || Deno.args.length > 4) {
   throw new Error(
-    "usage: generate-skin-review-scenes.ts <skin-id> <new-output-dir>",
+    "usage: generate-skin-review-scenes.ts <skin-id> <new-output-dir> [motion-periods-ms] [paint-padding-px]",
   );
 }
+const paintPadding = Number(paddingArgument);
+if (!Number.isSafeInteger(paintPadding) || paintPadding < 0) {
+  throw new Error("paint padding must be a nonnegative integer in pixels");
+}
+const motionPeriodsMs = periodsArgument === ""
+  ? []
+  : periodsArgument.split(",").map(Number);
+if (
+  motionPeriodsMs.some((period) => !Number.isSafeInteger(period) || period <= 0)
+) {
+  throw new Error("motion periods must be positive integer milliseconds");
+}
+const reviewFps = 15;
+const reviewDurationMs = Math.ceil(
+  Math.max(8000, ...motionPeriodsMs.map((period) => period + 1000)) / 1000,
+) * 1000;
+const nativeMotionMs = [
+  ...new Set([
+    250,
+    1000,
+    2000,
+    4000,
+    reviewDurationMs - Math.round(1000 / reviewFps),
+    reviewDurationMs,
+    ...motionPeriodsMs.flatMap((
+      period,
+    ) => [
+      period - Math.round(1000 / reviewFps),
+      period,
+      period + Math.round(1000 / reviewFps),
+    ]),
+  ].filter((value) => value > 0)),
+].sort((a, b) => a - b);
+const nativeMotionSeconds = nativeMotionMs.map((value) =>
+  Number((value / 1000).toFixed(3))
+);
 
 const cases = [
   {
@@ -93,7 +130,6 @@ const commonWidgets = [
     width: 300,
     height: 80,
     settings: { title: "HAND CAM" },
-    skin_properties: { "fill-opacity-percent": 20 },
   },
 ];
 
@@ -119,16 +155,16 @@ for (const [index, variant] of cases.entries()) {
       id: "selection",
       kind: "selection",
       x,
-      y: 82 + row * 142,
-      width: 440,
+      y: 82 + row * 168,
+      width: 420,
       height: 126,
     },
     {
       id: "score",
       kind: "score",
       x,
-      y: 430 + row * 240,
-      width: 440,
+      y: 430 + row * 260,
+      width: 420,
       height: 194,
     },
   ];
@@ -153,8 +189,12 @@ for (const [index, variant] of cases.entries()) {
       difficulty: variant.difficulty,
       level: variant.level,
       notes,
-      title: `NEON 回路 CIRCUIT ${id}`,
-      artist: `架空 ARTIST ${id}`,
+      title: index === 7
+        ? `検証用の長い和英混在タイトル SONG ${id} EXTENDED MIX`
+        : `検証用 SONG ${id}`,
+      artist: index === 7
+        ? `Example Artist / 架空アーティスト ${id}`
+        : `Example ARTIST ${id}`,
     },
     system: index === 0 || index === 6 ? "error" : "active",
     result_signal: index === 0 || index % 2 ? "inactive" : "active",
@@ -269,6 +309,7 @@ for (const [index, variant] of cases.entries()) {
   };
   const scene = {
     skin: skinId,
+    monotonic_base_ms: 0,
     logical_size: [1920, 1440],
     scale: 1,
     canvases: [{
@@ -279,16 +320,17 @@ for (const [index, variant] of cases.entries()) {
       y: 0,
       width: 1920,
       height: 1440,
-      skin_properties: { background: "animated" },
       widgets,
     }],
     editing: false,
-    selectors: [".overlay-canvas", ".widget-slot", ".instrument-panel"],
+    selectors: ["*"],
     actions: [
       { action: "set_state", state },
       { action: "capture", name: `review-${id}` },
-      { action: "advance_animation", seconds: 2 },
-      { action: "capture", name: `review-${id}-motion` },
+      ...nativeMotionSeconds.flatMap((seconds) => [
+        { action: "advance_animation", seconds },
+        { action: "capture", name: `review-${id}-at-${seconds}` },
+      ]),
     ],
   };
   await Deno.writeTextFile(
@@ -307,6 +349,13 @@ for (const [index, variant] of cases.entries()) {
     score,
     bestMiss: state.best.miss,
     scenario: `${id}.json`,
+    paint_padding: paintPadding,
+    media: {
+      fps: reviewFps,
+      duration_ms: reviewDurationMs,
+      motion_periods_ms: motionPeriodsMs,
+      native_motion_seconds: nativeMotionSeconds,
+    },
   });
 }
 await Deno.writeTextFile(

@@ -715,7 +715,14 @@ fn native_skin_input_presentation(
 
 fn skin_monotonic_ms() -> u64 {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    if let Some(value) = VISUAL_SKIN_MONOTONIC_MS.with(std::cell::Cell::get) {
+        return value;
+    }
     u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+thread_local! {
+    static VISUAL_SKIN_MONOTONIC_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 fn editor_skin_state(state: &OverlayState) -> OverlayState {
