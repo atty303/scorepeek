@@ -203,7 +203,6 @@ test("editor replicas reconnect and follow drag, stale delivery, scroll, and lif
     await page.locator("#widget-picker-trigger").click();
     await page.locator(".list-picker-option[data-index='0']").click();
   }
-  await page.getByRole("button", { name: "obs-output", exact: true }).click();
   await page.getByRole("button", { name: "+ Add canvas", exact: true }).click();
   await page.locator("#widget-picker-trigger").click();
   await page.locator(".list-picker-option[data-index='0']").click();

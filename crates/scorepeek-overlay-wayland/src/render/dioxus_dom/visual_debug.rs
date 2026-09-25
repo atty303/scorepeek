@@ -382,16 +382,20 @@ impl VisualDebugSession {
         };
         if let Some(output) = output {
             let candidate = self.authority.session().stage_projection(&output);
-            changed |= accept_stage_projection_replica(
-                self.projection,
-                &mut self.document,
-                &mut self.skins,
-                &self.skin_assets,
-                &output.name,
-                &candidate,
-            );
+            changed |= self.accept_editor_projection(&candidate);
         }
         changed
+    }
+
+    pub(super) fn accept_editor_projection(&mut self, candidate: &StageProjection) -> bool {
+        accept_stage_projection_replica(
+            self.projection,
+            &mut self.document,
+            &mut self.skins,
+            &self.skin_assets,
+            &candidate.output.name,
+            candidate,
+        )
     }
 
     pub(super) fn resolve(&mut self) {

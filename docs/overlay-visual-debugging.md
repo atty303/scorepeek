@@ -153,7 +153,9 @@ offscreen canvases, widgets outside their canvas and values off the 4px grid. Ca
 must be 32–8192 logical pixels and widget dimensions 16–8192 logical pixels; an assigned output
 name remains required even when that output is disconnected. Objects and Inspector remain available
 for a fully offscreen canvas, and Inspector accepts integer coordinates without viewport or canvas
-bounds. An uncommitted invalid field blocks Save. Pointer movement and resize retain 4px snapping:
+bounds. The Objects tree initially expands every output and canvas; subsequent disclosure choices
+stay in the editor session. An uncommitted invalid field blocks Save. Pointer movement and resize
+retain 4px snapping:
 widgets stay within their canvas where possible, while canvases may cross the viewport edge but
 must retain a visible area after a pointer gesture. `Button` owns text alignment,
 sizing, selected/disabled state and tone; parent CSS owns placement and spacing.

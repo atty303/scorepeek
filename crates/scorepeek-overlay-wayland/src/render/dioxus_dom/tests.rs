@@ -2440,7 +2440,6 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-2"));
     fake.scroll_stage(&mut authority, "WL-2", ".navigator-scroll", -800.0)
         .unwrap();
-    fake.click_stage(&mut authority, "WL-2", ".workspace-output-option[*|data-output='WL-2'] > .navigator-item-line > .navigator-item-select").unwrap();
     fake.click_stage(
             &mut authority,
             "WL-2",
@@ -3734,9 +3733,8 @@ fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
         NativeDocumentProjection::Editor(stage) => stage.output.clone(),
         NativeDocumentProjection::Display { .. } => panic!("expected editor stage"),
     };
-    session.projection.set(NativeDocumentProjection::Editor(
-        session.authority.session().stage_projection(&output),
-    ));
+    let next = session.authority.session().stage_projection(&output);
+    assert!(session.accept_editor_projection(&next));
     session.resolve();
 
     let expected = match &*session.projection.borrow() {
@@ -3790,9 +3788,8 @@ fn visual_debug_new_canvas_mounts_its_skin_on_the_same_reactive_turn() {
         .authority
         .dispatch(EditorInput::Action(EditorAction::AddCanvas));
     let output = session.authority.session().outputs[0].clone();
-    session.projection.set(NativeDocumentProjection::Editor(
-        session.authority.session().stage_projection(&output),
-    ));
+    let next = session.authority.session().stage_projection(&output);
+    assert!(session.accept_editor_projection(&next));
 
     session.resolve();
 

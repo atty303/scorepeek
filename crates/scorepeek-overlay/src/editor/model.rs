@@ -253,11 +253,16 @@ impl EditorSession {
             .collect::<std::collections::BTreeMap<_, _>>()
             .into_values()
             .collect();
-        let expanded_canvases = canvases
-            .first()
-            .map(|canvas| canvas.id.clone())
-            .into_iter()
+        let expanded_outputs = canvases
+            .iter()
+            .map(|canvas| {
+                canvas
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| super::UNASSIGNED_OUTPUT_NAME.into())
+            })
             .collect();
+        let expanded_canvases = canvases.iter().map(|canvas| canvas.id.clone()).collect();
         Self {
             session_id: 0,
             revision: 0,
@@ -275,7 +280,7 @@ impl EditorSession {
                 sample: true,
                 screen_picker_open: false,
                 output_picker_open: false,
-                expanded_outputs: active_output.clone().into_iter().collect(),
+                expanded_outputs,
                 expanded_canvases,
                 collapsed_accordions: std::collections::BTreeSet::new(),
                 field_drafts: std::collections::BTreeMap::new(),
@@ -581,6 +586,17 @@ impl EditorSession {
     }
     pub fn set_outputs(&mut self, outputs: Vec<crate::editor::EditorOutput>) {
         let previous_active = self.active_output.clone();
+        let previous_outputs = self
+            .outputs
+            .iter()
+            .map(|output| output.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.chrome.expanded_outputs.extend(
+            outputs
+                .iter()
+                .filter(|output| !previous_outputs.contains(output.name.as_str()))
+                .map(|output| output.name.clone()),
+        );
         self.outputs = outputs;
         let active = if self
             .active_output
@@ -1924,6 +1940,68 @@ mod skin_tests {
             )]),
             widget_properties: std::collections::BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn objects_initially_expands_every_output_and_canvas() {
+        let first = CanvasPresentation {
+            id: "first".into(),
+            name: "First".into(),
+            skin: "dev.example.skin".parse().unwrap(),
+            skin_properties: std::collections::BTreeMap::new(),
+            show_on: None,
+            opacity_percent: 100,
+            output: Some("DP-2".into()),
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 560,
+            widgets: Vec::new(),
+        };
+        let second = CanvasPresentation {
+            id: "second".into(),
+            output: Some("DP-1".into()),
+            ..first.clone()
+        };
+        let unassigned = CanvasPresentation {
+            id: "unassigned".into(),
+            output: None,
+            ..first.clone()
+        };
+        let mut model = Model::new(vec![first, second, unassigned], [1920, 1080], "test");
+        assert_eq!(
+            model.chrome.expanded_canvases,
+            [
+                "first".to_owned(),
+                "second".to_owned(),
+                "unassigned".to_owned()
+            ]
+            .into()
+        );
+        let outputs = ["DP-1", "DP-2", "DP-3"]
+            .map(|name| crate::editor::EditorOutput {
+                name: name.into(),
+                model: "test".into(),
+                logical_size: Some([1920, 1080]),
+            })
+            .to_vec();
+        model.set_outputs(outputs.clone());
+        assert_eq!(
+            model.chrome.expanded_outputs,
+            [
+                "DP-1".to_owned(),
+                "DP-2".to_owned(),
+                "DP-3".to_owned(),
+                crate::editor::UNASSIGNED_OUTPUT_NAME.to_owned(),
+            ]
+            .into()
+        );
+
+        model.action(&EditorAction::ToggleOutputExpanded("DP-1".into()));
+        model.action(&EditorAction::ToggleCanvasExpanded("second".into()));
+        model.set_outputs(outputs);
+        assert!(!model.chrome.expanded_outputs.contains("DP-1"));
+        assert!(!model.chrome.expanded_canvases.contains("second"));
     }
 
     #[test]

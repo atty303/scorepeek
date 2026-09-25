@@ -3,6 +3,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod components;
+const UNASSIGNED_OUTPUT_NAME: &str = "Unassigned";
 pub mod effect;
 pub mod model;
 pub mod runtime;
@@ -409,7 +410,7 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
     if view.canvases.iter().any(|canvas| canvas.output.is_none()) {
         navigator_outputs.push((
             EditorOutput {
-                name: "Unassigned".into(),
+                name: UNASSIGNED_OUTPUT_NAME.into(),
                 model: "No output".into(),
                 logical_size: None,
             },
