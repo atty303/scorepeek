@@ -6,11 +6,12 @@ if [[ "${SCOREPEEK_ISOLATED_SKINS:-0}" == 1 ]]; then
 fi
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-node_binary=$(node -p 'process.execPath')
+deno_binary=$(mise which deno)
 xdg=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-skins.XXXXXX")
 export SCOREPEEK_ISOLATED_SKINS=1
 export MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}"
+export DENO_DIR="${DENO_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/deno}"
 cleanup() {
   if [[ -n "${active_child:-}" ]] && kill -0 "$active_child" 2>/dev/null; then
     kill "$active_child" 2>/dev/null || true
@@ -55,8 +56,8 @@ for package in "$root"/target/skins/*.zip; do
   "${SCOREPEEK_BINARY:-$root/target/debug/scorepeek}" skin install "$package" >/dev/null
 done
 
-if [[ "${1:-}" == node ]]; then
+if [[ "${1:-}" == deno ]]; then
   shift
-  set -- "$node_binary" "$@"
+  set -- "$deno_binary" "$@"
 fi
 run_child "$@"

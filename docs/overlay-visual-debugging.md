@@ -89,12 +89,24 @@ listen address. The configuration file must not already exist, and non-loopback 
 rejected:
 
 ```text
-mise run overlay:visual:obs -- /tmp/scorepeek-obs-visual/overlay.toml 127.0.0.1:17384
+mise run --raw overlay:visual:obs -- /tmp/scorepeek-obs-visual/overlay.toml 127.0.0.1:17384
 ```
 
-Open `http://127.0.0.1:17384/overlay` in Codex Browser, set its viewport to the configured logical
-output size, and use the Browser DOM, interaction and screenshot surfaces. Press Enter in the server
-terminal to stop it. The server uses the production `/overlay`, iframe canvas, WebSocket and editor
+Open `http://127.0.0.1:17384/overlay` with Playwright CLI, set its viewport to the configured logical
+output size, and inspect the top-level and canvas iframe DOM before capturing the composed image:
+
+```text
+mise run browser:cli -- open http://127.0.0.1:17384/overlay
+mise run browser:cli -- resize 1920 1080
+mise run browser:cli -- snapshot
+mise run browser:cli -- run-code 'async page => await Promise.all(page.frames().map(async frame => ({ url: frame.url(), body: await frame.locator("body").innerText() })))'
+mise run browser:cli -- screenshot --filename=/tmp/scorepeek-obs-visual/composed.png
+mise run browser:cli -- close
+```
+
+Use `click <ref> right` or `mousedown right` for editor entry, then exercise the controls and
+capture another screenshot. Use a new agent-owned output path for each inspection. Press Enter in the server
+terminal to stop it and remove agent-owned temporary artifacts. The server uses the production `/overlay`, iframe canvas, WebSocket and editor
 code, but an absent event socket and no score database, so it starts with the editor's fixed sample
 data and never initializes capture, recognition, Wayland or OBS.
 

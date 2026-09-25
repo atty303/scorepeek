@@ -6,7 +6,7 @@ run_root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-skin-previews.XXXXXX")
 stop_fifo="$run_root/stop"
 server_log="$run_root/server.log"
 staging="$run_root/output"
-port=$(node -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
+port=$(deno eval 'const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 }); console.log(listener.addr.port); listener.close();')
 address="127.0.0.1:$port"
 mkdir -p "$staging"
 mkfifo "$stop_fifo"
@@ -30,7 +30,7 @@ cleanup() {
 trap cleanup EXIT
 
 "$root/scripts/with-isolated-skins.sh" \
-  node "$root/scripts/overlay-fixture-host.js" "$run_root" "$address" "$root/skins/preview-scene.json" \
+  deno run -A "$root/scripts/overlay-fixture-host.deno.js" "$run_root" "$address" "$root/skins/preview-scene.json" \
   <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
 server_pid=$!
 
@@ -48,7 +48,7 @@ curl --fail --silent --output /dev/null "http://$address/overlay"
 
 SCOREPEEK_SKIN_PREVIEW_URL="http://$address" \
 SCOREPEEK_SKIN_PREVIEW_OUTPUT="$staging" \
-playwright test scripts/generate-skin-previews.browser.spec.js --workers=1 --reporter=line --output="$run_root/playwright"
+deno test -A scripts/generate-skin-previews.browser.test.js
 
 destination=${1:-}
 if [[ -n "$destination" ]]; then
@@ -58,7 +58,7 @@ else
   while IFS= read -r slug; do
     install -m 0644 "$staging/$slug/preview.png" "$root/skins/$slug/preview.png"
     install -m 0644 "$staging/$slug/preview.webm" "$root/skins/$slug/preview.webm"
-  done < <(node -e 'const scene=require(process.argv[1]);for(const skin of scene.skins)console.log(skin.slug)' "$root/skins/preview-scene.json")
+  done < <(deno eval 'const scene = JSON.parse(await Deno.readTextFile(Deno.args[0])); for (const skin of scene.skins) console.log(skin.slug)' "$root/skins/preview-scene.json")
   "$root/scripts/build-skins.sh"
   mkdir -p "$root/target/skin-previews"
   install -m 0644 "$staging/manifest.json" "$root/target/skin-previews/manifest.json"

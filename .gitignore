@@ -3,6 +3,7 @@
 /.direnv/
 /tools/ocr/.venv/
 /.mise.local.toml
+/.playwright-cli/
 __pycache__/
 *.py[cod]
 

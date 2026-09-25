@@ -33,7 +33,7 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
-scripts/with-isolated-skins.sh node scripts/overlay-fixture-host.js "$root" "$address" - "$config_path" <"$fifo" 3>&- >"$root/server.log" 2>&1 &
+scripts/with-isolated-skins.sh deno run -A scripts/overlay-fixture-host.deno.js "$root" "$address" - "$config_path" <"$fifo" 3>&- >"$root/server.log" 2>&1 &
 server_pid=$!
 for _ in {1..200}; do
   if curl --fail --silent --output /dev/null "http://$address/overlay"; then break; fi

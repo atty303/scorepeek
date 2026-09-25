@@ -49,16 +49,16 @@ layoutの正のrectangleだけではnative paintを証明できない。
 sourceのscenario型が許す項目だけを使う。fixtureに未対応のstate注入をあるものとして実行しない。
 
 ```sh
-mise run overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:17384
+mise run --raw overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:17384
 ```
 
 - configは未存在であること。stdinを保持する対話terminalで起動し、HTTP応答後に開く。Enterで終了するserverなのでstdin EOFを起動失敗と誤認しない。
-- 利用可能なBrowser skillに従い、利用者が指定したブラウザを使う。`/overlay` を原則1920×1080（指定があればそのlogical size）で開く。
-- 右clickで編集に入り、対象skin・screen/canvasを選ぶ。top-levelとcanvas iframeのDOMを両方読む。composed screenshotを取得して実際に見る。
+- `mise run browser:cli -- open <url>` で `/overlay` を開き、`resize` で原則1920×1080（指定があればそのlogical size）にする。利用者が別のブラウザを明示した場合はその指定を使う。
+- `snapshot` と `run-code` でtop-levelとcanvas iframeのDOMを両方読む。`click <ref> right` または `mousedown right` で編集に入り、対象skin・screen/canvasを選ぶ。`screenshot --filename=<path>` でcomposed screenshotを取得して実際に見る。
 - widget選択、移動、四隅resize、manifestで宣言したproperty、EMPTY title有無・aspect、scroll、save/reopen、別変更のdiscardを試す。保存先は一時configだけ。
 - 狙ったskinが全canvasへ反映されたか確認する。一つのcanvasの変更だけで全画面のskin検証済みとしない。
 - 時刻の異なる表示を取得し、動きと安定した実値を確認する。CSS animationは明示motion時刻で、Wasmのscheduled full-tree更新はrender呼出しを伴うcaptureで確認する。v2 ABIの `backend` と `monotonic_ms` を使う最適化とmotionはskinが所有する。nativeとbrowserで同じ内容/サイズを比較し、pixel equalityは求めない。
-- 終了後serverを止め、所有tabを閉じ、viewportを戻し、一時config/scenario/outputをcleanupする。比較証拠を残すなら保持先を明示する。
+- 終了後 `mise run browser:cli -- close` でsessionを閉じ、serverを止め、一時config/scenario/outputをcleanupする。比較証拠を残すなら保持先を明示する。
 
 `overlay:visual:obs` はbundle依存を持つ。backendだけを古いbundleと組み合わせない。
 通常のcargo build/testもbundleを埋め込み、bundleの欠落またはbuild identity不一致はbuild時に拒否する。

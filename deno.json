@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "playwright": "npm:playwright@1.64.0-alpha-1789764292000",
+    "playwright/test": "npm:playwright@1.64.0-alpha-1789764292000/test"
+  }
+}
