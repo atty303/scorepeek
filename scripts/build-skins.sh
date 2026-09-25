@@ -58,7 +58,12 @@ package() {
     cp "$skin_dir"/resources/* "$work/"
   fi
 
-  bash "$root/skins/shared/tools/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
+  if [[ "$shared" == true ]]; then
+    # The original three retain their private implementation until comparison ends.
+    bash "$root/skins/shared/tools/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
+  else
+    bash "$root/.agents/skills/create-overlay-skin/scripts/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
+  fi
   (cd "$work" && zip -q -X -9 "$archive" ./*)
   mv -fT -- "$archive" "$output/$name.zip"
 }

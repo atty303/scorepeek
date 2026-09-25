@@ -1,5 +1,10 @@
 # Overlay visual debugging
 
+**Responsibility:** Describe the repository's native and browser overlay
+debugging interfaces, scenario schema and artifact meanings. Skin-specific
+design rules, review-board composition and preview production belong to
+`create-overlay-skin`; this document does not set skin quality criteria.
+
 DOM and bounding-box assertions do not detect every native rendering problem. The native visual
 debugger renders the production Dioxus component through the native DOM, Blitz paint and Vello image
 path without connecting to Wayland. A scenario retains UI state across clicks, scrolls and drags and
@@ -13,9 +18,11 @@ mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual
 ```
 
 The output directory must not already exist. A scenario retains one image renderer for its complete
-action sequence. Scenario actions are `set_editing`, `set_screen`, `click`, `scroll`, `drag`, and
-`capture`. `set_screen` accepts a screen kind or `null` and exercises normal runtime canvas
-visibility. Clicks use CSS selectors. Left drag moves the widget under its starting point; right drag
+action sequence. Scenario actions are `set_state`, `title_text`, `set_editing`, `set_screen`,
+`click`, `scroll`, `drag`, `capture` and `advance_animation`. `set_state` accepts a complete
+`OverlayState` object and repaints the same canvas with supplied synthetic information, including
+AAA and FULL COMBO cases. `set_screen` accepts a screen kind or `null` and exercises normal runtime
+canvas visibility. Clicks use CSS selectors. Left drag moves the widget under its starting point; right drag
 moves the selected canvas. Coordinates and layout rectangles are logical CSS pixels. PNG dimensions
 are the logical output size multiplied by `scale` and rounded up; the manifest records both sizes.
 This path is intended for visual diagnosis and does not save overlay configuration.

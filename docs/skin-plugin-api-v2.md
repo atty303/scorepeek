@@ -1,5 +1,10 @@
 # scorepeek skin plugin API v2
 
+**Responsibility:** Define the technical contract at the skin boundary:
+input, ABI, manifest, ZIP contents and installation validation. Design
+choices, authoring workflow, preview production and bundled-skin decisions
+belong to the skin authoring skill or the owning skin specification.
+
 This is the current language-neutral authoring contract for `api_version = 2`.
 Unknown API versions are rejected.
 
@@ -176,8 +181,9 @@ pointer, keyboard, focus, click, timer, thread, filesystem, network, database, E
 asynchronous callback interface.
 
 Rust reference types and buffer helpers live in `crates/scorepeek-skin-sdk`. Each repository skin
-is a separate Wasm crate. `skins/shared` is an optional implementation shortcut containing generic
-rendering code, styles, resources, and authoring tools; it contains no skin registry or theme values.
+is a separate Wasm crate. The authoring guide is
+[`create-overlay-skin`](../.agents/skills/create-overlay-skin/SKILL.md); its design and preview
+procedures are production guidance, not package acceptance conditions.
 The skin uses `backend` and `monotonic_ms` to choose its own native or browser scheduling and motion.
 
 ## Local package management

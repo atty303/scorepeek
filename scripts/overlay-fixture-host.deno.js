@@ -77,8 +77,12 @@ const initialCanvases = backend === "wayland"
     height: scene.canvas.height,
     widgets: scene.canvas.widgets.map((widget) => ({
       ...widget,
-      skin_properties: { "frame-width": "m", "fill-opacity-percent": 0 },
-      settings: { history_count: 5, graph_months: 6 },
+      skin_properties: {
+        "frame-width": "m",
+        "fill-opacity-percent": 0,
+        ...widget.skin_properties,
+      },
+      settings: { history_count: 5, graph_months: 6, ...widget.settings },
     })),
   }))
   : [];

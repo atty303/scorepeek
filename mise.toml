@@ -149,7 +149,7 @@ exec bash scripts/build-skins.sh
 [tasks."overlay:skins:preview:generate"]
 description = "Regenerate bundled skin PNG and WebM previews from the production browser renderer"
 depends = ["build", "overlay:skins:build", "browser:install"]
-run = "scripts/generate-skin-previews.bash"
+run = "bash .agents/skills/create-overlay-skin/scripts/generate-skin-previews.bash"
 
 [tasks."overlay:visual:native"]
 description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario without Wayland"

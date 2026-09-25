@@ -3,21 +3,24 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { browserTest } from "../tests/browser-test.js";
+import { browserTest } from "../../../../tests/browser-test.js";
 
 const baseURL = Deno.env.get("SCOREPEEK_SKIN_PREVIEW_URL");
 const outputRoot = Deno.env.get("SCOREPEEK_SKIN_PREVIEW_OUTPUT");
 const repositoryRoot = Deno.cwd();
+const skinsDirectory = Deno.env.get("SCOREPEEK_SKINS_DIRECTORY") ??
+  path.join(repositoryRoot, "skins");
 const scene = JSON.parse(
   fs.readFileSync(
-    path.join(repositoryRoot, "skins/preview-scene.json"),
+    Deno.env.get("SCOREPEEK_SKIN_PREVIEW_SCENE") ??
+      path.join(repositoryRoot, ".agents/skills/create-overlay-skin/preview-scene.json"),
     "utf8",
   ),
 );
 
 function manifestValue(slug, key) {
   const source = fs.readFileSync(
-    path.join(repositoryRoot, "skins", slug, "skin.toml"),
+    path.join(skinsDirectory, slug, "skin.toml"),
     "utf8",
   );
   const match = source.match(new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, "m"));
@@ -93,10 +96,10 @@ browserTest(
       await page.goto(`${baseURL}/canvas/${canvasId}?editor=1`, {
         waitUntil: "networkidle",
       });
-      await expect(page.locator(".selection-widget")).toBeVisible();
-      await expect(page.locator(".score-widget .detail-row.options"))
-        .toBeVisible();
-      await expect(page.locator(".history-graph-widget .plot")).toBeVisible();
+      for (const widget of scene.canvas.widgets) {
+        await expect(page.locator(`.widget-slot[data-widget-id="${widget.id}"]`))
+          .toBeVisible();
+      }
       await expect(page.locator("body")).toContainText(state.chart.title);
       await expect(page.locator("body")).toContainText(state.chart.artist);
       await expect(page.locator("body")).toContainText("AAA");

@@ -1,0 +1,63 @@
+id = "dev.atty303.scorepeek.skin.cyan-system-instrument"
+name = "Cyan System Instrument"
+release = "1"
+api_version = 2
+description = "Precision navy instruments with milled silver edges and cyan light channels."
+author = "scorepeek"
+
+[widget_defaults.status]
+width = 440
+height = 52
+[widget_defaults.selection]
+width = 440
+height = 126
+[widget_defaults.score]
+width = 440
+height = 194
+[widget_defaults.history-list]
+width = 440
+height = 200
+[widget_defaults.history-graph]
+width = 440
+height = 214
+[widget_defaults.empty]
+width = 512
+height = 360
+
+[[resources]]
+path = "background.png"
+media_type = "image/png"
+[[resources]]
+path = "frame.png"
+media_type = "image/png"
+[[resources]]
+path = "scorepeek-logo-dark-transparent.png"
+media_type = "image/png"
+[[resources]]
+path = "Rajdhani-SemiBold.ttf"
+media_type = "font/ttf"
+[[resources]]
+path = "Orbitron.ttf"
+media_type = "font/ttf"
+[[resources]]
+path = "Rajdhani-OFL.txt"
+media_type = "text/plain"
+[[resources]]
+path = "Orbitron-OFL.txt"
+media_type = "text/plain"
+
+[canvas_properties.background]
+type = "enum"
+default = "none"
+values = ["none", "static", "animated"]
+
+[widget_properties."*".frame-width]
+type = "enum"
+default = "m"
+values = ["s", "m", "l"]
+
+[widget_properties."*".fill-opacity-percent]
+type = "integer"
+default = 0
+minimum = 0
+maximum = 100
