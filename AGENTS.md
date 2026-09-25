@@ -123,11 +123,11 @@
   the corresponding selector-layout JSON and `manifest.json`; positive DOM rectangles alone do not
   establish correct native paint, clipping or CSS support. This path exercises the production
   Dioxus native DOM, Blitz and Vello renderer without connecting to Wayland.
-- Verify the browser/OBS route with `mise run overlay:visual:obs -- <new-config-path> 127.0.0.1:<unused-port>`. The config path must not exist. Open `/overlay` in Codex Browser at the
+- Verify the browser/OBS route with `mise run --raw overlay:visual:obs -- <new-config-path> 127.0.0.1:<unused-port>`. The config path must not exist. Keep stdin open while inspecting. Open `/overlay` with `mise run browser:cli -- open <url>` and resize to the
   task-specific logical output size, or 1920x1080 when none is specified. Inspect both the top-level
-  and canvas iframe DOM, use right-click
-  and editor controls to exercise stateful interaction, and capture the composed image. Stop the
-  server and remove agent-owned temporary artifacts after inspection. See
+  and canvas iframe DOM through `snapshot` and `run-code`, use right-click
+  and editor controls to exercise stateful interaction, and capture the composed image with `screenshot`.
+  Close the browser session and stop the server; remove agent-owned temporary artifacts after inspection. See
   `docs/overlay-visual-debugging.md` for scenario actions and artifact semantics.
 - Compare native and browser images manually to find unsupported native CSS or paint differences;
   pixel equality is not an acceptance condition. Browser integration, fake Wayland and the checked-in

@@ -35,6 +35,9 @@ const fn visual_debug_default_editing() -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VisualDebugAction {
+    SetState {
+        state: scorepeek_overlay::OverlayState,
+    },
     TitleText {
         text: String,
         #[serde(default)]
@@ -873,6 +876,11 @@ pub fn run_visual_debug(
         )?;
         for (index, action) in scenario.actions.iter().enumerate() {
             let name = match action {
+                VisualDebugAction::SetState { state } => {
+                    session.state = state.clone();
+                    session.resolve();
+                    "set-state".into()
+                }
                 VisualDebugAction::TitleText { text, composing } => {
                     session.title_text(text.clone(), *composing)?;
                     if *composing {

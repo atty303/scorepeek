@@ -1,0 +1,24 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:playwright@1.64.0-alpha-1789764292000": "1.64.0-alpha-1789764292000"
+  },
+  "npm": {
+    "playwright-core@1.64.0-alpha-1789764292000": {
+      "integrity": "sha512-ZgRaybFv4rRy7QMGnYprEGFdNJnvapNqcaER2w96bDQA+40BWIle1el1Yh9KHD3E6XYmieMB+r+UxFTCauTGGQ==",
+      "bin": true
+    },
+    "playwright@1.64.0-alpha-1789764292000": {
+      "integrity": "sha512-3Ngs4ERGdC912uW3srEDtNVey4u1wSaQ/EFcKhxMpz0by0K6nidaJgM087pLpJc1osytiVnL7ack5gvgPArPNw==",
+      "dependencies": [
+        "playwright-core"
+      ],
+      "bin": true
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:playwright@1.64.0-alpha-1789764292000"
+    ]
+  }
+}

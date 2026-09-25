@@ -16,11 +16,6 @@
     "video_fps": 25,
     "video_codec": "vp9"
   },
-  "skins": [
-    { "slug": "cyan-system", "id": "dev.atty303.scorepeek.skin.cyan-system" },
-    { "slug": "result-aurora", "id": "dev.atty303.scorepeek.skin.result-aurora" },
-    { "slug": "dj-blackbox", "id": "dev.atty303.scorepeek.skin.dj-blackbox" }
-  ],
   "state": {
     "connected": true,
     "chart": {

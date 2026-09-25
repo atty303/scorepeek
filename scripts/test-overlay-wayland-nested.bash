@@ -28,7 +28,7 @@ case "${1:-}" in
     cd "$repo"
     mkfifo "$root/stop"
     exec 3<>"$root/stop"
-    SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh node scripts/overlay-fixture-host.js "$root" 127.0.0.1:0 - "$root/overlay.toml" wayland <"$root/stop" 3>&- >"$root/host.log" 2>&1 &
+    SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh deno run -A scripts/overlay-fixture-host.deno.js "$root" 127.0.0.1:0 - "$root/overlay.toml" wayland <"$root/stop" 3>&- >"$root/host.log" 2>&1 &
     host_pid=$!
     scenario_cleanup() {
       if [[ -n "${host_pid:-}" ]]; then

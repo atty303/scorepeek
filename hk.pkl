@@ -24,6 +24,17 @@ local linters = new Mapping<String, Step> {
     }
   }
   ["taplo"] = Builtins.taplo
+  ["browser:deno-fmt"] {
+    glob = List("deno.json", "tests/*.js", "scripts/*.deno.js", "scripts/*browser.test.js")
+    check = "deno fmt --check {{files}}"
+    fix = "deno fmt {{files}}"
+    check_first = false
+  }
+  ["browser:deno-lint"] {
+    glob = List("tests/*.js", "scripts/*.deno.js", "scripts/*browser.test.js")
+    check = "deno lint {{files}}"
+    fix = "deno lint --fix {{files}}"
+  }
   ["overlay:web"] {
     glob = List("crates/scorepeek-overlay/**", "crates/scorepeek-overlay-web-client/**")
     check = "mise run overlay:web:check"

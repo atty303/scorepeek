@@ -254,7 +254,7 @@ async fn stage_versions_gate_edits_and_disconnect_releases_only_its_lease() {
     let message = client.receive();
     assert_eq!(message["type"], "state");
     assert_eq!(message["state"]["chart"]["title"], "NEON CIRCUIT");
-    assert_eq!(message["state"]["best"]["score"], "2846");
+    assert_eq!(message["state"]["best"]["score"], "2932");
     assert!(
         message["state"]["history"]["plays"]
             .as_array()

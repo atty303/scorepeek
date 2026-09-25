@@ -11,8 +11,8 @@ cargo.binstall_native = true
 "cargo:cargo-nextest" = "0.9.145"
 "cargo:dioxus-cli" = "0.7.10"
 actionlint = "1.7.12"
+deno = "2.9.5"
 hk = "1.54.1"
-"npm:playwright" = "1.63.0"
 rclone = "1.74.2"
 rust = { version = "1.97.1", components = [
   "clippy",
@@ -135,10 +135,6 @@ outputs = [
   "target/dx/scorepeek-overlay-web-client/release/web/public/index.html",
 ]
 
-[tasks."overlay:web:browser:install"]
-description = "Install the headless Chromium revision pinned by the repository Playwright tool"
-run = "playwright install --only-shell chromium"
-
 [tasks."overlay:skins:build"]
 description = "Build repository skin ZIP packages without installing them"
 run = '''
@@ -152,8 +148,8 @@ exec bash scripts/build-skins.sh
 
 [tasks."overlay:skins:preview:generate"]
 description = "Regenerate bundled skin PNG and WebM previews from the production browser renderer"
-depends = ["build", "overlay:skins:build", "overlay:web:browser:install"]
-run = "scripts/generate-skin-previews.bash"
+depends = ["build", "overlay:skins:build", "browser:install"]
+run = "bash .agents/skills/create-overlay-skin/scripts/generate-skin-previews.bash"
 
 [tasks."overlay:visual:native"]
 description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario without Wayland"
@@ -166,7 +162,7 @@ depends = ["build", "overlay:skins:build"]
 run = "scripts/test-overlay-wayland-nested.bash"
 
 [tasks."overlay:visual:obs"]
-description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
+description = "Serve the production OBS overlay from an isolated config for Playwright CLI inspection"
 depends = ["build", "overlay:skins:build"]
 run = 'scripts/visual-obs.bash "$@"'
 
@@ -193,7 +189,7 @@ mise run overlay:web:bundle
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo nextest run --locked --workspace "$@"
 mise run capture:vulkan:artifact:check
-mise run overlay:web:browser:install
+mise run browser:install
 scripts/test-overlay-browser.bash
 '''
 

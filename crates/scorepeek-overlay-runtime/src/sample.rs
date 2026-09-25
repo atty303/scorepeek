@@ -41,7 +41,7 @@ pub fn editor_sample_state() -> OverlayState {
         system: LampState::Inactive,
         result_signal: LampState::Active,
         best: BestView {
-            score: "2846".into(),
+            score: "2932".into(),
             dj_level: "AA".into(),
             miss: "12".into(),
             clear: "HARD CLEAR".into(),

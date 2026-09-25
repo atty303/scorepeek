@@ -1,5 +1,8 @@
 # IIDXの意味とscorepeekの表示契約
 
+**責務:** 公式資料のゲーム用語と、scorepeekがskinへ渡す値の意味を区別して説明する。
+情報の表示優先順位とレイアウトは基本design system、具体的な見た目はskin固有仕様が所有する。
+
 確認日: 2026-09-08。公式の事実、sourceで確認した実装、利用者のデザイン判断を混同しない。
 作品固有の画面装飾やoption条件を全シリーズ共通の規則へ拡張しない。
 以下は要約であり、ゲーム画像・文面・座標・資産を取り込む資料ではない。
@@ -35,9 +38,10 @@ source anchorはrepository rootから解決する。実装が変わったらanch
 | クリア文字 | `runtime.rs` の `clear()`: 保存rank 0–7をNO PLAY/FAILED/ASSIST/EASY/CLEAR/HARD/EX HARD/FULL COMBOへ対応。wire literalとは別 |
 | 履歴 | `query.rs`: 受信日時等による降順。skinがソートし直したり最高記録を再判定しない |
 | グラフ | `runtime.rs`: EX/(2*notes)、MISS/notes。notes不明/0はplotしない。UIは0–100%へclipし、不明missの区間を接続しない。各playの値であり累積best曲線ではない |
-| 軸 | `skins/shared/src/lib.rs`: DJ LEVEL境界と右側MISS RATE。missは大きいほど高い位置。成功率やaccuracyへ読み替えない。月・日時は親から渡される |
+| 軸 | [基本design system](basic-design-system.md)に従いDJ LEVEL境界と右側MISS RATEを示す。missは大きいほど高い位置。成功率やaccuracyへ読み替えない。月・日時は親から渡される |
 | SYSTEM | `crates/scorepeek-overlay/src/projection.rs` の `apply_status()`: watcher/session、catalog/model等の状態。ゲーム成績ではない |
-| RESULT | `projection.rs`: inactive/provisional/confirmed/retractedをlampへ写す。DB保存完了や接続可否そのものではない。recorded indicatorとも別 |
+| RESULT | `crates/scorepeek-overlay-runtime/src/consumer.rs`: inactive→`LampState::Inactive`、provisional/confirmed→`Active`、retracted→`Error`。skinが受け取るのはこの3値であり、provisionalとconfirmedの区別は保持されない。DB保存完了や接続可否そのものではなく、recorded indicatorとも別 |
+| SELECT lamp | `history.recorded` の真偽をstatus widgetに表示する制作上の配置。選択譜面に記録があるかを示し、SYSTEM/RESULTの状態とは独立。skin APIのfieldは増やさない |
 | MISSとCB | `runtime.rs`: miss_countとcombo_breakは独立field。BAD+POORなどからskinが推定しない |
 | プレイ条件 | `runtime.rs` が渡す表示文字列を保持。知らないoptionも消さない |
 

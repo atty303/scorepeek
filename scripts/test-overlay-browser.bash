@@ -4,7 +4,7 @@ set -euo pipefail
 test_root="$(mktemp -d /tmp/scorepeek-overlay-browser-test.XXXXXX)"
 stop_fifo="$test_root/stop"
 server_log="$test_root/server.log"
-port="$(node -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')"
+port="$(deno eval 'const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 }); console.log(listener.addr.port); listener.close();')"
 address="127.0.0.1:$port"
 mkfifo "$stop_fifo"
 exec 3<>"$stop_fifo"
@@ -32,7 +32,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-scripts/with-isolated-skins.sh node scripts/overlay-fixture-host.js "$test_root" "$address" <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
+scripts/with-isolated-skins.sh deno run -A scripts/overlay-fixture-host.deno.js "$test_root" "$address" <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
 server_pid=$!
 
 for _ in {1..300}; do
@@ -47,7 +47,7 @@ for _ in {1..300}; do
 done
 curl --fail --silent --output /dev/null "http://$address/overlay"
 
-SCOREPEEK_BROWSER_TEST_URL="http://$address" playwright test tests/overlay-browser.spec.js --workers=1 --reporter=line --output="$test_root/playwright" &
+SCOREPEEK_BROWSER_TEST_URL="http://$address" deno test -A tests/overlay-browser.test.js &
 test_pid=$!
 wait "$test_pid"
 test_pid=

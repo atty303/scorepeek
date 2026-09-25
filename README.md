@@ -90,8 +90,11 @@ Third-party source acknowledgements and terms are documented in
 
 `mise run test` runs the repository checks, production asset builds, Clippy,
 one standard `cargo nextest run --locked --workspace`, Vulkan layer artifact checks,
-and the browser overlay test in fail-fast order. The browser test launches the
+and the Deno browser overlay scenario in fail-fast order. The browser scenario launches the
 production `scorepeek` private OBS role with temporary HOME and XDG directories.
+Playwright CLI is available through `mise run browser:cli -- <command>`; `browser:install`
+installs its pinned Chromium headless shell. Browser scenarios use the Playwright version
+paired with the pinned CLI and run through Deno, without a Node.js runtime.
 CI runs nextest with `--no-fail-fast` to report every Rust test failure in one run;
 local `mise run test` retains nextest's default fail-fast behavior.
 Private corpus replay, corpus import and review, skin preview generation,
