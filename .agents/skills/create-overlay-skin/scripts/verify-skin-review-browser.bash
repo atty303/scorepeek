@@ -31,10 +31,17 @@ deno run --allow-read --allow-write "$skill/scripts/prepare-browser-review-scene
 if [[ "${SCOREPEEK_PREBUILT_SKINS:-0}" != 1 ]]; then
   bash "$root/scripts/build-skins.sh"
 fi
-case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa)
+case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa background-off background-static background-animated)
+if [[ ! -f "$native_scenes/background-animated.json" ]]; then
+  case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa background-off background-static)
+fi
 if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
-  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa))$ ]]; then
-    echo "SCOREPEEK_REVIEW_CASE_ID must be 01..08 or rank-a/rank-aa/rank-aaa" >&2
+  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa)|background-(off|static|animated))$ ]]; then
+    echo "SCOREPEEK_REVIEW_CASE_ID must be 01..08, rank-a/rank-aa/rank-aaa, or background-off/background-static/background-animated" >&2
+    exit 2
+  fi
+  if [[ ! -f "$native_scenes/$SCOREPEEK_REVIEW_CASE_ID.json" ]]; then
+    echo "review case not generated: $SCOREPEEK_REVIEW_CASE_ID" >&2
     exit 2
   fi
   case_ids=("$SCOREPEEK_REVIEW_CASE_ID")

@@ -25,7 +25,7 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 2. 指定がなければ異なる3案を作る。各案は現行package previewに近い情報量で全widgetと主要状態の世界観を伝えるモックとし、色だけでなく素材・輪郭・文字・光の性格を変える。各方向を全widgetへ展開できるか見通しを確認する。モックの数字や配置に実装相当の厳密さは求めない。
 3. 画像生成toolとそのskillをconceptと素材部品の制作候補にする。生成画像の文字は視覚見本であり、実装ではlive textや意味を保持するatlasへ置き換える。SVGやImageMagickだけで質感を満たせない場合は画像生成で枠、面、発光、文字を試作する。
 4. 候補を実際に表示し、世界観の候補名、素材、配色、文字の性格、想定する動き、全widgetへの展開方針を短く添えて選択する。利用者が代理選択を明示的に任せた場合は担当agentが選び、理由を記録する。
-5. 採用モックから、枠・情報面・固定文字・動的文字・特別な状態に必要な世界観の手掛かりをskin固有仕様に記す。これは制作後の合否に使う観測項目であり、モックの位置や色を固定する設計書ではない。どの手掛かりも背景画像だけに任せない。
+5. 採用モックから、枠・**情報が載る面**・固定文字・動的文字・特別な状態に必要な世界観の手掛かりをskin固有仕様に記す。素材を核にする案では、情報面の走査・反射・粒子・奥行きなどから核となる手掛かりを名指しし、最終renderで実際に描かれた箇所を対応付ける。可読性のためにその手掛かりを取り除くなら、情報面に同等の素材表現を作り直す。これは制作後の合否に使う観測項目であり、モックの位置や色を固定する設計書ではない。どの手掛かりも背景画像だけに任せない。
 6. 採用モックの世界観と素材の方向を保持する。配置、寸法、具体色、書体、光、動きは完成度と可読性のために調整し、モック再現だけで完了しない。
 
 ## 2. Prove material and motion
@@ -63,12 +63,13 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 ## 3. Expand and verify
 
 - 代表widgetの内部検証後、status・selection・score・history-list・history-graph・emptyとcanvas背景へ展開する。欧文の主要数値だけでなく、定型ラベルも一貫した素材にする。
+- packageと最終描画の前に `bash .agents/skills/create-overlay-skin/scripts/check-skin-authoring-contract.bash <skin-dir>` で6 widgetの既定寸法と背景状態を検査する。canvasを静止させるconceptは固有仕様に理由を記して`--still`を追加し、無効なanimated controlを置かない。検査結果の`background_off_value`と`background_motion`をscene生成へ渡す。共通sceneの`background-off`/`background-static`と、canvasが動くconceptなら`background-animated`で全widgetを載せてnative/browser描画する。背景なしではSelect・Score・Historyの情報面と枠の世界観を原寸で読み、animated背景では周期中の時刻差を確認する。manifestの値だけで描画対応を合格にしない。
 - 意味別の色・文字・素材・動きの規則をまとめ、widgetごとの場当たり的なCSSや別のnative/webレイアウトを増やさない。
 - 検証referenceの共通matrixを実行し、見本比較と条件変更耐性を分けて評価する。既知の崩れを残したまま利用者へ品質判断を委ねない。
 - 全widgetへ展開した後もfinish gatesを実寸で再判定する。各widgetに実際の情報を載せたnative画像とbrowserの同時刻frameを使い、検証済みsizeの下限となる組合せをすべて、既定size、異なる状態を確認する。package previewに載るSelection・Score・History Graphはそのsizeも確認する。全画面を縮小した一覧だけで小さい文字や素材を判定しない。小文字は画像だけからラベルと代表値を転記してからsceneと照合し、拡大やsource参照がないと読めない項目を不合格にする。長い曲名・artist・PLAY OPTIONSの試験値は末尾まで画像から読めるか確かめる。DOMに全文が残っていても、表示上の省略記号やclipで末尾を隠したら、その内容とsizeを全情報表示の検証済み条件に含めない。仕様には各widgetの実寸証拠への参照、gateごとの可視の根拠、失敗時の修正と再描画結果を残す。文字と質感が簡略化したwidgetを、他のwidgetや背景が美しいという理由で通さない。
 - PNG等のbitmapを文字atlasに使う場合、Score/Historyの全状態とpackage previewで、**表示される個々の字形・sprite cell**の元pixel寸法と、crop・`background-size`・transformを反映した実効表示寸法を照合する。atlas画像全体の寸法では判定しない。輪郭を滑らかに描く字形を元のcellより大きく表示してはいけない。小さいcellを拡大したAAAやCLEAR TYPEが読めても、にじみ・二重輪郭が見えるならlettering gateは不合格とし、表示寸法に足りる解像度で作り直す。意図したpixel artは補間方法と実寸の仕上がりを固有仕様へ記録して判定する。
 - ScoreとHistoryで同じ意味表現を検証する際は、レビューcase 02のAAAとcase 08のFULL COMBOを含むHistoryのnative・browser画像を実寸で読む。合成browser動画でHistoryが1例しか表示されないことを、この確認の代わりにしない。
-- **意味段階の停止条件:** 共通scene生成toolの`rank-a`、`rank-aa`、`rank-aaa`は、同じchart・CLEAR・判定・FAST/SLOW・Historyで、ランクと整合するSCOREと先頭History行のSCORE/ランクだけを変える。3 sceneをnative/browserの両方で実寸描画して横に比較する。AからAAへ文字列以外のpositiveな手掛かりが加わり、AAからAAAへvery positiveな素材表現がさらに加わることを、ScoreとHistory双方の具体的な色・形・面・光で記録する。score rate barや差分値の変化をランク文字の表現と取り違えない。clearのNO PLAY/FAILED/ASSIST/EASY/CLEAR/HARD/EX HARD/FULL COMBO、判定のPGREAT/GREAT/GOOD/BAD/POOR/COMBO BREAKは意味段階を、FAST/SLOWは等しい重みの方向差を照合する。AAAとFCだけ、または文字列の読み分けだけで意味gateを合格にしない。
+- **意味段階の停止条件:** 共通scene生成toolの`rank-a`、`rank-aa`、`rank-aaa`は、同じchart・CLEAR・判定・FAST/SLOW・Historyで、ランクと整合するSCOREと先頭History行のSCORE/ランクだけを変える。3 sceneをnative/browserの両方で実寸描画して横に比較する。AからAAへ文字列以外のpositiveな手掛かりが加わり、AAからAAAへvery positiveな素材表現がさらに加わることを、ScoreとHistory双方の具体的な色・形・面・光で記録する。score rate barや差分値の変化をランク文字の表現と取り違えない。同じScore画像内のPGREAT/GREAT/GOODを原寸で比較し、PGREATにだけより強い肯定表現が見えることを記録する。3行へ同じclass・色・面を与えて文字列だけ変える実装は不合格。clearのNO PLAY/FAILED/ASSIST/EASY/CLEAR/HARD/EX HARD/FULL COMBOとBAD/POOR/COMBO BREAKの意味段階、FAST/SLOWの等しい重みの方向差も照合する。AAAとFCだけ、または文字列の読み分けだけで意味gateを合格にしない。
 - History Graphはsceneの具体値から上下方向を再計算し、最終native/browser画像の右軸と赤線を照合する。共通matrixのcase 01では最初のMISS RATEが75%、最後が10%なので、100%は上、0%は下、最初の赤点は最後の赤点より上にある。軸・線・凡例の位置が一致しても、値の方向が逆なら不合格とする。
 - skin制作中のレビュー提示は、[実装と視覚検証](references/implementation-and-verification.md#レビュー提示用のbrowser動画)の全widget・状態matrixを1920×1440の一画面に収めたbrowser動画を使う。nativeでは同条件の代表時刻を描画し、開始、変化、中間、終端、loop境界の整合をagentが確認する。レビュー制作中はpackageの`preview.png`を変更しない。
 - 最後のWasm・CSS・font・素材変更後に、package preview、native行列、browser行列とZIPを同じsourceから再生成する。成果物の時刻・hashとpackage内のresourceを照合し、変更前の画像を最終仕様の証拠へ混ぜない。

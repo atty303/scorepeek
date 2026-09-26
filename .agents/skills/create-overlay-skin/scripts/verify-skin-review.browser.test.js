@@ -344,17 +344,19 @@ browserTest(
         }
       }
       const number = String(frame).padStart(3, "0");
-      if (caseId === "01") {
+      if (caseId === "01" || caseId.startsWith("background-")) {
         await page.screenshot({
           path: path.join(framesDirectory, `frame-${number}.png`),
           omitBackground: true,
         });
-        fs.writeFileSync(
-          path.join(framesDirectory, `backdrop-${number}.sha256`),
-          await backdropDigest(
-            await captureCanvasBackdrop(page, scene.canvas.widgets),
-          ),
-        );
+        if (caseId === "01") {
+          fs.writeFileSync(
+            path.join(framesDirectory, `backdrop-${number}.sha256`),
+            await backdropDigest(
+              await captureCanvasBackdrop(page, scene.canvas.widgets),
+            ),
+          );
+        }
       } else {
         for (const kind of ["selection", "score"]) {
           const widget = scene.canvas.widgets.find((item) =>

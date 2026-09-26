@@ -30,7 +30,7 @@ supplied best score and chart note count.
 | `history-list` | HISTORY; DATE, SCORE, DJ LEVEL, MISS, CLEAR headers and the number of supplied rows requested by `history_count`, in supplied order | Comparison across columns; no newest-row celebration |
 | `history-graph` | HISTORY GRAPH; DJ LEVEL and MISS RATE legends, F/E/D/C/B/A/AA/AAA and 0/25/50/75/100% axis stages, month/time ticks, supplied points and missing intervals within the requested `graph_months` range | Data lines and legend lead; all stages and units remain legible; surrounding material is subordinate |
 | `empty` | Optional user title, requested interior opacity and open aperture | The user's content in the aperture leads; title and frame do not obscure it |
-| Canvas | Requested background off/static/animated and EMPTY apertures | Widgets and user content lead over background material |
+| Canvas | Selectable background off/static, animated when the adopted world calls for motion, and EMPTY apertures | Widgets and user content lead over background material |
 
 An absent field remains visibly unknown or neutral where the widget has a
 field. Zero, NO PLAY and FAILED are different values. BEST and RESULT DETAIL
@@ -80,8 +80,10 @@ These semantic palette and motion rules are authoritative. In particular:
   stronger, EX HARD is strong positive, and FULL COMBO is the most positive.
   Color, light and motion reinforce the text consistently in score and history.
 - PGREAT is very positive; GREAT and GOOD are positive; BAD, POOR and COMBO
-  BREAK are negative. These meaning groups remain distinguishable by color
-  and text without changing the supplied counts.
+  BREAK are negative. PGREAT has a visible stronger cue than GREAT and GOOD
+  beyond its different letters; assigning all three the same label class,
+  color and surface treatment does not express the required tier. These
+  meaning groups remain distinguishable without changing the supplied counts.
 - FAST uses a blue hue and SLOW a red hue as timing directions of equal
   weight. A red SLOW count is not a negative judgment. Missing values are not
   invented from other fields.
@@ -112,6 +114,13 @@ material is incomplete. A deliberately flat concept instead needs equally
 deliberate contour, type and spacing at actual size. Background art gives
 canvas gaps texture without baked-in text, widgets or game imagery.
 Background off is a complete visual state.
+Every authored skin exposes no-background and static canvas modes. The
+no-background value may be named `none` or `off` in its manifest. When the
+selected concept includes canvas motion, it also exposes animated mode with a
+visible continuous material change while leaving widget data still. A
+concept with a deliberately still canvas omits the ineffective animated control
+and records that decision in its skin specification. Each declared mode must be rendered
+in native and browser; a manifest value alone does not establish support.
 The status identity uses the repository's approved light/dark scorepeek logo
 artwork, chosen for its surface. The logo may be framed or cropped but its
 artwork is not redrawn as a skin-specific wordmark.
@@ -233,11 +242,11 @@ to review the skin.
 
 | Gate | Evidence needed for a pass | Fail and revise when |
 | --- | --- | --- |
-| World in the widgets | With canvas background off, the panel contour, surface, typography and state accents still communicate the adopted world across Select, Score and History. | Only the background image or accent hue carries the concept; the information-bearing panels could belong to an unrelated skin. |
-| Material construction | The edges, joints, face and highlights used by the adopted world form a coherent construction at actual size. A world that calls for glass, metal, print or fabric shows that material in the information-bearing surface and its edges. A deliberately flat world instead shows equally intentional shape, spacing and type. | A material-rich concept becomes a thin outline around a generic fill, or decoration floats without a plausible relation to the panel. |
+| World in the widgets | Render an actual final-source background-off scene containing information-filled Select, Score and History in both hosts. Their panel contour, surface, typography and state accents still communicate the adopted world. | The off-state proof shows only EMPTY or omits an information widget; only background art or accent hue carries the concept; the panels could belong to an unrelated skin. |
+| Material construction | The edges, joints, face and highlights used by the adopted world form a coherent construction at actual size. Record the selected concept's defining material cue on the information face and show its painted counterpart in Select, Score and History. A world that calls for glass, metal, print or fabric shows that material in the information-bearing surface and its edges. A deliberately flat world instead shows equally intentional shape, spacing and type. | A material-rich concept becomes a thin outline around a uniform fill; a face scan, reflection, grain or depth cue disappears during readability fixes without an equally finished replacement on the face; decoration floats without a plausible relation to the panel. |
 | Lettering as material | Primary values, fixed labels, judgment labels, History numbers/headers, DJ LEVEL and CLEAR TYPE share the world's deliberate weight, alignment and surface treatment. In a material-rich world, inspect the ordinary glyph faces or contours at actual size: their deliberate glyph geometry, engraving, inset/raised edge, reflection, texture or other chosen treatment must remain visible in native and browser, including small labels. A lit or textured panel behind plain glyphs does not establish this gate. A font-family or weight change alone does not establish it either: point to visible features in the glyphs that belong to this world. Special badges may be richer, but cannot be the only materially finished letters. Dynamic Japanese/Latin titles, artists and options remain live and visually related. Labels are visibly quieter than values without becoming faint. Each bitmap glyph or sprite cell has enough source pixels for its effective displayed size in every verified state and package preview, unless an intentionally pixelated treatment is visibly finished at actual size. The whole atlas dimensions cannot stand in for its individual cells. | Rich art surrounds default-looking or blurry text; ordinary labels and numbers remain flat beside exceptional badges; the material cue exists only in the backing or adjacent glow; upscaled raster lettering has softened or doubled contours; atlas cells have visible padding/baseline jumps; labels and values collapse into one color or luminance role. |
 | Hierarchy and density | At the real widget width, SCORE/DJ LEVEL and title lead, supporting rows can be read without zoom, and adjacent groups have deliberate spacing. Status, History and Graph retain their own clear reading order. Available panel area is used to make small information readable before text is reduced. | Texture, glow or ornament competes with values; compact labels disappear; rows are compressed while usable space remains; empty space or crowded groups make the intended order ambiguous. |
-| Meaning and exceptional states | Difficulty, judgment, timing, rank and clear meanings stay distinct. At actual size, A, AA and AAA form a readable progression in both score and history: AA has a positive cue absent from A, and AAA adds a very positive material cue. AAA and FULL COMBO have individually recognizable treatments, including when they appear separately. Each history treatment retains a recognizable cue from its score counterpart. Clear states and judgment/timing groups preserve their separate meanings. | A and AA differ only in the text string; a generic brighter color stands in for every positive state; a special badge becomes only colored text in history or works only in the one preview state; a clear or timing state borrows the wrong meaning. |
+| Meaning and exceptional states | Difficulty, judgment, timing, rank and clear meanings stay distinct. At actual size, A, AA and AAA form a readable progression in both score and history: AA has a positive cue absent from A, and AAA adds a very positive material cue. AAA and FULL COMBO have individually recognizable treatments, including when they appear separately. Each history treatment retains a recognizable cue from its score counterpart. In Score, PGREAT has a visibly stronger positive treatment than GREAT/GOOD; FAST and SLOW remain equal-weight directions. Clear states preserve their own tiers. | A and AA differ only in the text string; PGREAT/GREAT/GOOD share one identical treatment; a generic brighter color stands in for every positive state; a special badge becomes only colored text in history or works only in the one preview state; a clear or timing state borrows the wrong meaning. |
 | Motion in the material | At normal size, each intended continuous effect has a visible start, change and loop in both native and browser without moving data or obscuring text. Compare pixels inside the claimed effect region at chosen low/high phases in each host; the region must visibly differ, while static data regions remain stable. A deliberately still concept passes with a complete static appearance. | Animation exists only in CSS/code or only one host, all captured phases have identical effect pixels, a change is too small to perceive at display size, or motion supplies material quality missing from the still frame. |
 
 Inspect both a full composition and each affected widget at its actual pixel

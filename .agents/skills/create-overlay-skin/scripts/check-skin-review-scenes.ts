@@ -15,6 +15,7 @@ type ReviewCase = {
   rank: string;
   clear: string;
   paint_padding: number;
+  background_motion: "animated" | "still";
   media: {
     fps: number;
     duration_ms: number;
@@ -46,6 +47,7 @@ type ReviewState = {
 type ReviewScene = {
   logical_size: number[];
   canvases: {
+    skin_properties?: { background?: string };
     widgets: {
       kind: string;
       x: number;
@@ -54,7 +56,12 @@ type ReviewScene = {
       height: number;
     }[];
   }[];
-  actions: { action: string; state?: ReviewState }[];
+  actions: {
+    action: string;
+    state?: ReviewState;
+    name?: string;
+    seconds?: number;
+  }[];
 };
 type NativeManifest = {
   status: string;
@@ -420,6 +427,105 @@ for (const [rank, rankIndex] of [["A", 6], ["AA", 7], ["AAA", 8]] as const) {
     `${id}: empty native or browser comparison image`,
   );
 }
+const referenceScene = JSON.parse(
+  await Deno.readTextFile(`${sceneDir}/01.json`),
+) as ReviewScene;
+const referenceState = referenceScene.actions.find((action) =>
+  action.action === "set_state"
+)?.state;
+requireCondition(referenceState, "01: missing reference state");
+requireCondition(
+  ["animated", "still"].includes(cases[0].background_motion) &&
+    cases.every((item) =>
+      item.background_motion === cases[0].background_motion
+    ),
+  "inconsistent background motion declaration",
+);
+for (
+  const background of [
+    "off",
+    "static",
+    ...(cases[0].background_motion === "animated" ? ["animated"] : []),
+  ]
+) {
+  const id = `background-${background}`;
+  const scene = JSON.parse(
+    await Deno.readTextFile(`${sceneDir}/${id}.json`),
+  ) as ReviewScene;
+  const state = scene.actions.find((action) => action.action === "set_state")
+    ?.state;
+  requireCondition(
+    (background === "off"
+      ? ["none", "off"].includes(
+        scene.canvases[0]?.skin_properties?.background ?? "",
+      )
+      : scene.canvases[0]?.skin_properties?.background === background) &&
+      JSON.stringify(scene.canvases[0].widgets) ===
+        JSON.stringify(referenceScene.canvases[0].widgets) &&
+      JSON.stringify(state) === JSON.stringify(referenceState),
+    `${id}: background comparison changed widget content or layout`,
+  );
+  const manifest = JSON.parse(
+    await Deno.readTextFile(`${nativeRoot}/${id}/manifest.json`),
+  ) as NativeManifest;
+  requireCondition(
+    manifest.status === "complete" && manifest.completeness === "complete",
+    `${id}: incomplete native background render`,
+  );
+  const expectedCaptures = scene.actions.filter((action) =>
+    action.action === "capture"
+  );
+  const sampledSeconds = scene.actions.filter((action) =>
+    action.action === "advance_animation"
+  ).map((action) => action.seconds);
+  requireCondition(
+    JSON.stringify(sampledSeconds) ===
+        JSON.stringify(cases[0].media.native_motion_seconds) &&
+      (cases[0].background_motion === "still" ||
+        cases[0].media.motion_periods_ms.length > 0) &&
+      cases[0].media.motion_periods_ms.every((period) =>
+        [1, 2, 3].every((quarter) =>
+          sampledSeconds.includes(
+            Number((Math.round(quarter * period / 4) / 1000).toFixed(3)),
+          )
+        )
+      ) &&
+      JSON.stringify(expectedCaptures.map((action) => action.name)) ===
+        JSON.stringify([
+          id,
+          ...sampledSeconds.map((seconds) => `${id}-at-${seconds}`),
+        ]),
+    `${id}: missing phase-sensitive native background samples`,
+  );
+  for (const expected of expectedCaptures) {
+    requireCondition(expected.name, `${id}: unnamed native background capture`);
+    const action = `capture-${expected.name.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    const capture = manifest.operations?.find((operation) =>
+      operation.action === action
+    );
+    requireCondition(
+      capture?.status === "success" && capture.image && capture.layout,
+      `${id}: missing native background capture ${action}`,
+    );
+    requireCondition(
+      (await Deno.stat(`${nativeRoot}/${id}/${capture.image}`)).size > 0 &&
+        (await Deno.stat(`${nativeRoot}/${id}/${capture.layout}`)).size > 0,
+      `${id}: empty native background image or layout ${action}`,
+    );
+  }
+  requireCondition(
+    (await Deno.stat(`${browserRoot}/${id}.png`)).size > 0 &&
+      (await Deno.stat(`${browserRoot}/${id}/frame-000.png`)).size > 0 &&
+      (await Deno.stat(
+          `${browserRoot}/${id}/frame-${
+            String(Math.floor(assembly.timing.frame_count / 2)).padStart(3, "0")
+          }.png`,
+        )).size > 0,
+    `${id}: missing browser background frames`,
+  );
+}
 console.log(
-  "one 4:3 browser review video; eight selection/score pairs, all common widgets and controlled A/AA/AAA captures verified",
+  `one 4:3 browser review video; eight selection/score pairs, all common widgets, controlled A/AA/AAA and ${
+    cases[0].background_motion === "animated" ? "three" : "two"
+  } background modes verified`,
 );

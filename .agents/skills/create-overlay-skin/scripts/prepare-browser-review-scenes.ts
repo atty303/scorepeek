@@ -11,6 +11,7 @@ const cases = JSON.parse(
   await Deno.readTextFile(`${nativeDirectory}/cases.json`),
 ) as {
   id: string;
+  background_motion: "animated" | "still";
   paint_padding: number;
   media: { fps: number; duration_ms: number; motion_periods_ms: number[] };
 }[];
@@ -22,10 +23,15 @@ const caseIds = [
   "rank-a",
   "rank-aa",
   "rank-aaa",
+  "background-off",
+  "background-static",
+  ...(cases[0].background_motion === "animated" ? ["background-animated"] : []),
 ];
 for (const caseId of caseIds) {
   const reviewCase = cases.find((item) => item.id === caseId) ??
-    (caseId.startsWith("rank-") ? cases[0] : undefined);
+    (caseId.startsWith("rank-") || caseId.startsWith("background-")
+      ? cases[0]
+      : undefined);
   if (!reviewCase) throw new Error(`missing review case ${caseId}`);
   const scenario = JSON.parse(
     await Deno.readTextFile(`${nativeDirectory}/${caseId}.json`),

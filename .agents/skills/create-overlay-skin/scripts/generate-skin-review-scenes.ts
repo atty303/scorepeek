@@ -1,11 +1,27 @@
 // Generate synthetic, all-widget native review scenarios for any installed skin.
-// Usage: deno run --allow-write scripts/generate-skin-review-scenes.ts <skin-id> <new-output-dir> [motion-periods-ms] [paint-padding-px]
+// Usage: deno run --allow-write scripts/generate-skin-review-scenes.ts <skin-id> <new-output-dir> <motion-periods-ms> <paint-padding-px> <no-background-value> <animated|still>
 
-const [skinId, outputDir, periodsArgument = "", paddingArgument = "16"] =
-  Deno.args;
-if (!skinId || !outputDir || Deno.args.length > 4) {
+const [
+  skinId,
+  outputDir,
+  periodsArgument,
+  paddingArgument,
+  backgroundOffValue,
+  backgroundMotion,
+] = Deno.args;
+if (!skinId || !outputDir || Deno.args.length !== 6) {
   throw new Error(
-    "usage: generate-skin-review-scenes.ts <skin-id> <new-output-dir> [motion-periods-ms] [paint-padding-px]",
+    "usage: generate-skin-review-scenes.ts <skin-id> <new-output-dir> <motion-periods-ms> <paint-padding-px> <none|off> <animated|still>",
+  );
+}
+if (backgroundOffValue !== "none" && backgroundOffValue !== "off") {
+  throw new Error(
+    "no-background value must be none or off, as declared by the skin manifest",
+  );
+}
+if (backgroundMotion !== "animated" && backgroundMotion !== "still") {
+  throw new Error(
+    "background motion must be animated or still, as declared by the concept",
   );
 }
 const paintPadding = Number(paddingArgument);
@@ -19,6 +35,9 @@ if (
   motionPeriodsMs.some((period) => !Number.isSafeInteger(period) || period <= 0)
 ) {
   throw new Error("motion periods must be positive integer milliseconds");
+}
+if (backgroundMotion === "animated" && motionPeriodsMs.length === 0) {
+  throw new Error("animated background requires its declared motion period");
 }
 const reviewFps = 15;
 const reviewDurationMs = Math.ceil(
@@ -35,6 +54,9 @@ const nativeMotionMs = [
     ...motionPeriodsMs.flatMap((
       period,
     ) => [
+      Math.round(period / 4),
+      Math.round(period / 2),
+      Math.round(3 * period / 4),
       period - Math.round(1000 / reviewFps),
       period,
       period + Math.round(1000 / reviewFps),
@@ -338,6 +360,39 @@ for (const [index, variant] of cases.entries()) {
     `${JSON.stringify(scene, null, 2)}\n`,
   );
   if (index === 0) {
+    // Internal canvas comparison. Keep every widget and its content fixed so
+    // the surface and the information-bearing panels can be read separately.
+    for (
+      const background of [
+        "off",
+        "static",
+        ...(backgroundMotion === "animated" ? ["animated"] : []),
+      ]
+    ) {
+      const comparisonId = `background-${background}`;
+      const comparisonScene = {
+        ...scene,
+        canvases: [{
+          ...scene.canvases[0],
+          id: comparisonId,
+          skin_properties: {
+            background: background === "off" ? backgroundOffValue : background,
+          },
+        }],
+        actions: [
+          { action: "set_state", state },
+          { action: "capture", name: comparisonId },
+          ...nativeMotionSeconds.flatMap((seconds) => [
+            { action: "advance_animation", seconds },
+            { action: "capture", name: `${comparisonId}-at-${seconds}` },
+          ]),
+        ],
+      };
+      await Deno.writeTextFile(
+        `${outputDir}/${comparisonId}.json`,
+        `${JSON.stringify(comparisonScene, null, 2)}\n`,
+      );
+    }
     // Internal meaning comparison. Keep chart, clear, judgments, graph and
     // widget dimensions fixed; change only the rank-consistent best score and
     // the first History row's matching score/rank.
@@ -382,6 +437,7 @@ for (const [index, variant] of cases.entries()) {
     score,
     bestMiss: state.best.miss,
     scenario: `${id}.json`,
+    background_motion: backgroundMotion,
     paint_padding: paintPadding,
     media: {
       fps: reviewFps,

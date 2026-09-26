@@ -21,6 +21,12 @@ fixed mock coordinates or prescribed production techniques.
 Describe contours, frame segmentation, surfaces, joints, background, original
 assets, source/generation method, independently obtained font provenance,
 licenses and reproduction steps where applicable.
+Trace each defining material cue from the chosen concept to a visible region
+of the final information-bearing face in Selection, Score and History. Name the
+replacement and show it at actual size if a readability fix removed the
+original cue. An edge treatment or canvas texture alone cannot prove a glass,
+metal, print or fabric face. Link final-source native and browser
+`background-off` captures that contain those information-filled widgets.
 Link the selected concept and give hashes for skin-owned packaged art. Record
 each widget's principal regions, proportions, alignment and spacing. Record
 frame-width variants only when this skin actually offers them.
@@ -47,7 +53,10 @@ omit the textured candidate with its reason and actual-size evidence.
 
 Record difficulty colors; the A-to-AA-to-AAA progression in both Score and
 History, including the positive cue that distinguishes AA from A; AAA and FULL COMBO treatments; clear, judgment,
-FAST/SLOW, missing-value, SYSTEM/RESULT/SELECT status and graph rules. List expressive exceptions
+FAST/SLOW, missing-value, SYSTEM/RESULT/SELECT status and graph rules. In Score,
+name the visible cue that makes PGREAT more positive than GREAT/GOOD beyond its
+letters. Record the manifest and painted behavior of no-background and static
+canvas modes, plus animated when the canvas concept uses it. List expressive exceptions
 and a reason for each. No exception may omit a required item or make it
 unreadable inside the verified range.
 State how score progress, rank distance and unknown MISS RATE graph samples
@@ -105,9 +114,15 @@ Link actual-size native and browser Score/History comparisons from the
 controlled `rank-a`/`rank-aa`/`rank-aaa` scenes. Name
 the visible positive cue added at AA and the further material cue added at AAA;
 different letters alone are insufficient. Record the clear, judgment and timing
-meanings separately: clear is a progression, judgments have positive and
-negative groups, and FAST/SLOW are equal-weight directions. A special AAA/FC
+meanings separately. Clear types form a progression. PGREAT has a stronger
+positive cue than GREAT/GOOD; other judgments have positive and negative
+groups. FAST/SLOW are equal-weight directions. A special AAA/FC
 badge does not stand in for all semantic states.
+Link the final native/browser `background-off`/`background-static` scenes and,
+for a moving canvas, `background-animated`. A still canvas records why an
+animated canvas control is omitted. Read the material cue on the Select, Score and
+History faces with background off; compare background-only regions at low and
+high animation phases while the widget data stays still.
 For each applicable
 [finish gate](basic-design-system.md#self-assessed-finish-gates), record a
 pass/fail observation from these images, naming the visible cue or defect
