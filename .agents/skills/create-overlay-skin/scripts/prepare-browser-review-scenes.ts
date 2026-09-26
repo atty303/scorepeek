@@ -14,9 +14,18 @@ const cases = JSON.parse(
   paint_padding: number;
   media: { fps: number; duration_ms: number; motion_periods_ms: number[] };
 }[];
-for (let index = 1; index <= 8; index += 1) {
-  const caseId = String(index).padStart(2, "0");
-  const reviewCase = cases.find((item) => item.id === caseId);
+const caseIds = [
+  ...Array.from(
+    { length: 8 },
+    (_, index) => String(index + 1).padStart(2, "0"),
+  ),
+  "rank-a",
+  "rank-aa",
+  "rank-aaa",
+];
+for (const caseId of caseIds) {
+  const reviewCase = cases.find((item) => item.id === caseId) ??
+    (caseId.startsWith("rank-") ? cases[0] : undefined);
   if (!reviewCase) throw new Error(`missing review case ${caseId}`);
   const scenario = JSON.parse(
     await Deno.readTextFile(`${nativeDirectory}/${caseId}.json`),

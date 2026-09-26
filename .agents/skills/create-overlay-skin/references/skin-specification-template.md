@@ -45,7 +45,8 @@ omit the textured candidate with its reason and actual-size evidence.
 
 ## Meaning-specific presentation
 
-Record difficulty colors; AAA and FULL COMBO treatments; clear, judgment,
+Record difficulty colors; the A-to-AA-to-AAA progression in both Score and
+History, including the positive cue that distinguishes AA from A; AAA and FULL COMBO treatments; clear, judgment,
 FAST/SLOW, missing-value, SYSTEM/RESULT/SELECT status and graph rules. List expressive exceptions
 and a reason for each. No exception may omit a required item or make it
 unreadable inside the verified range.
@@ -100,6 +101,13 @@ the change is visible at actual size. Record that data regions remain still.
 For the exceptional-state gate, include the native and browser History images
 from review cases 02 (AAA) and 08 (FULL COMBO); the composite review video
 shows only one History case.
+Link actual-size native and browser Score/History comparisons from the
+controlled `rank-a`/`rank-aa`/`rank-aaa` scenes. Name
+the visible positive cue added at AA and the further material cue added at AAA;
+different letters alone are insufficient. Record the clear, judgment and timing
+meanings separately: clear is a progression, judgments have positive and
+negative groups, and FAST/SLOW are equal-weight directions. A special AAA/FC
+badge does not stand in for all semantic states.
 For each applicable
 [finish gate](basic-design-system.md#self-assessed-finish-gates), record a
 pass/fail observation from these images, naming the visible cue or defect

@@ -31,10 +31,10 @@ deno run --allow-read --allow-write "$skill/scripts/prepare-browser-review-scene
 if [[ "${SCOREPEEK_PREBUILT_SKINS:-0}" != 1 ]]; then
   bash "$root/scripts/build-skins.sh"
 fi
-case_ids=(01 02 03 04 05 06 07 08)
+case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa)
 if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
-  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^0[1-8]$ ]]; then
-    echo "SCOREPEEK_REVIEW_CASE_ID must be 01..08" >&2
+  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa))$ ]]; then
+    echo "SCOREPEEK_REVIEW_CASE_ID must be 01..08 or rank-a/rank-aa/rank-aaa" >&2
     exit 2
   fi
   case_ids=("$SCOREPEEK_REVIEW_CASE_ID")

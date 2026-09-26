@@ -34,7 +34,12 @@ type ReviewState = {
   best: { score: string; dj_level: string; clear: string; miss: string };
   detail: Record<string, string>;
   history: {
-    plays: { score: string }[];
+    plays: {
+      score: string;
+      dj_level: string;
+      clear: string;
+      miss: string;
+    }[];
     graph: { score_ratio: number; miss_ratio: number | null }[];
   };
 };
@@ -362,6 +367,59 @@ for (const { id } of cases.filter((item) => item.id !== "01")) {
     `${id}: review placements`,
   );
 }
+let controlledRankState: ReviewState | undefined;
+const browserRoot = reviewVideo.includes("/")
+  ? reviewVideo.slice(0, reviewVideo.lastIndexOf("/")) || "/"
+  : ".";
+for (const [rank, rankIndex] of [["A", 6], ["AA", 7], ["AAA", 8]] as const) {
+  const id = `rank-${rank.toLowerCase()}`;
+  const scene = JSON.parse(
+    await Deno.readTextFile(`${sceneDir}/${id}.json`),
+  ) as ReviewScene;
+  const state = scene.actions.find((action) => action.action === "set_state")
+    ?.state;
+  requireCondition(state, `${id}: missing controlled state`);
+  const score = Number(state.best.score);
+  const notes = Number(state.chart.notes);
+  requireCondition(
+    state.best.dj_level === rank &&
+      score === Math.ceil(2 * notes * rankIndex / 9) + 12 &&
+      state.best.clear === "CLEAR" && state.best.miss === "7" &&
+      state.history.plays[0].score === state.best.score &&
+      state.history.plays[0].dj_level === rank &&
+      state.history.plays[0].clear === "CLEAR" &&
+      state.history.plays[0].miss === "7",
+    `${id}: rank comparison is not score-consistent and controlled`,
+  );
+  const normalized = structuredClone(state);
+  normalized.best.score = "<rank score>";
+  normalized.best.dj_level = "<rank>";
+  normalized.history.plays[0].score = "<rank score>";
+  normalized.history.plays[0].dj_level = "<rank>";
+  if (controlledRankState) {
+    requireCondition(
+      JSON.stringify(normalized) === JSON.stringify(controlledRankState),
+      `${id}: non-rank state differs from other rank comparison scenes`,
+    );
+  } else controlledRankState = normalized;
+  const manifest = JSON.parse(
+    await Deno.readTextFile(`${nativeRoot}/${id}/manifest.json`),
+  ) as NativeManifest;
+  const capture = manifest.operations?.find((operation) =>
+    operation.action === `capture-${id}`
+  );
+  requireCondition(
+    manifest.status === "complete" &&
+      manifest.completeness === "complete" &&
+      capture?.status === "success" && capture.image && capture.layout,
+    `${id}: missing controlled native capture`,
+  );
+  requireCondition(
+    (await Deno.stat(`${nativeRoot}/${id}/${capture.image}`)).size > 0 &&
+      (await Deno.stat(`${browserRoot}/${id}.png`)).size > 0,
+    `${id}: empty native or browser comparison image`,
+  );
+}
 console.log(
-  "one 4:3 browser review video; eight selection/score pairs and all common widgets verified against native captures",
+  "one 4:3 browser review video; eight selection/score pairs, all common widgets and controlled A/AA/AAA captures verified",
 );

@@ -337,6 +337,39 @@ for (const [index, variant] of cases.entries()) {
     `${outputDir}/${id}.json`,
     `${JSON.stringify(scene, null, 2)}\n`,
   );
+  if (index === 0) {
+    // Internal meaning comparison. Keep chart, clear, judgments, graph and
+    // widget dimensions fixed; change only the rank-consistent best score and
+    // the first History row's matching score/rank.
+    for (const rank of ["A", "AA", "AAA"] as const) {
+      const comparisonId = `rank-${rank.toLowerCase()}`;
+      const comparisonState = structuredClone(state);
+      const comparisonScore = lowerThreshold(rank, notes) + 12;
+      if (djLevel(comparisonScore, notes) !== rank) {
+        throw new Error(`${comparisonId}: score/rank mismatch`);
+      }
+      comparisonState.best.score = String(comparisonScore);
+      comparisonState.best.dj_level = rank;
+      comparisonState.best.clear = "CLEAR";
+      comparisonState.best.miss = "7";
+      comparisonState.history.plays[0].score = String(comparisonScore);
+      comparisonState.history.plays[0].dj_level = rank;
+      comparisonState.history.plays[0].clear = "CLEAR";
+      comparisonState.history.plays[0].miss = "7";
+      const comparisonScene = {
+        ...scene,
+        canvases: [{ ...scene.canvases[0], id: comparisonId }],
+        actions: [
+          { action: "set_state", state: comparisonState },
+          { action: "capture", name: comparisonId },
+        ],
+      };
+      await Deno.writeTextFile(
+        `${outputDir}/${comparisonId}.json`,
+        `${JSON.stringify(comparisonScene, null, 2)}\n`,
+      );
+    }
+  }
   summary.push({
     id,
     skinId,

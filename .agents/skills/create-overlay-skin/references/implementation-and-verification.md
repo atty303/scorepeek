@@ -97,7 +97,7 @@ skin制作中に利用者へ実装のレビューを求めるたびに、product
 1. 提示物は**1920×1440（4:3）の一画面を連続描画したbrowser動画**とする。この中に`status`、`selection`、`score`、`history-list`、`history-graph`、`empty`とcanvas背景を配置する。`selection`と`score`は状態別の複数実例を同じ画面に配置し、残りのwidgetは読み取れる大きさで1例ずつ置く。`empty`を大きな空白領域にせず、他のwidgetと釣り合う小さな開口部にする。skin ID、case ID、logical size、motion時刻は動画に隣接するcase表にも明記する。
 2. 次の8 variantを作る。各行の`selection`と`score`を1組として動画の全フレームに含め、SP/DP、5難易度、DJ LEVELのA/AA/AAAとMAX-差分、8 clear typeを組み合わせて網羅する。基本matrixのclear値はoverlay Feedがskinへ渡す`NO PLAY`、`FAILED`、`ASSIST`、`EASY`、`CLEAR`、`HARD`、`EX HARD`、`FULL COMBO`とする。editorのsample stateなど別の入力経路で`HARD CLEAR`等の長い文字列が渡る場合は、基本matrixを置き換えず、その経路を追加で実寸確認する。notesとSCOREには3桁の例を含める。共通statusにはinactiveとerrorのランプを表示する。clearとDJ LEVELは別軸なので、ランクとclearの組合せから結果を推定しない。
 
-   Skillの `.agents/skills/create-overlay-skin/scripts/generate-skin-review-scenes.ts` は、このmatrixの合成stateと最終画面上のwidget配置を新しい出力directoryへ生成する。`deno run --allow-write .agents/skills/create-overlay-skin/scripts/generate-skin-review-scenes.ts <skin-id> <new-output-dir> <motion-periods-ms> <paint-padding-px>` を実行する。motion引数は採用skinの全ループ周期を整数ミリ秒のカンマ区切りで指定し、動きがないskinでは空文字列にする。最後のpaddingは枠外に実際に描く光や装飾の最大範囲に合わせた任意の非負整数で、省略時は16 pxから検証を始める値とする。16 pxは表現上の上限ではない。生成された`cases.json` と `01.json`–`08.json` をnative harnessへ渡す。native出力の親directoryは先に作り、8つのcase IDを子directory名にする。
+   Skillの `.agents/skills/create-overlay-skin/scripts/generate-skin-review-scenes.ts` は、このmatrixの合成stateと最終画面上のwidget配置を新しい出力directoryへ生成する。`deno run --allow-write .agents/skills/create-overlay-skin/scripts/generate-skin-review-scenes.ts <skin-id> <new-output-dir> <motion-periods-ms> <paint-padding-px>` を実行する。motion引数は採用skinの全ループ周期を整数ミリ秒のカンマ区切りで指定し、動きがないskinでは空文字列にする。最後のpaddingは枠外に実際に描く光や装飾の最大範囲に合わせた任意の非負整数で、省略時は16 pxから検証を始める値とする。16 pxは表現上の上限ではない。生成された`cases.json`、`01.json`–`08.json`と内部意味検査用の`rank-a.json`、`rank-aa.json`、`rank-aaa.json`をnative harnessへ渡す。native出力の親directoryは先に作り、各case IDを子directory名にする。後者3件はreview動画の8組に足さず、同一条件でランクだけを比較する別の実寸画像とする。
 
    | ID | Play | Difficulty | DJ LEVEL | Clear type |
    | --- | --- | --- | --- | --- |
@@ -112,8 +112,8 @@ skin制作中に利用者へ実装のレビューを求めるたびに、product
 
 3. 各variantの曲名・artist・譜面level・notesに加え、score widget内のSCORE、MISS COUNT、判定数、FAST/SLOW、COMBO BREAKと、履歴・graphの数値を変える。固定の代表値を複写しない。SCORE、notes、DJ LEVEL、達成率、しきい値差分は各合成state内で整合させる。BESTとRESULT DETAILで異なる値を示すvariant、0・不明・長い文字列など共通matrixの境界条件も追加する。補助variantを増やしても上記8行を省かない。Graphのcase 01はMISS RATEが最初75%・最後10%であり、右軸100%上・0%下と赤線の上下が一致することを原寸画像で照合する。
 4. `bash .agents/skills/create-overlay-skin/scripts/verify-skin-review-browser.bash <native-scene-dir> <skin-slug> <new-browser-output-dir>` で全8状態をproduction browserに描画し、同一motion時刻のwidget画像を合成して1920×1440の動画を生成する。共通widgetと背景はcase `01`、各selection/scoreはそのcaseのwidgetだけを透過で切り出して等倍で重ねる。通常は他の要素を非表示にして対象だけをcaptureし、対象を隠した際に余白が透明になることを検査する。要素または擬似要素の`mix-blend-mode`や`backdrop-filter`には、元の背景を保った描画と対象を隠した描画の差分から対象の領域を取り出す。この合成経路では全widgetを隠したcanvas背景がcase `01`と同じmotion時刻に一致することを各frameで検査し、異なる場合は動画を作らず失敗する。背景が透明なら対象のalphaを保持し、不透明なら完成画素を重ねる。半透明の背景からは対象を一意に復元できないため失敗する。文字・素材・値は描き直さない。`empty`は300×80の実寸に抑える。検証toolはsceneのwidget座標と実DOMの矩形から描画領域を特定する。skin固有のclass名や`data-*`属性を要求しない。
-5. 各variantをnativeで独立してcaptureし、開始、主な変化、中間、終端、申告した各周期のloopの継ぎ目を含む代表時刻のlayout JSON、manifest、実画像を確認する。browser動画の同時刻のframeと見比べ、意味上の動きと見え方が両hostで成立することを目視判定する。video scriptはbrowserの仮想時計を使い、native harnessは同じ0秒の単調時刻基準からWasm入力を進める。CSS時刻は両方とも動画先頭を0とする。pixel一致は要求しない。nativeで欠落・破綻したmotionをbrowserだけで合格にしない。
-6. 提示前に `deno run --allow-read .agents/skills/create-overlay-skin/scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <browser-review-video>` を実行する。widget種別、SP/DP、5難易度、A/AA/AAAとMAX-、8 clear type、3桁のnotes/SCORE、inactive/error、各数値列の変化、score/rank計算の整合、各native manifestの完了と全widget境界に対応するDOM矩形、動画の4:3寸法とdurationを検査する。提示時は**この動画**とcase表、検証したsize・motion時刻、残る制限をセットにする。原寸frameも目視評価する。
+5. 各variantと内部`rank-a`/`rank-aa`/`rank-aaa`をnativeで独立してcaptureし、開始、主な変化、中間、終端、申告した各周期のloopの継ぎ目を含む代表時刻のlayout JSON、manifest、実画像を確認する。rank比較は3枚のScoreとHistoryを同じ寸法で並べ、AとAAの違い、AAとAAAの追加表現を文字列・score rate・しきい値差分とは別に読む。browser verifierもこの3件を描画し、review動画は従来どおり8 variantだけを含める。browser動画の同時刻のframeと見比べ、意味上の動きと見え方が両hostで成立することを目視判定する。video scriptはbrowserの仮想時計を使い、native harnessは同じ0秒の単調時刻基準からWasm入力を進める。CSS時刻は両方とも動画先頭を0とする。pixel一致は要求しない。nativeで欠落・破綻したmotionをbrowserだけで合格にしない。
+6. 提示前に `deno run --allow-read .agents/skills/create-overlay-skin/scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <browser-review-video>` を実行する。widget種別、SP/DP、5難易度、A/AA/AAAとMAX-、8 clear type、3桁のnotes/SCORE、inactive/error、各数値列の変化、score/rank計算の整合、各native manifestの完了と全widget境界に対応するDOM矩形、動画の4:3寸法とdurationを検査する。内部rank3件ではscore/rankの整合、他のstate条件の一致、native/browser実画像の存在も検査する。提示時は**この動画**とcase表、検証したsize・motion時刻、残る制限をセットにする。原寸frameも目視評価する。
 
 ## 共通matrixと合否
 
@@ -125,7 +125,7 @@ skin制作中に利用者へ実装のレビューを求めるたびに、product
 | 長い和英混在title・artist・option | 共通の収め方を維持し、文字化け/無断略称/ラベルと値の重なりなし |
 | 数値0/1/999/1000など桁変化 | 桁/label baselineが安定し、atlasの透明余白で列が浮かない |
 | SP/DP・全難易度・level1/12 | 難易度色がスキン背景から分離し、種別と数値を独立に読める |
-| 全clear・A/AA/AAAとB以下 | AAA/FCの特別感が独立し、unknownに達成処理を付けない |
+| 全clear・A/AA/AAAとB以下 | 同条件に近い実寸Score/Historyを両hostで並べ、AからAAへ文字列以外のpositiveな手掛かり、AAからAAAへ追加の素材表現がある。AAA/FCの特別感が独立し、unknownに達成処理を付けない |
 | AAA+FAILED、AA+FC、A+EX HARD | 評価軸を混同せず、同時motionがcontentを圧倒しない |
 | 判定、FAST/SLOW、miss0、不明 | 原則どおりの強弱、対称性、中立表示。0とunknownを区別 |
 | 履歴・graph、欠損値 | 列/軸/単位/順序を維持し、欠損を架空の線で結ばない。`history_count` の5/10/20/50行と `graph_months` の1/3/6/12か月を、設定に合う高さと期間で別途確認する |

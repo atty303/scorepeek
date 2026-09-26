@@ -199,6 +199,14 @@ browserTest(
         await expect.poll(() =>
           page.evaluate(() => window.__skinPreviewWorker?.lastCompletedMs)
         ).toBe(actualTime);
+        // A full-tree Wasm update may replace nodes and restart their CSS
+        // animations. Seek the newly rendered tree before recording the frame.
+        await page.evaluate((value) => {
+          for (const animation of document.getAnimations()) {
+            animation.pause();
+            animation.currentTime = value;
+          }
+        }, time);
         if (frame === pngFrame) {
           await page.screenshot({
             path: png,
