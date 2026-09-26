@@ -34,8 +34,12 @@ Give the skin's color roles and treatments of long or unknown text. For a
 material-rich world, link the actual-size ordinary-number and fixed-label
 technique comparison across SCORE digits, fixed/judgment labels and History
 numbers/headers. State which material cue is visible in the ordinary glyphs
-themselves in both hosts. If one candidate blurs and another remains plain,
-record a revised technique and rerender rather than selecting a relative winner.
+themselves in both hosts, and record that this prototype passed before all
+widgets were expanded. Include the native control appropriate to the technique
+(neutral font for glyph geometry, undecorated same font for face/edge effects)
+and the corresponding browser comparison. If one candidate blurs and another remains
+plain, record a revised technique and rerender rather than selecting a relative
+winner.
 
 ## Meaning-specific presentation
 

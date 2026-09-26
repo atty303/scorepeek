@@ -38,6 +38,24 @@ PNGをnativeとbrowserのeditorで選択して表示する。WebMは生成した
 ゲーム画像、upstream資産、実playerデータはrepositoryの包含許可なしにcommitしない。
 新しいdependencyはrepositoryの承認規則に従う。通常起動で画像/fontをdownloadしない。
 
+## 文字素材の実寸試作
+
+素材を持つ世界観では、全widgetを作る前に次の順で通常文字を試す。対象は
+SCORE数字、固定／判定ラベル、History数字／見出しを同時に含む実寸の
+Score・History panelとする。AAAやFULL COMBOだけの試作はこの確認にならない。
+
+1. 文字サイズ・配置・値・静止した背景を固定し、review matrixの小さいScore・History寸法で候補と対照を描く。字形自体を選ぶfont案は中立的なfontを対照にし、glyph mask・atlas・CSSの面／縁効果は装飾を外した同書体を対照にする。browserとnativeをそれぞれ撮り、候補の値が異なる比較や拡大画像だけで判断しない。
+2. 文字の字形領域を原寸で並べて読む。nativeで候補と適切な対照に画素差がなければ、その字形選択または効果は表示されていない。差があっても、ぼけ・二重像・低コントラストだけなら不合格とする。font案では字形の形自体が世界観を表すかも判定する。browserでの差をnativeの代わりにしない。素材の手掛かりは字形の形、面、輪郭、刻印などに残す。
+3. 不合格なら技法を変えて同じ比較へ戻る。世界観を表す字形のfont、元の字形を保った高解像度のglyph maskと素材テクスチャ、固定ラベルや数字のpackage内atlasを試す。画像生成は素材面や光の部品に使えるが、生成画像中の誤字を字形の原典にしない。CSSの影・擬似要素・blend効果はnativeで実画素を確認するまで採用しない。
+4. atlasを使う場合も意味を持つDOM textを残す。数字を個別sprite nodeにする場合は、Scoreだけでなく`history_count=50`のHistoryを早期にnative描画し、paint順・負荷・行の可読性を確認する。密な表で破綻した手法を、少数行の成功だけで全Historyへ採用しない。
+5. 両hostの候補が可読で、字形内の素材が素の対照より明確になってから全widgetへ展開する。試作の比較画像、nativeの差、選択／棄却理由をskin固有仕様へ記す。完成後も最終sourceで同じ箇所を再描画する。
+
+標準のnative検証taskはskinを一時ZIPへbuildしてから描く。試作段階では
+APIが要求する全widget設定と仮の`preview.png`を入れた隔離packageを使用してよい。
+これは描画を可能にする試験入力であり、最終previewや完成ZIPの証拠ではない。
+文字の停止条件を通過し全widgetを仕上げた後、最終sourceからpreviewとZIPを
+生成し直す。
+
 ## 検証を実行する
 
 厳密なコマンドとscenario schemaは `docs/overlay-visual-debugging.md` が原典。
