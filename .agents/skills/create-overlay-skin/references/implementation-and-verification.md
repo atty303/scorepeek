@@ -30,7 +30,7 @@ ZIP内へ入れ、通常runtimeのembedded assetへ登録しない。widget resi
 `preview.png`と`preview.webm`はskill所有の`preview-scene.json`と
 `.agents/skills/create-overlay-skin/scripts/generate-skin-previews.bash`からproduction browser経路で生成する。
 採用concept、比較sheet、DOMの手動書換えまたは別実装による再現画像をpackageへ入れない。生成後は
-PNGをnativeとbrowserのeditorで選択して表示し、WebMをbrowser editorで再生・loop確認する。native editorはPNGだけを表示する。
+PNGをnativeとbrowserのeditorで選択して表示する。WebMは生成したファイルをbrowserで再生してmotionとloopを確認する。現行editorのskin選択UIはPNGを表示し、`preview_video`を再生しない。
 同じ生成runでresource request、Wasm init/render、期待DOM、media metadataと成果物hashを記録し、欠落resourceや不完全な描画を
 成功成果物として残さない。
 

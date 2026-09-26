@@ -69,8 +69,10 @@ These semantic palette and motion rules are authoritative. In particular:
   red and purple identity, respectively. SP/DP and level remain separate.
 - AAA has a material treatment beyond simply increasing the intensity of AA.
   AA is positive and AAA is very positive. The same meaning treatment appears
-  in score and history. FULL COMBO has an independent treatment; either can
-  appear without the other.
+  in score and history. A smaller history version may simplify geometry, but
+  must retain a recognizable shape or material cue from the score treatment;
+  hue alone is insufficient. FULL COMBO has an independent treatment with the
+  same cross-widget relation; either can appear without the other.
 - A clear state is written as text. NO PLAY is inactive, FAILED is negative,
   ASSIST and EASY are weak positive, CLEAR is positive, HARD is somewhat
   stronger, EX HARD is strong positive, and FULL COMBO is the most positive.
@@ -101,10 +103,12 @@ These semantic palette and motion rules are authoritative. In particular:
 ## Material and typography freedom
 
 A skin owns its contours, surfaces, palette beyond semantic colors, type
-personality, spacing and motion rhythm. Material must retain deliberate
-thickness, edges, joints, reflection or engraving at actual widget size. A
-flat border that merely hints at an approved material is incomplete. Background
-art gives canvas gaps texture without baked-in text, widgets or game imagery.
+personality, spacing and motion rhythm. Where the adopted concept calls for
+physical material, its thickness, edges, joints, reflection or engraving must
+remain legible at actual widget size. A flat border that merely hints at that
+material is incomplete. A deliberately flat concept instead needs equally
+deliberate contour, type and spacing at actual size. Background art gives
+canvas gaps texture without baked-in text, widgets or game imagery.
 Background off is a complete visual state.
 The status identity uses the repository's approved light/dark scorepeek logo
 artwork, chosen for its surface. The logo may be framed or cropped but its
@@ -162,6 +166,17 @@ continue to work under the existing API, but this design system makes no
 readability claim. Document any aspect-ratio limitation as a pair of width
 and height bounds or an explicit tested matrix; a single area number is not
 enough.
+For the stressed title, artist and PLAY OPTIONS values used to certify a size,
+the full supplied string must be visibly available at that size. Keeping it
+in DOM text while the paint clips, overlays an ellipsis or otherwise hides the
+tail does not establish full-information display. Reflow, wrap, change the
+layout or narrow the claimed content/size condition and test again. State an
+explicit content limit if the skin cannot fit arbitrary-length text.
+For an interval claim, inspect its minimum, maximum and interior width/height
+combinations with stressed text and states, plus both sides of every responsive
+breakpoint inside the interval. A pair of successful endpoints alone does not
+prove the interval between them. If only isolated sizes were checked, report
+those sizes as discrete evidence and leave the range unverified.
 
 ## Quality criteria
 
@@ -200,3 +215,44 @@ fixed coordinates, colors or a stopping point. Observe letterforms, surface
 depth, joint details, intentional light, information hierarchy and motion in
 native and browser renders. Record specific shortcomings and revise the
 material or typography before treating the skin as complete.
+
+### Self-assessed finish gates
+
+The creator judges these gates from **unscaled, information-filled renders** at
+every lower-bound size pair and the declared default size. For a discrete
+matrix, this includes incomparable narrow and short cases. Selection, Score and
+History Graph also use their package-preview sizes. A concept image,
+isolated texture, CSS declaration, DOM rectangle or enlarged crop cannot prove
+one of them. All applicable gates must pass independently; strong background
+art cannot compensate for weak lettering or an unfinished panel. Record the
+observed evidence and the correction for any failed gate in the skin's
+specification. The creator performs this judgment before asking another person
+to review the skin.
+
+| Gate | Evidence needed for a pass | Fail and revise when |
+| --- | --- | --- |
+| World in the widgets | With canvas background off, the panel contour, surface, typography and state accents still communicate the adopted world across Select, Score and History. | Only the background image or accent hue carries the concept; the information-bearing panels could belong to an unrelated skin. |
+| Material construction | The edges, joints, face and highlights used by the adopted world form a coherent construction at actual size. A world that calls for glass, metal, print or fabric shows that material in the information-bearing surface and its edges. A deliberately flat world instead shows equally intentional shape, spacing and type. | A material-rich concept becomes a thin outline around a generic fill, or decoration floats without a plausible relation to the panel. |
+| Lettering as material | Primary values, fixed labels, judgment labels, History numbers/headers, DJ LEVEL and CLEAR TYPE share the world's deliberate weight, alignment and surface treatment. In a material-rich world, inspect the ordinary glyph faces or contours at actual size: their engraving, inset/raised edge, reflection, texture or other chosen treatment must remain visible in native and browser, including small labels. A lit or textured panel behind plain glyphs does not establish this gate. Special badges may be richer, but cannot be the only materially finished letters. Dynamic Japanese/Latin titles, artists and options remain live and visually related. Labels are visibly quieter than values without becoming faint. | Rich art surrounds default-looking or blurry text; ordinary labels and numbers remain flat beside exceptional badges; the material cue exists only in the backing or adjacent glow; atlas cells have visible padding/baseline jumps; labels and values collapse into one color or luminance role. |
+| Hierarchy and density | At the real widget width, SCORE/DJ LEVEL and title lead, supporting rows can be read without zoom, and adjacent groups have deliberate spacing. Status, History and Graph retain their own clear reading order. Available panel area is used to make small information readable before text is reduced. | Texture, glow or ornament competes with values; compact labels disappear; rows are compressed while usable space remains; empty space or crowded groups make the intended order ambiguous. |
+| Meaning and exceptional states | Difficulty, judgment, timing, rank and clear meanings stay distinct. AAA and FULL COMBO have individually recognizable treatments in both score and history, including when they appear separately. Each history treatment retains a recognizable cue from its score counterpart. | A generic brighter color stands in for every positive state, or a special badge becomes only colored text in history or works only in the one preview state. |
+| Motion in the material | At normal size, each intended continuous effect has a visible start, change and loop in both native and browser without moving data or obscuring text. Compare pixels inside the claimed effect region at chosen low/high phases in each host; the region must visibly differ, while static data regions remain stable. A deliberately still concept passes with a complete static appearance. | Animation exists only in CSS/code or only one host, all captured phases have identical effect pixels, a change is too small to perceive at display size, or motion supplies material quality missing from the still frame. |
+
+Inspect both a full composition and each affected widget at its actual pixel
+size. Use the latter to diagnose an issue, then recheck the full composition:
+one impressive crop does not establish cohesion. If a gate fails, change the
+underlying asset, glyph treatment, layout or motion and render again. Reducing
+the claimed size range does not repair a failure at the skin's own default or
+package-preview size. Do not average the gates into a score.
+For small type, read the unscaled image without consulting the scene JSON or DOM
+and transcribe each distinct label plus representative short, long and numeric
+values. Compare the transcription to the supplied scene afterward. If a
+required item is ambiguous until enlarged or revealed from source data, its
+lettering and hierarchy gates fail even when the DOM value is correct.
+For a material-rich world, compare the ordinary SCORE digits, fixed labels,
+judgment labels and History lettering against plain host-font controls on the
+same panel at the same actual size. The candidate must show a material cue in
+the glyph itself, not only in its backing. If the textured/atlas candidate is
+blurrier and the live-text candidate lacks that cue, neither passes: revise the
+mask resolution, font, layered treatment or production technique and rerender.
+Choosing the sharper of two failing candidates is not a finish-gate pass.
