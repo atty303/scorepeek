@@ -12,6 +12,7 @@ required_files=(
   "$en"
   "$site/assets/site.css"
   "$site/assets/scorepeek-logo-dark.png"
+  "$site/assets/play-session.png"
   "$site/assets/cyan-system.png"
   "$site/assets/result-aurora.png"
   "$site/assets/dj-blackbox.png"
