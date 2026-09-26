@@ -739,7 +739,7 @@ h1 em {
 }
 
 .usage-secondary {
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto auto;
 }
 
 .monitor-shell {
@@ -776,16 +776,16 @@ h1 em {
 
 .broadcast-window {
   position: relative;
-  width: min(100%, 320px);
+  width: min(100%, 400px);
   margin: 0 auto 2.2rem;
-  padding: 2.4rem 1.5rem 1.4rem;
+  padding: 2.4rem 0.75rem 1.4rem;
   border: 1px solid #42546b;
   background: var(--surface-raised);
   box-shadow: 0 25px 45px rgb(0 0 0 / 30%);
 }
 
 .broadcast-window img {
-  width: 82%;
+  width: 100%;
   height: auto;
   margin: auto;
   border: 1px solid #34465b;
