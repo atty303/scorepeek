@@ -66,7 +66,9 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 - 意味別の色・文字・素材・動きの規則をまとめ、widgetごとの場当たり的なCSSや別のnative/webレイアウトを増やさない。
 - 検証referenceの共通matrixを実行し、見本比較と条件変更耐性を分けて評価する。既知の崩れを残したまま利用者へ品質判断を委ねない。
 - 全widgetへ展開した後もfinish gatesを実寸で再判定する。各widgetに実際の情報を載せたnative画像とbrowserの同時刻frameを使い、検証済みsizeの下限となる組合せをすべて、既定size、異なる状態を確認する。package previewに載るSelection・Score・History Graphはそのsizeも確認する。全画面を縮小した一覧だけで小さい文字や素材を判定しない。小文字は画像だけからラベルと代表値を転記してからsceneと照合し、拡大やsource参照がないと読めない項目を不合格にする。長い曲名・artist・PLAY OPTIONSの試験値は末尾まで画像から読めるか確かめる。DOMに全文が残っていても、表示上の省略記号やclipで末尾を隠したら、その内容とsizeを全情報表示の検証済み条件に含めない。仕様には各widgetの実寸証拠への参照、gateごとの可視の根拠、失敗時の修正と再描画結果を残す。文字と質感が簡略化したwidgetを、他のwidgetや背景が美しいという理由で通さない。
+- PNG等のbitmapを文字atlasに使う場合、Score/Historyの全状態とpackage previewで、**表示される個々の字形・sprite cell**の元pixel寸法と、crop・`background-size`・transformを反映した実効表示寸法を照合する。atlas画像全体の寸法では判定しない。輪郭を滑らかに描く字形を元のcellより大きく表示してはいけない。小さいcellを拡大したAAAやCLEAR TYPEが読めても、にじみ・二重輪郭が見えるならlettering gateは不合格とし、表示寸法に足りる解像度で作り直す。意図したpixel artは補間方法と実寸の仕上がりを固有仕様へ記録して判定する。
 - ScoreとHistoryで同じ意味表現を検証する際は、レビューcase 02のAAAとcase 08のFULL COMBOを含むHistoryのnative・browser画像を実寸で読む。合成browser動画でHistoryが1例しか表示されないことを、この確認の代わりにしない。
+- History Graphはsceneの具体値から上下方向を再計算し、最終native/browser画像の右軸と赤線を照合する。共通matrixのcase 01では最初のMISS RATEが75%、最後が10%なので、100%は上、0%は下、最初の赤点は最後の赤点より上にある。軸・線・凡例の位置が一致しても、値の方向が逆なら不合格とする。
 - skin制作中のレビュー提示は、[実装と視覚検証](references/implementation-and-verification.md#レビュー提示用のbrowser動画)の全widget・状態matrixを1920×1440の一画面に収めたbrowser動画を使う。nativeでは同条件の代表時刻を描画し、開始、変化、中間、終端、loop境界の整合をagentが確認する。レビュー制作中はpackageの`preview.png`を変更しない。
 - 最後のWasm・CSS・font・素材変更後に、package preview、native行列、browser行列とZIPを同じsourceから再生成する。成果物の時刻・hashとpackage内のresourceを照合し、変更前の画像を最終仕様の証拠へ混ぜない。
 - 選択済み見本、全widgetのレビュー結果、共通原則を満たせば追加の最終承認なしで完了してよい。成果物・比較画像・検証条件・限界を示し、適用される開発workflowのreviewとローカルcommitを行う。
