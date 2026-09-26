@@ -31,15 +31,17 @@ Record fonts, numbers/labels/live text, baselines, label-versus-value color
 roles, contrast and how each widget keeps the
 [shared information contract](basic-design-system.md#shared-information-contract).
 Give the skin's color roles and treatments of long or unknown text. For a
-material-rich world, link the actual-size ordinary-number and fixed-label
-technique comparison across SCORE digits, fixed/judgment labels and History
-numbers/headers. State which material cue is visible in the ordinary glyphs
-themselves in both hosts, and record that this prototype passed before all
-widgets were expanded. Include the native control appropriate to the technique
-(neutral font for glyph geometry, undecorated same font for face/edge effects)
-and the corresponding browser comparison. If one candidate blurs and another remains
-plain, record a revised technique and rerender rather than selecting a relative
-winner.
+material-rich world, link the actual-size live-font, textured atlas or
+glyph-mask, and control comparison across SCORE digits, fixed/judgment labels
+and History numbers/headers. Record at least two concrete glyph-face or contour
+features visible at actual size in both hosts, and why the selected technique
+beats the alternatives for this world. Pixel difference alone records rendering,
+not material quality. State that this prototype passed before all widgets were
+expanded. Match the neutral font control's weight, width and brightness for
+glyph-geometry tests; use the undecorated same font for face/edge effects.
+If one candidate blurs and another remains plain, record a revised technique
+and rerender rather than selecting a relative winner. A clearly flat world may
+omit the textured candidate with its reason and actual-size evidence.
 
 ## Meaning-specific presentation
 
