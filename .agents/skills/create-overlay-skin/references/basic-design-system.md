@@ -48,6 +48,8 @@ numeric meaning. The rate is SCORE divided by twice the note count, bounded
 to 0–100% for the bar. DJ LEVEL ticks use the same rank thresholds as the
 runtime. With a missing or invalid score or note count, derived values remain
 unknown; a skin never guesses them from the shown DJ LEVEL.
+This applies to the painted score-rate bar or dial as well as numeric text:
+an unknown input must not paint the same zero-progress state as a valid SCORE 0.
 
 For the display-only threshold distance, let `N` be the supplied note count,
 `M = 2N`, and `S` the supplied SCORE. The lower score boundaries for

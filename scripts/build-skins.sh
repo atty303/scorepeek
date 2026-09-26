@@ -69,9 +69,19 @@ package() {
 }
 
 found=false
+declare -A id_owner=()
 for manifest in "$root"/skins/*/skin.toml; do
   [[ -f "$manifest" ]] || continue
   found=true
+  id=$(taplo get -f "$manifest" id)
+  if [[ -n "${id_owner[$id]:-}" ]]; then
+    echo "duplicate skin ID $id: ${id_owner[$id]} and $manifest" >&2
+    exit 1
+  fi
+  id_owner[$id]=$manifest
+done
+for manifest in "$root"/skins/*/skin.toml; do
+  [[ -f "$manifest" ]] || continue
   package "$(dirname "$manifest")"
 done
 if [[ "$found" != true ]]; then

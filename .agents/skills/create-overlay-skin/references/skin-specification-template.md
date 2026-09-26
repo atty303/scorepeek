@@ -7,10 +7,16 @@ requirements.
 
 Use these headings for each authored skin. Fill them from the selected concept
 and verified implementation, rather than treating the template as evidence.
+Start the skin specification with its title and a **Responsibility** sentence:
+it owns this skin's world, assets, expression, final dimensions, justified
+baseline changes and verified evidence; reusable meaning/layout stays in the
+basic design system and package acceptance stays in the API specification.
 
 ## Identity and world
 
-Record skin ID, display name and intended world. Describe the world-defining
+Record skin ID, directory slug, display name and intended world. For a new
+skin, record the distinct-ID check against both the current tree and committed
+manifests when old skin files were removed in an isolated checkout. Describe the world-defining
 traits chosen for this skin. Before implementation, state what those traits
 must communicate through the frame, information surface, fixed lettering,
 dynamic lettering and exceptional states. These are observable cues, not
@@ -80,12 +86,18 @@ adjustments from this skin's choices.
 
 For status, selection, score, history-list, history-graph and empty, list each
 tested width and height or a bounded matrix and the resulting verified range.
-For an interval, include minimum, maximum, interior and responsive-breakpoint
-samples with the stressed content used at each point. If only discrete points
-were rendered, list them as such and mark the interval unverified.
+Completion requires a bounded width-height range for each widget. Include
+minimum, maximum, interior, incomparable narrow/short combinations and both
+sides of every responsive breakpoint with stressed content at each point.
+Discrete points alone are trial evidence; mark the interval unverified and
+continue rendering before declaring the skin complete.
 Include frame width, long text, numeric extremes, absent/unknown, difficulty,
 clear, rank, EMPTY title/opacity/aspect, and background states. Mark untested
 conditions explicitly; do not advertise them as verified.
+Record History 5/10/20/50 rows at heights suitable for every row, Graph
+1/3/6/12 months, and EMPTY title/no-title, opacity 0/0.5, wide/tall aspects.
+Show valid SCORE 0 beside missing/invalid SCORE or NOTES at the same size and
+describe how the score-rate bar or dial remains unknown rather than zero.
 For each long title, artist or PLAY OPTIONS string used to certify a size,
 record its complete visible readback. A full DOM value with a clipped or
 ellipsis-marked painted tail is not a verified full-information display.
@@ -97,6 +109,9 @@ For final evidence, state the source revision or content hashes used to build
 the ZIP and the time/hash of the preview and native/browser renders. Rerun
 them after the last Wasm, CSS, font or asset edit; older captures are trial
 evidence, not proof of the packaged source.
+Keep final scene inputs and selected native/browser evidence in a durable
+repository location and use relative links from this specification. Temporary
+trial captures can explain rejected choices but cannot be the sole final proof.
 Link native and browser images or video with content, dimensions and
 timestamps. For each widget, link information-filled renders at every
 lower-bound size pair, including incomparable narrow and short cases; include

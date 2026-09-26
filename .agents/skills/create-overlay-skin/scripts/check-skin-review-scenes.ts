@@ -1,5 +1,5 @@
 // Check scene coverage, changing numeric data, native captures and browser video.
-// Usage: deno run --allow-read scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <review-video>
+// Usage: deno run --allow-read --allow-run=magick scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <review-video>
 
 const [sceneDir, nativeRoot, reviewVideo] = Deno.args;
 if (!sceneDir || !nativeRoot || !reviewVideo || Deno.args.length !== 3) {
@@ -54,6 +54,12 @@ type ReviewScene = {
       y: number;
       width: number;
       height: number;
+      settings?: {
+        history_count?: number;
+        graph_months?: number;
+        title?: string;
+      };
+      skin_properties?: Record<string, unknown>;
     }[];
   }[];
   actions: {
@@ -524,8 +530,168 @@ for (
     `${id}: missing browser background frames`,
   );
 }
+const boundaries = JSON.parse(
+  await Deno.readTextFile(`${sceneDir}/boundary-cases.json`),
+) as { opacityProperty: string; ids: string[] };
+const expectedBoundaries = [
+  ...[5, 10, 20, 50].map((count) => `boundary-history-${count}`),
+  ...[1, 3, 6, 12].map((months) => `boundary-graph-${months}`),
+  ...["wide", "tall", "titleless", "opacity-zero", "opacity-half"].map((name) =>
+    `boundary-empty-${name}`
+  ),
+  "boundary-score-zero",
+  "boundary-score-unknown",
+  "boundary-score-invalid-notes",
+];
+exactly(boundaries.ids, expectedBoundaries, "boundary scenes");
+requireCondition(boundaries.opacityProperty, "missing EMPTY opacity property");
+for (const id of expectedBoundaries) {
+  const scene = JSON.parse(
+    await Deno.readTextFile(`${sceneDir}/${id}.json`),
+  ) as ReviewScene;
+  const widgets = scene.canvases[0]?.widgets ?? [];
+  exactly(widgets.map((item) => item.kind), [
+    "status",
+    "selection",
+    "score",
+    "history-list",
+    "history-graph",
+    "empty",
+  ], `${id} widgets`);
+  const state = scene.actions.find((action) => action.action === "set_state")
+    ?.state;
+  requireCondition(state, `${id}: missing state`);
+  if (id.startsWith("boundary-history-")) {
+    const count = Number(id.slice("boundary-history-".length));
+    requireCondition(
+      widgets.find((item) => item.kind === "history-list")?.settings
+            ?.history_count === count && state.history.plays.length === 50,
+      `${id}: wrong row count or insufficient supplied rows`,
+    );
+  } else if (id.startsWith("boundary-graph-")) {
+    const months = Number(id.slice("boundary-graph-".length));
+    requireCondition(
+      widgets.find((item) => item.kind === "history-graph")?.settings
+        ?.graph_months === months,
+      `${id}: wrong graph window`,
+    );
+  } else if (id.startsWith("boundary-empty-")) {
+    const empty = widgets.find((item) => item.kind === "empty");
+    requireCondition(empty, `${id}: missing EMPTY`);
+    requireCondition(
+      empty.skin_properties?.[boundaries.opacityProperty] ===
+        (id === "boundary-empty-opacity-half" ? 0.5 : 0),
+      `${id}: wrong EMPTY opacity`,
+    );
+    if (id === "boundary-empty-titleless") {
+      requireCondition(empty.settings?.title === "", `${id}: title remains`);
+    }
+  } else {
+    if (id === "boundary-score-invalid-notes") {
+      requireCondition(
+        state.chart.notes === 0 &&
+          state.best.score === referenceState.best.score,
+        `${id}: missing invalid-notes comparison`,
+      );
+    } else {
+      requireCondition(
+        state.best.score === (id === "boundary-score-zero" ? "0" : "") &&
+          state.best.dj_level ===
+            (id === "boundary-score-zero" ? "F" : ""),
+        `${id}: missing zero/unknown comparison`,
+      );
+    }
+  }
+  const manifest = JSON.parse(
+    await Deno.readTextFile(`${nativeRoot}/${id}/manifest.json`),
+  ) as NativeManifest;
+  const capture = manifest.operations.find((item) =>
+    item.action === `capture-${id}`
+  );
+  requireCondition(
+    manifest.status === "complete" &&
+      manifest.completeness === "complete" &&
+      capture?.status === "success" && capture.image && capture.layout &&
+      (await Deno.stat(`${nativeRoot}/${id}/${capture.image}`)).size > 0 &&
+      (await Deno.stat(`${nativeRoot}/${id}/${capture.layout}`)).size > 0 &&
+      (await Deno.stat(`${browserRoot}/${id}.png`)).size > 0,
+    `${id}: missing native/browser boundary evidence`,
+  );
+}
+const emptyZero = JSON.parse(
+  await Deno.readTextFile(`${sceneDir}/boundary-empty-opacity-zero.json`),
+) as ReviewScene;
+const emptyHalf = JSON.parse(
+  await Deno.readTextFile(`${sceneDir}/boundary-empty-opacity-half.json`),
+) as ReviewScene;
+const halfWidgets = structuredClone(emptyHalf.canvases[0].widgets);
+const halfEmpty = halfWidgets.find((item) => item.kind === "empty");
+requireCondition(halfEmpty?.skin_properties, "missing half-opacity EMPTY");
+halfEmpty.skin_properties[boundaries.opacityProperty] = 0;
+const empty = emptyZero.canvases[0].widgets.find((item) =>
+  item.kind === "empty"
+);
+requireCondition(empty, "missing zero-opacity EMPTY");
+requireCondition(
+  JSON.stringify(emptyZero.canvases[0].widgets) ===
+      JSON.stringify(halfWidgets) &&
+    [emptyZero, emptyHalf].every((scene) =>
+      ["off", "none"].includes(
+        scene.canvases[0].skin_properties?.background ?? "",
+      )
+    ) &&
+    JSON.stringify(emptyZero.actions[0].state) ===
+      JSON.stringify(emptyHalf.actions[0].state),
+  "EMPTY opacity comparison changed another input",
+);
+const apertureWidth = Math.max(1, Math.floor(empty.width / 3));
+const apertureHeight = Math.max(1, Math.floor(empty.height / 3));
+const apertureX = empty.x + Math.floor((empty.width - apertureWidth) / 2);
+const apertureY = empty.y + Math.floor((empty.height - apertureHeight) / 2);
+async function aperturePixels(path: string): Promise<Uint8Array> {
+  const result = await new Deno.Command("magick", {
+    args: [
+      path,
+      "-crop",
+      `${apertureWidth}x${apertureHeight}+${apertureX}+${apertureY}`,
+      "+repage",
+      "-depth",
+      "8",
+      "rgba:-",
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  requireCondition(result.success, `cannot crop EMPTY aperture from ${path}`);
+  return result.stdout;
+}
+for (const root of [nativeRoot, browserRoot]) {
+  const paths = [];
+  for (const suffix of ["zero", "half"]) {
+    const id = `boundary-empty-opacity-${suffix}`;
+    if (root === browserRoot) {
+      paths.push(`${root}/${id}.png`);
+    } else {
+      const manifest = JSON.parse(
+        await Deno.readTextFile(`${root}/${id}/manifest.json`),
+      ) as NativeManifest;
+      const image = manifest.operations.find((item) =>
+        item.action === `capture-${id}`
+      )?.image;
+      requireCondition(image, `${id}: missing native opacity capture`);
+      paths.push(`${root}/${id}/${image}`);
+    }
+  }
+  const zero = await aperturePixels(paths[0]);
+  const half = await aperturePixels(paths[1]);
+  requireCondition(
+    zero.length === half.length &&
+      zero.some((value, index) => value !== half[index]),
+    `EMPTY opacity paints identical aperture pixels in ${root}`,
+  );
+}
 console.log(
-  `one 4:3 browser review video; eight selection/score pairs, all common widgets, controlled A/AA/AAA and ${
+  `one 4:3 browser review video; eight selection/score pairs, all common widgets, ${expectedBoundaries.length} boundary inputs with native/browser captures, controlled A/AA/AAA and ${
     cases[0].background_motion === "animated" ? "three" : "two"
-  } background modes verified`,
+  } background modes checked mechanically; painted zero/unknown, material and readability still require visual review`,
 );

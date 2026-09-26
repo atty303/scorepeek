@@ -22,6 +22,7 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 
 1. 対象widget、用途、参考画像、希望する世界観、既存の承認を確認する。保存済みレイアウトは利用者が所有する。
    API文書とSDKを使い、skinごとに独立したWasm実装、manifest、CSS、素材を制作する。共通のDOMやCSSを複製元として使わない。
+   新規skinには、採用する世界観を識別できる新しいdirectory slugとmanifest IDを与える。既存skinと併存させる依頼では既存IDを再利用せず、選択画面でも区別できる表示名にする。隔離worktreeで既存skinのファイルを外していても、衝突検査だけはGit HEADのslugとmanifest IDまで含める。この検査は旧skinの意匠を制作入力にするものではない。
 2. 指定がなければ異なる3案を作る。各案は現行package previewに近い情報量で全widgetと主要状態の世界観を伝えるモックとし、色だけでなく素材・輪郭・文字・光の性格を変える。各方向を全widgetへ展開できるか見通しを確認する。モックの数字や配置に実装相当の厳密さは求めない。
 3. 画像生成toolとそのskillをconceptと素材部品の制作候補にする。生成画像の文字は視覚見本であり、実装ではlive textや意味を保持するatlasへ置き換える。SVGやImageMagickだけで質感を満たせない場合は画像生成で枠、面、発光、文字を試作する。
 4. 候補を実際に表示し、世界観の候補名、素材、配色、文字の性格、想定する動き、全widgetへの展開方針を短く添えて選択する。利用者が代理選択を明示的に任せた場合は担当agentが選び、理由を記録する。
@@ -63,9 +64,12 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 ## 3. Expand and verify
 
 - 代表widgetの内部検証後、status・selection・score・history-list・history-graph・emptyとcanvas背景へ展開する。欧文の主要数値だけでなく、定型ラベルも一貫した素材にする。
-- packageと最終描画の前に `bash .agents/skills/create-overlay-skin/scripts/check-skin-authoring-contract.bash <skin-dir>` で6 widgetの既定寸法と背景状態を検査する。canvasを静止させるconceptは固有仕様に理由を記して`--still`を追加し、無効なanimated controlを置かない。検査結果の`background_off_value`と`background_motion`をscene生成へ渡す。共通sceneの`background-off`/`background-static`と、canvasが動くconceptなら`background-animated`で全widgetを載せてnative/browser描画する。背景なしではSelect・Score・Historyの情報面と枠の世界観を原寸で読み、animated背景では周期中の時刻差を確認する。manifestの値だけで描画対応を合格にしない。
+- packageと最終描画の前に `bash .agents/skills/create-overlay-skin/scripts/check-skin-authoring-contract.bash <skin-dir>` で新skinのID・slugの未使用、6 widgetの既定寸法と背景状態を検査する。既存skinをその場所で再設計する依頼だけは`--existing`を付ける。canvasを静止させるconceptは固有仕様に理由を記して`--still`を追加し、無効なanimated controlを置かない。検査結果の`background_off_value`と`background_motion`をscene生成へ渡す。共通sceneの`background-off`/`background-static`と、canvasが動くconceptなら`background-animated`で全widgetを載せてnative/browser描画する。背景なしではSelect・Score・Historyの情報面と枠の世界観を原寸で読み、animated背景では周期中の時刻差を確認する。manifestの値だけで描画対応を合格にしない。
+- 欠損・不正なSCOREまたはNOTESと、正当なSCORE 0を同じ条件で描画する。DJ LEVEL差分だけでなくscore rateのbar/dialを含む**すべての派生表示**を比較し、欠損時に0%を確定表示しない。欠損値を数字へparseして0に丸める実装を不合格にする。
 - 意味別の色・文字・素材・動きの規則をまとめ、widgetごとの場当たり的なCSSや別のnative/webレイアウトを増やさない。
 - 検証referenceの共通matrixを実行し、見本比較と条件変更耐性を分けて評価する。既知の崩れを残したまま利用者へ品質判断を委ねない。
+- `history_count` 5/10/20/50、`graph_months` 1/3/6/12、EMPTYの横長/縦長・title有無・opacity 0/0.5、および欠損と0の補助sceneを、標準レビュー動画とは別に両hostで実寸描画する。全情報を表示できる高さを各countに割り当てる。補助条件を未検証のまま完成扱いにしない。
+- widgetごとに全情報と可読性を保証する幅・高さの**範囲**を完成仕様へ記す。各範囲の最小、最大、内側、縦横それぞれの限界、responsive境界の両側を、内容・状態を載せてnative/browserで見る。孤立した既定sizeとreview sizeを範囲の証明として扱わない。選んだ範囲内で実際に失敗する組合せがあれば、layoutを直すか範囲を狭めて再検証する。
 - 全widgetへ展開した後もfinish gatesを実寸で再判定する。各widgetに実際の情報を載せたnative画像とbrowserの同時刻frameを使い、検証済みsizeの下限となる組合せをすべて、既定size、異なる状態を確認する。package previewに載るSelection・Score・History Graphはそのsizeも確認する。全画面を縮小した一覧だけで小さい文字や素材を判定しない。小文字は画像だけからラベルと代表値を転記してからsceneと照合し、拡大やsource参照がないと読めない項目を不合格にする。長い曲名・artist・PLAY OPTIONSの試験値は末尾まで画像から読めるか確かめる。DOMに全文が残っていても、表示上の省略記号やclipで末尾を隠したら、その内容とsizeを全情報表示の検証済み条件に含めない。仕様には各widgetの実寸証拠への参照、gateごとの可視の根拠、失敗時の修正と再描画結果を残す。文字と質感が簡略化したwidgetを、他のwidgetや背景が美しいという理由で通さない。
 - PNG等のbitmapを文字atlasに使う場合、Score/Historyの全状態とpackage previewで、**表示される個々の字形・sprite cell**の元pixel寸法と、crop・`background-size`・transformを反映した実効表示寸法を照合する。atlas画像全体の寸法では判定しない。輪郭を滑らかに描く字形を元のcellより大きく表示してはいけない。小さいcellを拡大したAAAやCLEAR TYPEが読めても、にじみ・二重輪郭が見えるならlettering gateは不合格とし、表示寸法に足りる解像度で作り直す。意図したpixel artは補間方法と実寸の仕上がりを固有仕様へ記録して判定する。
 - ScoreとHistoryで同じ意味表現を検証する際は、レビューcase 02のAAAとcase 08のFULL COMBOを含むHistoryのnative・browser画像を実寸で読む。合成browser動画でHistoryが1例しか表示されないことを、この確認の代わりにしない。
@@ -73,6 +77,7 @@ skin APIの技術契約、特定skinの世界観、任意シリーズの表現�
 - History Graphはsceneの具体値から上下方向を再計算し、最終native/browser画像の右軸と赤線を照合する。共通matrixのcase 01では最初のMISS RATEが75%、最後が10%なので、100%は上、0%は下、最初の赤点は最後の赤点より上にある。軸・線・凡例の位置が一致しても、値の方向が逆なら不合格とする。
 - skin制作中のレビュー提示は、[実装と視覚検証](references/implementation-and-verification.md#レビュー提示用のbrowser動画)の全widget・状態matrixを1920×1440の一画面に収めたbrowser動画を使う。nativeでは同条件の代表時刻を描画し、開始、変化、中間、終端、loop境界の整合をagentが確認する。レビュー制作中はpackageの`preview.png`を変更しない。
 - 最後のWasm・CSS・font・素材変更後に、package preview、native行列、browser行列とZIPを同じsourceから再生成する。成果物の時刻・hashとpackage内のresourceを照合し、変更前の画像を最終仕様の証拠へ混ぜない。
+- 固有仕様が最終合格の根拠として参照する画像、動画、scene、検査結果は、skinまたは今後も維持するrepository内の位置へ保存し、相対linkで示す。`/tmp`の試作画像は試行の説明にのみ使い、作業treeを消すと壊れる絶対pathを最終証拠にしない。通常ビルドで再生成するZIPそのものは恒久保存せず、生成commandとhashを記す。
 - 選択済み見本、全widgetのレビュー結果、共通原則を満たせば追加の最終承認なしで完了してよい。成果物・比較画像・検証条件・限界を示し、適用される開発workflowのreviewとローカルcommitを行う。
 
 ## Stop and report precisely

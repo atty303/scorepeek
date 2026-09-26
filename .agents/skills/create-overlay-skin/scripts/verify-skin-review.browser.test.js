@@ -132,7 +132,10 @@ browserTest(
     for (const value of ["DATE", "SCORE", "DJ LEVEL", "MISS", "CLEAR"]) {
       await contains("history", value);
     }
-    for (const play of history.plays) {
+    const historyCount =
+      scene.canvas.widgets.find((item) => item.kind === "history-list")
+        ?.settings?.history_count ?? 5;
+    for (const play of history.plays.slice(0, historyCount)) {
       for (
         const value of [
           play.notified_at,
@@ -298,6 +301,31 @@ browserTest(
           JSON.stringify(rootInfo)
         }`,
       ).toBe(0);
+    }
+    if (caseId.startsWith("boundary-")) {
+      const kind = caseId.startsWith("boundary-history-")
+        ? "history-list"
+        : caseId.startsWith("boundary-graph-")
+        ? "history-graph"
+        : caseId.startsWith("boundary-empty-")
+        ? "empty"
+        : "score";
+      await assertPaintFits(
+        scene.canvas.widgets.find((item) => item.kind === kind),
+      );
+      expect(failures).toEqual([]);
+      expect(
+        await page.evaluate(() => document.documentElement.dataset.skinFailure),
+      ).toBeUndefined();
+      expect(
+        await page.evaluate(() =>
+          [...document.images].every((image) =>
+            image.complete && image.naturalWidth > 0
+          )
+        ),
+      ).toBe(true);
+      await context.close();
+      return;
     }
     const frameCount = durationMs * fps / 1000;
     let paintChecks = 0;

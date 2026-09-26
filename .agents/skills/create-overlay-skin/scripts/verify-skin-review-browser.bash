@@ -35,9 +35,13 @@ case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa background-off backgro
 if [[ ! -f "$native_scenes/background-animated.json" ]]; then
   case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa background-off background-static)
 fi
+for boundary in "$native_scenes"/boundary-*.json; do
+  [[ -f "$boundary" && $(basename "$boundary") != boundary-cases.json ]] || continue
+  case_ids+=("$(basename "$boundary" .json)")
+done
 if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
-  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa)|background-(off|static|animated))$ ]]; then
-    echo "SCOREPEEK_REVIEW_CASE_ID must be 01..08, rank-a/rank-aa/rank-aaa, or background-off/background-static/background-animated" >&2
+  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa)|background-(off|static|animated)|boundary-(history-(5|10|20|50)|graph-(1|3|6|12)|empty-(wide|tall|titleless|opacity-zero|opacity-half)|score-(zero|unknown|invalid-notes)))$ ]]; then
+    echo "SCOREPEEK_REVIEW_CASE_ID is not a generated review or boundary case" >&2
     exit 2
   fi
   if [[ ! -f "$native_scenes/$SCOREPEEK_REVIEW_CASE_ID.json" ]]; then
@@ -45,7 +49,7 @@ if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
     exit 2
   fi
   case_ids=("$SCOREPEEK_REVIEW_CASE_ID")
-  if [[ "$SCOREPEEK_REVIEW_CASE_ID" != 01 ]]; then
+  if [[ "$SCOREPEEK_REVIEW_CASE_ID" != 01 && "$SCOREPEEK_REVIEW_CASE_ID" != boundary-* ]]; then
     case_ids=(01 "$SCOREPEEK_REVIEW_CASE_ID")
   fi
 fi

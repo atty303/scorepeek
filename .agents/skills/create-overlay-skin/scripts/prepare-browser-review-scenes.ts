@@ -27,9 +27,14 @@ const caseIds = [
   "background-static",
   ...(cases[0].background_motion === "animated" ? ["background-animated"] : []),
 ];
+const boundaries = JSON.parse(
+  await Deno.readTextFile(`${nativeDirectory}/boundary-cases.json`),
+) as { ids: string[] };
+caseIds.push(...boundaries.ids);
 for (const caseId of caseIds) {
   const reviewCase = cases.find((item) => item.id === caseId) ??
-    (caseId.startsWith("rank-") || caseId.startsWith("background-")
+    (caseId.startsWith("rank-") || caseId.startsWith("background-") ||
+        caseId.startsWith("boundary-")
       ? cases[0]
       : undefined);
   if (!reviewCase) throw new Error(`missing review case ${caseId}`);
