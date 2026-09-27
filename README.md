@@ -14,90 +14,121 @@
 | :---: | :---: | :---: |
 | ![Cyan System overlay preview](skins/cyan-system/preview.png) | ![Result Aurora overlay preview](skins/result-aurora/preview.png) | ![DJ Blackbox overlay preview](skins/dj-blackbox/preview.png) |
 
-> **NOTICE**
-> Scorepeek is in active development. Published builds are early releases and
-are not yet ready for general use.
+Scorepeek recognizes your game screen without reading the game's internal data.
+It saves results locally and can show personal bests, recent plays, history,
+and progress graphs on your Wayland desktop or in OBS. Recognition runs on your
+machine; it does not upload screenshots to a cloud OCR service. You can also
+use its live Event API and local SQLite score history in your own tools.
 
-## What you get
+## Install
 
-### Automatic score tracking
+Scorepeek currently distributes a Linux x86-64 executable. Download the
+`scorepeek-VERSION-x86_64-unknown-linux-gnu` asset from the
+[GitHub Releases page](https://github.com/atty303/scorepeek/releases), replacing
+`VERSION` with the version in the release you choose. From the directory where
+you downloaded it, install it as `scorepeek` on your `PATH`:
 
-Keep a local record of your play results without entering scores by hand. See
-your personal bests, recent results, history, and progress graphs in the overlay.
-Score recording is required when `scorepeek run` starts unless `--no-scores` is
-explicitly selected. The run checks that its SQLite database is ready before
-capture begins and stops with an error if saving fails later. A stopped run
-reports saved, failed, rejected, and still pending results separately.
+```sh
+install -Dm755 scorepeek-VERSION-x86_64-unknown-linux-gnu "$HOME/.local/bin/scorepeek"
+scorepeek --version
+```
 
-Existing score databases migrate automatically on the next scored run. Before
-changing a v3 or v4 database, Scorepeek creates and verifies a SQLite snapshot
-beside it, named with the source schema version and a unique suffix. The
-backup is retained for manual recovery. Do not remove it until you have
-verified your score history after upgrading. Normal history and detail views
-read structured SQLite data; retained per-play evidence is preserved separately.
+Replace `VERSION` in the command too, and ensure `~/.local/bin` is on your
+`PATH`.
 
-### Screen recognition that keeps up
+Run Scorepeek in a user session with an XDG runtime directory. The Vulkan
+capture path needs a compatible Vulkan game. A fresh installation needs network
+access to obtain the registered OCR model and song catalog. Wayland display
+needs a Wayland session; OBS display needs OBS with a Browser Source.
 
-Scorepeek reads your game screen using image recognition, without analyzing the
-game's internal data. It matches OCR readings against song catalogs fetched
-online. New songs do not need their own set of training images, reducing the
-upkeep needed as the catalogs grow.
+## Start with Vulkan capture
 
-### Local processing, local records
+1. Install the explicit Vulkan capture layer embedded in the executable:
 
-Recognition runs on your machine, and your scores are saved locally. No cloud
-OCR or screen uploads are needed to recognize and record your results.
+   ```sh
+   scorepeek vulkan-layer install
+   ```
 
-### Build your own tools
+2. Enable the layer for the game process. A generic launch example is:
 
-The recognition core is separated from capture and presentation for portability
-and reuse. Use the Event API for live recognition events and SQLite for recorded
-scores and history to build your own dashboards, analysis tools, or integrations.
-The included overlays are optional.
+   ```sh
+   env VK_INSTANCE_LAYERS=VK_LAYER_SCOREPEEK_capture GAME_COMMAND
+   ```
 
-The core returns typed recognition and play decisions. The runtime projects
-them into the versioned Event API and saves scores through the SQLite consumer.
-The native overlay feed reads public events and committed history for both
-Wayland and OBS; the browser client receives display state from its host.
+   Replace `GAME_COMMAND` with the command that starts your game. The variable
+   must reach the game process. If the game runs in a container, its environment
+   and Scorepeek's `$XDG_RUNTIME_DIR/scorepeek` socket directory must both be
+   accessible there.
 
-### For your screen and your stream
+3. In another terminal in the same user session, start Scorepeek:
 
-Show an overlay on your own screen, in an OBS broadcast, or both. It is just as
-useful for everyday play when you are not streaming.
+   ```sh
+   scorepeek run --capture vulkan-layer
+   ```
 
-### Make the overlay yours
+   Scorepeek waits for an eligible game source; it does not launch the game.
+   Score recording is on by default and requires a writable local SQLite
+   database. Use `--no-scores` only if you intentionally want a run without
+   saved results. Press Ctrl+C to stop the run.
 
-Choose the information you want to see, move and resize widgets in the visual
-editor, and decide which game screens show them. Install skins or create your
-own; the three previews above are examples, not a fixed set of styles.
+### PipeWire alternative
 
-## Releases
+If you already have a compatible PipeWire video source, use its exact
+`node.name` instead of the Vulkan layer:
 
-GitHub Releases use `YYYY.M.COUNTER` CalVer, starting at counter `0` each month.
-The release workflow checks for releasable commits every day at 04:17
-Asia/Tokyo and can also be started manually; pushes to `main` do not release
-immediately.
-Each release contains a Linux x86-64 executable named
-`scorepeek-VERSION-x86_64-unknown-linux-gnu`. Release automation verifies its
-locally computed SHA-256 against the digest recorded by GitHub after upload.
+```sh
+scorepeek run --capture pipewire --node-name NODE_NAME
+```
+
+Replace `NODE_NAME` with that source's name. Scorepeek does not choose or
+switch capture sources automatically.
+
+## Show the overlay
+
+Overlays are off by default. Add either or both options to the `run` command:
+
+```sh
+scorepeek run --capture vulkan-layer --overlay-wayland-edit
+```
+
+`--overlay-wayland-edit` opens the Wayland overlay in edit mode. After setting
+up a skin and canvas, use `--overlay-wayland` for normal display. For OBS, run:
+
+```sh
+scorepeek run --capture vulkan-layer --overlay-obs
+```
+
+Add a Browser Source in OBS with URL `http://127.0.0.1:3939/overlay` while
+Scorepeek is running. Use the Browser Source's interaction view to edit the
+layout. You can combine `--overlay-wayland` and `--overlay-obs` in one run.
+
+A new overlay has no canvases. Install a compatible skin ZIP with
+`scorepeek skin install PATH_TO_SKIN.zip`, then add a canvas and widgets in the
+editor. The previews above show available designs, but the executable alone
+does not populate an overlay layout.
+
+## Check status
+
+Use `scorepeek doctor` to check the local model, catalog, capture inventory,
+and Vulkan layer installation. While a run is active,
+`scorepeek diagnostic observe` streams diagnostic events. After it stops,
+`scorepeek diagnostic inspect --latest` shows the most recent run. These
+commands help distinguish setup problems from a game source that has not yet
+appeared.
+
+## Other commands
+
+| Command group | Purpose |
+| --- | --- |
+| `config` | Locate, display, or check configuration. |
+| `skin` | Install, list, or remove overlay skin ZIPs. |
+| `vulkan-layer` | Install or remove the embedded Vulkan layer. |
+| `completion` | Generate shell completion. |
+
+Run `scorepeek --help` or `scorepeek COMMAND --help` for the full options and
+subcommands.
 
 ## Third-party notices
 
 Third-party source acknowledgements and terms are documented in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-
-## Development validation
-
-`mise run test` runs the repository checks, production asset builds, Clippy,
-one standard `cargo nextest run --locked --workspace`, Vulkan layer artifact checks,
-and the Deno browser overlay scenario in fail-fast order. The browser scenario launches the
-production `scorepeek` private OBS role with temporary HOME and XDG directories.
-Playwright CLI is available through `mise run browser:cli -- <command>`; `browser:install`
-installs its pinned Chromium headless shell. Browser scenarios use the Playwright version
-paired with the pinned CLI and run through Deno, without a Node.js runtime.
-CI runs nextest with `--no-fail-fast` to report every Rust test failure in one run;
-local `mise run test` retains nextest's default fail-fast behavior.
-Private corpus replay, corpus import and review, skin preview generation,
-native visual rendering, and nested Wayland require their
-separate opt-in mise tasks. See [private corpus](docs/private-corpus.md) and
-[overlay visual debugging](docs/overlay-visual-debugging.md).

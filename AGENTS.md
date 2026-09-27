@@ -13,6 +13,10 @@
   operation belong in README, architecture and domain references. Superseded
   design, completed or abandoned plans, experiments and point-in-time
   verification belong in Git history.
+- README is for users: keep its overview, installation, and usage instructions
+  user-facing. Do not put development or validation procedures in README;
+  developer guidance belongs in AGENTS.md and detailed development references
+  belong in docs/.
 
 ## Task start and resumption
 
