@@ -1,0 +1,72 @@
+Task: Make scorepeek README a user installation and usage guide
+Anchor: 45573b7393875bfbd3d8faa8658d5a1fa2212fd6
+Base: a267ebf85e8eaba6515a4ebf8ec8138436fa2303
+Branch: main
+Commits: 45573b7 docs: make README a user installation and usage guide
+Guidance: repository AGENTS.md; develop-repository; maintain-agent-guidance
+Conditions: Linux workspace; clean starting tree; origin/main fetched; no push, release, or deploy authority
+Authority: user implementation request, current repository source, and repository AGENTS.md
+## Transcript
+- U1: # 実装依頼
+    
+    ## 依頼
+    
+    README.md を英語の利用者向け案内に整理し、配布バイナリの導入方法と CLI の使い方を追加してください。AGENTS.md には、README に開発手順を書かない責務を追記してください。
+    
+    ## 目的
+    
+    - 利用者が Scorepeek を導入し、初回起動、表示、状態確認まで進められるようにする。
+    - README を利用者向けの案内に保ち、開発手順の置き場所を明確にする。
+    
+    ## 成功条件
+    
+    - README に配布バイナリの導入、Vulkan layer を使う初回起動、Wayland・OBS 表示、状態確認の手順がある。
+    - ゲーム側で Vulkan layer を有効化する汎用例がある。Steam など環境別の設定手順は含めない。
+    - PipeWire 経路は短い代替案として案内されている。
+    - その他の公開 CLI コマンドは短い一覧で案内し、詳細は `--help` に誘導している。
+    - README から開発手順、リリースの版付け・自動化などの定義、冒頭の早期リリースに関する注意書きが除かれている。
+    - AGENTS.md に「README は利用者向けであり、開発手順を書かない」と明記されている。
+    - 記載したコマンド、前提条件、配布物の名前が現行の実装と配布設定に一致している。
+    
+    ## 決定事項
+    
+    - README は英語に統一する。
+      - 理由: 既存の本文と新しい手順を一続きで読めるようにするため。
+      - 主な棄却案: 日本語への全面変更、手順だけの日本語併記。今回の整理に不要な言語変更や混在を生むため。
+    - Vulkan layer を初回起動の主な経路とし、PipeWire は短い代替案にする。
+      - 理由: 利用者が選んだ案内の優先順位に合わせるため。
+      - 主な棄却案: 両経路を同じ詳しさで扱う案、PipeWire を主経路にする案。
+    - ゲーム側の Vulkan layer 有効化は汎用例まで示す。
+      - 理由: Scorepeek 側の操作だけでは初回利用の手順が途切れるため。
+      - 主な棄却案: Steam 固有の設定例まで載せる案、ゲーム側の操作を省く案。
+    - CLI は初回利用に必要な手順を詳しく示し、その他は短い一覧にする。
+      - 理由: 利用を始めるのに必要な情報を揃えつつ、README を詳細マニュアルにしないため。
+      - 主な棄却案: 全オプションの説明、初回起動だけの説明。
+    - 今回の編集対象は README.md と AGENTS.md に限る。
+      - 理由: `docs/` は開発資料として維持するため。
+      - 主な棄却案: `docs/` の開発手順も AGENTS.md へ移す案。
+    
+    ## 制約
+    
+    - README に開発・検証用の手順を書かない。
+    - README にリリースの版付けや自動化の定義を書かない。利用者が配布バイナリを入手するための案内は含める。
+    - この依頼でプログラムの挙動や CLI 契約を変更しない。
+    - リリース作成、公開、デプロイ、push は行わない。
+    
+    ## 対象外
+    
+    - `docs/` の編集。
+    - Steam、Gamescope、OBS などの環境別セットアップ手順。
+    - CLI の全オプションを網羅する詳細マニュアル。
+    
+    ## 未検証の前提
+    
+    - 現行の配布物名、入手先、実行時の依存条件。
+    - Vulkan layer の汎用的な有効化例が、現行実装と配布形態で成立すること。
+    - Wayland・OBS 表示、状態確認に用いる正確な CLI コマンドと既定動作。
+    
+    ## 実装時の指示
+    
+    - README の既存の機能説明も、利用者に必要な内容へ整理する。内部構成の説明は利用者向けの説明に置き換えるか削除する。
+    - 導入・実行例は、初めて使う人が順に試せる形にする。
+  - A: Read current source and release asset inventory; rewrote README for binary installation, Vulkan and PipeWire capture, Wayland and OBS overlays, diagnostics, and CLI groups; clarified AGENTS responsibility; passed targeted mise check and git diff --check; committed locally. No push or external change.
