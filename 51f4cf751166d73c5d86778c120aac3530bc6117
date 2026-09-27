@@ -1,0 +1,11 @@
+Task: Restore the README What you get section after user correction
+Anchor: 51f4cf751166d73c5d86778c120aac3530bc6117
+Base: 45573b7393875bfbd3d8faa8658d5a1fa2212fd6
+Branch: main
+Commits: 51f4cf7 docs: restore README feature overview
+Guidance: repository AGENTS.md; develop-repository
+Conditions: Linux workspace; clean starting tree; no push authority
+Authority: user correction, current README and prior README content, repository AGENTS.md
+## Transcript
+- U1: What you getを削れといったか？
+  - A: Restored the six What you get feature subsections and user-facing descriptions, leaving new installation and CLI guide intact; passed targeted mise check and git diff --check; committed locally.
