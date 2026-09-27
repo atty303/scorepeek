@@ -52,7 +52,8 @@ if [[ "${SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR:-0}" != 1 ]]; then
   chmod 700 "$XDG_RUNTIME_DIR"
 fi
 
-for package in "$root"/target/skins/*.zip; do
+package_dir=${SCOREPEEK_SKINS_PACKAGE_DIR:-$root/target/skins}
+for package in "$package_dir"/*.zip; do
   "${SCOREPEEK_BINARY:-$root/target/debug/scorepeek}" skin install "$package" >/dev/null
 done
 

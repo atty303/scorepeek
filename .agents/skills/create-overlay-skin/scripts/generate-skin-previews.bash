@@ -3,6 +3,11 @@ set -euo pipefail
 
 skill=$(cd "$(dirname "$0")/.." && pwd)
 root=$(cd "$skill/../../.." && pwd)
+destination=${1:-}
+if [[ -z "$destination" && -n "${SCOREPEEK_SKIN_PREVIEW_SCENE:-}" ]]; then
+  echo "final skin previews must use the skill-owned preview scene; pass an output directory for a diagnostic custom scene" >&2
+  exit 2
+fi
 run_root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-skin-previews.XXXXXX")
 stop_fifo="$run_root/stop"
 server_log="$run_root/server.log"
@@ -58,7 +63,6 @@ SCOREPEEK_SKIN_PREVIEW_SCENE="$scene_path" \
 SCOREPEEK_SKINS_DIRECTORY="$skins_directory" \
 deno test -A "$skill/scripts/generate-skin-previews.browser.test.js"
 
-destination=${1:-}
 if [[ -n "$destination" ]]; then
   mkdir -p "$destination"
   cp -a "$staging/." "$destination/"

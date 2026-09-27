@@ -366,9 +366,9 @@ pub fn EditorWorkspace(
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     rsx! {
-        div { class: if view.selected_canvas.is_some() { "editor-workspace has-selection" } else { "editor-workspace" },
+        div { class: "editor-workspace has-selection",
             ObjectNavigator { view: view.clone(), onaction }
-            if view.selected_canvas.is_some() { Inspector { view: view.clone(), title, onaction } }
+            Inspector { view: view.clone(), title, onaction }
         }
     }
 }

@@ -31,6 +31,10 @@ deno run --allow-read --allow-write "$skill/scripts/prepare-browser-review-scene
 if [[ "${SCOREPEEK_PREBUILT_SKINS:-0}" != 1 ]]; then
   bash "$root/scripts/build-skins.sh"
 fi
+package_dir="$run_root/packages"
+mkdir "$package_dir"
+cp "$root/target/skins/$slug.zip" "$package_dir/$slug.zip"
+(cd "$package_dir" && sha256sum "$slug.zip") > "$output/PACKAGE.sha256"
 case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa background-off background-static background-animated)
 if [[ ! -f "$native_scenes/background-animated.json" ]]; then
   case_ids=(01 02 03 04 05 06 07 08 rank-a rank-aa rank-aaa background-off background-static)
@@ -40,7 +44,7 @@ for boundary in "$native_scenes"/boundary-*.json; do
   case_ids+=("$(basename "$boundary" .json)")
 done
 if [[ -n "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
-  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa)|background-(off|static|animated)|boundary-(history-(5|10|20|50)|graph-(1|3|6|12)|empty-(wide|tall|titleless|opacity-zero|opacity-half)|score-(zero|unknown|invalid-notes)))$ ]]; then
+  if [[ ! "$SCOREPEEK_REVIEW_CASE_ID" =~ ^(0[1-8]|rank-(a|aa|aaa)|background-(off|static|animated)|boundary-(history-(5|10|20|50)|graph-(1|3|6|12)|empty-(wide|tall|titleless|opacity-zero|opacity-half)|score-(zero|unknown|invalid-notes)|text-(default|preview)))$ ]]; then
     echo "SCOREPEEK_REVIEW_CASE_ID is not a generated review or boundary case" >&2
     exit 2
   fi
@@ -61,7 +65,7 @@ for case_id in "${case_ids[@]}"; do
   exec 3<>"$fifo"
   port=$(deno eval 'const socket = Deno.listen({hostname:"127.0.0.1",port:0}); console.log(socket.addr.port); socket.close();')
   address="127.0.0.1:$port"
-  SCOREPEEK_PREBUILT_SKINS=1 "$root/scripts/with-isolated-skins.sh" \
+  SCOREPEEK_ISOLATED_SKINS=0 SCOREPEEK_PREBUILT_SKINS=1 SCOREPEEK_SKINS_PACKAGE_DIR="$package_dir" "$root/scripts/with-isolated-skins.sh" \
     deno run -A "$root/scripts/overlay-fixture-host.deno.js" "$case_root" "$address" "$run_root/scenes/$case_id.json" \
     <"$fifo" 3>&- >"$case_root/server.log" 2>&1 &
   server_pid=$!
@@ -86,4 +90,8 @@ if [[ -z "${SCOREPEEK_REVIEW_CASE_ID:-}" ]]; then
   deno run --allow-read --allow-write --allow-run=magick,ffmpeg,ffprobe \
     "$skill/scripts/compose-browser-review-video.ts" \
     "$native_scenes" "$output" "$output/review.webm"
+fi
+if ! cmp -s "$package_dir/$slug.zip" "$root/target/skins/$slug.zip"; then
+  echo "skin ZIP changed during browser review; discard this output and rerun from final source" >&2
+  exit 1
 fi

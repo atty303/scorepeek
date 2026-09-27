@@ -217,6 +217,11 @@ browserTest(
     await page.locator("#stage").click({ button: "right" });
     stageConnections[0].release();
     await expect(addCanvas).toBeEnabled();
+    await page.locator(
+      ".editor-accordion-heading[data-section='new-canvas:skin']",
+    ).locator("..").locator(".skin-option strong").filter({
+      hasText: /^Cyan System$/,
+    }).click();
     await addCanvas.click();
     const widgetPicker = page.locator("#widget-picker-trigger");
     await widgetPicker.click();
@@ -258,6 +263,10 @@ browserTest(
         .toBe(Number(value));
     }
     const unrelatedFrame = page.frameLocator("#scorepeek-replica-canvas-2");
+    await expect.poll(async () =>
+      JSON.parse(await unrelatedFrame.locator("#scorepeek-skin").textContent())
+        .canvas.skin
+    ).toBe("dev.atty303.scorepeek.skin.cyan-system");
     await expect(unrelatedFrame.locator(".widget-slot")).toBeVisible();
     await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
 

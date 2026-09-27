@@ -31,6 +31,8 @@ type ReviewState = {
     difficulty: string;
     level: number;
     notes: number;
+    title: string;
+    artist: string;
   };
   best: { score: string; dj_level: string; clear: string; miss: string };
   detail: Record<string, string>;
@@ -542,9 +544,18 @@ const expectedBoundaries = [
   "boundary-score-zero",
   "boundary-score-unknown",
   "boundary-score-invalid-notes",
+  "boundary-text-default",
+  "boundary-text-preview",
 ];
 exactly(boundaries.ids, expectedBoundaries, "boundary scenes");
 requireCondition(boundaries.opacityProperty, "missing EMPTY opacity property");
+const longTextScene = JSON.parse(
+  await Deno.readTextFile(`${sceneDir}/08.json`),
+) as ReviewScene;
+const longTextState = longTextScene.actions.find((action) =>
+  action.action === "set_state"
+)?.state;
+requireCondition(longTextState, "08: missing long-text state");
 for (const id of expectedBoundaries) {
   const scene = JSON.parse(
     await Deno.readTextFile(`${sceneDir}/${id}.json`),
@@ -585,6 +596,23 @@ for (const id of expectedBoundaries) {
     );
     if (id === "boundary-empty-titleless") {
       requireCondition(empty.settings?.title === "", `${id}: title remains`);
+    }
+  } else if (id.startsWith("boundary-text-")) {
+    const selection = widgets.find((item) => item.kind === "selection");
+    const score = widgets.find((item) => item.kind === "score");
+    requireCondition(
+      state.chart.title === longTextState.chart.title &&
+        state.chart.artist === longTextState.chart.artist &&
+        state.detail.play_options === longTextState.detail.play_options &&
+        selection && score,
+      `${id}: missing long-text comparison`,
+    );
+    if (id === "boundary-text-preview") {
+      requireCondition(
+        selection.width === 544 && selection.height === 124 &&
+          score.width === 544 && score.height === 200,
+        `${id}: wrong package preview dimensions`,
+      );
     }
   } else {
     if (id === "boundary-score-invalid-notes") {

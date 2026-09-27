@@ -178,7 +178,7 @@ for (const [index, variant] of cases.entries()) {
       kind: "selection",
       x,
       y: 82 + row * 168,
-      width: 420,
+      width: 440,
       height: 126,
     },
     {
@@ -186,7 +186,7 @@ for (const [index, variant] of cases.entries()) {
       kind: "score",
       x,
       y: 430 + row * 260,
-      width: 420,
+      width: 440,
       height: 194,
     },
   ];
@@ -342,6 +342,9 @@ for (const [index, variant] of cases.entries()) {
       y: 0,
       width: 1920,
       height: 1440,
+      ...(backgroundMotion === "animated"
+        ? { skin_properties: { background: "animated" } }
+        : {}),
       widgets,
     }],
     editing: false,

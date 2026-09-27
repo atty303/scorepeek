@@ -9,6 +9,7 @@ import {
   widgetRect,
   widgetRoot,
   widgetText,
+  widgetTextVisibility,
 } from "./browser-widget-regions.js";
 
 const scenePath = Deno.env.get("SCOREPEEK_SKIN_REVIEW_SCENE");
@@ -101,6 +102,21 @@ browserTest(
       await contains("selection", value);
     }
     for (
+      const [id, value] of [
+        ["selection", chart.title],
+        ["selection", chart.artist],
+        ["score", detail.play_options],
+      ]
+    ) {
+      const result = await widgetTextVisibility(page, widget(id), value);
+      expect(
+        result.visible,
+        `${id} ${JSON.stringify(value)} at ${widget(id).width}x${
+          widget(id).height
+        }: ${JSON.stringify(result)}`,
+      ).toBe(true);
+    }
+    for (
       const value of [
         best.score,
         best.dj_level,
@@ -111,6 +127,13 @@ browserTest(
     ) {
       await contains("score", value);
     }
+    // The review states do not supply these words as dynamic options. A mock
+    // may show them, but the authored score widget must not restore retired
+    // static headings or rename SCORE to EX SCORE.
+    const scoreCopy = await widgetText(page, widget("score"));
+    expect(scoreCopy).not.toMatch(
+      /EX\s*SCORE|\bBEST\b|RESULT\s*DETAIL|SCORE\s*RATE/i,
+    );
     for (
       const field of [
         "pgreat",
@@ -165,6 +188,16 @@ browserTest(
     const paintPadding = scene.canvas.paint_padding;
     expect(Number.isInteger(paintPadding) && paintPadding >= 0).toBe(true);
     async function assertPaintFits(widget) {
+      // Compare one stable frame. In animated scenes, a backdrop scan can
+      // otherwise move between the hide/show captures and resemble overflow.
+      await page.evaluate(() => {
+        globalThis.__paintRunningAnimations = document.getAnimations().filter(
+          (animation) => animation.playState === "running",
+        );
+        for (const animation of globalThis.__paintRunningAnimations) {
+          animation.pause();
+        }
+      });
       const extra = 8;
       const outerPad = paintPadding + extra;
       const clip = {
@@ -199,6 +232,12 @@ browserTest(
       // Restoring the widget distinguishes its paint from a moving canvas
       // background or a neighboring animation between the first two captures.
       const restored = await page.screenshot({ clip, omitBackground: true });
+      await page.evaluate(() => {
+        for (const animation of globalThis.__paintRunningAnimations ?? []) {
+          animation.play();
+        }
+        delete globalThis.__paintRunningAnimations;
+      });
       const overflowPixels = await page.evaluate(
         async (
           {
@@ -303,7 +342,9 @@ browserTest(
       ).toBe(0);
     }
     if (caseId.startsWith("boundary-")) {
-      const kind = caseId.startsWith("boundary-history-")
+      const kind = caseId.startsWith("boundary-text-")
+        ? "selection"
+        : caseId.startsWith("boundary-history-")
         ? "history-list"
         : caseId.startsWith("boundary-graph-")
         ? "history-graph"
@@ -313,6 +354,11 @@ browserTest(
       await assertPaintFits(
         scene.canvas.widgets.find((item) => item.kind === kind),
       );
+      if (caseId.startsWith("boundary-text-")) {
+        await assertPaintFits(
+          scene.canvas.widgets.find((item) => item.kind === "score"),
+        );
+      }
       expect(failures).toEqual([]);
       expect(
         await page.evaluate(() => document.documentElement.dataset.skinFailure),
@@ -329,6 +375,19 @@ browserTest(
     }
     const frameCount = durationMs * fps / 1000;
     let paintChecks = 0;
+    const checkBackgroundMotion = caseId === "background-animated" ||
+      (caseId === "01" &&
+        scene.canvas.skin_properties?.background === "animated");
+    const backgroundSampleFrames = new Set([
+      0,
+      ...scene.media.motion_periods_ms.flatMap((period) =>
+        Array.from(
+          { length: 7 },
+          (_, index) => Math.round((index + 1) * period * fps / 8000),
+        )
+      ),
+    ]);
+    const backgroundSamples = new Set();
     await page.evaluate(() => {
       for (const animation of document.getAnimations()) animation.pause();
     });
@@ -370,6 +429,13 @@ browserTest(
           await assertPaintFits(widget);
           paintChecks += 1;
         }
+      }
+      if (checkBackgroundMotion && backgroundSampleFrames.has(frame)) {
+        backgroundSamples.add(
+          await backdropDigest(
+            await captureCanvasBackdrop(page, scene.canvas.widgets),
+          ),
+        );
       }
       const number = String(frame).padStart(3, "0");
       if (caseId === "01" || caseId.startsWith("background-")) {
@@ -421,6 +487,13 @@ browserTest(
           );
         }
       }
+    }
+    if (checkBackgroundMotion) {
+      expect(
+        backgroundSamples.size,
+        `${caseId}: declared animated canvas background did not change ` +
+          "across sampled motion phases",
+      ).toBeGreaterThan(1);
     }
     expect(failures).toEqual([]);
     expect(

@@ -33,7 +33,11 @@ type Timing = {
 };
 const cases = JSON.parse(
   await Deno.readTextFile(`${sceneDirectory}/cases.json`),
-) as { id: string; paint_padding: number }[];
+) as {
+  id: string;
+  paint_padding: number;
+  media: { motion_periods_ms: number[] };
+}[];
 if (cases.length !== 8) throw new Error("expected eight review cases");
 const timing = JSON.parse(
   await Deno.readTextFile(`${browserDirectory}/01/timing.json`),
@@ -155,6 +159,28 @@ try {
     Math.abs(Number(probe.format.duration) - timing.duration_ms / 1000) > 0.1
   ) {
     throw new Error("review video metadata mismatch");
+  }
+  if (cases[0].media.motion_periods_ms.length > 0) {
+    const frameDigests = await run("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      outputPath,
+      "-f",
+      "framemd5",
+      "-",
+    ]);
+    const hashes = new Set(
+      frameDigests.split("\n").filter((line) => line.startsWith("0,")).map((
+        line,
+      ) => line.split(",").at(-1)?.trim()),
+    );
+    if (hashes.size < 2) {
+      throw new Error(
+        "declared review motion is absent from the encoded video",
+      );
+    }
   }
   await Deno.writeTextFile(
     `${outputPath}.json`,

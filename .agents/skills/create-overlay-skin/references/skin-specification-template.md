@@ -2,7 +2,7 @@
 
 **Responsibility:** Define the headings and evidence to record for one skin's
 world, materials, typography, motion, final measurements, justified baseline
-adjustments and verified range. It does not add common design rules or API
+adjustments and recommended dimensions. It does not add common design rules or API
 requirements.
 
 Use these headings for each authored skin. Fill them from the selected concept
@@ -33,6 +33,29 @@ replacement and show it at actual size if a readability fix removed the
 original cue. An edge treatment or canvas texture alone cannot prove a glass,
 metal, print or fabric face. Link final-source native and browser
 `background-off` captures that contain those information-filled widgets.
+Add a side-by-side material comparison between the selected mock and final
+native/browser renders at recommended display size. Identify counterparts for
+the information face, an ordinary numeric or fixed-label glyph, and two
+separated perimeter spans with their transitions into the face. For each,
+name the mock's layering, light and surface cue, the
+visible final counterpart and any feature still flattened or missing. Repair
+the production material before declaring a pass; matching layout or hue alone
+is not equivalent material finish.
+If the concept has a recognizable canvas field motif, link a widget-free
+region of its final default background and the package preview over its actual
+underlay. State whether that motif or a comparably clear replacement remains
+visible; transparency by itself is not a failure.
+For a physical-material world, link the image-generated frame-joint or
+information-face component trial alongside the deterministic candidate and
+record which one the actual-size render supports. Record the independent
+image-only visual review of the final face, ordinary lettering, full panel
+perimeter, Status logo with its surrounding surface, and package preview,
+including concrete objections and the rerender that closed
+them. A checker's pass or the creator's own favorable assessment does not
+close an independent material or legibility failure.
+Include the reviewer's unscaled readback of small values, a long History date
+and a judgment label, the hardest-to-read glyphs it identified, and its
+comparison against an undecorated control with matched size and brightness.
 Link the selected concept and give hashes for skin-owned packaged art. Record
 each widget's principal regions, proportions, alignment and spacing. Record
 frame-width variants only when this skin actually offers them.
@@ -64,7 +87,7 @@ name the visible cue that makes PGREAT more positive than GREAT/GOOD beyond its
 letters. Record the manifest and painted behavior of no-background and static
 canvas modes, plus animated when the canvas concept uses it. List expressive exceptions
 and a reason for each. No exception may omit a required item or make it
-unreadable inside the verified range.
+unreadable at the recommended sizes.
 State how score progress, rank distance and unknown MISS RATE graph samples
 appear. The supplied score ratio is required for each graph point.
 
@@ -78,22 +101,26 @@ at two or more timestamps.
 
 For each widget, record the baseline structure and measurements, final
 structure and measurements, the constraint preserved by the adjustment, and
-the render evidence. State explicitly which baseline measurements remain
-provisional. If a series specification applies, link it and separate its
-adjustments from this skin's choices.
+the render evidence. Show the information-filled baseline at its stated review
+size before changing its geometry. For each change, link native and browser
+renders of the baseline and the final geometry with identical content, size
+and state; describe whether neighboring labels, values and state cues became
+easier or harder to read. A reason without the paired renders does not
+establish that the adjusted geometry meets the baseline's purpose. State
+explicitly which baseline measurements remain provisional. If a series
+specification applies, link it and separate its adjustments from this skin's
+choices.
 
-## Verified dimensions and states
+## Recommended dimensions and states
 
-For status, selection, score, history-list, history-graph and empty, list each
-tested width and height or a bounded matrix and the resulting verified range.
-Completion requires a bounded width-height range for each widget. Include
-minimum, maximum, interior, incomparable narrow/short combinations and both
-sides of every responsive breakpoint with stressed content at each point.
-Discrete points alone are trial evidence; mark the interval unverified and
-continue rendering before declaring the skin complete.
-Include frame width, long text, numeric extremes, absent/unknown, difficulty,
-clear, rank, EMPTY title/opacity/aspect, and background states. Mark untested
-conditions explicitly; do not advertise them as verified.
+For status, selection, score, history-list, history-graph and empty, list the
+recommended width and height at which all required information is cleanly
+painted in both hosts. List separate recommended dimensions for content modes
+that need them, such as a 50-row History. Include frame width, long text,
+numeric extremes, absent/unknown, difficulty, clear, rank, EMPTY
+title/opacity/aspect, and background states. Mark untested conditions
+explicitly. Additional tested sizes may be reported as individual observations;
+an arbitrary resize range is not required.
 Record History 5/10/20/50 rows at heights suitable for every row, Graph
 1/3/6/12 months, and EMPTY title/no-title, opacity 0/0.5, wide/tall aspects.
 Show valid SCORE 0 beside missing/invalid SCORE or NOTES at the same size and
@@ -101,6 +128,11 @@ describe how the score-rate bar or dial remains unknown rather than zero.
 For each long title, artist or PLAY OPTIONS string used to certify a size,
 record its complete visible readback. A full DOM value with a clipped or
 ellipsis-marked painted tail is not a verified full-information display.
+For Score at its recommended and package-preview sizes, transcribe every visible label, count,
+rank distance, bar tick, clear state, timing count and play option solely from
+the unscaled native and browser images, then compare those readbacks to the
+scene input. Note touching or ambiguous rows even when the text is present in
+the DOM; repair and rerender before calling the size verified.
 
 ## Objective checks and visual review
 
@@ -113,10 +145,9 @@ Keep final scene inputs and selected native/browser evidence in a durable
 repository location and use relative links from this specification. Temporary
 trial captures can explain rejected choices but cannot be the sole final proof.
 Link native and browser images or video with content, dimensions and
-timestamps. For each widget, link information-filled renders at every
-lower-bound size pair, including incomparable narrow and short cases; include
-normal-scale views of fixed labels, primary values, the frame, the declared
-default size and motion time samples. Add a package-preview-size check for
+timestamps. For each widget, link information-filled renders at its
+recommended size; include normal-scale views of fixed labels, primary values,
+the frame, the declared default size and motion time samples. Add a package-preview-size check for
 Selection, Score and History Graph. Link a background-off image of the
 information-bearing widgets so their world is judged without canvas art.
 For every claimed continuous effect, identify its pixel region and low/high

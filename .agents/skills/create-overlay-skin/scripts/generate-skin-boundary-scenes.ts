@@ -1,5 +1,5 @@
 // Add static, all-widget boundary scenes to a generated review-scene directory.
-// Usage: deno run --allow-read --allow-write generate-skin-boundary-scenes.ts SCENE_DIR EMPTY_OPACITY_PROPERTY
+// Usage: deno run --allow-read --allow-write --allow-run=taplo generate-skin-boundary-scenes.ts SCENE_DIR EMPTY_OPACITY_PROPERTY
 
 const [directory, opacityProperty] = Deno.args;
 if (!directory || !opacityProperty || Deno.args.length !== 2) {
@@ -8,6 +8,9 @@ if (!directory || !opacityProperty || Deno.args.length !== 2) {
   );
 }
 const source = JSON.parse(await Deno.readTextFile(`${directory}/01.json`));
+const longTextSource = JSON.parse(
+  await Deno.readTextFile(`${directory}/08.json`),
+);
 const backgroundOffScene = JSON.parse(
   await Deno.readTextFile(`${directory}/background-off.json`),
 );
@@ -23,15 +26,82 @@ if (!baseState || !source.canvases?.[0]?.widgets) {
   throw new Error("missing complete 01 review scene");
 }
 
+async function widgetDefaults(skinId: string) {
+  const skinsRoot = new URL("../../../../skins/", import.meta.url);
+  const matches: Record<string, { width?: number; height?: number }>[] = [];
+  async function field(manifest: string, key: string): Promise<string> {
+    const result = await new Deno.Command("taplo", {
+      args: ["get", "-f", manifest, key],
+    }).output();
+    if (!result.success) {
+      throw new Error(
+        `cannot read ${key} from ${manifest}: ${
+          new TextDecoder().decode(result.stderr).trim()
+        }`,
+      );
+    }
+    return new TextDecoder().decode(result.stdout).trim();
+  }
+  for await (const entry of Deno.readDir(skinsRoot)) {
+    if (!entry.isDirectory) continue;
+    let manifest;
+    try {
+      manifest = await Deno.realPath(
+        new URL(`${entry.name}/skin.toml`, skinsRoot),
+      );
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+    if (await field(manifest, "id") !== skinId) continue;
+    const defaults: Record<string, { width?: number; height?: number }> = {};
+    for (const kind of ["selection", "score"] as const) {
+      defaults[kind] = {};
+      for (const dimension of ["width", "height"] as const) {
+        const value = await field(
+          manifest,
+          `widget_defaults.${kind}.${dimension}`,
+        );
+        if (/^[1-9][0-9]*$/.test(value)) {
+          defaults[kind][dimension] = Number(value);
+        }
+      }
+    }
+    matches.push(defaults);
+  }
+  if (
+    matches.length !== 1 ||
+    ["selection", "score"].some((kind) =>
+      !Number.isSafeInteger(matches[0]?.[kind]?.width) ||
+      !Number.isSafeInteger(matches[0]?.[kind]?.height)
+    )
+  ) {
+    throw new Error(`one complete skin manifest is required for ${skinId}`);
+  }
+  return matches[0] as Record<
+    "selection" | "score",
+    { width: number; height: number }
+  >;
+}
+const defaults = await widgetDefaults(source.skin);
+
 type Scene = typeof source;
 type State = typeof baseState;
 const boundaryIds: string[] = [];
 async function write(
   id: string,
   change: (scene: Scene, state: State) => void,
+  template: Scene = source,
 ): Promise<void> {
-  const scene = structuredClone(source);
-  const state = structuredClone(baseState);
+  const scene = structuredClone(template);
+  const state = structuredClone(
+    template.actions.find((action: { action: string }) =>
+      action.action === "set_state"
+    )?.state,
+  );
+  if (!state || !scene.canvases?.[0]?.widgets) {
+    throw new Error(`missing complete source scene for ${id}`);
+  }
   change(scene, state);
   scene.canvases[0].id = id;
   scene.canvases[0].skin_properties = {
@@ -138,6 +208,28 @@ for (const mode of ["zero", "unknown", "invalid-notes"] as const) {
     }
   });
 }
+function textWidgetSize(
+  scene: Scene,
+  sizes: Record<"selection" | "score", { width: number; height: number }>,
+) {
+  const selection = widget(scene, "selection");
+  selection.x = 40;
+  selection.width = sizes.selection.width;
+  selection.height = sizes.selection.height;
+  const score = widget(scene, "score");
+  score.x = 40;
+  score.width = sizes.score.width;
+  score.height = sizes.score.height;
+}
+await write("boundary-text-default", (scene) => {
+  textWidgetSize(scene, defaults);
+}, longTextSource);
+await write("boundary-text-preview", (scene) => {
+  textWidgetSize(scene, {
+    selection: { width: 544, height: 124 },
+    score: { width: 544, height: 200 },
+  });
+}, longTextSource);
 await Deno.writeTextFile(
   `${directory}/boundary-cases.json`,
   `${JSON.stringify({ opacityProperty, ids: boundaryIds }, null, 2)}\n`,

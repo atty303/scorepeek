@@ -25,6 +25,143 @@ export async function widgetText(page, widget) {
   }
 }
 
+// Text in the DOM can extend past an overflow clip or be replaced by an
+// ellipsis. Test glyph ranges against the widget and every clipping ancestor.
+export async function widgetTextVisibility(page, widget, value) {
+  const root = await widgetRoot(page, widget);
+  try {
+    return await root.evaluate((element, expected) => {
+      if (!element) return { visible: false, reason: "widget root missing" };
+      const nodes = [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let text = "";
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        nodes.push({
+          node,
+          start: text.length,
+          end: text.length + node.length,
+        });
+        text += node.textContent;
+      }
+      const point = (offset, endBoundary = false) => {
+        const entry = nodes.find(({ start, end }) =>
+          endBoundary
+            ? start < offset && offset <= end
+            : start <= offset && offset < end
+        ) ?? nodes.at(-1);
+        return [entry.node, offset - entry.start];
+      };
+      const clips = (node) => {
+        const result = [];
+        for (let current = node; current; current = current.parentElement) {
+          const style = getComputedStyle(current);
+          if (
+            style.display === "none" || Number(style.opacity) === 0 ||
+            (current === node && style.visibility !== "visible")
+          ) {
+            return null;
+          }
+          const x = current === element ||
+            /^(hidden|clip|scroll|auto)$/.test(style.overflowX);
+          const y = current === element ||
+            /^(hidden|clip|scroll|auto)$/.test(style.overflowY);
+          if (x || y) {
+            const rect = current.getBoundingClientRect();
+            result.push({
+              x,
+              y,
+              left: rect.left + current.clientLeft,
+              right: rect.left + current.clientLeft + current.clientWidth,
+              top: rect.top + current.clientTop,
+              bottom: rect.top + current.clientTop + current.clientHeight,
+            });
+          }
+          if (current === element) {
+            break;
+          }
+        }
+        return result;
+      };
+      if (!expected || !text.includes(expected)) {
+        return { visible: false, reason: "text missing from widget" };
+      }
+      const segmenter = new Intl.Segmenter(undefined, {
+        granularity: "grapheme",
+      });
+      let failure;
+      for (
+        let start = text.indexOf(expected);
+        start !== -1;
+        start = text.indexOf(expected, start + 1)
+      ) {
+        let candidateFailure;
+        for (const { segment, index } of segmenter.segment(expected)) {
+          if (/^\s+$/u.test(segment)) {
+            continue;
+          }
+          const [startNode, startOffset] = point(start + index);
+          const [endNode, endOffset] = point(
+            start + index + segment.length,
+            true,
+          );
+          const range = document.createRange();
+          range.setStart(startNode, startOffset);
+          range.setEnd(endNode, endOffset);
+          const bounds = clips(startNode.parentElement);
+          const rects = [...range.getClientRects()];
+          if (!bounds || rects.length === 0) {
+            candidateFailure = {
+              visible: false,
+              reason: "text is hidden",
+              segment,
+            };
+            break;
+          }
+          // Font metrics can extend a few pixels beyond the painted glyphs.
+          const verticalSlack = Math.max(
+            1,
+            Number.parseFloat(
+              getComputedStyle(startNode.parentElement).fontSize,
+            ) /
+              4,
+          );
+          const outside = rects.find((rect) =>
+            bounds.some((clip) =>
+              (clip.x &&
+                (rect.left < clip.left - 1 || rect.right > clip.right + 1)) ||
+              (clip.y &&
+                (rect.top < clip.top - verticalSlack ||
+                  rect.bottom > clip.bottom + verticalSlack))
+            )
+          );
+          if (outside) {
+            candidateFailure = {
+              visible: false,
+              reason: "text is clipped",
+              segment,
+              rect: {
+                x: outside.x,
+                y: outside.y,
+                width: outside.width,
+                height: outside.height,
+              },
+            };
+            break;
+          }
+        }
+        if (!candidateFailure) {
+          return { visible: true };
+        }
+        failure ??= candidateFailure;
+      }
+      return failure;
+    }, String(value));
+  } finally {
+    await root.dispose();
+  }
+}
+
 export async function widgetRect(page, widget) {
   const root = await widgetRoot(page, widget);
   try {

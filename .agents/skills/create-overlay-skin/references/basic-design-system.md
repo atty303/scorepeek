@@ -16,7 +16,7 @@ specification records the final result.
 
 For the same widget kind, every authored skin presents the same information,
 meaning and priority. A skin may change placement, size ratios, material,
-typographic expression and continuous motion within its verified sizes. The
+typographic expression and continuous motion at its recommended sizes. The
 skin does not calculate a new game result, infer a missing value, change
 supplied text, or treat a visual accent as a substitute for a label. It may
 derive the specified display-only score rate and threshold distance from the
@@ -48,6 +48,10 @@ numeric meaning. The rate is SCORE divided by twice the note count, bounded
 to 0–100% for the bar. DJ LEVEL ticks use the same rank thresholds as the
 runtime. With a missing or invalid score or note count, derived values remain
 unknown; a skin never guesses them from the shown DJ LEVEL.
+The static score label is `SCORE`. Do not bring `EX SCORE`, `BEST`,
+`RESULT DETAIL` or `SCORE RATE` back as a panel title, eyebrow or group
+heading. BEST and RESULT DETAIL remain separate input meanings even though
+their headings are absent. Concept mock text is not authority for these labels.
 This applies to the painted score-rate bar or dial as well as numeric text:
 an unknown input must not paint the same zero-progress state as a valid SCORE 0.
 
@@ -126,11 +130,23 @@ in native and browser; a manifest value alone does not establish support.
 The status identity uses the repository's approved light/dark scorepeek logo
 artwork, chosen for its surface. The logo may be framed or cropped but its
 artwork is not redrawn as a skin-specific wordmark.
+The approved assets in `docs/assets/` include opaque and transparent light/dark
+variants. Use a transparent variant when the logo sits directly on the skin's
+surface; an opaque variant needs an intentionally integrated plate whose color
+and edge make its rectangular backing part of the design. Inspect Status at its
+actual recommended size in native and browser rather than inferring the result
+from the source asset.
 Canvas background art needs visible middle-scale material in gaps, without
 baked-in text, widgets or game images. Decoration may extend beyond a widget
 but is cropped by the canvas. It does not rewrite saved placement or add
 automatic padding. An EMPTY aperture is reserved for the user's camera,
 game or other content; optional title and fill must not obscure the opening.
+When the selected concept gives the canvas a recognizable field motif, the
+default canvas and package preview must show that motif or a comparably clear
+world-specific replacement at actual size over the preview underlay.
+Transparency is allowed; disappearing material is not evidence of a finished
+field. Compare widget-free areas of the concept and final default scene for
+material presence and depth, without requiring matching geometry or placement.
 Fixed frame corners and edges retain their thickness as the widget resizes;
 the interior, rather than the material edge, absorbs the change in size.
 Decoration remains outside accessibility and hit testing while each real
@@ -141,12 +157,12 @@ atlas padding at actual size.
 
 Each skin records any exception to an expressive rule and its reason in its
 specification. Information items, meanings and priority, and legibility within
-the claimed size range have no per-skin exceptions.
+the recommended sizes have no per-skin exceptions.
 
 ## Layout and dimensional baseline
 
 Implement this structure first in a working skin. Then change dimensions to
-fit the chosen type, material and verified size range. The numbers are
+fit the chosen type, material and recommended sizes. The numbers are
 **starting values**, observed in the accepted Cyan composition at its review
 size, not guaranteed minimum sizes. Record every final value and adjustment
 in the skin specification. Preserve the reason in the last column when
@@ -155,11 +171,11 @@ adjusting; prove readability at the new dimensions by rendering.
 | Region | Starting structure and value | Reason to preserve when adjusting |
 | --- | --- | --- |
 | Status | identity at left, SYSTEM/RESULT/SELECT at right; 156×34 identity, 12 px lamps, 14 px signal gaps at a 1840×52 review size | Three signals need separate readable names and states; identity cannot compete with them. The 156, 12 and 14 px values are observed, while their exact historical choice has no independent evidence. |
-| Selection | title over artist, then a 31 px rail for SP/DP, difficulty, LV and NOTES; rail columns 70 px / flexible / 80 px / 1.1 flexible; title 28 px and artist 16 px at 440×126 | Title leads, artist has visible separation, and mode/level have predictable width while difficulty and notes may need more room. Widths are observed; validate longest representative strings before changing them. |
-| Score overall | left/right 54%/46% at 440×194; right judgment rows 16 px and final two-line options 30 px | The left contains the large score and state, while the right retains a compact but readable full detail set. Match the two columns' lower edges without adding empty space below detail. |
+| Selection | title over artist, then a 31 px rail for SP/DP, difficulty, LV and NOTES; rail columns 70 px / flexible / 80 px / 1.1 flexible; title 28 px and artist 16 px at 440×126 | Title leads, artist has visible separation, and mode/level have predictable width while difficulty and notes may need more room. These are observed sizes, not derived minima. Fit long strings without globally shrinking ordinary short titles and artists; test both at the same widget size. |
+| Score overall | left/right 54%/46% at 440×194; SCORE value 30 px, DJ LEVEL value 22 px, threshold difference 14 px and CLEAR value 13 px; right judgment rows 16 px and final two-line options 30 px | SCORE and DJ LEVEL share the first reading level; CLEAR remains a separate result, ahead of judgment detail. The numeric sizes are observations without an independent historical derivation. Preserve their relative visual emphasis through type, area, contrast or material when changing them. Match the two columns' lower edges without adding empty space below detail. |
 | Score left | three rows of 66, 68 and 24 px: SCORE/DJ LEVEL at 54%/46%, MISS COUNT/CLEAR TYPE at 40%/60%, then a rank-ticked bar | Four-digit MISS COUNT needs less horizontal room than a long CLEAR TYPE; SCORE stays dominant; the bar occupies its own row without extra rate text or divider. These row heights sum to 158 px, matching the observed right detail density at the reviewed size. |
-| History list | DATE/SCORE/DJ LEVEL/MISS/CLEAR at 29/18/16/10/27%; header and rows 23 px | Date and clear text are the longest comparison fields; MISS can be narrow; fixed row height keeps columns aligned. The exact percentages remain provisional until boundary-size verification. |
-| History graph | title and two legends above plot; 32 px rank axis and 36 px MISS RATE axis, with a 22 px time axis | Distinct left/right scales and time labels need room without shrinking the central plot excessively. F through AAA and 0% through 100% in 25% steps make the levels explicit. Both axes and plot must remain readable at the claimed minimum size. |
+| History list | DATE/SCORE/DJ LEVEL/MISS/CLEAR at 29/18/16/10/27%; header and rows 23 px | Date and clear text are the longest comparison fields; MISS can be narrow; fixed row height keeps columns aligned. The exact percentages remain provisional until recommended-size verification. |
+| History graph | title and two legends above plot; 32 px rank axis and 36 px MISS RATE axis, with a 22 px time axis | Distinct left/right scales and time labels need room without shrinking the central plot excessively. F through AAA and 0% through 100% in 25% steps make the levels explicit. Both axes and plot must remain readable at the recommended size. |
 | Empty | optional title over an open aperture; 300×80 in the review composition | A small empty widget proves aperture and title behavior without consuming the full review board. This review size is not a universal default or verified range. |
 | Frame | S/M/L corner sizes 21/27/34 px, edge sheets 88/112/142 px; 8 px vertical and 12 px horizontal content inset at M | A fixed-thickness frame lets the content area grow independently of material edges; every chosen frame must retain a usable content rectangle. These values describe the source composition's construction, not a mandatory frame shape. |
 
@@ -168,28 +184,21 @@ baseline. A different frame can satisfy the same content and spacing reasons.
 If an observed number has no demonstrated causal reason, treat it as a
 provisional starting point and decide its replacement through actual renders.
 
-## Verified size contract
+## Recommended size contract
 
-A specification lists a tested width and height range for **each** widget,
-including frame width, title/opacity and aspect settings where applicable.
-The lower bound is established by the smallest tested size at which all
-required information is present and legible. It is not inferred from the
-editor's 16-pixel minimum. Outside a listed range, the editor and saved layout
-continue to work under the existing API, but this design system makes no
-readability claim. Document any aspect-ratio limitation as a pair of width
-and height bounds or an explicit tested matrix; a single area number is not
-enough.
-For the stressed title, artist and PLAY OPTIONS values used to certify a size,
-the full supplied string must be visibly available at that size. Keeping it
-in DOM text while the paint clips, overlays an ellipsis or otherwise hides the
-tail does not establish full-information display. Reflow, wrap, change the
-layout or narrow the claimed content/size condition and test again. State an
-explicit content limit if the skin cannot fit arbitrary-length text.
-For an interval claim, inspect its minimum, maximum and interior width/height
-combinations with stressed text and states, plus both sides of every responsive
-breakpoint inside the interval. A pair of successful endpoints alone does not
-prove the interval between them. If only isolated sizes were checked, report
-those sizes as discrete evidence and leave the range unverified.
+The specification lists a recommended width and height for each widget, and
+for content modes that need a different size, such as History with 50 rows.
+At each recommended size, all required information must paint clearly in
+native and browser. The editor and saved layout still permit other sizes under
+the existing API; this system makes no readability claim for arbitrary resize
+combinations. A skin may document other tested sizes, but a width-height range
+is not required for completion.
+
+For the stressed title, artist and PLAY OPTIONS values used to certify a
+recommended size, the full supplied string must be visibly available. DOM
+text whose tail is clipped, covered or replaced with an ellipsis does not
+establish full-information display. Reflow, wrap, adjust the recommended size
+or state an explicit content-length limit and test again.
 
 ## Quality criteria
 
@@ -199,7 +208,7 @@ valid preview media and a buildable ZIP. They check each claimed size and
 state case for missing content. They do not certify readability or craft.
 
 Visual review establishes that all required information is legible and
-correctly ordered throughout the claimed size range; contours, material,
+correctly ordered at the recommended sizes; contours, material,
 typography and motion have a coherent finish; and state changes preserve the
 meaning rules above. Native and browser rendering must both meet these
 criteria. A per-skin specification records the concrete evidence and any
@@ -219,7 +228,7 @@ Frames, surfaces, highlights and small lettering must share a deliberate
 construction: a richly rendered background cannot compensate for flat labels
 or numbers. Low- and high-cardinality text may use different techniques, but
 their weight, alignment, edge treatment and contrast must belong to the same
-world. Review the full state and size matrix before claiming this finish;
+world. Review the full state matrix at recommended sizes before claiming this finish;
 material that only works in a concept mock is incomplete.
 
 Compare against the chosen concept for its intended world and against the
@@ -229,12 +238,27 @@ depth, joint details, intentional light, information hierarchy and motion in
 native and browser renders. Record specific shortcomings and revise the
 material or typography before treating the skin as complete.
 
+The selected full-information mock also sets the target for **material
+finish**. Compare its information-bearing face, an ordinary numeric or fixed
+label, and the panel perimeter to the same regions in production native and
+browser renders at recommended display size. Production may use different
+geometry and techniques, but must retain comparable layering, light and
+surface character in each region. A textured mock reduced to a uniform fill,
+one gradient or thin outline in production fails this gate even when its hue
+and information layout match. Give each region a concrete visible counterpart
+and revise missing or flattened material before completing the skin.
+The mock is directional and may itself simplify material. A physically made
+panel must still read as a complete object at package-preview size: compare
+two separated edge spans, their transitions into the information face, and
+the ordinary lettering. One detailed corner or badge does not finish a panel
+whose remaining perimeter is only a hairline. A deliberately flat world is
+judged by its intentional contour and spacing instead of simulated thickness.
+
 ### Self-assessed finish gates
 
 The creator judges these gates from **unscaled, information-filled renders** at
-every lower-bound size pair and the declared default size. For a discrete
-matrix, this includes incomparable narrow and short cases. Selection, Score and
-History Graph also use their package-preview sizes. A concept image,
+each recommended size. Selection, Score and History Graph also use their
+package-preview sizes. A concept image,
 isolated texture, CSS declaration, DOM rectangle or enlarged crop cannot prove
 one of them. All applicable gates must pass independently; strong background
 art cannot compensate for weak lettering or an unfinished panel. Record the
@@ -245,9 +269,9 @@ to review the skin.
 | Gate | Evidence needed for a pass | Fail and revise when |
 | --- | --- | --- |
 | World in the widgets | Render an actual final-source background-off scene containing information-filled Select, Score and History in both hosts. Their panel contour, surface, typography and state accents still communicate the adopted world. | The off-state proof shows only EMPTY or omits an information widget; only background art or accent hue carries the concept; the panels could belong to an unrelated skin. |
-| Material construction | The edges, joints, face and highlights used by the adopted world form a coherent construction at actual size. Record the selected concept's defining material cue on the information face and show its painted counterpart in Select, Score and History. A world that calls for glass, metal, print or fabric shows that material in the information-bearing surface and its edges. A deliberately flat world instead shows equally intentional shape, spacing and type. | A material-rich concept becomes a thin outline around a uniform fill; a face scan, reflection, grain or depth cue disappears during readability fixes without an equally finished replacement on the face; decoration floats without a plausible relation to the panel. |
-| Lettering as material | Primary values, fixed labels, judgment labels, History numbers/headers, DJ LEVEL and CLEAR TYPE share the world's deliberate weight, alignment and surface treatment. In a material-rich world, inspect the ordinary glyph faces or contours at actual size: their deliberate glyph geometry, engraving, inset/raised edge, reflection, texture or other chosen treatment must remain visible in native and browser, including small labels. A lit or textured panel behind plain glyphs does not establish this gate. A font-family or weight change alone does not establish it either: point to visible features in the glyphs that belong to this world. Special badges may be richer, but cannot be the only materially finished letters. Dynamic Japanese/Latin titles, artists and options remain live and visually related. Labels are visibly quieter than values without becoming faint. Each bitmap glyph or sprite cell has enough source pixels for its effective displayed size in every verified state and package preview, unless an intentionally pixelated treatment is visibly finished at actual size. The whole atlas dimensions cannot stand in for its individual cells. | Rich art surrounds default-looking or blurry text; ordinary labels and numbers remain flat beside exceptional badges; the material cue exists only in the backing or adjacent glow; upscaled raster lettering has softened or doubled contours; atlas cells have visible padding/baseline jumps; labels and values collapse into one color or luminance role. |
-| Hierarchy and density | At the real widget width, SCORE/DJ LEVEL and title lead, supporting rows can be read without zoom, and adjacent groups have deliberate spacing. Status, History and Graph retain their own clear reading order. Available panel area is used to make small information readable before text is reduced. | Texture, glow or ornament competes with values; compact labels disappear; rows are compressed while usable space remains; empty space or crowded groups make the intended order ambiguous. |
+| Material construction | The edges, joints, face and highlights used by the adopted world form a coherent construction at actual size. Record the selected concept's defining material cue on the information face and show its painted counterpart in Select, Score and History. For a physical enclosure, inspect two separated edge spans and their face transitions in each panel and in the package preview; all visible sides must belong to the same construction, even if their ornament differs. A world that calls for glass, metal, print or fabric shows that material in the information-bearing surface and its edges. A deliberately flat world instead shows equally intentional shape, spacing and type. | A material-rich concept becomes a thin outline around a uniform fill; one rich corner or badge is attached to otherwise hairline edges; a face scan, reflection, grain or depth cue disappears during readability fixes without an equally finished replacement on the face; decoration floats without a plausible relation to the panel. |
+| Lettering as material | Primary values, fixed labels, judgment labels, History numbers/headers, DJ LEVEL and CLEAR TYPE share the world's deliberate weight, alignment and surface treatment. In a material-rich world, inspect the ordinary glyph faces or contours at actual size and package-preview size: their deliberate glyph geometry, engraving, inset/raised edge, reflection, texture or other chosen treatment must remain visible in native and browser, including small labels. A lit or textured panel behind plain glyphs does not establish this gate. A font-family or weight change alone does not establish it either: point to visible features in the glyphs that belong to this world. Special badges may be richer, but cannot be the only materially finished letters. Dynamic Japanese/Latin titles, artists and options remain live and visually related. Labels are visibly quieter than values without becoming faint. Each bitmap glyph or sprite cell has enough source pixels for its effective displayed size in every verified state and package preview, unless an intentionally pixelated treatment is visibly finished at actual size. The whole atlas dimensions cannot stand in for its individual cells. | Rich art surrounds default-looking or blurry text; ordinary labels and numbers remain flat beside exceptional badges; the material cue vanishes at package-preview size; the material cue exists only in the backing or adjacent glow; upscaled raster lettering has softened or doubled contours; decorative cuts turn small letters, numerals or dates into speckled/broken marks that are harder to distinguish than the undecorated control; atlas cells have visible padding/baseline jumps; labels and values collapse into one color or luminance role. |
+| Hierarchy and density | At the real widget width, SCORE and DJ LEVEL are the two first-read Score values; CLEAR is the next independent result and must not look like a minor option or control. A very positive AAA or FULL COMBO state strengthens that result's presence, even when its letters and badge remain readable at smaller size. A short song title leads Selection at ordinary size; a long-title fitting rule must not shrink every short title and artist. Ask an image-only reviewer to name the first two Score values and the first Selection item at a glance, then inspect the small supporting rows at 1×. Status, History and Graph retain their own clear reading order. Use available panel area to make small information readable before reducing text. | SCORE alone dominates while DJ LEVEL and CLEAR recede into small peripheral badges; AAA or FULL COMBO is legible only on close inspection; a worst-case title makes ordinary titles and artists uniformly tiny; texture, glow or ornament competes with values; compact labels disappear; rows are compressed while usable space remains; empty space or crowded groups make the intended order ambiguous. |
 | Meaning and exceptional states | Difficulty, judgment, timing, rank and clear meanings stay distinct. At actual size, A, AA and AAA form a readable progression in both score and history: AA has a positive cue absent from A, and AAA adds a very positive material cue. AAA and FULL COMBO have individually recognizable treatments, including when they appear separately. Each history treatment retains a recognizable cue from its score counterpart. In Score, PGREAT has a visibly stronger positive treatment than GREAT/GOOD; FAST and SLOW remain equal-weight directions. Clear states preserve their own tiers. | A and AA differ only in the text string; PGREAT/GREAT/GOOD share one identical treatment; a generic brighter color stands in for every positive state; a special badge becomes only colored text in history or works only in the one preview state; a clear or timing state borrows the wrong meaning. |
 | Motion in the material | At normal size, each intended continuous effect has a visible start, change and loop in both native and browser without moving data or obscuring text. Compare pixels inside the claimed effect region at chosen low/high phases in each host; the region must visibly differ, while static data regions remain stable. A deliberately still concept passes with a complete static appearance. | Animation exists only in CSS/code or only one host, all captured phases have identical effect pixels, a change is too small to perceive at display size, or motion supplies material quality missing from the still frame. |
 
@@ -255,13 +279,18 @@ Inspect both a full composition and each affected widget at its actual pixel
 size. Use the latter to diagnose an issue, then recheck the full composition:
 one impressive crop does not establish cohesion. If a gate fails, change the
 underlying asset, glyph treatment, layout or motion and render again. Reducing
-the claimed size range does not repair a failure at the skin's own default or
+another tested size does not repair a failure at the skin's own default or
 package-preview size. Do not average the gates into a score.
 For small type, read the unscaled image without consulting the scene JSON or DOM
 and transcribe each distinct label plus representative short, long and numeric
 values. Compare the transcription to the supplied scene afterward. If a
 required item is ambiguous until enlarged or revealed from source data, its
 lettering and hierarchy gates fail even when the DOM value is correct.
+Also compare ordinary small glyphs and dense History rows side by side with
+the undecorated control at the same size and brightness. Correctly guessed
+text can still fail when its strokes are visibly fragmented, mottled or
+surrounded by halo pixels that make repeated digits harder to scan. Repair the
+glyph treatment or use a clearer technique before the final review.
 For a material-rich world, compare the ordinary SCORE digits, fixed labels,
 judgment labels and History lettering in a live-font version and a textured
 atlas or glyph-mask version on the same panel at the same actual size. Match

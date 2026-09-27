@@ -29,6 +29,7 @@ ZIP内へ入れ、通常runtimeのembedded assetへ登録しない。widget resi
 伸びないこと、canvas cropと意図したoverflowを両hostで確認する。
 `preview.png`と`preview.webm`はskill所有の`preview-scene.json`と
 `.agents/skills/create-overlay-skin/scripts/generate-skin-previews.bash`からproduction browser経路で生成する。
+最終package生成ではskin固有のscene overrideを使わない。`SCOREPEEK_SKIN_PREVIEW_SCENE`は出力先を指定した診断runに限り、診断画像をpackageへ入れない。標準動画へ継続motionを載せるskinは、標準sceneが使うmanifest既定表現でそのmotionが見えるようにする。
 採用concept、比較sheet、DOMの手動書換えまたは別実装による再現画像をpackageへ入れない。生成後は
 PNGをnativeとbrowserのeditorで選択して表示する。WebMは生成したファイルをbrowserで再生してmotionとloopを確認する。現行editorのskin選択UIはPNGを表示し、`preview_video`を再生しない。
 同じ生成runでresource request、Wasm init/render、期待DOM、media metadataと成果物hashを記録し、欠落resourceや不完全な描画を
@@ -111,10 +112,13 @@ skin制作中に利用者へ実装のレビューを求めるたびに、product
    | 08 | DP | HYPER | AA | FULL COMBO |
 
 3. 各variantの曲名・artist・譜面level・notesに加え、score widget内のSCORE、MISS COUNT、判定数、FAST/SLOW、COMBO BREAKと、履歴・graphの数値を変える。固定の代表値を複写しない。SCORE、notes、DJ LEVEL、達成率、しきい値差分は各合成state内で整合させる。BESTとRESULT DETAILで異なる値を示すvariant、0・不明・長い文字列など共通matrixの境界条件も追加する。補助variantを増やしても上記8行を省かない。Graphのcase 01はMISS RATEが最初75%・最後10%であり、右軸100%上・0%下と赤線の上下が一致することを原寸画像で照合する。
-   続けて `deno run --allow-read --allow-write .agents/skills/create-overlay-skin/scripts/generate-skin-boundary-scenes.ts <scene-dir> <empty-opacity-property>` を実行する。最後の引数はmanifestに宣言したEMPTYのopacity property名である。これでHistory 5/10/20/50、Graph 1/3/6/12、EMPTY横長/縦長/titleなし/同寸法のopacity 0と0.5、SCORE 0/unknown/不正NOTESの計16個の静止補助sceneが生成される。背景はすべてoffに固定する。各sceneもnativeで描画し、下のbrowser verifierへ渡す。50行sceneは十分な高さを使い、標準の1920×1440レビュー動画に混ぜない。補助sceneは実際の可読性を原寸で目視するための条件であり、個別skinが申告する幅・高さの範囲の検証を代行しない。
+   続けて `deno run --allow-read --allow-write --allow-run=taplo .agents/skills/create-overlay-skin/scripts/generate-skin-boundary-scenes.ts <scene-dir> <empty-opacity-property>` を実行する。最後の引数はmanifestに宣言したEMPTYのopacity property名である。これでHistory 5/10/20/50、Graph 1/3/6/12、EMPTY横長/縦長/titleなし/同寸法のopacity 0と0.5、SCORE 0/unknown/不正NOTESに、case 08の長い曲名・artist・PLAY OPTIONSをmanifest既定寸法とpackage preview寸法で描く2件を加えた計18個の静止補助sceneが生成される。背景はすべてoffに固定する。各sceneもnativeで描画し、下のbrowser verifierへ渡す。browser verifierは文字列のDOM存在に加え、字形領域がwidgetや内部のclipを越えないか調べる。nativeでは同じ値の末尾を画像から読む。50行sceneは十分な高さを使い、標準の1920×1440レビュー動画に混ぜない。これらは内容と状態の検証であり、任意のリサイズ範囲を保証するものではない。各内容の推奨寸法で原寸の可読性を判定する。
 4. `bash .agents/skills/create-overlay-skin/scripts/verify-skin-review-browser.bash <native-scene-dir> <skin-slug> <new-browser-output-dir>` で全8状態と補助sceneをproduction browserに描画し、同一motion時刻のwidget画像を合成して1920×1440の動画を生成する。補助sceneは静止画だけを作り、動画には混ぜない。共通widgetと背景はcase `01`、各selection/scoreはそのcaseのwidgetだけを透過で切り出して等倍で重ねる。通常は他の要素を非表示にして対象だけをcaptureし、対象を隠した際に余白が透明になることを検査する。要素または擬似要素の`mix-blend-mode`や`backdrop-filter`には、元の背景を保った描画と対象を隠した描画の差分から対象の領域を取り出す。この合成経路では全widgetを隠したcanvas背景がcase `01`と同じmotion時刻に一致することを各frameで検査し、異なる場合は動画を作らず失敗する。背景が透明なら対象のalphaを保持し、不透明なら完成画素を重ねる。半透明の背景からは対象を一意に復元できないため失敗する。文字・素材・値は描き直さない。`empty`は300×80の実寸に抑える。検証toolはsceneのwidget座標と実DOMの矩形から描画領域を特定する。skin固有のclass名や`data-*`属性を要求しない。
+   Verifierはbuild後の対象ZIPを一度だけ隔離先に固定し、全sceneへ同じbyte列をinstallする。`PACKAGE.sha256`はそのZIPのdigestである。検証中にsource、previewまたはZIPを変更した場合は全sceneと動画を最終sourceから撮り直す。終了時に通常build先のZIPが固定版と異なればverifierは失敗する。
+   動く背景を宣言したconceptではreview boardにも`animated`背景を表示し、別の`background-off`/`background-static`/`background-animated`比較sceneを保持する。Browser verifierは背景単体の時刻差を確認し、motionを申告した場合は完成動画のdecoded frameにも変化があることを検査する。静止conceptには動画のframe差を要求しない。
 5. 各variantと内部rank3件・背景2件（動くconceptでは3件）をnativeで独立してcaptureし、開始、主な変化、中間、終端、申告した各周期の内側とloopの継ぎ目を含む代表時刻のlayout JSON、manifest、実画像を確認する。rank比較は3枚のScoreとHistoryを同じ寸法で並べ、AとAAの違い、AAとAAAの追加表現を文字列・score rate・しきい値差分とは別に読む。同じScore内ではPGREATのvery positive表現がGREAT/GOODより強いことを、文字列以外の可視の手掛かりで確認する。背景比較はどのsceneもSelect・Score・Historyを含み、offで世界観の情報面を読み、animatedで背景素材の時刻差を読み取る。browser verifierも内部sceneを描画し、review動画は従来どおり8 variantだけを含める。browser動画の同時刻のframeと見比べ、意味上の動きと見え方が両hostで成立することを目視判定する。video scriptはbrowserの仮想時計を使い、native harnessは同じ0秒の単調時刻基準からWasm入力を進める。CSS時刻は両方とも動画先頭を0とする。pixel一致は要求しない。nativeで欠落・破綻したmotionをbrowserだけで合格にしない。
-6. 提示前に `deno run --allow-read --allow-run=magick .agents/skills/create-overlay-skin/scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <browser-review-video>` を実行する。widget種別、SP/DP、5難易度、A/AA/AAAとMAX-、8 clear type、3桁のnotes/SCORE、inactive/error、各数値列の変化、score/rank計算の整合、各native manifestの完了と全widget境界に対応するDOM矩形、動画の4:3寸法とdurationを検査する。内部rank3件ではscore/rankの整合、他のstate条件の一致、native/browser実画像の存在を検査する。背景sceneでは状態以外の内容・寸法の一致と、native/browserの各時刻の実画像を検査する。補助sceneのnative/browser画像が揃い、EMPTY同寸法のopacity 0/0.5では開口内の画素が変わることを機械的に確認する。これは他の補助sceneの意味や可読性を保証する検査ではない。提示時は**この動画**とcase表、検証したsize・motion時刻、残る制限をセットにする。原寸frameも目視評価する。
+6. 提示前に `deno run --allow-read --allow-run=magick .agents/skills/create-overlay-skin/scripts/check-skin-review-scenes.ts <scene-dir> <native-output-root> <browser-review-video>` を実行する。widget種別、SP/DP、5難易度、A/AA/AAAとMAX-、8 clear type、3桁のnotes/SCORE、inactive/error、各数値列の変化、score/rank計算の整合、各native manifestの完了と全widget境界に対応するDOM矩形、動画の4:3寸法とdurationを検査する。内部rank3件ではscore/rankの整合、他のstate条件の一致、native/browser実画像の存在を検査する。背景sceneでは状態以外の内容・寸法の一致と、native/browserの各時刻の実画像を検査する。補助sceneのnative/browser画像が揃い、EMPTY同寸法のopacity 0/0.5では開口内の画素が変わることを機械的に確認する。これは他の補助sceneの意味や可読性を保証する検査ではない。提示時は採用された**全widgetモック**、**この動画**、case表、検証したsize・motion時刻、残る制限をセットにする。モックの世界観・素材・文字・光が完成描画のどこに見えるかを示し、原寸frameも目視評価する。
+   素材比較sheetなど最終画像から作る二次資料は、最後のnative/browser captureから再生成する。sheetの切り抜きがその入力PNGと一致することを確認してから最終証拠として提示する。
 
 ## 共通matrixと合否
 
@@ -122,11 +126,11 @@ skin制作中に利用者へ実装のレビューを求めるたびに、product
 
 | 条件 | 合格oracle |
 | --- | --- |
-| 全体/詳細と採用concept | 採用した世界観と素材の方向が、同じ内容・幅でも成立し、輪郭、素材の縁/反射、文字階層、密度が仕上がっている |
-| 長い和英混在title・artist・option | 共通の収め方を維持し、文字化け/無断略称/ラベルと値の重なりなし |
+| 全体/詳細と採用concept | 採用した世界観と素材の方向が、同じ内容・幅でも成立し、輪郭、素材の縁/反射、文字階層、密度が仕上がっている。画像のみを見た人の初見で、ScoreはSCORE/DJ LEVELが先、CLEARは判定詳細より先、Selectionは曲名が先に伝わる |
+| 通常titleと長い和英混在title・artist・option | 同じSelection寸法で通常titleの存在感を維持しつつ、長文とoptionの末尾を表示する。文字化け/無断略称/ラベルと値の重なりなし |
 | 数値0/1/999/1000など桁変化 | 桁/label baselineが安定し、atlasの透明余白で列が浮かない |
 | SP/DP・全難易度・level1/12 | 難易度色がスキン背景から分離し、種別と数値を独立に読める |
-| 全clear・A/AA/AAAとB以下 | 同条件に近い実寸Score/Historyを両hostで並べ、AからAAへ文字列以外のpositiveな手掛かり、AAからAAAへ追加の素材表現がある。AAA/FCの特別感が独立し、unknownに達成処理を付けない |
+| 全clear・A/AA/AAAとB以下 | 同条件に近い実寸Score/Historyを両hostで並べ、AからAAへ文字列以外のpositiveな手掛かり、AAからAAAへ追加の素材表現がある。AAA/FCは小さく読めるだけの周辺badgeにせず、強い達成状態として見える。二つの特別感が独立し、unknownに達成処理を付けない |
 | AAA+FAILED、AA+FC、A+EX HARD | 評価軸を混同せず、同時motionがcontentを圧倒しない |
 | 判定、FAST/SLOW、miss0、不明 | PGREATはGREAT/GOODより文字列以外の強い肯定表現を持つ。FAST/SLOWの対称性、unknownの中立表示と0を区別 |
 | 欠損SCORE/NOTESと正当なSCORE 0 | DJ LEVEL差分だけでなく達成率bar/dialの塗りも比較し、欠損を0%として確定表示しない |
@@ -139,8 +143,9 @@ skin制作中に利用者へ実装のレビューを求めるたびに、product
 
 既存harnessで表現できない条件は、まず型とfixtureの制限を報告する。必要最小の合成fixture/harness変更を
 開発workflowで行うか、利用者と合意した未検証範囲として残す。DOMを直接書き換えた画像をproduction確認にしない。
-制作完了ではmatrixの未検証項目を隠さない。特に5/10/20/50行、1/3/6/12か月、EMPTYのaspect/title/opacity、欠損と0の区別を標準動画だけで代用しない。各widgetの幅・高さの検証済み範囲には最小、最大、内側とresponsive境界の両側が必要である。評価だけの依頼なら対象範囲に比例した部分matrixを明示してよい。
+制作完了ではmatrixの未検証項目を隠さない。特に5/10/20/50行、1/3/6/12か月、EMPTYのaspect/title/opacity、欠損と0の区別を標準動画だけで代用しない。各widgetの推奨寸法での実寸描画と素材評価を完成条件とし、任意のリサイズ範囲の証明は要求しない。評価だけの依頼なら対象条件に比例した部分matrixを明示してよい。
 
 静的check、関連test、bundle/build、画像/操作の順で検証し、repositoryの必須checkも完了する。
+制作検証のため既存packageを物理的に外した隔離checkoutでは、その欠落だけを原因とするsiteや全体testの失敗を新skinの失敗と混同しない。無関係なREADME、site、runtime、fixtureの参照を置換して隔離checkoutだけの全体checkを通さない。原因を記録して対象skinのcheckを行い、旧packageを保持した統合treeでrepository全体の必須checkを実行する。
 実機Wayland composition/input、OBS内部のrender/Interactionは別の明示的live gate。
 ブラウザの合格を実機OBS合格と報告しない。
