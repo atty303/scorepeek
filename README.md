@@ -10,9 +10,9 @@
   An IIDX companion that automatically records your results and brings your progress into view.
 </p>
 
-| Cyan System | Result Aurora | DJ Blackbox |
-| :---: | :---: | :---: |
-| ![Cyan System overlay preview](skins/cyan-system/preview.png) | ![Result Aurora overlay preview](skins/result-aurora/preview.png) | ![DJ Blackbox overlay preview](skins/dj-blackbox/preview.png) |
+| Cyan System | Result Aurora | DJ Blackbox | infinitas |
+| :---: | :---: | :---: | :---: |
+| ![Cyan System overlay preview](skins/cyan-system/preview.png) | ![Result Aurora overlay preview](skins/result-aurora/preview.png) | ![DJ Blackbox overlay preview](skins/dj-blackbox/preview.png) | ![infinitas overlay preview](skins/infinitas/preview.png) |
 
 ## What you get
 
@@ -55,7 +55,10 @@ as useful for everyday play when you are not streaming.
 
 Choose the information you want to see, move and resize widgets in the visual
 editor, and decide which game screens show them. Install skins or create your
-own; the three previews above are examples, not a fixed set of styles.
+own; the previews above are examples, not a fixed set of styles. The `infinitas`
+skin offers an INFINITAS-inspired glass-and-silver design. Its canvas `series`
+property selects INFINITAS or an arcade-series palette from IIDX RED through
+ZINRAI, keeping the layout and game meaning colors consistent.
 
 ## Install
 

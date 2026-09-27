@@ -1,0 +1,58 @@
+id = "dev.atty303.infinitas"
+name = "infinitas"
+release = "2026-09-27"
+api_version = 2
+author = "atty303"
+description = "Orbital light, optical glass and silver edges; IIDX series palettes."
+license = "MIT; OFL-1.1 (Chakra Petch)"
+
+[widget_defaults.status]
+width = 544
+height = 52
+[widget_defaults.selection]
+width = 544
+height = 124
+[widget_defaults.score]
+width = 544
+height = 200
+[widget_defaults.history-list]
+width = 600
+height = 188
+[widget_defaults.history-graph]
+width = 544
+height = 208
+[widget_defaults.empty]
+width = 640
+height = 360
+
+[canvas_properties.series]
+type = "enum"
+default = "INFINITAS"
+values = ["INFINITAS", "IIDX RED", "HAPPY SKY", "DistorteD", "GOLD", "DJ TROOPERS", "EMPRESS", "SIRIUS", "Resort Anthem", "Lincle", "tricoro", "SPADA", "PENDUAL", "copula", "SINOBUZ", "CANNON BALLERS", "Rootage", "HEROIC VERSE", "BISTROVER", "CastHour", "RESIDENT", "EPOLIS", "Pinky Crush", "Sparkle Shower", "ZINRAI"]
+
+[canvas_properties.background]
+type = "enum"
+default = "animated"
+values = ["none", "static", "animated"]
+
+[widget_properties.empty.opacity]
+type = "number"
+default = 0.0
+minimum = 0.0
+maximum = 1.0
+
+[[resources]]
+path = "ChakraPetch-SemiBoldItalic.ttf"
+media_type = "font/ttf"
+
+[[resources]]
+path = "scorepeek-logo.png"
+media_type = "image/png"
+
+[[resources]]
+path = "optical-glass.png"
+media_type = "image/png"
+
+[[resources]]
+path = "OFL-ChakraPetch.txt"
+media_type = "text/plain"

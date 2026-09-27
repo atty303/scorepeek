@@ -1,0 +1,3 @@
+[tasks.assets]
+description = "Regenerate vector lettering from the packaged OFL font"
+run = "tools/generate-outlines.bash"

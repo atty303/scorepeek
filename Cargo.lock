@@ -4458,6 +4458,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scorepeek-skin-infinitas"
+version = "0.1.0"
+dependencies = [
+ "scorepeek-skin-sdk",
+ "serde_json",
+]
+
+[[package]]
 name = "scorepeek-skin-result-aurora"
 version = "0.1.0"
 dependencies = [
