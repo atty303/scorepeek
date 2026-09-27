@@ -14,11 +14,48 @@
 | :---: | :---: | :---: |
 | ![Cyan System overlay preview](skins/cyan-system/preview.png) | ![Result Aurora overlay preview](skins/result-aurora/preview.png) | ![DJ Blackbox overlay preview](skins/dj-blackbox/preview.png) |
 
-Scorepeek recognizes your game screen without reading the game's internal data.
-It saves results locally and can show personal bests, recent plays, history,
-and progress graphs on your Wayland desktop or in OBS. Recognition runs on your
-machine; it does not upload screenshots to a cloud OCR service. You can also
-use its live Event API and local SQLite score history in your own tools.
+## What you get
+
+### Automatic score tracking
+
+Keep a local record of your play results without entering scores by hand. See
+your personal bests, recent results, history, and progress graphs in the
+overlay. Score recording is on by default; `scorepeek run` stops with an error
+if it cannot save results. Use `--no-scores` only when you want a run without
+saved results.
+
+Existing score databases migrate automatically on the next scored run. Before
+changing an older database, Scorepeek creates a verified SQLite snapshot
+beside it for manual recovery. Keep that snapshot until you have checked your
+score history after upgrading.
+
+### Screen recognition that keeps up
+
+Scorepeek reads your game screen using image recognition, without analyzing
+the game's internal data. It matches OCR readings against song catalogs
+fetched online, so new songs do not each need their own training images.
+
+### Local processing, local records
+
+Recognition runs on your machine, and your scores are saved locally. No cloud
+OCR or screen uploads are needed to recognize and record your results.
+
+### Build your own tools
+
+Use the Event API for live recognition events and SQLite for recorded scores
+and history to build your own dashboards, analysis tools, or integrations.
+The included overlays are optional.
+
+### For your screen and your stream
+
+Show an overlay on your own screen, in an OBS broadcast, or both. It is just
+as useful for everyday play when you are not streaming.
+
+### Make the overlay yours
+
+Choose the information you want to see, move and resize widgets in the visual
+editor, and decide which game screens show them. Install skins or create your
+own; the three previews above are examples, not a fixed set of styles.
 
 ## Install
 
