@@ -1,0 +1,38 @@
+Task: Correct infinitas native Selection layout and remove generated verification data from the skin commit
+Anchor: 621f91068abe287ab494192dbda7d3adcb582314
+Base: 526c2b86f81303333f29ede1c2aeb1c9c02f7ae9
+Branch: codex/infinitas-skin
+Commits: 4dcd33cc6968b7c4144c63119062c0e2cc388bc9 rewrites the original skin commit for U8-U9; 621f91068abe287ab494192dbda7d3adcb582314 fixes U5
+Guidance: AGENTS.md; create-overlay-skin; investigate-problem; develop-repository; design-program-observability; review; Git task evidence and data handling
+Conditions: Original A implementation approval remains in effect; explicit local commit rewrite authorization; ignore HDR capture colors; isolated synthetic native/browser checks only; no new dependencies, saved user configuration changes, remote writes or deployment
+## Evidence
+- Complete thread retrieval matched all nine human messages in order across the two session logs; four automatic context/skill messages were excluded. Earlier implementation is recorded on the preserved original commit 526c2b86f81303333f29ede1c2aeb1c9c02f7ae9.
+- User attachment: codex-clipboard-8156c665-8d22-48bb-a2b0-a45776a910f6.png, SHA-256 1fedbacebe700c1a662eb27b29edd6ab8749bb62824beaff08cddf13dc004b8a. Selection title/artist wrap into a narrow column and the chart rail overlaps at the top. Colors were explicitly excluded from the oracle.
+- Headless production native reproduction: infinitas alone has a 512px song area; adding Cyan System collapses it to 22px because both CSS packages target .selection-content under the shared scope class. After binding each stylesheet to its canvas, mixed native layout has song [368,44,512,69] and rail [368,113,512,31]. Browser song width is also 512px, including with Cyan mounted and after series changes.
+- Rewrote the original feature commit to exclude all 260 generated evidence files totaling 98,035,498 bytes (93.5 MiB). Old commits and Git objects remain; no garbage collection or remote ref updates. Removed stale evidence links from the current SPEC and retained source, runtime assets and catalog previews.
+- Skin outline task moved from root overlay:infinitas:assets to skins/infinitas/mise.toml task assets. mise run //skins/infinitas:assets succeeded with unchanged generated glyphs. Root mise only registers the skin configuration directory.
+- Independent code review found an existing CSS test mounting two trees under one host root; the test now has a dedicated root. Delta review returned no findings. Reviewed and committed diff SHA-256: 63233dffa3c29a1ed05e3914a1581d7a3482cd173b4a399575f786d47a00185d.
+- Final mise run test passed 779 Rust tests, three browser integration tests, workspace clippy, static checks and Vulkan artifact checks. Standard native scenario completed 38 frames; mixed-skin scenario completed two frames. Every PNG was inspected, and corresponding layouts and manifests were checked. Browser editor right-click entry, canvas/widget creation, geometry changes, iframe DOM, INFINITAS/IIDX RED switching and mixed-skin display were inspected at 1920x1080. Final mise run build succeeded.
+- Initial concurrent test/native/OBS task launches raced over the shared web bundle directory. Those failed runs were replaced by serial successful builds and visual runs. A blank initial browser page was an empty canvas configuration; right-click editor entry worked. No source change was needed for either observation.
+- This correction verifies production native DOM/Blitz/Vello without Wayland and the production browser route. The earlier nested-compositor SIGSEGV remains outside these claims; live target Wayland/OBS was not exercised.
+- Before/after images retained for user inspection only under ignored target/overlay-visual/infinitas-selection-20260928/. Generated screenshots and logs are excluded from the commits. The new visual-mixed-skins.json is a maintained synthetic regression input.
+Authority: Latest user requests and repository AGENTS.md govern scope; current source and docs own behavior; this note is descriptive history.
+## Transcript
+- U1: [$create-overlay-skin](/var/home/atty/src/atty303/scorepeek/.agents/skills/create-overlay-skin/SKILL.md) iidxシリーズのテーマを再現するスキンを作る。基本はinfinitasの世界観をネットから探して再現する。そして、skin propertyにシリーズ名を設定可能にして色だけ変更可能とする。ac過去作は明確にテーマが採用されたiidx red以降からテーマを抽出する。skin名称はinfinitasとする。
+  - A: Used the authoring skill and official theme references to propose visual concepts for infinitas. The original implementation history remains on commit 526c2b8 and its task note.
+- U2: 続けて
+  - A: Continued concept research and mock production.
+- U3: Aでシリーズ選択を変えたバリエーションもモックを作って
+  - A: Produced A / Orbital Light variants with the same geometry and different decorative series palettes.
+- U4: 実現可能性ありそうだな。Aで実装を進めて
+  - A: Implemented six widgets and 25 palettes, resources and catalog previews. Validated native/browser matrices and independently reviewed the images. Original feature commit was 526c2b8; this cycle later rewrote it as 4dcd33 to honor U8-U9.
+- U5: nativeでselect widgetのレイアウト崩れがある。色はhdr captureの問題だから無視して
+  - A: Inspected the attached image, reproduced the layout failure with infinitas and Cyan System in one native document, and isolated shared CSS selectors as the cause. Bound parsed scoped selectors to each canvas, corrected replacement style attachment, added lifecycle regression coverage and a small mixed-skin scenario. HDR colors were not used as an oracle.
+- U6: あとevidenceをcommitしてないか？ これ検証用データでrepoにcommitするべきものなのか？
+  - A: Confirmed generated verification data had been committed and agreed it should be excluded from the durable source tree. Explained the mismatch between the authoring workflow and repository artifact policy.
+- U7: evidneceの容量はどの程度だ？
+  - A: Measured 260 files totaling 98,035,498 bytes, approximately 98.0 MB or 93.5 MiB.
+- U8: それならgit objectは残っていいからcommitから除いて
+  - A: Amended the original local feature commit to remove the evidence directory and obsolete SPEC references. Preserved old Git objects and the original note without garbage collection or remote writes.
+- U9: このskin固有のmise taskをrootに置かないで
+  - A: Moved the outline generation task into skins/infinitas/mise.toml and updated invocation references. Verified the relocated task. Completed the native correction, independent review, full tests and native/browser inspection; committed 621f910, rebuilt the runnable CLI, and kept the worktree clean. No push or deployment was performed.
