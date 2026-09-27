@@ -1,0 +1,70 @@
+{
+  "logical_size": [
+    1000,
+    600
+  ],
+  "scale": 1,
+  "editing": true,
+  "monotonic_base_ms": 0,
+  "canvases": [
+    {
+      "id": "infinitas",
+      "name": "infinitas",
+      "skin": "dev.atty303.infinitas",
+      "x": 340,
+      "y": 20,
+      "width": 600,
+      "height": 180,
+      "skin_properties": {
+        "background": "none"
+      },
+      "widgets": [
+        {
+          "id": "selection",
+          "kind": "selection",
+          "x": 12,
+          "y": 12,
+          "width": 544,
+          "height": 124
+        }
+      ],
+      "output": "HEADLESS-1"
+    },
+    {
+      "id": "cyan",
+      "name": "cyan",
+      "skin": "dev.atty303.scorepeek.skin.cyan-system",
+      "x": 340,
+      "y": 220,
+      "width": 600,
+      "height": 180,
+      "skin_properties": {
+        "background": "none"
+      },
+      "widgets": [
+        {
+          "id": "selection",
+          "kind": "selection",
+          "x": 12,
+          "y": 12,
+          "width": 544,
+          "height": 124
+        }
+      ],
+      "output": "HEADLESS-1"
+    }
+  ],
+  "selectors": [
+    ".selection-content",
+    ".song",
+    ".song-title",
+    ".song-artist",
+    ".selection-rail"
+  ],
+  "actions": [
+    {
+      "action": "capture",
+      "name": "mixed"
+    }
+  ]
+}

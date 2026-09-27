@@ -332,7 +332,7 @@ impl VisualDebugSession {
             let mut initial = runtime.init(&input)?;
             namespace_native_skin_output(&package.manifest.id, &mut initial);
             let mut tree =
-                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css)?;
             tree.apply(&mut document.inner.borrow_mut(), &initial);
             skins.insert(
                 mounted.id.clone(),
@@ -515,8 +515,11 @@ impl VisualDebugSession {
                     native_skin_input_presentation(&canvas, &self.state, &package.manifest);
                 let mut output = runtime.init(&initial_input)?;
                 namespace_native_skin_output(&package.manifest.id, &mut output);
-                let mut tree =
-                    crate::skin::NativeTree::new(&mut self.document.inner.borrow_mut(), root, &css);
+                let mut tree = crate::skin::NativeTree::new(
+                    &mut self.document.inner.borrow_mut(),
+                    root,
+                    &css,
+                )?;
                 tree.apply(&mut self.document.inner.borrow_mut(), &output);
                 self.skins.insert(
                     canvas.id.clone(),
@@ -566,7 +569,7 @@ impl VisualDebugSession {
                     .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
                 );
                 skin.tree
-                    .replace(&mut self.document.inner.borrow_mut(), &css, &output);
+                    .replace(&mut self.document.inner.borrow_mut(), &css, &output)?;
             } else {
                 skin.tree
                     .apply(&mut self.document.inner.borrow_mut(), &output);

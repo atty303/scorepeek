@@ -1,5 +1,8 @@
 //! Native Wasmtime execution and Wayland DOM adaptation.
 
+#[cfg(test)]
+mod style_tests;
+
 use scorepeek_overlay_runtime::skin::{MODULE_PATH, Package};
 use scorepeek_skin_sdk::{Node, Output as RenderOutput};
 use std::{
@@ -380,24 +383,33 @@ enum MountedKind {
 
 impl NativeTree {
     /// Creates a package-owned subtree below a host-owned canvas root.
-    pub fn new(document: &mut blitz_dom::BaseDocument, root: blitz_dom::NodeId, css: &str) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the stylesheet cannot bind its scope to this canvas.
+    pub fn new(
+        document: &mut blitz_dom::BaseDocument,
+        root: blitz_dom::NodeId,
+        css: &str,
+    ) -> Result<Self, String> {
         static NEXT_MARKER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let marker = NEXT_MARKER
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .to_string();
         let mut mutator = document.mutate();
+        mutator.set_attribute(root, attribute_name("data-scorepeek-style-scope"), &marker);
         let style = mutator.create_element(html_name("style"), Vec::new());
         mutator.set_attribute(style, attribute_name("data-scorepeek-tree"), &marker);
         let text = mutator.create_text_node(css);
         mutator.append_children(style, &[text]);
         mutator.append_children(root, &[style]);
         drop(mutator);
-        Self {
+        super::style_scope::bind(document, style, &marker)?;
+        Ok(Self {
             root,
             style,
             marker,
             mounted: None,
-        }
+        })
     }
 
     #[must_use]
@@ -427,12 +439,14 @@ impl NativeTree {
         changed
     }
 
+    /// # Errors
+    /// Returns an error if the replacement stylesheet cannot bind to this canvas.
     pub fn replace(
         &mut self,
         document: &mut blitz_dom::BaseDocument,
         css: &str,
         output: &RenderOutput,
-    ) {
+    ) -> Result<(), String> {
         let mut mutator = document.mutate();
         if let Some(mounted) = self.mounted.take() {
             mutator.remove_and_drop_node(mounted.node);
@@ -446,11 +460,20 @@ impl NativeTree {
         );
         let text = mutator.create_text_node(css);
         mutator.append_children(self.style, &[text]);
+        mutator.append_children(self.root, &[self.style]);
         drop(mutator);
+        super::style_scope::bind(document, self.style, &self.marker)?;
         self.apply(document, output);
+        Ok(())
     }
 
-    pub fn set_css(&mut self, document: &mut blitz_dom::BaseDocument, css: &str) {
+    /// # Errors
+    /// Returns an error if the stylesheet cannot bind its scope to this canvas.
+    pub fn set_css(
+        &mut self,
+        document: &mut blitz_dom::BaseDocument,
+        css: &str,
+    ) -> Result<(), String> {
         let mut mutator = document.mutate();
         mutator.remove_and_drop_node(self.style);
         self.style = mutator.create_element(html_name("style"), Vec::new());
@@ -462,6 +485,8 @@ impl NativeTree {
         let text = mutator.create_text_node(css);
         mutator.append_children(self.style, &[text]);
         mutator.append_children(self.root, &[self.style]);
+        drop(mutator);
+        super::style_scope::bind(document, self.style, &self.marker)
     }
 
     /// Removes every package-owned node while leaving the host-owned root intact.

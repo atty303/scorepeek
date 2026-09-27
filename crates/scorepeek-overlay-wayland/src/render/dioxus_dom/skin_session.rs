@@ -79,7 +79,7 @@ pub(super) fn create_native_display_skin(
         )
         .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
     );
-    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css)?;
     tree.apply(&mut document.inner.borrow_mut(), &initial);
     crate::diagnostics::emit(
         "skin_render",
@@ -151,7 +151,7 @@ pub(super) fn create_editor_skin_preview(
         )
         .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
     );
-    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css)?;
     work.measure("tree_reconciliation", || {
         tree.apply(&mut document.inner.borrow_mut(), &rendered);
     });
@@ -263,7 +263,7 @@ pub(super) fn reconcile_editor_skin_previews(
                 .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
             );
             let mut tree =
-                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css)?;
             tree.apply(&mut document.inner.borrow_mut(), &rendered);
             preview.tree = tree;
             preview.next_render = skin_deadline(&rendered.schedule, false);
@@ -306,8 +306,8 @@ pub(super) fn reconcile_editor_skin_previews(
             work.measure("tree_reconciliation", || {
                 preview
                     .tree
-                    .replace(&mut document.inner.borrow_mut(), &css, &rendered);
-            });
+                    .replace(&mut document.inner.borrow_mut(), &css, &rendered)
+            })?;
             preview.package = next_package;
             preview.runtime = next_runtime;
             preview.next_render = skin_deadline(&rendered.schedule, false);

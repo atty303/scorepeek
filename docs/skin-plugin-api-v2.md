@@ -15,6 +15,13 @@ The archive contains one skin and normalized relative paths. Root files `skin.to
 package-relative resources. CSS `url('background.png')` addresses the ZIP root; `../`, absolute
 paths, remote URLs, filesystem, and network host calls are not package APIs.
 
+Author skin selectors under `.scorepeek-skin-scope`; the repository's CSS composition
+task adds that prefix. The browser hosts each canvas in its own iframe. Native binds
+that class selector to the owning canvas root when it loads or replaces the stylesheet,
+including rules inside grouping at-rules. This keeps shared class names from changing
+another canvas's layout. Resource URLs, declarations and font/keyframe names are not
+rewritten by this selector binding.
+
 `skin.toml` has this shape. `id` is a lowercase ASCII reverse-domain name, `release` is an opaque
 non-empty string, and property keys use lowercase ASCII letters, digits, and `-`. Properties may be
 omitted entirely; the example shows every supported type:

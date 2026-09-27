@@ -3321,13 +3321,17 @@ fn retained_skin_tree_can_restore_live_css_after_preview() {
     ))
     .unwrap();
     let session = VisualDebugSession::new(&scenario, [1920, 1080]).unwrap();
-    let root = session
-        .document
-        .inner
-        .borrow()
-        .query_selector("#scorepeek-skin-root")
-        .unwrap()
-        .unwrap();
+    let root = {
+        let mut document = session.document.inner.borrow_mut();
+        let body = document.query_selector("body").unwrap().unwrap();
+        let mut dom = document.mutate();
+        let root = dom.create_element(
+            blitz_dom::QualName::new(None, "http://www.w3.org/1999/xhtml".into(), "div".into()),
+            Vec::new(),
+        );
+        dom.append_children(body, &[root]);
+        root
+    };
     let output = crate::skin::RenderOutput {
         schedule: crate::skin::Schedule::Idle,
         tree: crate::skin::Node::Element {
@@ -3344,7 +3348,8 @@ fn retained_skin_tree_can_restore_live_css_after_preview() {
         &mut session.document.inner.borrow_mut(),
         root,
         "#native-css-probe { display: block; width: 80px; height: 20px; }",
-    );
+    )
+    .unwrap();
     assert!(tree.apply(&mut session.document.inner.borrow_mut(), &output));
     session.document.inner.borrow_mut().resolve(0.0);
     let damage_before = session
@@ -3376,7 +3381,8 @@ fn retained_skin_tree_can_restore_live_css_after_preview() {
     tree.set_css(
         &mut session.document.inner.borrow_mut(),
         "#native-css-probe { display: block; width: 160px; height: 20px; }",
-    );
+    )
+    .unwrap();
     session.document.inner.borrow_mut().resolve(0.0);
     assert!((width(&session) - 160.0).abs() < f64::EPSILON);
 }
@@ -3395,7 +3401,8 @@ fn native_skin_reorder_preserves_existing_nodes_and_dom_order() {
         .query_selector("#scorepeek-skin-root")
         .unwrap()
         .unwrap();
-    let mut tree = crate::skin::NativeTree::new(&mut session.document.inner.borrow_mut(), root, "");
+    let mut tree =
+        crate::skin::NativeTree::new(&mut session.document.inner.borrow_mut(), root, "").unwrap();
     let child = |key: &str| {
         crate::skin::Node::element(
             key,

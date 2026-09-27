@@ -27,6 +27,18 @@ moves the selected canvas. Coordinates and layout rectangles are logical CSS pix
 are the logical output size multiplied by `scale` and rounded up; the manifest records both sizes.
 This path is intended for visual diagnosis and does not save overlay configuration.
 
+Use the mixed-skin scenario to check that native editor canvases keep their own
+layout when two packages use the same CSS classes:
+
+```text
+mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-mixed-skins.json /tmp/scorepeek-mixed-skins
+```
+
+Its infinitas Selection must keep the title and artist above the chart rail while
+the Cyan System canvas is mounted. Inspect the PNGs and the `.song` rectangle;
+the infinitas text column is 512 CSS pixels wide at the fixture's 544 px widget
+width. Keep generated captures outside the source tree.
+
 The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz. An
 external fixture starts the production private Wayland role with one status canvas on each output
 under an isolated home and XDG state. The harness injects a pointer drag through Scroll IPC,
