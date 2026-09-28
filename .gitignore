@@ -9,6 +9,7 @@ __pycache__/
 
 # Generated or externally acquired artifacts
 /artifacts/
+/skins/*/verification/
 /upstream-cache/
 *.onnx
 !/models/numeric-fixed-slot-hog-mlp-runtime-v3/inference.onnx

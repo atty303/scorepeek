@@ -1,8 +1,9 @@
 # 実装と視覚検証
 
 **責務:** 汎用skin制作の実装接続先、標準preview、native/browser検証、
-レビュー提示matrixと合否手順を定める。skin固有の結果・素材・最終寸法、
-旧作との一回限りの比較結果は各skin仕様または当該taskの証拠が所有する。
+レビュー提示matrixと合否手順を定める。skin固有の素材・最終寸法は
+`SPEC.md`、実行ごとの結果と旧作との一回限りの比較結果は
+`verification/verification.md`または当該taskの証拠が所有する。
 
 ## 現行の接続先
 
@@ -20,6 +21,7 @@ repository rootから次を読む。行番号ではなく型・関数を確認�
 | versioned authoring contract | `docs/skin-plugin-api-v2.md` |
 | 設定schemaとmanifest property | `crates/scorepeek-overlay-runtime/src/config/layout.rs`、`crates/scorepeek-overlay/src/skin/manifest.rs` |
 | 採用conceptと素材の由来 | `skins/<name>/SPEC.md` |
+| skin制作の検証記録とevidence | `skins/<name>/verification/verification.md`、`skins/<name>/verification/evidence/`（Git除外） |
 
 skin ID、表示名、release、propertyはmanifestが所有し、editorへ静的enumを追加しない。各skinは
 独立したWasm crateとし、素材と描画コードはskin自身が所有する。
@@ -49,7 +51,7 @@ Score・History panelとする。AAAやFULL COMBOだけの試作はこの確認�
 2. 物理的な素材を核にする場合、文字の字形領域を枠から切り離して原寸で並べて読む。画素差は候補が実際に描かれた証拠であり、表現の完成度を測る点数ではない。nativeで候補と適切な対照に画素差がなければ、その字形選択または効果は表示されていない。差が太さ・ぼけ・二重像・低コントラストだけなら不合格とする。普通のSCORE数字・固定／判定ラベル・History数字／見出しから、世界観に固有の字形・面・縁の特徴を原寸で少なくとも2つ指摘する。既製の等幅fontを太くしただけでは通さない。browserでの差をnativeの代わりにしない。
 3. 不合格なら技法を変えて同じ比較へ戻る。世界観を表す字形のfont、元の字形を保った高解像度のglyph maskと素材テクスチャ、固定ラベルや数字のpackage内atlasを試す。atlasやmaskの素材面はimagegenを含む方法で制作し、正しい字形のalpha maskと合成できる。生成画像中の誤字を字形の原典にしない。CSSの影・擬似要素・blend効果はnativeで実画素を確認するまで採用しない。
 4. atlasを使う場合も意味を持つDOM textを残す。数字を個別sprite nodeにする場合は、Scoreだけでなく`history_count=50`のHistoryを早期にnative描画し、paint順・負荷・行の可読性を確認する。密な表で破綻した手法を、少数行の成功だけで全Historyへ採用しない。
-5. 物理的な素材を核にする場合、両hostの候補が可読で、字形の面・縁・特徴的な形のいずれかが素の対照より明確になってから全widgetへ展開する。書体のみを採用した場合は、素材入り候補より世界観と可読性を満たす理由を原寸で示す。この場合は試作の比較画像、nativeの差、字形内で観測した特徴、選択／棄却理由をskin固有仕様へ記す。明確なフラット表現では、意図した字形・間隔・階層と可読性を原寸で確認し、その画像と観測結果を記す。完成後も最終sourceで同じ箇所を再描画する。
+5. 物理的な素材を核にする場合、両hostの候補が可読で、字形の面・縁・特徴的な形のいずれかが素の対照より明確になってから全widgetへ展開する。書体のみを採用した場合は、素材入り候補より世界観と可読性を満たす理由を原寸で示す。この場合は試作の比較画像、nativeの差、字形内で観測した特徴、選択／棄却理由を検証記録へ記す。明確なフラット表現では、意図した字形・間隔・階層と可読性を原寸で確認し、その画像と観測結果を検証記録へ記す。完成後も最終sourceで同じ箇所を再描画する。
 
 標準のnative検証taskはskinを一時ZIPへbuildしてから描く。試作段階では
 APIが要求する全widget設定と仮の`preview.png`を入れた隔離packageを使用してよい。

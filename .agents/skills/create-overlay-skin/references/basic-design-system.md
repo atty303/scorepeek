@@ -211,8 +211,8 @@ Visual review establishes that all required information is legible and
 correctly ordered at the recommended sizes; contours, material,
 typography and motion have a coherent finish; and state changes preserve the
 meaning rules above. Native and browser rendering must both meet these
-criteria. A per-skin specification records the concrete evidence and any
-expression-only exception.
+criteria. The per-skin verification record holds the concrete evidence; the
+specification holds any current expression-only exception.
 
 The skill defines the production and verification procedure. This baseline is
 a starting layout to implement before adjusting
@@ -263,8 +263,8 @@ isolated texture, CSS declaration, DOM rectangle or enlarged crop cannot prove
 one of them. All applicable gates must pass independently; strong background
 art cannot compensate for weak lettering or an unfinished panel. Record the
 observed evidence and the correction for any failed gate in the skin's
-specification. The creator performs this judgment before asking another person
-to review the skin.
+`verification/verification.md`. The creator performs this judgment before
+asking another person to review the skin.
 
 | Gate | Evidence needed for a pass | Fail and revise when |
 | --- | --- | --- |
