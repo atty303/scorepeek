@@ -1,0 +1,77 @@
+Task: Remove three superseded overlay skins while retaining site previews
+Anchor: 12c9cc25012f53aaea9e49fb699840cef4a901fd
+Base: 3a33d1634a93b6faa1e4384181d5f79a69ace5e7
+Branch: main
+Commits: 12c9cc25012f53aaea9e49fb699840cef4a901fd deletes old skin sources and shared code, retains site previews, and updates build, tests and docs
+Guidance: AGENTS.md; dig; develop-repository; investigate-problem; review; data-handling; git-task-evidence; README.md; docs/architecture.md; docs/overlay-visual-debugging.md
+Conditions: Development-host isolated skin stores and visual server only; remote code fetch succeeded, remote notes retained separately after divergent notes fetch; no live target, deploy, publish, push or installed-skin migration authorized
+## Evidence
+Each old preview.png matched its tracked site/assets counterpart byte-for-byte before deletion. mise run test passed: 775 Rust and 4 browser tests; mise run check passed. Native visual scenarios inspected 36 standard, 20 composition and 2 mixed PNG/layout pairs; OBS browser top-level and iframe DOM plus screenshot inspected. target/skins contained only infinitas.zip after build. Independent review found one documentation schedule mismatch, fixed and delta-reviewed with no remaining findings.
+Authority: Latest user request and current repository sources, tests, living documentation, and AGENTS.md
+## Transcript
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) 旧3 skinを削除する
+  - A: Read repository state, README, architecture and skin references; identified four product skins and old gallery, then asked whether deletion includes installed packages.
+- U2: A
+  - A: Confirmed repository-only deletion of the old three skins and dedicated shared code; asked how the site should present them.
+- U3: サイトは現行画像のまま保持する。旧skin画像はsite/assetsへ移動する。
+  - A: Confirmed existing site/assets PNGs retain the previews and editor image; asked whether site copy and names should remain.
+- U4: B
+  - A: Confirmed site names, descriptions, images and editor screenshot remain unchanged; asked how README gallery should be handled.
+- U5: READMEのskin一覧は削除する
+  - A: Confirmed removal of README skin list and its body reference; asked for final scope agreement.
+- U6: A
+  - A: Produced the implementation request with accepted scope, exclusions, visual and test acceptance conditions.
+- U7: # 実装依頼
+    
+    ## 依頼
+    
+    scorepeekリポジトリから旧3 skin（`cyan-system`、`result-aurora`、`dj-blackbox`）と、その3種専用の`skins/shared`を削除してください。関連するビルド、テスト、文書、サイトの検証を現行構成に合わせて更新してください。
+    
+    ## 目的
+    
+    - リポジトリからビルド・提供するskinを`infinitas`に整理する。
+    - 旧3種の画像は紹介サイトの表示例として残す。
+    
+    ## 成功条件
+    
+    - 旧3種と`skins/shared`の実装・素材がリポジトリからなくなり、skin ZIPのビルド対象は`infinitas`だけになる。
+    - README冒頭のskin一覧がなくなり、一覧を前提にした本文の参照も解消される。
+    - サイトの日英ページでは旧3種の画像、名前、紹介文とeditor画像が現在のまま表示される。旧3種の画像は`site/assets`に保持される。
+    - 削除したskinを前提とするテストと視覚検証手順が更新され、必要なskin間の分離テストは現行skinまたはテスト専用fixtureで引き続き検証できる。
+    - リポジトリ所定の検証が通り、成功したskinビルド後の`target/skins`に旧3種のZIPが残らない。
+    
+    ## 決定事項
+    
+    - 削除対象はリポジトリ内の旧3種とその専用共通実装とする。
+      - 理由: 提供元の整理が目的であり、インストール済みskinと利用者設定は独立している。
+      - 主な棄却案: 利用環境のskin ZIPや設定も同時に変更する案。今回の範囲を超えるため採用しない。
+    - サイトの旧3種の表示は維持する。
+      - 理由: 旧3種の画像をサイトに残すと決定したため。
+      - 主な棄却案: `infinitas`への差し替え、過去のデザイン例という表示への変更、画像の削除。
+    - READMEのskin一覧は削除する。
+      - 理由: READMEに旧3種の一覧を残さないと決定したため。
+      - 主な棄却案: 旧3種の画像参照先を`site/assets`へ替えて一覧を維持する案、`infinitas`だけの一覧にする案。
+    
+    ## 制約
+    
+    - `infinitas`の実装とskinプラグインAPIの契約を維持する。
+    - インストール済みskin、利用者のoverlay設定、対象マシンを変更しない。
+    - サイトの公開、デプロイ、pushは行わない。
+    - 無関係な作業ツリーの変更を保護する。
+    
+    ## 対象外
+    
+    - 新しい一般向けskinの制作。
+    - 旧3種を参照する利用者設定の移行。
+    - 紹介サイトの文章やeditor画像の刷新。
+    
+    ## 未検証の前提
+    
+    - `site/assets`にある旧3種の画像が、削除する各skinの`preview.png`と一致すること。削除前に確認する。
+    
+    ## 実装時の指示
+    
+    - 旧3種を指すコード、fixture、文書、ビルド設定を調べ、サイトで維持すると決めた表示以外の参照を整理する。
+    - サイトの検証を、削除後も`site/assets`の画像だけで成立するよう更新する。
+    - 複数skinの共存を確認するテストが必要なら、旧3種の製品実装を残さず、テスト専用fixtureでその意味を保つ。
+  - A: Verified old previews byte-identical to tracked site assets, removed old source and references, built only infinitas, added isolated alternate test package, updated docs and fixtures, ran check and full test, inspected native and browser visuals, completed independent review and local commit 12c9cc25012f53aaea9e49fb699840cef4a901fd. Did not touch installed packages, user settings, target host or remote.
