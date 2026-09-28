@@ -1,0 +1,71 @@
+Task: Publish built skins in future GitHub Releases and install skin ZIPs from HTTPS URLs
+Anchor: 759741b2fda12bc9e7bf99a9890dbfaaa3c39f9c
+Base: 4800bbaa3c36cea45e94a834fc1340eac6739960
+Branch: main
+Commits: 759741b feat(skins): ship versioned skin ZIPs in releases
+Guidance: AGENTS.md; develop-repository; design-program-observability; review; data-handling; failure-oracle-and-causal-verification
+Conditions: Development host on main; clean starting tree; no release, push, deployment, or existing-release edit authorized; network available
+## Evidence
+- release:build 2026.9.6 into an agent-owned temporary directory produced the versioned binary and infinitas-2026-09-27.zip; cmp confirmed the ZIP matches target/skins/infinitas.zip byte for byte.
+- mise run test passed after final change: 779 Rust tests and 4 browser tests; targeted runtime and ZIP-boundary tests, clippy with -D warnings, mise run check, and git diff --check passed.
+- Independent reviewer found unbounded ZIP expansion; fixed with entry-count and decompressed-size limits, then the reviewer accepted the delta without further findings.
+Authority: User implementation request; repository AGENTS.md; committed source and living documentation; pinned release action contract
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    今後の GitHub Release に skin ZIP を独立した asset として含め、`scorepeek skin install` で HTTPS URL から直接インストールできるようにしてください。README の skin インストール手順も更新してください。
+    
+    ## 目的
+    
+    - 利用者が実行ファイルと同じ GitHub Release から skin を直接インストールできるようにする。
+    
+    ## 成功条件
+    
+    - `release:build` が、実行ファイルに加えて、build した `infinitas` skin ZIP を release 用ディレクトリへ出力する。
+    - asset 名は skin manifest の `release` 値を使った `infinitas-2026-09-27.zip` とする。ZIP 内の `release` 値は変更せず、build した ZIP の内容を保つ。
+    - `scorepeek skin install` が既存のローカルパスに加え、一般の HTTPS URL を受け付ける。HTTPS リダイレクト先から取得した ZIP もインストールできる。
+    - 取得した ZIP は既存のパッケージ検証とインストール処理を通る。取得や検証に失敗した場合、インストール済み skin を変更しない。
+    - README に、選んだ実行ファイルと同じ `vVERSION` の GitHub Release から `infinitas-2026-09-27.zip` を直接インストールするコマンドを載せる。
+    
+    ## 決定事項
+    
+    - skin は実行ファイルと並ぶ独立した GitHub Release asset にする。
+      - 理由: 既存の skin ZIP とインストール方式を利用できる。
+      - 主な棄却案: 実行ファイルとの一体アーカイブ化、実行ファイルへの内蔵。配布とインストールの契約を広げるため。
+    - skin の `release` 値は本体バージョンと連動させず、現在の値を維持する。
+      - 理由: skin のバージョンは独立して管理する。
+      - 主な棄却案: 本体の release ごとに skin の `release` 値を変更する。skin が変わらない場合にも別バージョンになるため。
+    - asset 名には skin manifest の `release` 値を含める。
+      - 理由: 掲載する skin のバージョンがファイル名から分かる。
+      - 主な棄却案: `infinitas.zip`、本体の `VERSION` を含む名前。
+    - URL インストールは一般の HTTPS URL と HTTPS リダイレクトに対応する。
+      - 理由: GitHub 固有の URL 処理なしで release asset をインストールできる。
+      - 主な棄却案: このリポジトリの GitHub Release URL だけに限定する方式。
+    - README では実行ファイルと同じ `vVERSION` の release を参照する。
+      - 理由: 同じ release の実行ファイルと skin を組み合わせられる。
+      - 主な棄却案: `releases/latest/download/...`。選んだ実行ファイルと異なる release の skin を取得し得るため。
+    
+    ## 制約
+    
+    - 既存のローカル ZIP インストールを維持する。
+    - skin ZIP 内の現在の `release = "2026-09-27"` を変更しない。
+    - 実際の release 発行、既存 release の編集、push は行わない。
+    
+    ## 対象外
+    
+    - skin の自動インストール。
+    - skin のバージョン管理方式の変更。
+    - 既存の GitHub Release への asset の追加。
+    
+    ## 未検証の前提
+    
+    - 実装時の checkout でも `skins/infinitas/skin.toml` の `release` 値が `2026-09-27` であること。変わっていた場合は、asset 名と README の例を現行値に合わせる。
+    
+    ## 実装時の指示
+    
+    - HTTPS 取得の失敗時や途中終了時に、一時ファイルを残さず、インストール済み skin を変更しないことを確認する。
+    - URL 取得とリダイレクト、release 成果物の名前と内容について、必要な範囲で検証する。
+  - A: Implemented versioned skin release assets, HTTPS-only redirected download through temporary ZIP and existing installer, bounded ZIP expansion, README and reference updates; verified artifacts and tests; completed independent review; committed locally without push or release.
