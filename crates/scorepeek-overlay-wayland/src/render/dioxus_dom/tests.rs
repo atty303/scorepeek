@@ -2464,13 +2464,12 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         ".editor-output-picker .list-picker-trigger",
     )
     .unwrap();
-    for command in [
-        scorepeek_overlay_wayland_handles::TextCommand::Down,
-        scorepeek_overlay_wayland_handles::TextCommand::Accept,
-    ] {
-        fake.event("WL-1", Event::Text(command)).unwrap();
-        fake.apply(&mut authority).unwrap();
-    }
+    fake.click_stage(
+        &mut authority,
+        "WL-1",
+        ".editor-output-picker .list-picker-option[*|data-index='1']",
+    )
+    .unwrap();
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-2"));
     fake.scroll_stage(&mut authority, "WL-2", ".navigator-scroll", -800.0)
         .unwrap();
@@ -2486,13 +2485,12 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         ".editor-output-picker .list-picker-trigger",
     )
     .unwrap();
-    for command in [
-        scorepeek_overlay_wayland_handles::TextCommand::Up,
-        scorepeek_overlay_wayland_handles::TextCommand::Accept,
-    ] {
-        fake.event("WL-2", Event::Text(command)).unwrap();
-        fake.apply(&mut authority).unwrap();
-    }
+    fake.click_stage(
+        &mut authority,
+        "WL-2",
+        ".editor-output-picker .list-picker-option[*|data-index='0']",
+    )
+    .unwrap();
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-1"));
     assert_eq!(
         authority.session().selected_canvas.as_deref(),
