@@ -1,0 +1,13 @@
+Task: Fix native editor output picker pointer selection
+Anchor: 4800bbaa3c36cea45e94a834fc1340eac6739960
+Base: 12c9cc25012f53aaea9e49fb699840cef4a901fd
+Branch: main
+Commits: 4800bbaa3c36cea45e94a834fc1340eac6739960 keeps the output menu in header flow and restores pointer-based two-output switching coverage
+Guidance: AGENTS.md; investigate-problem; develop-repository; design-program-observability; data-handling; git-task-evidence; README.md; docs/architecture.md; docs/overlay-visual-debugging.md
+Conditions: Development host only; no installed skin, user overlay setting, live target, publish, deploy or push changes authorized; native, fake Wayland and browser test routes available; nested Scroll container lacks matching host runtime dependencies
+## Evidence
+Before the CSS change, fake Wayland pointer selection failed because .navigator-root covered the output option center at 141,111. After the menu moved into header flow, pointer switching WL-1 to WL-2 and back passed. mise run test passed: 775 Rust and 4 browser tests. Native standard and picker scenarios produced and were inspected with PNG, layout and manifest evidence; browser top-level and iframe DOM, editor interaction and screenshot were inspected. Nested Scroll scenario could not start scorepeek because libpipewire-0.3.so.0 was absent inside the development container.
+Authority: Latest user request and current repository sources, tests, living documentation, and AGENTS.md
+## Transcript
+- U1: uiの問題は修正して
+  - A: Investigated the native editor output picker pointer failure observed after the prior skin-removal task. Captured the failing hit test, changed the menu to stay within the editor header flow, restored real pointer clicks in the fake Wayland integration test, and verified switching between two outputs. Ran full tests and inspected native and browser visuals. Attempted the nested Scroll scenario with temporary environment wrappers; it remained blocked by the container's missing runtime library. Committed the scoped fix locally without changing the target host or remote.
