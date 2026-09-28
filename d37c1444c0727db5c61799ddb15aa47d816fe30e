@@ -1,0 +1,89 @@
+Task: Keep skin verification artifacts out of tracked files
+Anchor: d37c1444c0727db5c61799ddb15aa47d816fe30e
+Base: 621f91068abe287ab494192dbda7d3adcb582314
+Branch: codex/infinitas-skin
+Commits: d37c1444c0727db5c61799ddb15aa47d816fe30e docs(skins): keep verification artifacts out of tracked files
+Guidance: repository AGENTS.md; develop-repository; author-skills; maintain-agent-guidance; review
+Conditions: local-only change; remote fetch failed because configured SSH agent could not sign; no runtime changes
+Authority: user implementation request and clarification; repository AGENTS.md
+## Transcript
+- U1:
+    # 実装依頼
+    
+    ## 依頼
+    
+    `/var/home/atty/src/atty303/scorepeek` の `create-overlay-skin` スキル一式と `AGENTS.md` を修正し、検証結果をリポジトリへ保存する指示を取り除いて、検証結果のcommit禁止を明記してください。
+    
+    対象は次のファイルです。スキル内に同じ要求を持つ関連記述があれば、併せて整合させてください。
+    
+    - `/var/home/atty/src/atty303/scorepeek/AGENTS.md`
+    - `/var/home/atty/src/atty303/scorepeek/.agents/skills/create-overlay-skin/SKILL.md`
+    - `/var/home/atty/src/atty303/scorepeek/.agents/skills/create-overlay-skin/references/skin-specification-template.md`
+    - `/var/home/atty/src/atty303/scorepeek/.agents/skills/create-overlay-skin/references/implementation-and-verification.md`
+    - `/var/home/atty/src/atty303/scorepeek/.agents/skills/create-overlay-skin/references/basic-design-system.md`
+    
+    ## 目的
+    
+    - 完成スキンと保守に必要な現行資料をリポジトリに残し、制作中や完了時の検証記録がcommitへ混入する指示をなくす。
+    - native/browserの検証と品質基準を維持し、検証結果はGit除外されたwork dirで扱えるようにする。
+    
+    ## 成功条件
+    
+    - 最終scene入力やnative/browserの検証証拠をリポジトリへ恒久保存する要求がなくなる。
+    - 比較画像、合否、読取結果、修正と再描画の経過、独立reviewの結果などを `SPEC.md` に記録する要求がなくなる。実行ごとの検証証拠へのリンクを残す要求も取り除く。
+    - 検証画像・レビュー動画・実行ごとの生成scene・ログ・合否記録・比較や試行錯誤の記録はcommit禁止と明確に読める。
+    - 検証結果をGit除外されたwork dirに保持できる。削除を一律に義務付けない。
+    - 検証の実施、品質基準、停止条件、利用者への結果提示は維持される。
+    - 完成スキンのコード・素材・正式preview・現行仕様と、再利用する検証ツール・共通fixtureは引き続きリポジトリで管理できる。
+    - スキル本体・参照文書・テンプレート・AGENTS.mdの間に、検証結果の保存先やcommit可否について矛盾がない。
+    
+    ## 決定事項
+    
+    - スキル一式とAGENTS.mdをまとめて整合させる。
+      - 理由: AGENTS.mdの「point-in-time verification belong in Git history」は、検証結果を一度commitしてから削除する運用も許すように読めるため。
+      - 主な棄却案: スキルだけの修正。上位規則に曖昧さが残るため採用しない。
+    - 検証結果はcommit禁止とし、Git除外されたwork dirへの保存は許可する。
+      - 理由: 検証中の確認や利用者への提示に必要な記録を保持しつつ、リポジトリへの混入を防ぐため。
+      - 主な棄却案: 検証証拠の恒久的なリポジトリ保存、および検証結果の一律削除。
+    - `SPEC.md` は完成スキンの現行仕様を所有し、実行ごとの検証記録を所有しない。
+      - 理由: 世界観、素材の由来・ライセンス、表現、最終寸法、推奨条件、現在の制約などは継続的に必要だが、合否や試行錯誤の経過は制作時の記録だから。
+      - 主な棄却案: 検証記録を別の追跡対象文書へ移すだけの対応。commit禁止という目的を満たさない。
+    - 検証の実施要件と品質基準は維持する。
+      - 理由: 問題は検証結果の保存・commit要求であり、品質確認の必要性ではないため。
+      - 主な棄却案: 検証記録の要求を消す際に、関連する検証手順や合格条件まで削除すること。
+    - 正式なpackage/catalog用previewと、実行ごとの検証画像・レビュー動画を区別する。
+      - 理由: 正式previewは完成スキンの成果物であり、検証記録のcommit禁止に巻き込むべきではないため。
+      - 主な棄却案: 生成画像・動画を一律にcommit禁止とすること。
+    
+    ## 制約
+    
+    - 今回の変更はguidanceとテンプレートの整合に限定する。
+    - 既存のステージ済み・未commitの別作業を変更したり、今回の変更に含めたりしない。調査時にはnative skinのCSS適用に関するRust変更がステージされていた。
+    - 検証記録の保存要求を別の追跡対象ファイルへ移して解決したことにしない。
+    - 完成スキンの仕様、正式preview、再利用する検証ツール・共通fixtureを、検証結果と一括して除外しない。
+    
+    ## 対象外
+    
+    - 既存スキンの変更や検証の再実行。
+    - 既存の検証成果物や過去commitの棚卸し・削除。
+    - Git履歴の書換え。
+    - runtimeや検証ツールの機能変更。
+    - push、公開、deploy。
+    
+    ## 未検証の前提
+    
+    なし。
+    
+    ## 実装時の指示
+    
+    - 仕様テンプレートの「Keep final scene inputs and selected native/browser evidence in a durable repository location」を含む保存要求を修正する。
+    - スキル本体だけでなく、基本design system、実装・検証reference、テンプレートに散在する「検証証拠や修正経過をskin固有仕様へ残す」要求を確認する。
+    - 検証を行う指示は維持し、結果の記録先だけをGit除外されたwork dirへ整理する。既存の `/var/home/atty/src/atty303/scorepeek/artifacts/` はGit除外済みなので、保存先の例に使える。
+    - 現行仕様と検証記録が同じ段落に混在している場合は、現行仕様に必要な内容を残して検証記録の保存要求を取り除く。
+    - AGENTS.mdは既存のliving artifacts規則へ統合して修正し、検証結果を一度commitしてから削除する解釈が残らないようにする。
+    
+  - A: Inspected source and clean working tree, changed skin guidance and template, aligned architecture after independent review, and passed reference-graph and repository checks.
+- U2:
+    検証結果を成果物ではなくgit messageやnotesに書くのはそのままでいい
+    
+  - A: Clarified that tracked files exclude per-run results while commit messages and approved Git notes may describe outcomes; checked final wording and forward scenario, then committed the six guidance files.
