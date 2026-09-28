@@ -1,0 +1,81 @@
+Task: Separate authored skin specification from run-specific verification records
+Anchor: 1d17649acbbea2df82cfaee4256c7cbb11e8df03
+Base: 621f91068abe287ab494192dbda7d3adcb582314
+Branch: codex/infinitas-skin
+Commits: 1d17649acbbea2df82cfaee4256c7cbb11e8df03 docs(skins): separate current specification from verification evidence
+Guidance: repository AGENTS.md; develop-repository; maintain-agent-guidance; author-skills; create-overlay-skin
+Conditions: local guidance-only change; AGENTS.md unchanged by explicit choice; no blanket commit ban; no push, publish, or deploy
+Authority: latest user implementation request and repository AGENTS.md
+## Transcript
+- U1: # 実装依頼
+    
+    ## 依頼
+    
+    `/var/home/atty/src/atty303/scorepeek` の `create-overlay-skin` スキル一式を、スキンの恒久仕様と実行ごとの検証記録を分けるよう修正してください。`SPEC.md` は恒久仕様を扱い、検証記録とevidenceは各スキン内のGit除外された場所に保持します。
+    
+    主な対象は次のファイルです。関連する同趣旨の記述も、必要な範囲で整合させてください。
+    
+    - `.agents/skills/create-overlay-skin/SKILL.md`
+    - `.agents/skills/create-overlay-skin/references/skin-specification-template.md`
+    - `.agents/skills/create-overlay-skin/references/implementation-and-verification.md`
+    - `.agents/skills/create-overlay-skin/references/basic-design-system.md`
+    - `.gitignore`
+    
+    ## 目的
+    
+    - 完成スキンの現行仕様を `SPEC.md` に残し、実行ごとの検証記録とevidenceをスキンのディレクトリ内で扱えるようにする。
+    - スキンの検証結果をリポジトリへ保存し、`SPEC.md` からリンクする要求をなくす。
+    - native/browserの検証、品質基準、結果を利用者へ示す手順を維持する。
+    
+    ## 成功条件
+    
+    - 新しいスキンでは、恒久的な設計・素材・表現・寸法・推奨条件・現在の制約を `SPEC.md` に記す。
+    - 実行ごとのscene入力、比較画像、動画、合否、読取結果、修正と再描画の経過、独立reviewの結果などは、各スキン内の `verification/verification.md` と `verification/evidence/` に記録・保存できる。
+    - `.gitignore` が `/skins/*/verification/` を除外する。`SPEC.md` に実行ごとのevidenceへのリンクを残す要求がない。
+    - 既存のテンプレートや参照文書で求めている記録内容は、恒久仕様と検証記録へ振り分ける。記録項目自体を削ったり、検証の合格条件を緩めたりしない。
+    - スキル自身のevidenceを用いた検証記録の要求は維持する。
+    - 完成スキンのコード・素材・正式preview・現行仕様、および再利用する検証ツール・共通fixtureは、引き続きGitで管理できる。
+    
+    ## 決定事項
+    
+    - 検証記録は各スキンの `verification/verification.md`、evidenceは同じディレクトリ内の `evidence/` に置き、ディレクトリ単位でGit除外する。
+      - 理由: スキンと一緒に作業中の記録を保持でき、一つのignore規則でリポジトリへの保存要求をなくせるため。
+      - 主な棄却案: リポジトリ内の追跡対象文書に検証記録を移す案。保存先を変えるだけでは目的を満たさないため。
+    - `SPEC.md` は恒久的な現行仕様を扱い、実行ごとの検証記録とevidenceへのリンクは扱わない。
+      - 理由: 保守に必要な仕様と制作時の検証経過では、必要な保存期間が異なるため。
+      - 主な棄却案: すべてを `SPEC.md` に残す案。実行ごとの記録が恒久仕様に混在するため。
+    - `AGENTS.md` は変更しない。
+      - 理由: 既存のGit履歴に関する規則は、commit messageやGit notesに残す検証要約として扱う方針のため。
+      - 主な棄却案: 今回のスキン固有の配置に合わせて上位規則へ例外を追加する案。ルール変更を最小限にするため。
+    - 検証結果全般の明示的なcommit禁止規則は追加しない。
+      - 理由: 今回必要なのは、スキンの検証記録とevidenceをGit除外された配置へ振り分け、保存・リンク要求を取り除くことだから。
+      - 主な棄却案: 検証結果全般に広い禁止規則を設ける案。今回の対象を超えるため。
+    
+    ## 制約
+    
+    - guidance、テンプレート、`.gitignore` の変更を必要最小限にする。
+    - `SPEC.md` と `verification.md` の書く内容は振り分けるだけにし、既存の検証項目、品質基準、停止条件、利用者への結果提示を変えない。
+    - 正式なpackage/catalog用previewと、実行ごとの検証画像・レビュー動画を区別する。
+    - 既存のステージ済み・未commitの別作業があれば保護し、今回の変更に含めない。
+    - push、公開、deployは行わない。
+    
+    ## 対象外
+    
+    - 既存スキンの変更や検証の再実行。
+    - 既存の検証成果物や過去commitの棚卸し・削除。
+    - Git履歴の書換え。
+    - runtimeや検証ツールの機能変更。
+    - `AGENTS.md` の変更。
+    
+    ## 未検証の前提
+    
+    - 実装時点のスキンbuildが、各スキンの `verification/` をZIPへ取り込まないことを確認する。取り込む場合は、その事実と影響を示して配置を再検討する。
+    
+    ## 実装時の指示
+    
+    - 仕様テンプレートの「Keep final scene inputs and selected native/browser evidence in a durable repository location」を含む保存・リンク要求を、新しい配置に合わせて修正する。
+    - スキル本体と参照文書に散在する「検証証拠や修正経過をスキン固有仕様へ残す」要求を確認し、実行ごとの内容だけを `verification.md` へ振り分ける。
+    - `verification.md` のテンプレートを用意する場合は、既存の検証記録項目を移すために必要な最小限の構成にする。
+    - `AGENTS.md` のGit履歴に関する文言や、commit message・Git notesに検証要約を書く運用は変更しない。
+    
+  - A: Read the clean branch and relevant guidance, fetched code and remote notes without replacing the divergent local notes ref, confirmed the skin ZIP build copies only named deliverables, split the specification template into current design and ignored verification templates, routed references and skill instructions, and added one Git ignore rule. Verified the reference graph, skill validator, targeted and full mise checks, ignore behavior, independent guidance review, and a realistic forward test. Committed only six guidance/ignore files as 1d17649; no skin runtime or existing package changed.
