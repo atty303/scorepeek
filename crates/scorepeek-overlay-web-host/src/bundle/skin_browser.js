@@ -139,18 +139,26 @@
         ? old : document.createElementNS(namespace, node.tag);
       for (const attribute of [...element.attributes]) if (!(attribute.name in node.attributes)) element.removeAttribute(attribute.name);
       for (const [name,value] of Object.entries(node.attributes)) {
+        if (element.getAttribute(name) === value) continue;
         if (name === "style" && "style" in element) element.style.cssText = value;
         else element.setAttribute(name,value);
       }
       const keyed = new Map([...element.childNodes].map(child => [child.__scorepeekKey, child]));
-      for (const child of node.children) element.append(make(child, keyed.get(child.key), svg && node.tag !== "foreignObject"));
-      for (const child of [...element.childNodes]) if (!node.children.some(next => next.key === child.__scorepeekKey)) child.remove();
+      const nextKeys = new Set(node.children.map(child => child.key));
+      for (const child of [...element.childNodes]) if (!nextKeys.has(child.__scorepeekKey)) child.remove();
+      for (const [index, child] of node.children.entries()) {
+        const next = make(child, keyed.get(child.key), svg && node.tag !== "foreignObject");
+        if (element.childNodes[index] !== next) element.insertBefore(next, element.childNodes[index] ?? null);
+      }
     }
     if (old && old !== element) old.remove();
     element.__scorepeekKey = node.key;
     return element;
   }
-  function apply(tree) { root.replaceChildren(make(tree, root.firstChild)); }
+  function apply(tree) {
+    const next = make(tree, root.firstChild);
+    if (root.firstChild !== next || root.childNodes.length !== 1) root.replaceChildren(next);
+  }
 
   const sample = new URLSearchParams(location.search).get("sample") === "1" ? "?sample=1" : "";
   const socketUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(spec.canvas.id)}${sample}`;

@@ -68,6 +68,84 @@ browserTest(
 );
 
 browserTest(
+  "animated skin updates keep the non-editor status logo mounted",
+  async ({ page }) => {
+    await page.goto(`${baseURL}/overlay`);
+    await page.locator("#stage").click({ button: "right" });
+    await page.getByRole("button", { name: "+ Add canvas", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Add widget: + Add widget" })
+      .click();
+    await page.getByRole("option", { name: "Status", exact: true }).click();
+    await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
+    await page.getByRole("button", { name: "Unknown OFF", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Save & Close", exact: true })
+      .click();
+    await expect(page.locator(".editor-panel")).toHaveCount(0);
+    await expect(page.locator("#scorepeek-replica-canvas-1"))
+      .toHaveAttribute("src", /sample=0/);
+    await page.waitForTimeout(500);
+
+    const frame = page.frameLocator("#scorepeek-replica-canvas-1");
+    await expect(frame.locator(".status-logo")).toBeVisible();
+    const observed = await frame.locator("#skin-root").evaluate(
+      async (root) => {
+        const logo = root.querySelector(".status-logo");
+        const result = {
+          rootMoves: 0,
+          logoMoves: 0,
+          styleChanges: 0,
+          logoLoads: 0,
+        };
+        const onLogoLoad = () => result.logoLoads += 1;
+        logo.addEventListener("load", onLogoLoad);
+        const observer = new MutationObserver((records) => {
+          for (const record of records) {
+            if (record.type === "attributes") result.styleChanges += 1;
+            if (record.target === root && record.type === "childList") {
+              result.rootMoves += record.removedNodes.length;
+            }
+            for (const node of record.removedNodes) {
+              if (node === logo || node.contains(logo)) result.logoMoves += 1;
+            }
+          }
+        });
+        observer.observe(root, {
+          subtree: true,
+          childList: true,
+          attributes: true,
+          attributeFilter: ["style"],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 550));
+        observer.disconnect();
+        logo.removeEventListener("load", onLogoLoad);
+        return {
+          ...result,
+          sameLogo: root.querySelector(".status-logo") === logo,
+        };
+      },
+    );
+
+    await page.locator("#stage").click({
+      button: "right",
+      position: { x: 10, y: 10 },
+    });
+    await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
+    await page.getByRole("button", { name: "Delete canvas", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Save & Close", exact: true })
+      .click();
+
+    expect(observed.styleChanges).toBeGreaterThan(0);
+    expect(observed.sameLogo).toBe(true);
+    expect(observed.rootMoves).toBe(0);
+    expect(observed.logoMoves).toBe(0);
+    expect(observed.logoLoads).toBe(0);
+  },
+);
+
+browserTest(
   "editor replicas reconnect and follow drag, stale delivery, scroll, and lifecycle",
   async ({ page }) => {
     const pageErrors = [];
