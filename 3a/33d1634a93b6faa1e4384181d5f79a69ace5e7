@@ -1,0 +1,13 @@
+Task: Fix browser Status widget scorepeek logo blinking outside the editor
+Anchor: 3a33d1634a93b6faa1e4384181d5f79a69ace5e7
+Base: 1d17649acbbea2df82cfaee4256c7cbb11e8df03
+Branch: codex/infinitas-status-logo
+Commits: 3a33d1634a93b6faa1e4384181d5f79a69ace5e7 fixes browser skin DOM reconciliation and adds a Status logo regression
+Guidance: AGENTS.md; develop-repository; investigate-problem; design-program-observability; review; docs/overlay-visual-debugging.md; docs/skin-plugin-api-v2.md
+Conditions: Isolated OBS visual server and browser tests on development host; no live OBS or Wayland validation; no remote push authorized
+## Evidence
+Initial non-editor infinitas Status observation: 21 root and logo removals in 1.1 s. The first correction retained the image node but still emitted 20 load events in 1 s because src was reset. Final browser regression observed active style updates with zero root/logo removals and zero logo load events over 550 ms. mise run check and mise run test passed (779 Rust and 4 browser tests). Standard native scenario completed 38 frames; final browser image, top-level DOM, and canvas iframe DOM were inspected. Independent review confirmed obsolete preceding children are removed without detaching the retained Status node.
+Authority: Latest user request and current repository sources, tests, living documentation, and AGENTS.md
+## Transcript
+- U1: browser側のstatus widgetでnon editor時にscorepeek logoが点滅する
+  - A: Reproduced the blinking in an isolated browser visual fixture, traced it to unconditional keyed-child/root DOM moves and repeated unchanged img src assignment, and added a browser regression. Updated the reconciler to preserve unchanged nodes and attributes, including removal ordering for obsolete preceding children. Verified focused and full tests, native and browser visual routes, and independent review; committed the fix locally without pushing.
