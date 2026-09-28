@@ -46,7 +46,7 @@ const initialCanvases = backend === "wayland"
     id: `wayland-${index + 1}`,
     name: `Nested output ${index + 1}`,
     backend: "wayland",
-    skin: "dev.atty303.scorepeek.skin.cyan-system",
+    skin: "dev.atty303.infinitas",
     opacity_percent: 100,
     output,
     x: 20,

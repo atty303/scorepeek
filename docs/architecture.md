@@ -271,8 +271,8 @@ bufferless remap commit, waits for the layer-shell configure, resumes the render
 already-retained skin tree. OBS expresses the same
 active/inactive meaning by including or removing the canvas iframe from composition. On Wayland,
 the skin schedule determines when an update becomes due; both display canvases and editor previews
-run that update on the next compositor frame. The included skins stay idle until their input
-changes; CSS animation is driven by Blitz without rerunning the skin Wasm.
+run that update on the next compositor frame. The included `infinitas` skin stays idle for
+static content and requests 50 ms updates for animated backgrounds or special result states.
 
 Browser integration and fake Wayland are the routine overlay completion gates.
 The checked-in nested compositor scenario is an opt-in host-dependent gate. Real OBS or a live

@@ -116,8 +116,7 @@ fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
 fn skin_install_stdout_remains_one_result_line() {
     let isolated = IsolatedHome::new();
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_scorepeek"));
-    let package =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/infinitas.zip");
     let mut command = Command::new(executable);
     isolated.apply(&mut command);
     let output = command
@@ -132,7 +131,7 @@ fn skin_install_stdout_remains_one_result_line() {
 #[test]
 fn skin_install_force_replaces_same_release_package() {
     let isolated = IsolatedHome::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/infinitas.zip");
     let file = std::fs::File::open(&source).unwrap();
     let mut original = zip::ZipArchive::new(file).unwrap();
     let package = isolated.path("unusable-wasm.zip");
@@ -172,9 +171,7 @@ fn skin_install_force_replaces_same_release_package() {
     assert_eq!(output.stdout, b"unchanged\n");
     let store =
         scorepeek_overlay_runtime::skin::StoreRoot::new(isolated.path("data/scorepeek/skins"));
-    let installed = store
-        .open("dev.atty303.scorepeek.skin.result-aurora")
-        .unwrap();
+    let installed = store.open("dev.atty303.infinitas").unwrap();
     assert_ne!(
         installed.resource("skin.wasm"),
         Some(b"not a wasm module".as_slice())
@@ -194,9 +191,7 @@ fn skin_install_force_replaces_same_release_package() {
     );
     assert!(output.stdout.starts_with(b"replaced "));
     assert!(output.stdout.ends_with(b"\n"));
-    let installed = store
-        .open("dev.atty303.scorepeek.skin.result-aurora")
-        .unwrap();
+    let installed = store.open("dev.atty303.infinitas").unwrap();
     assert_eq!(
         installed.resource("skin.wasm"),
         Some(b"not a wasm module".as_slice())
@@ -210,7 +205,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let skin_store = scorepeek_overlay_runtime::skin::StoreRoot::new(isolated.path("skins"));
     skin_store
         .install(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/infinitas.zip"),
             false,
         )
         .unwrap();
@@ -224,7 +219,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
                 vec![scorepeek_overlay_runtime::config::empty_canvas(
                     "obs-selection".into(),
                     Backend::Obs,
-                    "dev.atty303.scorepeek.skin.result-aurora".parse().unwrap(),
+                    "dev.atty303.infinitas".parse().unwrap(),
                 )]
             },
             config_path: isolated.path("overlay.toml"),
@@ -256,19 +251,13 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(page.contains("'wasm-unsafe-eval'"));
     assert!(!page.contains("'unsafe-inline'"));
     assert!(page.contains("/skin-runtime.js"));
-    assert!(page.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/skin.css"));
-    assert!(page.contains("dev.atty303.scorepeek.skin.result-aurora"));
+    assert!(page.contains("/skin/dev.atty303.infinitas/skin.css"));
+    assert!(page.contains("dev.atty303.infinitas"));
     assert!(page.contains("scorepeek-skin"));
     assert!(page.contains("class=\"scorepeek-skin-scope\""));
-    let skin_css = String::from_utf8(
-        get(
-            address,
-            "/skin/dev.atty303.scorepeek.skin.result-aurora/skin.css",
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(skin_css.contains(".scorepeek-skin-scope .overlay-canvas"));
+    let skin_css =
+        String::from_utf8(get(address, "/skin/dev.atty303.infinitas/skin.css").unwrap()).unwrap();
+    assert!(skin_css.contains(".scorepeek-skin-scope .infinitas"));
     assert!(
         skin_css.contains(".scorepeek-skin-scope,.scorepeek-skin-scope *{pointer-events:none}")
     );
@@ -283,17 +272,17 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(stage.contains("type=\"module\""));
     assert!(stage.contains("obs-selection"));
     assert!(stage.contains("editor-button"));
-    assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.png"));
-    assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.webm"));
+    assert!(stage.contains("/skin/dev.atty303.infinitas/preview.png"));
+    assert!(stage.contains("/skin/dev.atty303.infinitas/preview.webm"));
     let font = get(
         address,
-        "/skin/dev.atty303.scorepeek.skin.result-aurora/Oxanium.ttf",
+        "/skin/dev.atty303.infinitas/ChakraPetch-SemiBoldItalic.ttf",
     )
     .unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));
     assert!(font.ends_with(include_bytes!(
-        "../../../skins/shared/resources/Oxanium.ttf"
+        "../../../skins/infinitas/resources/ChakraPetch-SemiBoldItalic.ttf"
     )));
 
     assert!(
@@ -303,28 +292,18 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     );
     assert!(
         String::from_utf8(
-            get(
-                address,
-                "/skin/dev.atty303.scorepeek.skin.result-aurora/Oxanium-OFL.txt",
-            )
-            .unwrap()
+            get(address, "/skin/dev.atty303.infinitas/OFL-ChakraPetch.txt",).unwrap()
         )
         .unwrap()
         .contains("SIL OPEN FONT LICENSE")
     );
-    let package_root = "/skin/dev.atty303.scorepeek.skin.result-aurora";
+    let package_root = "/skin/dev.atty303.infinitas";
     for (name, mime) in [
         ("preview.png", "image/png"),
         ("preview.webm", "video/webm"),
-        ("background.png", "image/png"),
-        ("frame.png", "image/png"),
-        ("header.png", "image/png"),
-        ("type.png", "image/png"),
-        ("labels.png", "image/png"),
-        ("energy.png", "image/png"),
-        ("Oxanium.ttf", "font/ttf"),
-        ("Orbitron.ttf", "font/ttf"),
-        ("Rajdhani-SemiBold.ttf", "font/ttf"),
+        ("scorepeek-logo.png", "image/png"),
+        ("optical-glass.png", "image/png"),
+        ("ChakraPetch-SemiBoldItalic.ttf", "font/ttf"),
         ("skin.wasm", "application/wasm"),
     ] {
         let asset = get(address, &format!("{package_root}/{name}")).unwrap();
@@ -369,7 +348,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(
         skin_store
             .path()
-            .join("dev.atty303.scorepeek.skin.result-aurora.zip")
+            .join("dev.atty303.infinitas.zip")
             .is_file()
     );
 }

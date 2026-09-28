@@ -111,7 +111,7 @@ impl Fixture {
         document.canvases.push(crate::config::empty_canvas(
             "obs-test".into(),
             Backend::Obs,
-            "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap(),
+            "dev.atty303.infinitas".parse().unwrap(),
         ));
         let path = directory.0.join("overlay.toml");
         let controller = Controller::start(&path, document.clone()).unwrap();

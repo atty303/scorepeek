@@ -67,12 +67,31 @@ fn test_skin(id: &str) -> scorepeek_overlay::Skin {
     id.parse().unwrap()
 }
 
-fn cyan_skin() -> scorepeek_overlay::Skin {
-    test_skin("dev.atty303.scorepeek.skin.cyan-system")
+fn infinitas_skin() -> scorepeek_overlay::Skin {
+    test_skin("dev.atty303.infinitas")
 }
 
-fn result_skin() -> scorepeek_overlay::Skin {
-    test_skin("dev.atty303.scorepeek.skin.result-aurora")
+fn alternate_skin() -> scorepeek_overlay::Skin {
+    test_skin("dev.atty303.test.skin.alternate")
+}
+
+fn alternate_test_package(source: &crate::skin::Package) -> crate::skin::Package {
+    let mut manifest = source.manifest.clone();
+    manifest.id = alternate_skin().name().to_owned();
+    manifest.name = "Alternate test skin".into();
+    let mut entries = std::collections::BTreeMap::new();
+    for name in ["skin.wasm", "skin.css", "preview.png", "preview.webm"] {
+        if let Some(bytes) = source.resource(name) {
+            entries.insert(name.to_owned(), bytes.to_vec());
+        }
+    }
+    for resource in &manifest.resources {
+        entries.insert(
+            resource.path.clone(),
+            source.resource(&resource.path).unwrap().to_vec(),
+        );
+    }
+    crate::skin::Package::test_with_entries(manifest, entries)
 }
 
 #[test]
@@ -121,7 +140,7 @@ fn display_visibility_update_releases_the_signal_read_before_writing() {
     let mut canvas = crate::config::empty_canvas(
         "screen-filtered".into(),
         crate::bridge::data::Backend::Wayland,
-        cyan_skin(),
+        infinitas_skin(),
     );
     canvas.show_on = Some(vec![scorepeek_overlay::ScreenKind::MusicSelect]);
     let published = Rc::new(RefCell::new(None));
@@ -277,7 +296,7 @@ fn editor_skin_updates_coalesce_while_dragging_and_flush_on_frame_or_release() {
 #[test]
 fn repeated_skin_package_lookups_do_not_copy_archives() {
     let manifest: crate::skin::Manifest =
-        toml::from_str(include_str!("../../../../../skins/cyan-system/skin.toml")).unwrap();
+        toml::from_str(include_str!("../../../../../skins/infinitas/skin.toml")).unwrap();
     let package = crate::skin::Package::test_with_entries(
         manifest,
         std::collections::BTreeMap::from([("artwork.bin".into(), vec![0; 8 * 1024 * 1024])]),
@@ -379,13 +398,13 @@ fn native_skin_input_uses_the_manifest_property_authority() {
     let mut canvas = crate::config::empty_canvas(
         "background-probe".into(),
         crate::bridge::data::Backend::Wayland,
-        cyan_skin(),
+        infinitas_skin(),
     );
     canvas
         .skin_properties
         .insert("background".into(), serde_json::json!("static"));
     let manifest: crate::skin::Manifest =
-        toml::from_str(include_str!("../../../../../skins/cyan-system/skin.toml")).unwrap();
+        toml::from_str(include_str!("../../../../../skins/infinitas/skin.toml")).unwrap();
 
     let input = native_skin_input(&canvas, &OverlayState::default(), &manifest);
 
@@ -394,7 +413,7 @@ fn native_skin_input_uses_the_manifest_property_authority() {
 
 #[test]
 fn unchanged_native_frames_do_not_rebuild_surface_projection() {
-    let config = crate::config::visual_debug_config(cyan_skin());
+    let config = crate::config::visual_debug_config(infinitas_skin());
     let draft = config
         .canvases
         .iter()
@@ -415,7 +434,7 @@ fn unchanged_native_frames_do_not_rebuild_surface_projection() {
     for _ in 0..120 {
         assert_eq!(
             cache
-                .resolve(Some(cyan_skin()), &session, &[])
+                .resolve(Some(infinitas_skin()), &session, &[])
                 .unwrap()
                 .len(),
             1
@@ -424,7 +443,9 @@ fn unchanged_native_frames_do_not_rebuild_surface_projection() {
 
     assert_eq!(cache.rebuilds, 1);
     session.advance_revision();
-    let _ = cache.resolve(Some(cyan_skin()), &session, &[]).unwrap();
+    let _ = cache
+        .resolve(Some(infinitas_skin()), &session, &[])
+        .unwrap();
     assert_eq!(cache.rebuilds, 2);
 }
 
@@ -485,7 +506,7 @@ fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
         .unwrap();
         assert!(outcome.input_damage);
     };
-    let mut canvases: Vec<_> = crate::config::visual_debug_config(cyan_skin())
+    let mut canvases: Vec<_> = crate::config::visual_debug_config(infinitas_skin())
         .canvases
         .into_iter()
         .filter(|canvas| canvas.backend == crate::bridge::data::Backend::Wayland)
@@ -756,7 +777,7 @@ fn projection_model_describes_wayland_lifecycle_without_resource_churn() {
                 .collect::<Vec<_>>();
             let projected = self
                 .projection_cache
-                .resolve(Some(cyan_skin()), session, &display)
+                .resolve(Some(infinitas_skin()), session, &display)
                 .unwrap();
             let lifecycle = reconcile_worker_lifecycle(
                 self.surfaces
@@ -846,7 +867,7 @@ fn projection_model_describes_wayland_lifecycle_without_resource_churn() {
         }
     }
 
-    let mut canvases = crate::config::visual_debug_config(cyan_skin())
+    let mut canvases = crate::config::visual_debug_config(infinitas_skin())
         .canvases
         .into_iter()
         .filter(|canvas| canvas.backend == crate::bridge::data::Backend::Wayland)
@@ -922,7 +943,7 @@ fn projection_model_describes_wayland_lifecycle_without_resource_churn() {
 
     let creates = fake.runtime_creates;
     let drops = fake.runtime_drops;
-    session.draft[0].skin = result_skin();
+    session.draft[0].skin = alternate_skin();
     session.advance_revision();
     fake.apply(&session);
     assert_eq!(fake.runtime_creates, creates + 1);
@@ -1736,9 +1757,9 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 canvases
             };
             let started = Instant::now();
-            let projected = self
-                .projection_cache
-                .resolve(Some(cyan_skin()), &session, &display)?;
+            let projected =
+                self.projection_cache
+                    .resolve(Some(infinitas_skin()), &session, &display)?;
             self.work.record("projection", started.elapsed());
             let lifecycle = reconcile_worker_lifecycle(
                 self.surfaces
@@ -1967,9 +1988,10 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             output: &str,
             selector: &str,
         ) -> Result<(), String> {
-            let [x, y] = self
-                .stage_point(output, selector)
-                .or_else(|_| self.stage_descendant_point(output, selector))?;
+            let [x, y] = self.stage_point(output, selector).or_else(|first| {
+                self.stage_descendant_point(output, selector)
+                    .map_err(|second| format!("{first}; {second}"))
+            })?;
             for event in [
                 Event::PointerMotion { x, y },
                 Event::PointerButton {
@@ -2201,7 +2223,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
             let inner = stage.document.inner.borrow();
             assert_eq!(
                 inner
-                    .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+                    .query_selector_all(".scorepeek-skin-scope .infinitas")
                     .unwrap()
                     .len(),
                 expected.canvases.len(),
@@ -2227,7 +2249,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
                 assert!(
                     inner
                         .query_selector(&format!(
-                            ".scorepeek-skin-scope .overlay-canvas[*|data-canvas-id='{}']",
+                            ".scorepeek-skin-scope[*|data-skin-canvas='{}'] .infinitas",
                             canvas.id
                         ))
                         .unwrap()
@@ -2262,7 +2284,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         );
     }
 
-    let mut canvases = crate::config::visual_debug_config(cyan_skin())
+    let mut canvases = crate::config::visual_debug_config(infinitas_skin())
         .canvases
         .into_iter()
         .filter(|canvas| canvas.backend == crate::bridge::data::Backend::Wayland)
@@ -2296,7 +2318,12 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     canvases[1].y = 0;
     let mut session = EditorSession::new(canvases, [1920, 1080], "fake-wayland");
     session.set_session_id(41);
-    session.set_skins(embedded_editor_skins());
+    let mut skins = embedded_editor_skins();
+    let mut alternate = skins[0].clone();
+    alternate.id = alternate_skin();
+    alternate.name = "Alternate test skin".into();
+    skins.push(alternate);
+    session.set_skins(skins);
     let initial_outputs = vec![
         OutputDescription {
             name: "WL-1".into(),
@@ -2338,16 +2365,14 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     let store_guard = TestSkinStore(store_path.clone());
     let store = crate::skin::StoreRoot::new(store_path);
     let package_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
-    for package in ["cyan-system.zip", "result-aurora.zip", "dj-blackbox.zip"] {
-        store
-            .install(&package_root.join(package), false)
-            .unwrap_or_else(|error| panic!("install test skin {package}: {error}"));
-    }
+    store
+        .install(&package_root.join("infinitas.zip"), false)
+        .unwrap();
     let assets = Arc::new(SkinAssetCache::new(store));
     let mut cold_load_work = FrameWorkProfile::default();
     let cold_start = cold_load_work.snapshot();
     assets
-        .load_profiled(cyan_skin().name(), &mut cold_load_work)
+        .load_profiled(infinitas_skin().name(), &mut cold_load_work)
         .unwrap();
     cold_load_work.finish_frame(&cold_start, 0, 0);
     let cold_load = cold_load_work.frames.back().unwrap();
@@ -2361,6 +2386,12 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         cold_load.phases["package_clone"].total_ns,
         assets.clone_ns.load(std::sync::atomic::Ordering::Relaxed)
     );
+    let alternate = alternate_test_package(&assets.load(infinitas_skin().name()).unwrap());
+    assets
+        .packages
+        .lock()
+        .unwrap()
+        .insert(alternate.manifest.id.clone(), Arc::new(alternate));
     let mut fake = FakeAdapter::new(published, assets);
     fake.apply(&mut authority).unwrap();
     let configured = fake
@@ -2433,12 +2464,13 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         ".editor-output-picker .list-picker-trigger",
     )
     .unwrap();
-    fake.click_stage(
-        &mut authority,
-        "WL-1",
-        ".editor-output-picker .list-picker-option[*|data-index='1']",
-    )
-    .unwrap();
+    for command in [
+        scorepeek_overlay_wayland_handles::TextCommand::Down,
+        scorepeek_overlay_wayland_handles::TextCommand::Accept,
+    ] {
+        fake.event("WL-1", Event::Text(command)).unwrap();
+        fake.apply(&mut authority).unwrap();
+    }
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-2"));
     fake.scroll_stage(&mut authority, "WL-2", ".navigator-scroll", -800.0)
         .unwrap();
@@ -2454,12 +2486,13 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         ".editor-output-picker .list-picker-trigger",
     )
     .unwrap();
-    fake.click_stage(
-        &mut authority,
-        "WL-2",
-        ".editor-output-picker .list-picker-option[*|data-index='0']",
-    )
-    .unwrap();
+    for command in [
+        scorepeek_overlay_wayland_handles::TextCommand::Up,
+        scorepeek_overlay_wayland_handles::TextCommand::Accept,
+    ] {
+        fake.event("WL-2", Event::Text(command)).unwrap();
+        fake.apply(&mut authority).unwrap();
+    }
     assert_eq!(authority.session().active_output.as_deref(), Some("WL-1"));
     assert_eq!(
         authority.session().selected_canvas.as_deref(),
@@ -2817,12 +2850,13 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         ".widget-picker .list-picker-trigger",
     )
     .unwrap();
-    fake.click_stage(
-        &mut authority,
-        "WL-1",
-        ".widget-picker .list-picker-option[*|data-index='5']",
-    )
-    .unwrap();
+    for command in [
+        scorepeek_overlay_wayland_handles::TextCommand::End { select: false },
+        scorepeek_overlay_wayland_handles::TextCommand::Accept,
+    ] {
+        fake.event("WL-1", Event::Text(command)).unwrap();
+        fake.apply(&mut authority).unwrap();
+    }
     assert_eq!(
         authority.session().current().unwrap().widgets.len(),
         widget_count_before + 1
@@ -2876,10 +2910,10 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
     );
 
     let runtime_creates = fake.runtime_creates();
-    let replacement_skin = if authority.session().current().unwrap().skin == result_skin() {
-        cyan_skin()
+    let replacement_skin = if authority.session().current().unwrap().skin == alternate_skin() {
+        infinitas_skin()
     } else {
-        result_skin()
+        alternate_skin()
     };
     authority.dispatch(EditorInput::Action(EditorAction::Skin(replacement_skin)));
     fake.apply(&mut authority).unwrap();
@@ -3291,7 +3325,7 @@ fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
 
 #[test]
 fn canvas_position_does_not_invalidate_skin_but_content_geometry_does() {
-    let mut before = crate::config::visual_debug_config(cyan_skin())
+    let mut before = crate::config::visual_debug_config(infinitas_skin())
         .canvases
         .into_iter()
         .find(|canvas| canvas.backend == crate::bridge::data::Backend::Wayland)
@@ -3555,7 +3589,7 @@ fn editor_stage_is_removed_when_display_projection_replaces_it() {
     let projected = vec![crate::config::empty_canvas(
         "wayland-canvas".into(),
         crate::bridge::data::Backend::Wayland,
-        cyan_skin(),
+        infinitas_skin(),
     )];
 
     assert!(worker_needs_replacement(
@@ -3603,7 +3637,7 @@ fn unmap_failure_is_primary_when_the_app_loop_also_failed() {
 
 #[test]
 fn editor_stages_are_output_owned_when_canvas_assignment_changes() {
-    let mut canvases = crate::config::visual_debug_config(cyan_skin())
+    let mut canvases = crate::config::visual_debug_config(infinitas_skin())
         .canvases
         .into_iter()
         .filter(|canvas| canvas.backend == crate::bridge::data::Backend::Wayland)
@@ -3712,7 +3746,7 @@ fn visual_debug_surface_contains_every_visible_canvas_in_one_stage_projection() 
         .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
         .count();
     let rendered_skin_roots = inner
-        .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+        .query_selector_all(".scorepeek-skin-scope .infinitas")
         .unwrap()
         .len();
     assert_eq!(canvas_rects, expected_canvases);
@@ -3758,7 +3792,7 @@ fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
             .document
             .inner
             .borrow()
-            .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+            .query_selector_all(".scorepeek-skin-scope .infinitas")
             .unwrap()
             .len(),
         expected
@@ -3811,7 +3845,7 @@ fn visual_debug_new_canvas_mounts_its_skin_on_the_same_reactive_turn() {
             .document
             .inner
             .borrow()
-            .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+            .query_selector_all(".scorepeek-skin-scope .infinitas")
             .unwrap()
             .len(),
         1,
@@ -3841,7 +3875,7 @@ fn visual_debug_role_transition_remounts_skin_content_in_the_display_root() {
             .document
             .inner
             .borrow()
-            .query_selector_all("#scorepeek-skin-root .overlay-canvas")
+            .query_selector_all("#scorepeek-skin-root .infinitas")
             .unwrap()
             .len(),
         1
@@ -4093,9 +4127,19 @@ fn native_ime_targets_the_focused_shared_text_control() {
 
 #[test]
 fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state() {
+    let mut canvases: Vec<_> = crate::config::visual_debug_config(infinitas_skin())
+        .canvases
+        .iter()
+        .map(scorepeek_overlay_runtime::config::Canvas::presentation)
+        .collect();
+    let status = canvases
+        .iter_mut()
+        .find(|canvas| canvas.id == "wayland-status")
+        .unwrap();
+    status.widgets[0].kind = scorepeek_overlay::WidgetKind::Empty;
     let scenario = VisualDebugScenario {
         monotonic_base_ms: None,
-        canvases: None,
+        canvases: Some(canvases),
         skin: None,
         logical_size: [1920, 1080],
         scale: 1.0,
@@ -4118,7 +4162,7 @@ fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state(
     assert_eq!(
         session.authority.session().selected_widget.as_deref(),
         Some("status"),
-        "the native navigator click must select the status widget"
+        "the native navigator click must select the empty widget"
     );
     session.scroll(".inspector-scroll", 0.0, 1200.0).unwrap();
     session.focus(".property-value-input").unwrap();
@@ -4151,7 +4195,7 @@ fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state(
     session.focus(".property-value-input").unwrap();
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::SelectAll);
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::Insert(
-        "25".into(),
+        "0.25".into(),
     ));
     session.key_composing(
         &scorepeek_overlay_wayland_handles::TextCommand::Accept,
@@ -4164,7 +4208,7 @@ fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state(
             .chrome
             .field_drafts
             .values()
-            .any(|draft| draft.text == "25")
+            .any(|draft| draft.text == "0.25")
     );
     session.key(&scorepeek_overlay_wayland_handles::TextCommand::Accept);
 
@@ -4180,9 +4224,9 @@ fn native_skin_property_draft_survives_rebuild_and_commits_through_shared_state(
     assert_eq!(
         widget
             .skin_properties
-            .get("fill-opacity-percent")
-            .and_then(serde_json::Value::as_i64),
-        Some(25)
+            .get("opacity")
+            .and_then(serde_json::Value::as_f64),
+        Some(0.25)
     );
 }
 
@@ -4299,7 +4343,8 @@ fn compact_canvas_editor_expands_inside_the_output() {
 
 #[test]
 fn editor_input_region_covers_panel_and_canvas_but_leaves_blank_output_clear() {
-    let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
+    let mut canvas =
+        crate::config::visual_debug_config(infinitas_skin()).canvases[0].presentation();
     canvas.output = Some("WL-1".into());
     let scenario = VisualDebugScenario {
         monotonic_base_ms: None,
@@ -4337,7 +4382,8 @@ fn editor_input_region_covers_panel_and_canvas_but_leaves_blank_output_clear() {
 #[test]
 fn aggregate_canvas_visibility_preserves_explicit_screen_membership() {
     use scorepeek_overlay::editor::model::SCREENS;
-    let mut canvas = crate::config::visual_debug_config(cyan_skin()).canvases[0].presentation();
+    let mut canvas =
+        crate::config::visual_debug_config(infinitas_skin()).canvases[0].presentation();
     canvas.show_on = None;
     let mut model = EditorSession::new(vec![canvas.clone()], [1920, 1080], "wayland");
     model.readonly = false;

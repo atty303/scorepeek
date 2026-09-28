@@ -157,7 +157,7 @@ impl VisualDebugSession {
         physical_size: [u32; 2],
     ) -> Result<Self, String> {
         #[cfg(test)]
-        let default_skin = "dev.atty303.scorepeek.skin.cyan-system".parse().ok();
+        let default_skin = "dev.atty303.infinitas".parse().ok();
         #[cfg(not(test))]
         let default_skin = SkinAssetCache::new(crate::skin::StoreRoot::discover())
             .installed_editor_skins()?
@@ -244,7 +244,7 @@ impl VisualDebugSession {
         let (document_config, skin_assets) = {
             let package_root =
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
-            let packages = ["cyan-system.zip", "result-aurora.zip", "dj-blackbox.zip"]
+            let packages = ["infinitas.zip"]
                 .into_iter()
                 .map(|name| crate::skin::Package::open(&package_root.join(name)))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -857,8 +857,8 @@ pub fn run_visual_debug(
     let selectors = if scenario.selectors.is_empty() {
         [
             ".canvas-content",
-            ".overlay-canvas",
-            ".widget-slot",
+            ".infinitas",
+            ".panel",
             ".editor-panel-toggle",
             ".editor-panel",
             ".inspector-scroll",

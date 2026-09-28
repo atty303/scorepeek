@@ -31,9 +31,9 @@
       "output": "HEADLESS-1"
     },
     {
-      "id": "cyan",
-      "name": "cyan",
-      "skin": "dev.atty303.scorepeek.skin.cyan-system",
+      "id": "alternate",
+      "name": "Alternate test skin",
+      "skin": "dev.atty303.test.skin.alternate",
       "x": 340,
       "y": 220,
       "width": 600,

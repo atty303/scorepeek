@@ -298,7 +298,7 @@ browserTest(
     await page.locator(
       ".editor-accordion-heading[data-section='new-canvas:skin']",
     ).locator("..").locator(".skin-option strong").filter({
-      hasText: /^Cyan System$/,
+      hasText: /^infinitas$/,
     }).click();
     await addCanvas.click();
     const widgetPicker = page.locator("#widget-picker-trigger");
@@ -344,8 +344,8 @@ browserTest(
     await expect.poll(async () =>
       JSON.parse(await unrelatedFrame.locator("#scorepeek-skin").textContent())
         .canvas.skin
-    ).toBe("dev.atty303.scorepeek.skin.cyan-system");
-    await expect(unrelatedFrame.locator(".widget-slot")).toBeVisible();
+    ).toBe("dev.atty303.infinitas");
+    await expect(unrelatedFrame.locator(".panel.status")).toBeVisible();
     await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
 
     const frame = page.frameLocator("#scorepeek-replica-canvas-1");
@@ -362,9 +362,7 @@ browserTest(
     const handle = page.locator(
       `.editor-canvas[data-canvas='canvas-1'] .editor-widget-hit[data-widget='${draggedWidgetId}']`,
     );
-    const slot = frame.locator(
-      `.widget-slot[data-widget-id='${draggedWidgetId}']`,
-    );
+    const slot = frame.locator(".panel.status").last();
     await expect.poll(async () => [await handle.count(), await slot.count()])
       .toEqual([1, 1]);
     await expect(slot).toBeVisible();
@@ -412,10 +410,9 @@ browserTest(
     )
       .toBe(replicaLoadsBeforeRestart);
     await expect(slot).toBeVisible();
-    const unrelatedSameCanvas = frame.locator(
-      `.widget-slot:not([data-widget-id='${draggedWidgetId}'])`,
-    ).first();
-    const unrelatedOtherCanvas = unrelatedFrame.locator(".widget-slot").first();
+    const unrelatedSameCanvas = frame.locator(".panel.status").first();
+    const unrelatedOtherCanvas = unrelatedFrame.locator(".panel.status")
+      .first();
     const unrelatedBefore = {
       sameCanvas: await unrelatedSameCanvas.boundingBox(),
       otherCanvas: await unrelatedOtherCanvas.boundingBox(),
@@ -671,12 +668,8 @@ browserTest(
         ".skin-property[data-property='background'] .property-option[data-value='static']",
       )
       .click();
-    await expect(frame.locator(".canvas-background-art")).toBeVisible();
-    await expect(frame.locator(".canvas-background")).toHaveCSS(
-      "background-color",
-      "rgb(14, 25, 37)",
-    );
-    await expect.poll(() => frame.locator(".canvas-background").boundingBox())
+    await expect(frame.locator(".backdrop-image").first()).toBeVisible();
+    await expect.poll(() => frame.locator(".infinitas").boundingBox())
       .toEqual({
         x: 0,
         y: 0,
@@ -684,10 +677,10 @@ browserTest(
         height: 720,
       });
     await expect.poll(() =>
-      frame.locator(".canvas-background-art").evaluate((node) =>
-        getComputedStyle(node).backgroundImage
+      frame.locator(".backdrop-image").first().evaluate(
+        (image) => image.src,
       )
-    ).toContain("/skin/");
+    ).toMatch(/\/skin\/.*\/optical-glass\.png/);
     const screenshotPath = Deno.env.get("SCOREPEEK_BROWSER_SCREENSHOT");
     if (screenshotPath) {
       await page.screenshot({
@@ -710,7 +703,9 @@ browserTest(
       .getAttribute("src");
     const lifecycleBeforeSkin = replicaLifecycle.length;
     const wasmBeforeSkin = skinWasmRequests.length;
-    await appearance.locator(".skin-option").filter({ hasText: "DJ Blackbox" })
+    await appearance.locator(".skin-option").filter({
+      hasText: "Alternate test skin",
+    })
       .click();
     await expect(page.locator("#scorepeek-replica-canvas-1")).not
       .toHaveAttribute(
@@ -728,14 +723,11 @@ browserTest(
 
     await page.locator(".widget-row[data-widget-id='empty-1']").click();
     const opacity = page.locator(
-      "#canvas-1\\:empty-1\\:property\\:fill-opacity-percent",
+      "#canvas-1\\:empty-1\\:property\\:opacity",
     );
-    await opacity.fill("50");
+    await opacity.fill("0.5");
     await opacity.press("Enter");
-    await expect(frame.locator(".empty-fill")).toHaveAttribute(
-      "style",
-      /rgba\(0,\s*0,\s*0,\s*0\.5\)/,
-    );
+    await expect(frame.locator(".empty-fill")).toHaveCSS("opacity", "0.5");
     await page.getByRole("button", { name: "DELETE WIDGET", exact: true })
       .click();
     await expect(frame.locator(".empty-widget")).toHaveCount(0);
@@ -749,19 +741,19 @@ browserTest(
     await page.getByRole("button", { name: "Save & Close", exact: true })
       .click();
     await expect(page.locator(".editor-panel")).toHaveCount(0);
-    await expect(frame.locator(".canvas-background-art")).toBeVisible();
-    expect(
-      await frame.locator(".canvas-background-art").evaluate((node) =>
-        getComputedStyle(node).backgroundImage
-      ),
-    ).toContain("/skin/");
+    await expect(frame.locator(".backdrop-image").first()).toBeVisible();
+    await expect.poll(() =>
+      frame.locator(".backdrop-image").first().evaluate(
+        (image) => image.src,
+      )
+    ).toMatch(/\/skin\/.*\/optical-glass\.png/);
     const stageConnectionsBeforeReload = stageConnections.length;
     await page.reload();
     await expect.poll(() => stageConnections.length).toBe(
       stageConnectionsBeforeReload + 1,
     );
     stageConnections.at(-1).release();
-    await expect(frame.locator(".canvas-background-art")).toBeVisible();
+    await expect(frame.locator(".backdrop-image").first()).toBeVisible();
     await expect(page.locator(".editor-panel")).toHaveCount(0);
 
     await page.locator("#stage").click({

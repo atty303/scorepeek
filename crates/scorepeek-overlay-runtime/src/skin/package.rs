@@ -510,22 +510,16 @@ mod tests {
 
     #[test]
     fn repository_manifests_are_valid_package_sources() {
-        for manifest in [
-            include_str!("../../../../skins/cyan-system/skin.toml"),
-            include_str!("../../../../skins/result-aurora/skin.toml"),
-            include_str!("../../../../skins/dj-blackbox/skin.toml"),
-        ] {
-            toml::from_str::<Manifest>(manifest)
-                .unwrap()
-                .validate()
-                .unwrap();
-        }
+        toml::from_str::<Manifest>(include_str!("../../../../skins/infinitas/skin.toml"))
+            .unwrap()
+            .validate()
+            .unwrap();
     }
 
     #[test]
     fn legacy_manifest_remains_readable_for_explicit_replacement() {
         let mut manifest: Manifest =
-            toml::from_str(include_str!("../../../../skins/cyan-system/skin.toml")).unwrap();
+            toml::from_str(include_str!("../../../../skins/infinitas/skin.toml")).unwrap();
         manifest.api_version = 1;
         manifest.release = "legacy".into();
         let path = std::env::temp_dir().join(format!(
@@ -557,7 +551,7 @@ mod tests {
     #[test]
     fn updates_preserve_only_surviving_scope_and_type_pairs() {
         let old: Manifest =
-            toml::from_str(include_str!("../../../../skins/cyan-system/skin.toml")).unwrap();
+            toml::from_str(include_str!("../../../../skins/infinitas/skin.toml")).unwrap();
         let mut added = old.clone();
         added
             .widget_properties

@@ -32,7 +32,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-scripts/with-isolated-skins.sh deno run -A scripts/overlay-fixture-host.deno.js "$test_root" "$address" <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
+SCOREPEEK_TEST_SKIN=1 scripts/with-isolated-skins.sh deno run -A scripts/overlay-fixture-host.deno.js "$test_root" "$address" <"$stop_fifo" 3>&- >"$server_log" 2>&1 &
 server_pid=$!
 
 for _ in {1..300}; do

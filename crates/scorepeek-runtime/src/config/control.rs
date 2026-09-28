@@ -589,28 +589,19 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
 mod tests {
     use super::*;
 
-    fn blackbox_skin() -> scorepeek_overlay::Skin {
-        "dev.atty303.scorepeek.skin.dj-blackbox".parse().unwrap()
-    }
-
-    fn cyan_skin() -> scorepeek_overlay::Skin {
-        "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap()
+    fn infinitas_skin() -> scorepeek_overlay::Skin {
+        "dev.atty303.infinitas".parse().unwrap()
     }
 
     fn seed_skin_store(root: &Path) -> StoreRoot {
         let store = StoreRoot::new(root.join("skins"));
         std::fs::create_dir_all(store.path()).unwrap();
         let packages = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
-        for (name, id) in [
-            ("cyan-system", "dev.atty303.scorepeek.skin.cyan-system"),
-            ("dj-blackbox", "dev.atty303.scorepeek.skin.dj-blackbox"),
-        ] {
-            std::fs::copy(
-                packages.join(format!("{name}.zip")),
-                store.path().join(format!("{id}.zip")),
-            )
-            .unwrap();
-        }
+        std::fs::copy(
+            packages.join("infinitas.zip"),
+            store.path().join("dev.atty303.infinitas.zip"),
+        )
+        .unwrap();
         store
     }
 
@@ -623,7 +614,7 @@ mod tests {
         (
             root.join("overlay.toml"),
             Mutex::new(State {
-                config: scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
+                config: scorepeek_overlay_runtime::config::visual_debug_config(infinitas_skin()),
                 skin_store: StoreRoot::new(root.join("skins")),
                 leases: BTreeMap::new(),
                 diagnostics: VecDeque::new(),
@@ -677,7 +668,7 @@ mod tests {
             "workspace editor is already active"
         );
         let mut draft = first.canvases;
-        draft[0].skin = blackbox_skin();
+        draft[0].x += 1;
         let updated = apply(
             Request::UpdateBackendDraft {
                 backend: Backend::Obs,
@@ -712,11 +703,11 @@ mod tests {
         .unwrap();
         assert!(!saved.dirty);
         assert_eq!(saved.generation, Some(1));
-        assert_eq!(saved.canvases[0].skin, blackbox_skin());
+        assert_eq!(saved.canvases[0].x, updated.canvases[0].x);
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .contains("dj-blackbox")
+                .contains("dev.atty303.infinitas")
         );
         let released = apply(
             Request::ReleaseBackend {
@@ -770,7 +761,7 @@ mod tests {
             .unwrap()
             .touched = Instant::now().checked_sub(LEASE_TIMEOUT).unwrap();
         let mut draft = acquire("current").canvases;
-        draft[0].skin = blackbox_skin();
+        draft[0].x += 1;
         let updated = apply(
             Request::UpdateBackendDraft {
                 backend: Backend::Obs,
@@ -925,7 +916,7 @@ mod tests {
         let path = root.path().join("overlay.toml");
         let controller = Controller::start(
             &path,
-            scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
+            scorepeek_overlay_runtime::config::visual_debug_config(infinitas_skin()),
         )
         .unwrap();
         let mut stalled = UnixStream::connect(controller.path()).unwrap();
@@ -947,7 +938,7 @@ mod tests {
         let path = root.path().join("overlay.toml");
         let controller = Controller::start_with_store(
             &path,
-            scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
+            scorepeek_overlay_runtime::config::visual_debug_config(infinitas_skin()),
             seed_skin_store(root.path()),
         )
         .unwrap();
@@ -966,7 +957,7 @@ mod tests {
         );
 
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("dj-blackbox"));
+        assert!(saved.contains("dev.atty303.infinitas"));
     }
 
     #[test]
@@ -975,7 +966,7 @@ mod tests {
         let path = root.path().join("overlay.toml");
         let controller = Controller::start(
             &path,
-            scorepeek_overlay_runtime::config::visual_debug_config(cyan_skin()),
+            scorepeek_overlay_runtime::config::visual_debug_config(infinitas_skin()),
         )
         .unwrap();
         let mut stream = UnixStream::connect(controller.path()).unwrap();
@@ -1018,7 +1009,7 @@ mod tests {
         assert!(!acquired.readonly);
 
         let mut valid = acquired.canvases;
-        valid[0].skin = blackbox_skin();
+        valid[0].x += 1;
         let committed = client(
             socket,
             &Request::CommitBackend {

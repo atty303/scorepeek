@@ -27,10 +27,6 @@ for required in "${required_files[@]}"; do
 done
 
 cmp "$root/docs/assets/scorepeek-logo-dark.png" "$site/assets/scorepeek-logo-dark.png"
-cmp "$root/skins/cyan-system/preview.png" "$site/assets/cyan-system.png"
-cmp "$root/skins/result-aurora/preview.png" "$site/assets/result-aurora.png"
-cmp "$root/skins/dj-blackbox/preview.png" "$site/assets/dj-blackbox.png"
-
 extract_ids() {
   grep -oE 'id="[A-Za-z0-9_-]+"' "$1" | cut -d '"' -f 2
 }

@@ -2015,8 +2015,8 @@ mod skin_tests {
         model.editing = true;
         model.readonly = false;
         model.preview = ScreenKind::Unknown;
-        model.set_skins(vec![skin("dev.atty303.scorepeek.skin.dj-blackbox", 1)]);
-        let selected: Skin = "dev.atty303.scorepeek.skin.dj-blackbox".parse().unwrap();
+        model.set_skins(vec![skin("dev.atty303.infinitas", 1)]);
+        let selected: Skin = "dev.atty303.infinitas".parse().unwrap();
         model.action(&EditorAction::NewCanvasSkin(selected));
 
         assert!(model.action(&EditorAction::AddCanvas));

@@ -179,13 +179,13 @@ pub(crate) fn display_canvas_specification_uses_the_skin_property_authority() {
     let mut canvas = crate::config::empty_canvas(
         "browser-background".into(),
         crate::host::lifecycle::Backend::Obs,
-        "dev.atty303.scorepeek.skin.cyan-system".parse().unwrap(),
+        "dev.atty303.infinitas".parse().unwrap(),
     );
     canvas
         .skin_properties
         .insert("background".into(), serde_json::json!("none"));
     let manifest: crate::skin::Manifest =
-        toml::from_str(include_str!("../../../../skins/cyan-system/skin.toml")).unwrap();
+        toml::from_str(include_str!("../../../../skins/infinitas/skin.toml")).unwrap();
 
     assert_eq!(
         effective_canvas_properties(&canvas, &manifest)["background"],

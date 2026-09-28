@@ -38,11 +38,6 @@ package() {
   local work="$staging/$name"
   local archive="$staging/$name.zip"
   local module="${crate//-/_}.wasm"
-  local shared=false
-  if [[ -f "$skin_dir/skin.build.toml" ]] && grep -Eq '^shared[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$skin_dir/skin.build.toml"; then
-    shared=true
-  fi
-
   cargo build --locked --release --target wasm32-unknown-unknown -p "$crate"
   mkdir -p "$work"
   cp "$skin_dir/skin.toml" "$work/skin.toml"
@@ -51,19 +46,11 @@ package() {
   if [[ -f "$skin_dir/preview.webm" ]]; then
     cp "$skin_dir/preview.webm" "$work/preview.webm"
   fi
-  if [[ "$shared" == true ]]; then
-    cp "$root"/skins/shared/resources/* "$work/"
-  fi
   if compgen -G "$skin_dir/resources/*" >/dev/null; then
     cp "$skin_dir"/resources/* "$work/"
   fi
 
-  if [[ "$shared" == true ]]; then
-    # The original three retain their private implementation until comparison ends.
-    bash "$root/skins/shared/tools/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
-  else
-    bash "$root/.agents/skills/create-overlay-skin/scripts/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
-  fi
+  bash "$root/.agents/skills/create-overlay-skin/scripts/compose-css.bash" "$root" "$skin_dir" "$work/skin.css"
   (cd "$work" && zip -q -X -9 "$archive" ./*)
   mv -fT -- "$archive" "$output/$name.zip"
 }

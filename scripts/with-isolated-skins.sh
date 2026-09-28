@@ -56,6 +56,11 @@ package_dir=${SCOREPEEK_SKINS_PACKAGE_DIR:-$root/target/skins}
 for package in "$package_dir"/*.zip; do
   "${SCOREPEEK_BINARY:-$root/target/debug/scorepeek}" skin install "$package" >/dev/null
 done
+if [[ "${SCOREPEEK_TEST_SKIN:-0}" == 1 ]]; then
+  test_package="$xdg/alternate-test-skin.zip"
+  bash "$root/scripts/build-test-skin-package.bash" "$test_package"
+  "${SCOREPEEK_BINARY:-$root/target/debug/scorepeek}" skin install "$test_package" >/dev/null
+fi
 
 if [[ "${1:-}" == deno ]]; then
   shift

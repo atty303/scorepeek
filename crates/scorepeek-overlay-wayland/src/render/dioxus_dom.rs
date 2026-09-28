@@ -760,35 +760,31 @@ fn skin_error_type(error: &str) -> &'static str {
 
 #[cfg(test)]
 fn embedded_editor_skins() -> Vec<scorepeek_overlay::editor::EditorSkin> {
-    [
-        include_str!("../../../../skins/cyan-system/skin.toml"),
-        include_str!("../../../../skins/result-aurora/skin.toml"),
-        include_str!("../../../../skins/dj-blackbox/skin.toml"),
-    ]
-    .into_iter()
-    .filter_map(|source| {
-        let manifest: crate::skin::Manifest = toml::from_str(source).ok()?;
-        Some(scorepeek_overlay::editor::EditorSkin {
-            id: manifest.id.parse().ok()?,
-            name: manifest.name,
-            release: manifest.release,
-            preview: String::new(),
-            preview_video: None,
-            widget_defaults: serde_json::from_value(
-                serde_json::to_value(manifest.widget_defaults).ok()?,
-            )
-            .ok()?,
-            canvas_properties: serde_json::from_value(
-                serde_json::to_value(manifest.canvas_properties).ok()?,
-            )
-            .ok()?,
-            widget_properties: serde_json::from_value(
-                serde_json::to_value(manifest.widget_properties).ok()?,
-            )
-            .ok()?,
+    [include_str!("../../../../skins/infinitas/skin.toml")]
+        .into_iter()
+        .filter_map(|source| {
+            let manifest: crate::skin::Manifest = toml::from_str(source).ok()?;
+            Some(scorepeek_overlay::editor::EditorSkin {
+                id: manifest.id.parse().ok()?,
+                name: manifest.name,
+                release: manifest.release,
+                preview: String::new(),
+                preview_video: None,
+                widget_defaults: serde_json::from_value(
+                    serde_json::to_value(manifest.widget_defaults).ok()?,
+                )
+                .ok()?,
+                canvas_properties: serde_json::from_value(
+                    serde_json::to_value(manifest.canvas_properties).ok()?,
+                )
+                .ok()?,
+                widget_properties: serde_json::from_value(
+                    serde_json::to_value(manifest.widget_properties).ok()?,
+                )
+                .ok()?,
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 #[allow(clippy::cast_possible_truncation)]
 fn snap_i32(value: f64) -> i32 {

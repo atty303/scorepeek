@@ -3,7 +3,8 @@
     {
       "id": "design",
       "name": "Design",
-      "skin": "dev.atty303.scorepeek.skin.result-aurora",
+      "skin": "dev.atty303.infinitas",
+      "output": "HEADLESS-1",
       "x": 0,
       "y": 0,
       "width": 1920,
@@ -29,7 +30,7 @@
           "width": 760,
           "height": 280,
           "settings": { "title": "HAND CAM / DP" },
-          "skin_properties": { "frame-width": "l" }
+          "skin_properties": { "opacity": 0.4 }
         },
         {
           "id": "status",
@@ -79,7 +80,7 @@
           "width": 400,
           "height": 280,
           "settings": { "title": "FACE CAM" },
-          "skin_properties": { "frame-width": "s" }
+          "skin_properties": { "opacity": 0.7 }
         },
         {
           "id": "comments",
@@ -97,14 +98,14 @@
   ],
   "editing": false,
   "selectors": [
-    ".canvas-background",
-    ".empty-frame",
+    ".backdrop",
+    ".surface",
     ".empty-geometry",
-    ".widget-slot",
+    ".panel",
     ".widget-content",
     ".empty-title",
-    ".material-frame",
-    ".canvas-background-light",
+    ".glass-face",
+    ".backdrop-image",
     ".empty-title-edit",
     ".title-accept",
     ".aspect-ratio",
@@ -118,7 +119,11 @@
     },
     {
       "action": "click",
-      "selector": ".editor-widget-hit[data-widget='cam']"
+      "selector": ".canvas-select[*|data-canvas-id='design'] .navigator-item-select"
+    },
+    {
+      "action": "click",
+      "selector": ".editor-widget-hit[*|data-widget='cam']"
     },
     {
       "action": "scroll",
@@ -131,20 +136,6 @@
       "selector": ".editor-number-field",
       "dx": 0,
       "dy": -800
-    },
-    {
-      "action": "click",
-      "selector": ".skin-property[data-property='frame-width'] button[data-index='0']"
-    },
-    {
-      "action": "click",
-      "selector": ".skin-property[data-property='frame-width'] button[data-index='2']"
-    },
-    {
-      "action": "scroll",
-      "selector": ".skin-property[data-property='frame-width']",
-      "dx": 0,
-      "dy": 2000
     },
     {
       "action": "click",
@@ -165,19 +156,19 @@
     },
     {
       "action": "click",
-      "selector": ".aspect-ratio[data-index='1']"
+      "selector": ".aspect-ratio[*|data-index='1']"
     },
     {
       "action": "click",
-      "selector": ".aspect-ratio[data-index='2']"
+      "selector": ".aspect-ratio[*|data-index='2']"
     },
     {
       "action": "click",
-      "selector": ".aspect-ratio[data-index='3']"
+      "selector": ".aspect-ratio[*|data-index='3']"
     },
     {
       "action": "click",
-      "selector": ".aspect-ratio[data-index='0']"
+      "selector": ".aspect-ratio[*|data-index='0']"
     },
     {
       "action": "drag",
@@ -193,11 +184,15 @@
     },
     {
       "action": "click",
-      "selector": ".skin-property[data-property='background'] .property-option[data-value='static']"
+      "selector": ".skin-property[*|data-property='background'] .property-option[*|data-value='static']"
     },
     {
       "action": "click",
-      "selector": ".skin-property[data-property='background'] .property-option[data-value='animated']"
+      "selector": ".canvas-select[*|data-canvas-id='design'] .navigator-item-select"
+    },
+    {
+      "action": "click",
+      "selector": ".skin-property[*|data-property='background'] .property-option[*|data-value='animated']"
     },
     {
       "action": "set_editing",

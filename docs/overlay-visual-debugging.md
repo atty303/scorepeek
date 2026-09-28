@@ -31,11 +31,11 @@ Use the mixed-skin scenario to check that native editor canvases keep their own
 layout when two packages use the same CSS classes:
 
 ```text
-mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-mixed-skins.json /tmp/scorepeek-mixed-skins
+SCOREPEEK_TEST_SKIN=1 mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-mixed-skins.json /tmp/scorepeek-mixed-skins
 ```
 
 Its infinitas Selection must keep the title and artist above the chart rail while
-the Cyan System canvas is mounted. Inspect the PNGs and the `.song` rectangle;
+the alternate test skin uses the same CSS classes. Inspect the PNGs and the `.song` rectangle;
 the infinitas text column is 512 CSS pixels wide at the fixture's 544 px widget
 width. Keep generated captures outside the source tree.
 
@@ -98,8 +98,9 @@ callbacks received before that configure cannot admit the remap paint. `native_s
 records the visibility/configure/frame inputs, surface state, paint/unmap result, and renderer state
 on both sides of each lifecycle boundary.
 The skin schedule (`idle`, `next-frame`, or `after-ms`) determines when Wasm/DOM work becomes due;
-both native surface roles run due work on the next compositor frame. The included skins return
-`idle` and rely on CSS for animation, so the skin Wasm runs again when its input changes. A paint
+both native surface roles run due work on the next compositor frame. `infinitas` requests another
+render after 50 ms when its background is animated or a special RESULT state is present; otherwise
+it returns `idle` and runs again when its input changes. A paint
 resolves Blitz at most once when DOM or input state changed or Blitz reports an active animation. Repeated configure
 events with unchanged logical size, physical size and scale update no state.
 
@@ -157,19 +158,19 @@ Use captures separated by ordinary scenario interactions to inspect changing pai
 
 `tests/fixtures/visual-composition.json` supplies synthetic `canvases` (the shared presentation
 schema) rather than the normal first-run canvases. This optional scenario field does not change the
-runtime defaults. It exercises animated background selection and the S/M/L frame properties:
+runtime defaults. It exercises the infinitas background and empty-widget opacity properties:
 
 ```text
 mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-composition.json /tmp/scorepeek-composition-visual
 ```
 
 Inspect PNG alpha in game/camera/comment interiors, the chamfered opaque corners, background in
-narrow gaps, labels, fixed content rectangles across frame changes, and the manifest/layout pairs.
-Repeat with each `skin` override. OBS uses the same aperture asset route and background composition.
+narrow gaps, labels, opacity changes, and the manifest/layout pairs. OBS uses the same aperture
+asset route and background composition.
 While editing, each visible EMPTY aperture also shows compact viewport-relative
 `x,y · width×height` geometry. Confirm that it follows move and resize. In OBS these logical values
 are relative to `/overlay`; Browser Source scene transforms remain OBS-owned and are not displayed.
-In the OBS editor, add EMPTY, enter or clear TITLE, change INTERIOR OPACITY, select FRAME WIDTH and
+In the OBS editor, add EMPTY, enter or clear TITLE, change its opacity and
 ASPECT RATIO, then save/reopen and discard another change. Place an OBS source under the browser
 source to confirm that the aperture and fill expose/dim it.
 

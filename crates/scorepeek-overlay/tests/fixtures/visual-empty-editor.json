@@ -3,7 +3,7 @@
   "editing": true,
   "canvas_id": "empty-output",
   "canvases": [{
-    "id": "empty-output", "name": "Empty output", "skin": "dev.atty303.scorepeek.skin.cyan-system",
+    "id": "empty-output", "name": "Empty output", "skin": "dev.atty303.infinitas",
     "x": 500, "y": 100, "width": 640, "height": 480,
     "show_on": [], "widgets": []
   }],

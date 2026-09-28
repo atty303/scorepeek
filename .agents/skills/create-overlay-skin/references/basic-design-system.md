@@ -163,7 +163,7 @@ the recommended sizes have no per-skin exceptions.
 
 Implement this structure first in a working skin. Then change dimensions to
 fit the chosen type, material and recommended sizes. The numbers are
-**starting values**, observed in the accepted Cyan composition at its review
+**starting values**, observed in the accepted baseline composition at its review
 size, not guaranteed minimum sizes. Record every final value and adjustment
 in the skin specification. Preserve the reason in the last column when
 adjusting; prove readability at the new dimensions by rendering.
@@ -179,7 +179,7 @@ adjusting; prove readability at the new dimensions by rendering.
 | Empty | optional title over an open aperture; 300×80 in the review composition | A small empty widget proves aperture and title behavior without consuming the full review board. This review size is not a universal default or verified range. |
 | Frame | S/M/L corner sizes 21/27/34 px, edge sheets 88/112/142 px; 8 px vertical and 12 px horizontal content inset at M | A fixed-thickness frame lets the content area grow independently of material edges; every chosen frame must retain a usable content rectangle. These values describe the source composition's construction, not a mandatory frame shape. |
 
-Do not copy the Cyan frame art, font, color values or CSS when realizing this
+Do not copy another skin's frame art, font, color values or CSS when realizing this
 baseline. A different frame can satisfy the same content and spacing reasons.
 If an observed number has no demonstrated causal reason, treat it as a
 provisional starting point and decide its replacement through actual renders.
@@ -217,7 +217,7 @@ specification holds any current expression-only exception.
 The skill defines the production and verification procedure. This baseline is
 a starting layout to implement before adjusting
 for a chosen world's type and material. Numerical choices below are measured
-from the accepted Cyan composition. Where the original decision rationale
+from the accepted baseline composition. Where the original decision rationale
 cannot be established from code or rendering, the stated reason is an
 engineering constraint to test, not a claim about the original designer's intent.
 
