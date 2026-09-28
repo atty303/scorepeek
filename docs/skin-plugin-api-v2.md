@@ -14,6 +14,8 @@ The archive contains one skin and normalized relative paths. Root files `skin.to
 `skin.css`, and `preview.png` are mandatory. `preview.webm` is optional. Other files are
 package-relative resources. CSS `url('background.png')` addresses the ZIP root; `../`, absolute
 paths, remote URLs, filesystem, and network host calls are not package APIs.
+Packages have at most 256 ZIP entries, each entry may expand to at most 64 MiB,
+and all entries together may expand to at most 128 MiB.
 
 Author skin selectors under `.scorepeek-skin-scope`; the repository's CSS composition
 task adds that prefix. The browser hosts each canvas in its own iframe. Native binds
@@ -200,13 +202,15 @@ decides text padding, units, CSS values and visual treatment. These helpers do
 not change the v2 ABI or the host's supplied presentation data.
 The skin uses `backend` and `monotonic_ms` to choose its own native or browser scheduling and motion.
 
-## Local package management
+## Package management
 
 Build the repository examples with `mise run overlay:skins:build`; ZIPs are written below
-`target/skins/` and are not installed automatically. Manage any local ZIP with:
+`target/skins/` and are not installed automatically. Install a local ZIP or an HTTPS URL
+(including HTTPS redirects) with:
 
 ```text
 scorepeek skin install PATH.zip
+scorepeek skin install https://example.com/skin.zip
 scorepeek skin install --force PATH.zip
 scorepeek skin list
 scorepeek skin uninstall dev.example.skin-name

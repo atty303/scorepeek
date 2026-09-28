@@ -254,6 +254,10 @@ without executing or validating the Wasm module. The Wayland adapter owns native
 execution; the browser client executes skins in a Web Worker. Runtime failures follow each
 adapter's existing error and diagnostic path.
 
+Skin installation accepts local ZIP paths or HTTPS URLs. The runtime downloads a
+remote ZIP to a bounded temporary file before passing it through the same
+package validation and atomic activation as a local ZIP.
+
 Each installed skin is a self-contained ZIP with manifest, Wasm DOM producer,
 CSS, preview, and package-relative resources. Native executes the Wasm module
 through Wasmtime; OBS executes it in a Web Worker. The current authoring

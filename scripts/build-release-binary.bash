@@ -45,3 +45,14 @@ if [[ "$actual_version" != "scorepeek $version" ]]; then
   exit 1
 fi
 cp -- "$binary" "$output_directory/scorepeek-${version}-${target}"
+
+for manifest in skins/*/skin.toml; do
+  [[ -f "$manifest" ]] || continue
+  skin_name=$(basename "$(dirname "$manifest")")
+  skin_release=$(taplo get -f "$manifest" release)
+  if [[ ! "$skin_release" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    printf 'skin release cannot be used in an asset name: %s\n' "$manifest" >&2
+    exit 1
+  fi
+  cp -- "target/skins/$skin_name.zip" "$output_directory/$skin_name-$skin_release.zip"
+done

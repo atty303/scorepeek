@@ -138,9 +138,16 @@ Add a Browser Source in OBS with URL `http://127.0.0.1:3939/overlay` while
 Scorepeek is running. Use the Browser Source's interaction view to edit the
 layout. You can combine `--overlay-wayland` and `--overlay-obs` in one run.
 
-A new overlay has no canvases. Install a compatible skin ZIP with
-`scorepeek skin install PATH_TO_SKIN.zip`, then add a canvas and widgets in the
-editor. The executable alone does not populate an overlay layout.
+A new overlay has no canvases. Install the `infinitas` skin from the same GitHub
+Release as your executable, replacing `VERSION` with the version you chose:
+
+```sh
+scorepeek skin install https://github.com/atty303/scorepeek/releases/download/vVERSION/infinitas-2026-09-27.zip
+```
+
+Then add a canvas and widgets in the editor. The executable alone does not
+populate an overlay layout. You can also install a downloaded skin ZIP with
+`scorepeek skin install PATH_TO_SKIN.zip`.
 
 ## Check status
 

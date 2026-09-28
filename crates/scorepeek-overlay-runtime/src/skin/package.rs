@@ -15,6 +15,9 @@ pub const STYLE_PATH: &str = "skin.css";
 pub const PREVIEW_PATH: &str = "preview.png";
 pub const PREVIEW_VIDEO_PATH: &str = "preview.webm";
 pub const MAX_AFTER_MS: u64 = scorepeek_skin_sdk::MAX_AFTER_MS;
+const MAX_ZIP_ENTRIES: usize = 256;
+const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_UNCOMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Manifest {
     pub id: String,
@@ -328,7 +331,12 @@ impl Package {
             .map_err(|error| format!("open skin package {}: {error}", path.display()))?;
         let mut archive =
             ZipArchive::new(file).map_err(|error| format!("read skin ZIP: {error}"))?;
+        if archive.len() > MAX_ZIP_ENTRIES {
+            return Err("skin ZIP has too many entries".into());
+        }
         let mut entries = BTreeMap::new();
+        let mut declared_bytes = 0u64;
+        let mut actual_bytes = 0u64;
         for index in 0..archive.len() {
             let mut entry = archive
                 .by_index(index)
@@ -338,10 +346,28 @@ impl Package {
             }
             let name = entry.name().to_owned();
             validate_entry_path(&name)?;
+            if entry.size() > MAX_ENTRY_BYTES {
+                return Err(format!("skin ZIP entry {name} exceeds the size limit"));
+            }
+            declared_bytes = declared_bytes
+                .checked_add(entry.size())
+                .ok_or_else(|| "skin ZIP exceeds the total size limit".to_owned())?;
+            if declared_bytes > MAX_UNCOMPRESSED_BYTES {
+                return Err("skin ZIP exceeds the total size limit".into());
+            }
             let mut bytes = Vec::new();
-            entry
+            let remaining = MAX_UNCOMPRESSED_BYTES - actual_bytes;
+            (&mut entry)
+                .take(MAX_ENTRY_BYTES.min(remaining) + 1)
                 .read_to_end(&mut bytes)
                 .map_err(|error| format!("read skin ZIP entry {name}: {error}"))?;
+            if bytes.len() as u64 > MAX_ENTRY_BYTES {
+                return Err(format!("skin ZIP entry {name} exceeds the size limit"));
+            }
+            actual_bytes += bytes.len() as u64;
+            if actual_bytes > MAX_UNCOMPRESSED_BYTES {
+                return Err("skin ZIP exceeds the total size limit".into());
+            }
             if entries.insert(name.clone(), bytes).is_some() {
                 return Err(format!("skin ZIP contains duplicate entry {name}"));
             }
@@ -394,9 +420,13 @@ impl Package {
             .by_name(MANIFEST_PATH)
             .map_err(|error| format!("read skin ZIP entry {MANIFEST_PATH}: {error}"))?;
         let mut manifest_text = String::new();
-        entry
+        (&mut entry)
+            .take(MAX_ENTRY_BYTES + 1)
             .read_to_string(&mut manifest_text)
             .map_err(|error| format!("skin.toml is not UTF-8: {error}"))?;
+        if manifest_text.len() as u64 > MAX_ENTRY_BYTES {
+            return Err("skin.toml exceeds the size limit".into());
+        }
         toml::from_str(&manifest_text).map_err(|error| format!("skin.toml: {error}"))
     }
 
@@ -514,6 +544,34 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
+    }
+
+    #[test]
+    fn compressed_small_zip_cannot_expand_past_entry_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "scorepeek-oversized-skin-{}-{}.zip",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut archive = zip::ZipWriter::new(File::create(&path).unwrap());
+        archive
+            .start_file(
+                "oversized.bin",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        let chunk = [0u8; 8192];
+        for _ in 0..=(MAX_ENTRY_BYTES / chunk.len() as u64) {
+            archive.write_all(&chunk).unwrap();
+        }
+        archive.finish().unwrap();
+        assert!(fs::metadata(&path).unwrap().len() < 1024 * 1024);
+        assert!(Package::open(&path).unwrap_err().contains("size limit"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

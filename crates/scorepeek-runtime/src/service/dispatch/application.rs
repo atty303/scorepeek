@@ -169,7 +169,7 @@ struct DiagnosticInspectArgs {
 }
 
 enum SkinCommand {
-    Install { package: PathBuf, force: bool },
+    Install { package: String, force: bool },
     Uninstall { id: String },
     List,
 }
@@ -298,7 +298,7 @@ pub(crate) fn dispatch_frontend(
             command: PublicCommand::Skin {
                 command: match action {
                     api::SkinAction::Install { package, force } => SkinCommand::Install {
-                        package: PathBuf::from(package),
+                        package,
                         force: force.unwrap_or(false),
                     },
                     api::SkinAction::Uninstall { id } => SkinCommand::Uninstall { id },
@@ -475,7 +475,7 @@ fn run_skin_command(command: SkinCommand) -> Result<scorepeek_frontend_api::Comm
     let store = scorepeek_overlay_runtime::skin::StoreRoot::discover();
     let result = match command {
         SkinCommand::Install { package, force } => {
-            let outcome = store.install(&package, force)?;
+            let outcome = skin_install::install(&store, &package, force)?;
             let outcome = match outcome {
                 scorepeek_overlay_runtime::skin::InstallOutcome::Installed => {
                     scorepeek_frontend_api::SkinInstallResult::Installed
@@ -593,6 +593,9 @@ fn write_ndjson(output: &mut impl io::Write, value: &impl Serialize) -> Result<(
 
 #[path = "application/inventory_tools.rs"]
 mod inventory_tools;
+
+#[path = "application/skin_install.rs"]
+mod skin_install;
 
 #[allow(
     clippy::wildcard_imports,
