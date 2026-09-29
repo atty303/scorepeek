@@ -142,7 +142,7 @@ A new overlay has no canvases. Install the `infinitas` skin from the same GitHub
 Release as your executable, replacing `VERSION` with the version you chose:
 
 ```sh
-scorepeek skin install https://github.com/atty303/scorepeek/releases/download/vVERSION/infinitas-2026-09-27.zip
+scorepeek skin install https://github.com/atty303/scorepeek/releases/download/vVERSION/skin-infinitas-2026-09-27.zip
 ```
 
 Then add a canvas and widgets in the editor. The executable alone does not

@@ -54,5 +54,5 @@ for manifest in skins/*/skin.toml; do
     printf 'skin release cannot be used in an asset name: %s\n' "$manifest" >&2
     exit 1
   fi
-  cp -- "target/skins/$skin_name.zip" "$output_directory/$skin_name-$skin_release.zip"
+  cp -- "target/skins/$skin_name.zip" "$output_directory/skin-$skin_name-$skin_release.zip"
 done
