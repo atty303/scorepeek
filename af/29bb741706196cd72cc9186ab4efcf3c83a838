@@ -1,0 +1,107 @@
+Task: Portable nested Wayland integration with Scroll in rootless Podman
+Anchor: af29bb741706196cd72cc9186ab4efcf3c83a838
+Base: daa49636838a6696d986198869bfc3f686e3f7c1
+Branch: main
+Commits: af29bb7 test: run nested Scroll integration through rootless Podman
+Guidance: repository AGENTS.md; develop-repository, design-program-observability, dig, review; atty303 engineering policy
+Conditions: Linux x86-64 local Bazzite; Ubuntu 24.04 CI configured but not run remotely; no host Wayland or GPU passed; no push authorized
+## Evidence
+Pinned image: ghcr.io/atty303/arch-scroll@sha256:b5613820c8333a8dedc9e6329423db3bcca957ed0baa74365a7239f9f02b36a8.
+Local validation: mise run check; mise run test twice (779 Rust tests, 4 browser tests, nested Scroll scenario); dedicated nested task after final cleanup delta; bash -n; independent review with all findings resolved; no owned container or temp directory remains.
+Runtime diagnostic: both HEADLESS outputs configured with Vulkan llvmpipe, painted, and produced complete summaries; Scroll IPC pointer commands succeeded. CI execution remains unverified until a separately authorized push.
+Authority: latest implementation request, repository source and living documentation, repository AGENTS.md, and applicable development and review skills.
+## Transcript
+- U1: [$dig](/var/home/atty/.agents/skills/dig/SKILL.md) nested wayland testをportableにする。おそらくpodmanを起動してtestする構成がいい。compositorはscrollのままとする
+    
+  - A: Applied dig; inspected the nested Scroll script, mise task, CI, and host dependencies; asked what may remain on the host.
+- U2: C
+    
+  - A: Interpreted the host development preference and continued comparing container and host execution boundaries.
+- U3: BとCの違いは？ なるべくhostで実行したいがscrollをホスト依存が厳しすぎるのでコンテナにする目的だ。Bでホストビルド結果をコンテナにマウントして内部で実行できるならそれでいい。コンテナ内でビルドはせず、実行だけしたい
+  - A: Explained B and C as differing in where Scorepeek runs; investigated image and GPU requirements.
+- U4: A. そもそもホストのdriはhost compositorが占有しているからコンテナに渡せない
+    
+  - A: Clarified the render-node assumption and examined a no-GPU path for the requested test.
+- U5: scrollをnested modeで動かせないのか？ hostのwayland socketだけマウントすればsoftware renderにする必要もないだろう
+    
+  - A: Considered Scroll nested on host Wayland and the Wayland socket boundary; kept CI portability open.
+- U6: CIでも実行できるようにしたい。そうするとsoftware render in containerが現実的か？
+    
+  - A: Identified headless Scroll plus software Vulkan as the CI-compatible route; asked for host Scorepeek and container Scroll choice.
+- U7: A
+    
+  - A: Selected host Scorepeek and container Scroll; asked whether the scenario belongs in normal mise run test.
+- U8: A
+    
+  - A: Selected routine test and CI inclusion; investigated the pinned Scroll image.
+- U9: そのイメージはdistrobox用を意図しているがpodman経由でもscroll実行できたのか？
+    
+  - A: Probed the public Distrobox-oriented image directly with rootless Podman: headless pixman Scroll created two outputs and host Scorepeek painted both with llvmpipe; asked whether to reuse it.
+- U10: A
+    
+  - A: Selected the existing pinned image and requested final design confirmation.
+- U11: A
+    
+  - A: Completed the dig handoff with an implementation prompt covering Podman, host Scorepeek, software Vulkan, test and CI gates.
+- U12: # 実装依頼
+    
+    ## 依頼
+    
+    `/var/home/atty/src/atty303/scorepeek` の nested Wayland test を、ホストに Scroll・Wayland セッション・GPU を要求しない Podman ベースのテストに変更し、`mise run test` と既存 CI に組み込んでください。
+    
+    ## 目的
+    
+    - 開発ホストと GitHub Actions の Ubuntu 24.04 runner で、同じ Scroll を使った Wayland 統合テストを実行できるようにする。
+    - Scorepeek とスキンはホストでビルドし、コンテナでは Scroll の実行だけを行う。
+    
+    ## 成功条件
+    
+    - rootless Podman 内で Scroll が headless・pixman の 2 出力を作り、ホストで実行する Scorepeek が共有 Wayland ソケットへ接続する。ホストの Scroll、Wayland セッション、`/dev/dri` は不要。
+    - ホストの Scorepeek はソフトウェア Vulkan を使うことを診断出力で確認する。
+    - 現行シナリオの 2 出力での描画、Scroll IPC によるポインタードラッグ、入力後の再描画、両出力の complete summary、canvas failure の拒否を維持する。失敗時は原因を追えるログを出し、一時ディレクトリとコンテナを回収する。
+    - 専用の `mise` task と `mise run test` の双方から実行できる。既存 CI の PR と `main` push で `mise run test` を通じて毎回実行される。
+    - ローカルでシナリオ全体と `mise run test` を検証する。GitHub Actions 上の実走が push なしでは確認できない場合は、未検証と明示する。
+    
+    ## 決定事項
+    
+    - Scroll だけをコンテナで動かし、Scorepeek とテスト用プロセスはホストで動かす。
+      - 理由: ホストでのビルドと実行を優先でき、Scorepeek の実行時ライブラリをコンテナへ揃える必要がない。現ホストの一時プローブでは、この構成で両出力の描画を確認した。
+      - 主な棄却案: Scorepeek もコンテナで実行する案は、動的リンクの互換性と実行時依存を増やす。ホスト Wayland に nested 接続する案は、headless CI で実行できない。
+    - Scroll には既存の公開イメージ `ghcr.io/atty303/arch-scroll@sha256:b5613820c8333a8dedc9e6329423db3bcca957ed0baa74365a7239f9f02b36a8` を使う。
+      - 理由: Distrobox を介さない rootless Podman での headless・pixman 起動を確認済みで、テスト時にイメージや Scroll をビルドする必要がない。
+      - 主な棄却案: Scorepeek 専用イメージは、作成・公開・更新の管理を新たに要する。
+    - nested Wayland test を通常の `mise run test` に含める。
+      - 理由: PR と `main` push の既存 CI で毎回実行するため。
+      - 主な棄却案: opt-in のままにする案と手動 CI のみの案は、通常の CI で失敗を検出できない。
+    - Scroll は pixman、ホストの Scorepeek はソフトウェア Vulkan を使う。
+      - 理由: GPU デバイスなしで開発ホストと CI の同じ統合経路を検査するため。
+      - 主な棄却案: GPU パススルーはホスト依存を残す。
+    
+    ## 制約
+    
+    - 対象は、このリポジトリがサポートする Linux x86-64 環境と Ubuntu 24.04 CI とする。
+    - コンテナ内で Scorepeek、スキン、Scroll をビルドしない。テスト実行中に新しいイメージを作らない。
+    - Scroll 実行時にホストの Wayland ソケットや `/dev/dri` を渡さない。
+    - 既存の未コミット変更を確認して保持する。特に `/var/home/atty/src/atty303/scorepeek/scripts/test-overlay-wayland-nested.bash` の変更を上書きしない。
+    - push、イメージ公開、外部サービス変更は行わない。
+    
+    ## 対象外
+    
+    - 実 GPU、実 Wayland セッション、OBS 内での描画検証。
+    - macOS、Windows、ARM ホストへの対応。
+    - 新しい Scroll イメージの作成・公開。
+    - overlay のユーザー向け機能や描画内容の変更。
+    
+    ## 未検証の前提
+    
+    - GitHub Actions の Ubuntu 24.04 runner で、rootless Podman による共有 Wayland ソケットと固定イメージの実行が成立する。
+    - CI ホストの Mesa ソフトウェア Vulkan で、production Wayland role の全シナリオが完走する。現ホストの一時プローブでは llvmpipe で両出力が描画されたが、ポインター操作を含む全工程と CI 上の実走は未検証。
+    - ホストからコンテナ内の `scrollmsg` を操作する構成で、現行の入力検査を維持できる。
+    
+    ## 実装時の指示
+    
+    - 現行シナリオの検査内容を基準に、Scroll の設定内 `exec` に依存する起動・入力操作をホスト側のオーケストレーションへ移す。固定 sleep や検査の緩和で成功扱いにしない。
+    - ソフトウェア Vulkan の選択と使用アダプターを検査し、ハードウェア Vulkan へ暗黙に切り替わらないようにする。
+    - `/var/home/atty/src/atty303/scorepeek/docs/architecture.md`、`/var/home/atty/src/atty303/scorepeek/docs/overlay-visual-debugging.md`、`/var/home/atty/src/atty303/scorepeek/AGENTS.md` に残る「host-dependent の opt-in gate」という説明を、実装後の通常テストと CI の契約に合わせて更新する。
+    
+  - A: Implemented host-orchestrated pinned Scroll in rootless Podman, isolated socket sharing, host lavapipe, IPC and diagnostics assertions, bounded cleanup and logs, mise/CI wiring and living docs; verified dedicated and full tests, received and resolved independent review findings, and made local commit af29bb7 without push.
