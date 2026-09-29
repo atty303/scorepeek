@@ -96,6 +96,14 @@ browserTest(
     await expect(page.locator(".editor-panel")).toHaveCount(0);
     await expect(page.locator("#scorepeek-replica-canvas-1"))
       .toHaveAttribute("src", /sample=0/);
+    await expect.poll(() =>
+      page.locator("#scorepeek-replica-canvas-1").evaluate(
+        (iframe) =>
+          iframe.contentDocument?.readyState === "complete" &&
+          new URL(iframe.contentDocument.URL).searchParams.get("sample") ===
+            "0",
+      )
+    ).toBe(true);
     const frame = page.frameLocator("#scorepeek-replica-canvas-1");
     await expect(frame.locator(".status-logo")).toBeVisible();
     await expect.poll(() =>
@@ -171,6 +179,8 @@ browserTest(
       .click();
     await page.getByRole("button", { name: "Save & Close", exact: true })
       .click();
+    await expect(page.locator(".editor-panel")).toHaveCount(0);
+    await expect(page.locator("#scorepeek-replica-canvas-1")).toHaveCount(0);
 
     expect(observed.styleBatches).toBeGreaterThanOrEqual(3);
     expect(observed.sameLogo).toBe(true);
