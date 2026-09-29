@@ -1828,10 +1828,11 @@ fn socket_broadcasts_one_live_event_to_multiple_clients() {
 fn publishing_without_clients_is_healthy() {
     let temporary = tempfile::tempdir().unwrap();
     let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
-    channel.publish(wire_event(1));
-    std::thread::sleep(Duration::from_millis(40));
-    assert!(!channel.health.server_failed.load(Ordering::Acquire));
-    assert_eq!(channel.health.connected_clients.load(Ordering::Acquire), 0);
+    assert_eq!(channel.publish(wire_event(1)), "enqueued");
+    let health = Arc::clone(&channel.health);
+    drop(channel);
+    assert!(!health.server_failed.load(Ordering::Acquire));
+    assert_eq!(health.connected_clients.load(Ordering::Acquire), 0);
 }
 
 #[test]

@@ -1,25 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+wait_for() {
+  local deadline=$((SECONDS + 30))
+  until "$@"; do
+    if ((SECONDS >= deadline)); then return 1; fi
+    sleep 0.1
+  done
+}
+
+painted_both_outputs() {
+  local root=$1
+  [[ -f "$root/role.stdout" ]] || return 1
+  jq -Rc 'fromjson? | select(.operation == "native_editor_painted") | .data.output' "$root/role.stdout" | jq -es 'index("HEADLESS-1") != null and index("HEADLESS-2") != null' >/dev/null
+}
+
+paint_count() {
+  jq -Rc 'fromjson? | select(.operation == "native_editor_painted")' "$1/role.stdout" | wc -l
+}
+
+painted_after_input() {
+  (( $(paint_count "$1") > $2 ))
+}
+
 case "${1:-}" in
   --report-outputs)
-    sleep 2
-    scrollmsg -t get_outputs >"${2:?missing scenario root}/outputs.json"
+    root=${2:?missing scenario root}
+    outputs_ready() {
+      scrollmsg -t get_outputs >"$root/outputs.json" 2>/dev/null && jq -e '[.[] | .name] | index("HEADLESS-1") != null and index("HEADLESS-2") != null' "$root/outputs.json" >/dev/null
+    }
+    wait_for outputs_ready
+    : >"$root/outputs.ready"
     exit
     ;;
   --exercise-input)
     root=${2:?missing scenario root}
-    sleep 5
+    wait_for painted_both_outputs "$root"
     scrollmsg seat - cursor set 260 90 >/dev/null
     scrollmsg seat - cursor press button1 >/dev/null
     scrollmsg seat - cursor move 50 50 >/dev/null
     scrollmsg seat - cursor release button1 >/dev/null
+    before_paints=$(paint_count "$root")
+    wait_for painted_after_input "$root" "$before_paints"
     printf '%s\n' 'pointer drag injected through compositor IPC' >"$root/input.txt"
-    exit
-    ;;
-  --exit-after)
-    sleep 50
-    scrollmsg exit >/dev/null
     exit
     ;;
   --run-scenario)
@@ -50,7 +73,9 @@ case "${1:-}" in
       wait "$host_pid" || true
       exit 1
     fi
-    sleep 20
+    wait_for painted_both_outputs "$root"
+    wait_for test -s "$root/input.txt"
+    wait_for test -f "$root/outputs.ready"
     exec 3>&-
     wait "$host_pid"
     host_pid=
@@ -85,7 +110,6 @@ swaybg_command -
 exec "$repo/scripts/test-overlay-wayland-nested.bash" --run-scenario "$root" "$repo"
 exec "$repo/scripts/test-overlay-wayland-nested.bash" --report-outputs "$root"
 exec "$repo/scripts/test-overlay-wayland-nested.bash" --exercise-input "$root"
-exec "$repo/scripts/test-overlay-wayland-nested.bash" --exit-after
 EOF
 
 timeout 70s env XDG_RUNTIME_DIR="$root/runtime" WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=2 scroll -c "$root/scroll.conf" >"$root/scroll.log" 2>&1
@@ -96,4 +120,4 @@ if jq -Rc 'fromjson? | select(.operation == "native_canvas_failed")' "$root/role
   echo 'production Wayland canvas failed' >&2
   exit 1
 fi
-printf 'nested production Wayland role painted both outputs and received compositor pointer input\n'
+printf 'nested production Wayland role painted both outputs and painted again after compositor pointer injection\n'

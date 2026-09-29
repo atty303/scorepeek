@@ -693,13 +693,15 @@ mod tests {
             .get_typed_func::<(), ()>(&mut looping_store, "loop")
             .unwrap();
         let keep_compiled = Arc::clone(&compiled);
+        let (finished, result) = std::sync::mpsc::sync_channel(1);
         let timeout = std::thread::spawn(move || {
             let result = looping.call(&mut looping_store, ());
             drop(keep_compiled);
+            finished.send(result.is_err()).unwrap();
             result
         });
 
-        std::thread::sleep(Duration::from_secs(1));
+        assert!(result.recv_timeout(Duration::from_secs(3)).unwrap());
         let mut fast_store = Store::new(&compiled.engine, ());
         fast_store.set_epoch_deadline(CALL_TIMEOUT_TICKS);
         let fast_instance = Instance::new(&mut fast_store, &compiled.module, &[]).unwrap();

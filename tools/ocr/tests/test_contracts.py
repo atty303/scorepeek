@@ -145,7 +145,7 @@ class ContractTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(TrainingProcessError, "timed out"):
             run_checked(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", "import signal; signal.pause()"],
                 timeout_seconds=1,
             )
 
@@ -153,8 +153,8 @@ class ContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             child_pid_path = Path(temporary) / "child-pid"
             program = (
-                "import pathlib, subprocess; "
-                "child = subprocess.Popen(['sleep', '30']); "
+                "import pathlib, subprocess, sys; "
+                "child = subprocess.Popen([sys.executable, '-c', 'import signal; signal.pause()']); "
                 f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
                 "raise SystemExit(7)"
             )
@@ -184,7 +184,7 @@ class ContractTests(unittest.TestCase):
             side_effect=spawn_and_interrupt,
         ), self.assertRaisesRegex(TrainingProcessError, "signal"):
             run_checked(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", "import signal; signal.pause()"],
                 timeout_seconds=5,
             )
 

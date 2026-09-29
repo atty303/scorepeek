@@ -62,7 +62,18 @@ browserTest(
 
     await expect.poll(() => stageConnections).toBe(2);
     await expect(page.locator(".version-mismatch")).toBeVisible();
-    await page.waitForTimeout(750);
+    let unexpectedNavigation = false;
+    try {
+      await page.waitForEvent("framenavigated", {
+        predicate: (frame) =>
+          frame === page.mainFrame() && frame.url().includes("/overlay"),
+        timeout: 750,
+      });
+      unexpectedNavigation = true;
+    } catch (error) {
+      if (error.name !== "TimeoutError") throw error;
+    }
+    expect(unexpectedNavigation).toBe(false);
     expect(stageConnections).toBe(2);
   },
 );
@@ -85,44 +96,68 @@ browserTest(
     await expect(page.locator(".editor-panel")).toHaveCount(0);
     await expect(page.locator("#scorepeek-replica-canvas-1"))
       .toHaveAttribute("src", /sample=0/);
-    await page.waitForTimeout(500);
-
     const frame = page.frameLocator("#scorepeek-replica-canvas-1");
     await expect(frame.locator(".status-logo")).toBeVisible();
-    const observed = await frame.locator("#skin-root").evaluate(
-      async (root) => {
+    await expect.poll(() =>
+      page.locator("#scorepeek-replica-canvas-1").evaluate(
+        (iframe) => {
+          const image = iframe.contentDocument?.querySelector(".status-logo");
+          return !!image && image.complete && image.naturalWidth > 0;
+        },
+      )
+    ).toBe(true);
+    const observed = await page.locator("#scorepeek-replica-canvas-1").evaluate(
+      async (iframe) => {
+        const root = iframe.contentDocument.querySelector("#skin-root");
         const logo = root.querySelector(".status-logo");
+        await logo.decode();
         const result = {
           rootMoves: 0,
           logoMoves: 0,
-          styleChanges: 0,
+          styleBatches: 0,
           logoLoads: 0,
         };
         const onLogoLoad = () => result.logoLoads += 1;
         logo.addEventListener("load", onLogoLoad);
-        const observer = new MutationObserver((records) => {
-          for (const record of records) {
-            if (record.type === "attributes") result.styleChanges += 1;
-            if (record.target === root && record.type === "childList") {
-              result.rootMoves += record.removedNodes.length;
+        await new Promise((resolve, reject) => {
+          const observer = new MutationObserver((records) => {
+            if (records.some((record) => record.type === "attributes")) {
+              result.styleBatches += 1;
             }
-            for (const node of record.removedNodes) {
-              if (node === logo || node.contains(logo)) result.logoMoves += 1;
+            for (const record of records) {
+              if (record.target === root && record.type === "childList") {
+                result.rootMoves += record.removedNodes.length;
+              }
+              for (const node of record.removedNodes) {
+                if (node === logo || node.contains(logo)) result.logoMoves += 1;
+              }
             }
-          }
+            if (result.styleBatches >= 3) {
+              clearTimeout(deadline);
+              observer.disconnect();
+              resolve();
+            }
+          });
+          const deadline = setTimeout(() => {
+            observer.disconnect();
+            reject(
+              new Error(
+                `skin produced only ${result.styleBatches} style updates`,
+              ),
+            );
+          }, 5000);
+          observer.observe(root, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ["style"],
+          });
         });
-        observer.observe(root, {
-          subtree: true,
-          childList: true,
-          attributes: true,
-          attributeFilter: ["style"],
-        });
-        await new Promise((resolve) => setTimeout(resolve, 550));
-        observer.disconnect();
         logo.removeEventListener("load", onLogoLoad);
         return {
           ...result,
-          sameLogo: root.querySelector(".status-logo") === logo,
+          sameLogo:
+            iframe.contentDocument?.querySelector(".status-logo") === logo,
         };
       },
     );
@@ -137,7 +172,7 @@ browserTest(
     await page.getByRole("button", { name: "Save & Close", exact: true })
       .click();
 
-    expect(observed.styleChanges).toBeGreaterThan(0);
+    expect(observed.styleBatches).toBeGreaterThanOrEqual(3);
     expect(observed.sameLogo).toBe(true);
     expect(observed.rootMoves).toBe(0);
     expect(observed.logoMoves).toBe(0);
@@ -156,8 +191,10 @@ browserTest(
     const canvasConnections = [];
     let rejectedCanvasConnections = 0;
     let delayedCanvasMessages = 0;
+    let deliveredCanvasMessages = 0;
     let delayNextStageDraftReply = false;
     let delayedStageDraftReplies = 0;
+    let releaseStageDraftReply;
     const delayedStageDraftRequests = new Set();
     const stageConnections = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -238,7 +275,10 @@ browserTest(
           }
           if (envelope.type === "state") canvasStates.push(envelope.state);
         } catch { /* Ignore non-JSON messages. */ }
-        setTimeout(() => client.send(message), 250);
+        setTimeout(() => {
+          client.send(message);
+          deliveredCanvasMessages += 1;
+        }, 250);
       });
     });
     await page.routeWebSocket("**/ws/stage?**", (client) => {
@@ -277,7 +317,7 @@ browserTest(
           );
           if (delayedStageDraftRequests.delete(envelope.request_id)) {
             delayedStageDraftReplies += 1;
-            setTimeout(() => client.send(message), 500);
+            releaseStageDraftReply = () => client.send(message);
             return;
           }
         } catch { /* Ignore non-JSON messages. */ }
@@ -439,7 +479,19 @@ browserTest(
         before.x + before.width / 2 + (140 * step) / 8,
         before.y + before.height / 2 + (108 * step) / 8,
       );
-      await page.waitForTimeout(10);
+      await expect.poll(() =>
+        initialReplicaFrame.evaluate(({ start, id }) =>
+          new Set(
+            globalThis.__scorepeekTest.acceptedPresentations.slice(start).map(
+              ({ specification }) => {
+                const widget = specification.widgets.find((item) =>
+                  item.id === id
+                );
+                return JSON.stringify([widget?.x, widget?.y]);
+              },
+            ),
+          ).size, { start: presentationCountBeforeDrag, id: draggedWidgetId })
+      ).toBeGreaterThanOrEqual(step);
     }
     await page.mouse.up();
 
@@ -457,7 +509,10 @@ browserTest(
     expect(await unrelatedOtherCanvas.boundingBox()).toEqual(
       unrelatedBefore.otherCanvas,
     );
-    await page.waitForTimeout(400);
+    const canvasMessagesBeforeCheck = delayedCanvasMessages;
+    await expect.poll(() => deliveredCanvasMessages).toBeGreaterThanOrEqual(
+      canvasMessagesBeforeCheck,
+    );
     expect(await slot.boundingBox()).toEqual(expected);
     const dragUpdates = await page.evaluate(
       (start) => globalThis.__scorepeekTest.draftUpdates.slice(start),
@@ -538,7 +593,6 @@ browserTest(
         firstDragEnd.x + firstDragEnd.width / 2 + (40 * step) / 4,
         firstDragEnd.y + firstDragEnd.height / 2 + (24 * step) / 4,
       );
-      await page.waitForTimeout(10);
     }
     await page.mouse.up();
     const delayedFirstExpected = {
@@ -561,9 +615,9 @@ browserTest(
         secondDragStart.x + secondDragStart.width / 2 + (20 * step) / 4,
         secondDragStart.y + secondDragStart.height / 2 + (12 * step) / 4,
       );
-      await page.waitForTimeout(10);
     }
-    await page.waitForTimeout(600);
+    await expect.poll(() => delayedStageDraftReplies).toBe(1);
+    releaseStageDraftReply();
     await page.mouse.move(
       secondDragStart.x + secondDragStart.width / 2 + 64,
       secondDragStart.y + secondDragStart.height / 2 + 40,

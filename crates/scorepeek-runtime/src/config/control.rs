@@ -49,6 +49,8 @@ pub struct Controller {
     state: Arc<Mutex<State>>,
     worker: Option<JoinHandle<()>>,
     _config_lock: std::fs::File,
+    #[cfg(test)]
+    active_request: Arc<AtomicBool>,
 }
 
 impl Controller {
@@ -85,12 +87,22 @@ impl Controller {
             dropped_diagnostics: 0,
         }));
         let worker_state = Arc::clone(&state);
+        #[cfg(test)]
+        let active_request = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let worker_active_request = Arc::clone(&active_request);
         let worker = std::thread::Builder::new()
             .name("overlay-config-writer".into())
             .spawn(move || {
                 while !stopping.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((stream, _)) => handle(stream, &config_path, &worker_state),
+                        Ok((stream, _)) => {
+                            #[cfg(test)]
+                            worker_active_request.store(true, Ordering::Release);
+                            handle(stream, &config_path, &worker_state);
+                            #[cfg(test)]
+                            worker_active_request.store(false, Ordering::Release);
+                        }
                         Err(error) => {
                             if let Ok(mut state) = worker_state.lock() {
                                 state.observe(
@@ -112,6 +124,8 @@ impl Controller {
             state,
             worker: Some(worker),
             _config_lock: config_lock,
+            #[cfg(test)]
+            active_request,
         })
     }
 
@@ -921,7 +935,14 @@ mod tests {
         .unwrap();
         let mut stalled = UnixStream::connect(controller.path()).unwrap();
         stalled.write_all(b"{\"command\":").unwrap();
-        std::thread::sleep(Duration::from_millis(20));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !controller.active_request.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "partial request was not accepted"
+            );
+            std::thread::yield_now();
+        }
 
         let started = Instant::now();
         drop(controller);

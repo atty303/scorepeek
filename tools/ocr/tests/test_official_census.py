@@ -42,7 +42,7 @@ class OfficialCensusTests(unittest.TestCase):
     def test_decoder_process_is_bounded_by_time_and_both_streams(self) -> None:
         with self.assertRaisesRegex(OfficialCensusError, "timed out"):
             _run_bounded(
-                [sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.05
+                [sys.executable, "-c", "import signal; signal.pause()"], timeout=0.05
             )
         with self.assertRaisesRegex(OfficialCensusError, "exceeded"):
             _run_bounded(
@@ -60,12 +60,12 @@ class OfficialCensusTests(unittest.TestCase):
 
     def test_decoder_kills_term_ignoring_descendant_that_holds_pipes(self) -> None:
         child = (
-            "import signal,time; "
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(5)"
+            "import signal; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.pause()"
         )
         parent = (
-            "import subprocess,sys,time; "
-            f"subprocess.Popen([sys.executable,'-c',{child!r}]); time.sleep(0.1)"
+            "import signal,subprocess,sys; "
+            f"subprocess.Popen([sys.executable,'-c',{child!r}]); signal.pause()"
         )
         started = time.monotonic()
         with self.assertRaisesRegex(OfficialCensusError, "timed out"):
@@ -93,7 +93,7 @@ class OfficialCensusTests(unittest.TestCase):
             ) as raised,
         ):
             _run_bounded(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", "import signal; signal.pause()"],
                 timeout=0.05,
                 termination_grace=0.05,
             )
@@ -112,7 +112,7 @@ class OfficialCensusTests(unittest.TestCase):
                 raise OSError("initial cleanup failed")
             return original_terminate(process, grace)
 
-        child = "import time; time.sleep(30)"
+        child = "import signal; signal.pause()"
         parent = (
             "import subprocess,sys; "
             "subprocess.Popen("
@@ -144,8 +144,8 @@ class OfficialCensusTests(unittest.TestCase):
             return cleaned
 
         child = (
-            "import signal,time; "
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+            "import signal; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.pause()"
         )
         parent = (
             "import subprocess,sys; "
@@ -197,7 +197,7 @@ class OfficialCensusTests(unittest.TestCase):
             ) as raised,
         ):
             _run_bounded(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", "import signal; signal.pause()"],
                 timeout=0.05,
                 termination_grace=0.05,
             )
@@ -212,19 +212,26 @@ class OfficialCensusTests(unittest.TestCase):
     def test_decoder_interrupt_kills_parent_and_term_ignoring_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             pids = Path(temporary) / "pids"
+            child_ready = Path(temporary) / "child-ready"
             child = (
-                "import signal,time; "
-                "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+                "import pathlib,signal; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                f"pathlib.Path({str(child_ready)!r}).write_text('ready'); "
+                "signal.pause()"
             )
             parent = (
-                "import os,pathlib,subprocess,sys,time; "
+                "import os,pathlib,signal,subprocess,sys; "
                 f"child=subprocess.Popen([sys.executable,'-c',{child!r}]); "
                 f"pathlib.Path({str(pids)!r}).write_text(f'{{os.getpid()}} {{child.pid}}'); "
-                "time.sleep(30)"
+                "signal.pause()"
             )
 
             def interrupt(*_args: object, **_kwargs: object) -> None:
-                time.sleep(0.2)
+                deadline = time.monotonic() + 1.0
+                while not (pids.exists() and child_ready.exists()):
+                    if time.monotonic() >= deadline:
+                        self.fail("decoder processes did not become ready")
+                    time.sleep(0.01)
                 raise KeyboardInterrupt
 
             with patch.object(selectors.EpollSelector, "select", side_effect=interrupt):
@@ -259,7 +266,7 @@ class OfficialCensusTests(unittest.TestCase):
             self.assertRaisesRegex(OfficialCensusError, "interrupted by signal"),
         ):
             _run_bounded(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
+                [sys.executable, "-c", "import signal; signal.pause()"],
                 termination_grace=0.05,
             )
         self.assertEqual(len(spawned), 1)
@@ -270,8 +277,8 @@ class OfficialCensusTests(unittest.TestCase):
             for returncode in (0, 3):
                 pid_file = Path(temporary) / f"child-{returncode}"
                 child = (
-                    "import signal,time; "
-                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"
+                    "import signal; "
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.pause()"
                 )
                 parent = (
                     "import pathlib,subprocess,sys; "
@@ -431,7 +438,7 @@ class OfficialCensusTests(unittest.TestCase):
             recorder = _DiagnosticRecorder(diagnostic, 1)
             try:
                 _run_bounded(
-                    [sys.executable, "-c", "import time; time.sleep(5)"],
+                    [sys.executable, "-c", "import signal; signal.pause()"],
                     timeout=0.05,
                     termination_grace=0.05,
                 )

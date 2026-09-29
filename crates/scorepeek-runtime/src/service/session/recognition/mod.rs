@@ -847,9 +847,9 @@ mod tests {
         .unwrap();
         let mut timing = session.inspect(&frame).unwrap().timing;
         let inspection_wall_us = timing.frame_processing_wall_us;
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        timing.frame_started -= std::time::Duration::from_secs(1);
         timing.finish_wall();
-        assert!(timing.frame_processing_wall_us > inspection_wall_us);
+        assert!(timing.frame_processing_wall_us >= inspection_wall_us + 1_000_000);
     }
 
     #[test]

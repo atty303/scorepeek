@@ -341,7 +341,6 @@ fn config_result_preserves_non_utf8_paths() {
 #[test]
 fn public_run_interrupt_prioritizes_cancel_over_startup_success_and_failure() {
     use std::process::Command;
-    use std::time::Duration;
 
     const CHILD_MODE: &str = "SCOREPEEK_STARTUP_INTERRUPT_TEST_MODE";
     if let Some(mode) = std::env::var_os(CHILD_MODE) {
@@ -352,7 +351,6 @@ fn public_run_interrupt_prioritizes_cancel_over_startup_success_and_failure() {
         };
         let result = super::run_public_with_model_initializer(args, None, |_| {
             signal_hook::low_level::raise(signal_hook::consts::SIGINT).unwrap();
-            std::thread::sleep(Duration::from_millis(25));
             if mode == "success" {
                 Ok(PathBuf::from("/unused-after-interrupt"))
             } else {
@@ -401,7 +399,6 @@ fn public_run_interrupt_prioritizes_cancel_over_startup_success_and_failure() {
 #[test]
 fn output_owned_diagnostics_prioritize_interrupt_over_startup_failure() {
     use std::process::Command;
-    use std::time::Duration;
 
     const CHILD_ROOT: &str = "SCOREPEEK_OUTPUT_INTERRUPT_TEST_ROOT";
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
@@ -416,7 +413,14 @@ fn output_owned_diagnostics_prioritize_interrupt_over_startup_failure() {
         );
         let monitor = crate::platform::signal::SignalStopMonitor::start().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGINT).unwrap();
-        std::thread::sleep(Duration::from_millis(25));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !monitor.stop_requested() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "interrupt was not observed"
+            );
+            std::thread::yield_now();
+        }
         let result = super::settle_output_startup_result::<()>(
             &mut output,
             &monitor,

@@ -487,7 +487,7 @@ mod tests {
         let started = Instant::now();
         let result = SystemRunner::output_with_timeout(
             "/bin/sh",
-            &["-c", "/usr/bin/sleep 10 & wait"],
+            &["-c", "/usr/bin/sleep infinity & wait"],
             Duration::from_millis(100),
         );
 

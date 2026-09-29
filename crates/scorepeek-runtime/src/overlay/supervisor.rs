@@ -219,8 +219,8 @@ mod tests {
 
     #[test]
     fn forced_shutdown_records_the_child_exit() {
-        let child = Command::new("sh")
-            .args(["-c", "sleep 10"])
+        let child = Command::new("sleep")
+            .arg("infinity")
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();

@@ -1779,6 +1779,7 @@ mod tests {
 
     struct ParallelObserver {
         started: Arc<std::sync::Barrier>,
+        release_first: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     }
 
     impl FieldObserver for ParallelObserver {
@@ -1791,13 +1792,18 @@ mod tests {
         fn fork_outer_worker(&self) -> Option<Self> {
             Some(Self {
                 started: Arc::clone(&self.started),
+                release_first: Arc::clone(&self.release_first),
             })
         }
 
         fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
             self.started.wait();
             if input.sequence() == 1 {
-                thread::sleep(Duration::from_millis(100));
+                let (released, wake) = &*self.release_first;
+                let mut released = released.lock().unwrap();
+                while !*released {
+                    released = wake.wait(released).unwrap();
+                }
             }
             input.sequence()
         }
@@ -1806,11 +1812,13 @@ mod tests {
     #[test]
     fn parallel_outer_workers_may_finish_out_of_order_without_rebinding_results() {
         let descriptor = descriptor("parallel-outer-observer", 1);
+        let release_first = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let mut worker = FieldObserverWorker::start_for_test(
             &descriptor,
             |_| {
                 Ok::<_, ()>(ParallelObserver {
                     started: Arc::new(std::sync::Barrier::new(2)),
+                    release_first: Arc::clone(&release_first),
                 })
             },
             2,
@@ -1842,12 +1850,20 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
+        let second_before_release = second.wait(Duration::from_secs(1));
+        let first_before_release = first.poll();
+        let (released, wake) = &*release_first;
+        *released.lock().unwrap() = true;
+        wake.notify_one();
         assert!(matches!(
-            second.wait(Duration::from_secs(1)),
+            second_before_release,
             FieldObservationPoll::Ready(observation)
                 if observation.sequence() == 2 && *observation.output() == 2
         ));
-        assert!(matches!(first.poll(), FieldObservationPoll::Pending));
+        assert!(matches!(
+            first_before_release,
+            FieldObservationPoll::Pending
+        ));
         assert!(matches!(
             first.wait(Duration::from_secs(1)),
             FieldObservationPoll::Ready(observation)
