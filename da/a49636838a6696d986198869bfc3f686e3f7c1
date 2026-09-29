@@ -1,0 +1,13 @@
+Task: Investigate failing Scorepeek CI and remove fixed sleeps from tests
+Anchor: daa49636838a6696d986198869bfc3f686e3f7c1
+Base: 72400101d2e351d49b88a565511ee74309f32071
+Branch: main
+Commits: daa49636838a6696d986198869bfc3f686e3f7c1 test: wait for observable progress instead of fixed sleeps
+Guidance: Repository AGENTS.md; investigate-problem, develop-repository, review, and git-task-evidence guidance
+Conditions: Investigation started from a clean main checkout at base SHA; remote Actions run 36566239714 matched base; no push or remote CI rerun was authorized; nested Scroll scenario could not start through local Distrobox wrapper under isolated XDG_RUNTIME_DIR
+Authority: User requests in this task and current Scorepeek repository source, tests, and living documentation
+## Transcript
+- U1: CIが失敗している。調査して
+  - A: Compared remote GitHub Actions run 36566239714 with the local base SHA. Found browser regression in tests/overlay-browser.test.js where logoLoads was 1 after the observer attached; earlier run 36439721207 had the same failure. Reported the finding without editing or pushing.
+- U2: そもそもtestで固定sleepしている箇所はflakyだからすべて修正して
+  - A: Replaced blind fixed waits with image decode and observed DOM changes, browser events, readiness markers, worker signals, bounded condition polls, and indefinitely blocked timeout fixtures across browser, Rust, Wayland, and OCR tests. Independently reviewed and resolved findings. Verified mise run check, full mise run test with 779 Rust and 4 browser tests, 100 OCR tests, repeated browser tests, two targeted process-lifetime tests, shell syntax, and diff checks. Nested Scroll validation could not start because the local Distrobox wrapper lost crun container state under isolated XDG_RUNTIME_DIR. Committed locally; no push.
