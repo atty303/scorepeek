@@ -178,7 +178,7 @@ exec hk fix --all
 '''
 
 [tasks.test]
-description = "Run static checks, lint, production builds, workspace tests, Vulkan checks, and browser integration in order"
+description = "Run static checks, lint, production builds, workspace tests, Vulkan checks, browser integration, and nested Wayland"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -191,6 +191,7 @@ cargo nextest run --locked --workspace "$@"
 mise run capture:vulkan:artifact:check
 mise run browser:install
 scripts/test-overlay-browser.bash
+mise run overlay:visual:wayland:nested
 '''
 
 [tasks."capture:vulkan:artifact:check"]

@@ -278,11 +278,12 @@ the skin schedule determines when an update becomes due; both display canvases a
 run that update on the next compositor frame. The included `infinitas` skin stays idle for
 static content and requests 50 ms updates for animated backgrounds or special result states.
 
-Browser integration and fake Wayland are the routine overlay completion gates.
-The checked-in nested compositor scenario is an opt-in host-dependent gate. Real OBS or a live
-compositor is used when an adapter-specific failure needs investigation, not as
-a standing gate for every editor or skin change. The reproducible procedures
-are in [overlay visual debugging](overlay-visual-debugging.md).
+Browser integration, fake Wayland and the Podman-hosted nested Scroll scenario run through
+`mise run test` in local development and CI. The nested scenario uses headless pixman
+outputs and host software Vulkan; it requires rootless Podman, not a host Wayland session
+or GPU. Real OBS or a live compositor is used when an adapter-specific failure needs
+investigation. The reproducible procedures are in
+[overlay visual debugging](overlay-visual-debugging.md).
 
 ## Diagnostics and private corpus
 

@@ -135,7 +135,8 @@
   `docs/overlay-visual-debugging.md` for scenario actions and artifact semantics.
 - Compare native and browser images manually to find unsupported native CSS or paint differences;
   pixel equality is not an acceptance condition. Browser integration, fake Wayland and the checked-in
-  nested compositor scenario are the routine completion gates. Use actual Wayland composition/input
+  Podman-hosted nested Scroll scenario run through `mise run test` as routine completion gates.
+  Use actual Wayland composition/input
   or rendering inside OBS when investigating an adapter-specific failure or when the user explicitly
   requests a live check; they are not standing gates for every overlay change.
 - Keep operations against live Bazzite, Gamescope, OBS, or GPU state as

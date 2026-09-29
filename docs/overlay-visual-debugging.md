@@ -39,19 +39,24 @@ the alternate test skin uses the same CSS classes. Inspect the PNGs and the `.so
 the infinitas text column is 512 CSS pixels wide at the fixture's 544 px widget
 width. Keep generated captures outside the source tree.
 
-The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz. An
-external fixture starts the production private Wayland role with one status canvas on each output
-under an isolated home and XDG state. The harness injects a pointer drag through Scroll IPC,
-checks that the role reports complete paint summaries for both outputs, and rejects canvas failures:
+The checked-in bounded nested scenario runs Scroll in rootless Podman using the pinned
+`arch-scroll` image. Scroll creates two headless pixman outputs at 120 and 60 Hz in an
+isolated shared runtime directory; no host Wayland session or GPU device is needed.
+An external fixture starts the host-built production private Wayland role with one status canvas
+on each output under an isolated home and XDG state. The host uses Mesa software Vulkan and
+checks the reported backend and adapter. The harness injects a pointer drag through Scroll IPC,
+checks for a subsequent paint and complete summaries for both outputs, and rejects canvas failures:
 
 ```text
 mise run overlay:visual:wayland:nested
 ```
 
-This host-dependent scenario is intentionally outside `mise run test`. The routine lifecycle,
-revision, input and retained-resource oracle remains the fake-Wayland integration test. The
-nested harness keeps stdout, stderr and compositor logs until its assertions finish and prints
-them on failure.
+This scenario is part of `mise run test` and the existing PR and main-push CI job.
+On Linux x86-64 it requires rootless Podman, `jq`, and Mesa's lavapipe ICD; the test
+builds Scorepeek and skins on the host and only runs Scroll in the container. The routine
+lifecycle, revision, input and retained-resource oracle also runs in the fake-Wayland
+integration test. The nested harness keeps stdout, stderr and compositor logs until its
+assertions finish, prints them on failure, and removes its container and temporary directory.
 
 The native child emits timestamped `native_startup_timing` records for shell connection, renderer
 creation, application initialization and first paint. `elapsed_us` is measured from that surface
@@ -138,8 +143,8 @@ Also exercise output navigation, UNKNOWN preview, add/delete/undo, save/reopen a
 these cover state transitions that a single drag does not.
 
 Native and browser images are evidence for human or Codex comparison; pixel equality is not an
-acceptance condition. Browser integration and fake Wayland are routine checks. Use the opt-in
-nested compositor scenario or actual Wayland or OBS when investigating a backend-specific failure.
+acceptance condition. Browser integration, fake Wayland and the nested Scroll scenario are routine
+checks. Use actual Wayland or OBS when investigating a backend-specific failure.
 
 For motion comparisons, an `advance_animation` visual action with `seconds` resolves native CSS at
 that animation time and captures the result. Set browser animation `currentTime` to the same value
