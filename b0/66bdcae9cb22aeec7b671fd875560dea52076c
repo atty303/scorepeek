@@ -1,0 +1,14 @@
+Task: Fix failing browser integration in CI
+Anchor: b066bdcae9cb22aeec7b671fd875560dea52076c
+Base: 72d8694c2e092ed06c45eb5c14df9e64ebe3d640
+Branch: main
+Commits: b066bdc test: await browser canvas persistence between scenarios
+Guidance: repository AGENTS.md; investigate-problem, develop-repository, and review skills; failure oracle and Git task evidence references
+Conditions: user requested CI repair; rootless Podman nested Scroll task already committed locally; no push authorized; Ubuntu 24.04 GitHub Actions execution awaits push
+## Evidence
+GitHub Actions run 36593832367 on af29bb7 failed browser test fourth scenario before nested Scroll; tests/overlay-browser.test.js:362 timed out waiting for canvas-2:status-1:x. Reproduced the same selector failure locally under one CPU and observed leftover canvas-1 plus canvases 2 and 3 from the following scenario. The preceding scenario returned after Save & Close without awaiting persisted deletion. Initial repair passed that selector locally; a second intermittent old-iframe animation observer race motivated waiting for the loaded sample=0 iframe document.
+After repair, scripts/test-overlay-browser.bash passed 4/4 and mise run test passed repository checks, 779 Rust tests, 4 browser tests, and nested Scroll headless pixman with software Vulkan. Independent read-only review found no actionable issues. No remote run on the repair SHA was possible without push.
+Authority: latest user request, repository source and living documentation, repository AGENTS.md, and applicable investigation, development, and review skills.
+## Transcript
+- U1: ciが失敗している。修正して
+  - A: Inspected the latest failing GitHub Actions run and compared its SHA with the local branch; reproduced the browser selector timeout, observed leaked canvas state from the prior scenario, added completion checks for iframe transition and saved canvas deletion, passed the browser suite and full mise run test, obtained independent review, and committed locally without push.
