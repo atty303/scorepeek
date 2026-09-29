@@ -1,0 +1,15 @@
+Task: Prefix future GitHub Release skin asset filenames with skin-
+Anchor: 72400101d2e351d49b88a565511ee74309f32071
+Base: 759741b2fda12bc9e7bf99a9890dbfaaa3c39f9c
+Branch: main
+Commits: 7240010 fix(release): prefix skin asset filenames
+Guidance: AGENTS.md; develop-repository; review; git-task-evidence
+Conditions: Clean starting tree; main matched origin/main; no push or existing-release edit authorized; v2026.9.6 already published with the old asset name
+## Evidence
+- mise run release:build for 2026.9.7 in an agent-owned temporary directory produced scorepeek-2026.9.7-x86_64-unknown-linux-gnu and skin-infinitas-2026-09-27.zip; cmp confirmed the prefixed asset is byte-identical to target/skins/infinitas.zip.
+- Changed-file mise check, bash syntax check, git diff --check, and independent release-workflow review passed.
+Authority: User request; repository AGENTS.md; current release build script and README
+## Transcript
+- U1:
+    releaseするskinはファイル名にskin- prefixをつけて
+  - A: Updated release output filename and matching README URL, verified a temporary release build and ZIP identity, obtained independent review with no findings, and committed locally; did not push or edit published releases.
