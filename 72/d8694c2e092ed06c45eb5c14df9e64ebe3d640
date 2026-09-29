@@ -1,0 +1,15 @@
+Task: Manage nested Wayland test jq through repository mise
+Anchor: 72d8694c2e092ed06c45eb5c14df9e64ebe3d640
+Base: af29bb741706196cd72cc9186ab4efcf3c83a838
+Branch: main
+Commits: 72d8694 build: manage jq with mise
+Guidance: repository AGENTS.md; develop-repository and review skills; atty303 engineering policy
+Conditions: explicit jq management request; no push requested; local Linux x86-64; remote CI not run in this cycle
+## Evidence
+mise lock jq generated seven platform entries; mise install --locked jq succeeded; mise exec resolved jq-1.8.2 from the repository tool path.
+mise run check and mise run overlay:visual:wayland:nested passed; independent review had no actionable findings; CI apt jq removed.
+Authority: latest user request, repository source and living documentation, repository AGENTS.md, and applicable development and review skills.
+## Transcript
+- U1: jqはmise管理にして
+    
+  - A: Added jq 1.8.2 to mise.toml and generated mise.lock with checksums and provenance; removed apt jq from CI; updated the nested test documentation; installed the locked tool, verified its path/version, passed repository checks and the dedicated nested test, completed independent review, and committed locally without push.
