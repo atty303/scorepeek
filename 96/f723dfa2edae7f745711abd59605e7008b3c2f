@@ -1,0 +1,13 @@
+Task: Allow available host Vulkan drivers in the nested Wayland test
+Anchor: 96f723dfa2edae7f745711abd59605e7008b3c2f
+Base: 259085221ffc60ccdbdda07a8ddb18f3f8455b37
+Branch: main
+Commits: 96f723d removes the lavapipe loader filter and documents available-driver behavior
+Guidance: AGENTS.md; develop-repository, investigate-problem, and independent review skills
+Conditions: Local Linux x86-64 host; no push authorization; Git signing agent failed, so commit is unsigned; GitHub Actions on this commit was not run
+## Evidence
+`mise run check`, `mise run overlay:visual:wayland:nested`, and `mise run test` passed locally. The full test included 779 Rust tests, four browser tests, and the nested Scroll scenario. Nested diagnostics reported Vulkan llvmpipe on both outputs. Independent read-only review of diff SHA256 0cf265174e11564131235513016be5d0d651e72ae2753275cceba0d1c19f2fe8 had no findings.
+Authority: Current user correction, AGENTS.md, committed scripts and docs, and local test results
+## Transcript
+- U1: そもそもvulkanはsoftwareでもテストが動くことが目的でsoftware強制をしたいわけじゃない。gpuが使われてもテストに関係ないだろ？　シンプルなセットアップにしたい
+  - A: Confirmed the software-only filter was stricter than the requested test contract. Removed VK_LOADER_DRIVERS_SELECT and related environment overrides from the host Scorepeek launch, retained reported backend and adapter as diagnostic output, and updated architecture and visual-debugging docs. Verified shell syntax, diff, dedicated nested scenario, repository check, and complete test. Fresh independent review found no actionable defect. Committed locally as 96f723d without a signature after the signing agent failed; did not push, and CI on this commit remains unverified.
