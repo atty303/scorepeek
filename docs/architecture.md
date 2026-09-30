@@ -280,9 +280,10 @@ static content and requests 50 ms updates for animated backgrounds or special re
 
 Browser integration, fake Wayland and the Podman-hosted nested Scroll scenario run through
 `mise run test` in local development and CI. The nested scenario uses headless pixman
-outputs and host software Vulkan; it requires rootless Podman, not a host Wayland session
-or GPU. Real OBS or a live compositor is used when an adapter-specific failure needs
-investigation. The reproducible procedures are in
+outputs and an available host Vulkan driver. It requires rootless Podman and does not
+require a host Wayland session or GPU. CI installs Mesa's software driver to provide
+Vulkan on GPU-less runners. Real OBS or a live compositor is used when an adapter-specific
+failure needs investigation. The reproducible procedures are in
 [overlay visual debugging](overlay-visual-debugging.md).
 
 ## Diagnostics and private corpus

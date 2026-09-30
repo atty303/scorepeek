@@ -11,7 +11,6 @@ root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-nested-wayland.XXXXXX")
 container=scorepeek-nested-wayland-${root##*.}
 runtime=$root/runtime
 container_runtime=/tmp/scorepeek-runtime
-vulkan_driver_filter='*lvp*'
 host_pid=
 
 cleanup() {
@@ -101,7 +100,6 @@ report_renderer() {
 
 mkdir "$runtime"
 chmod 700 "$runtime"
-printf 'Vulkan loader driver filter: %s\n' "$vulkan_driver_filter"
 if ! command -v podman >/dev/null || ! command -v jq >/dev/null; then
   printf 'nested Wayland test requires podman and jq\n' >&2
   exit 1
@@ -129,9 +127,7 @@ wait_for 'Scroll Wayland socket, IPC and two outputs' scroll_ready
 
 mkfifo "$root/stop"
 exec 3<>"$root/stop"
-env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES \
-  XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-1 \
-  VK_LOADER_DRIVERS_SELECT="$vulkan_driver_filter" \
+XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-1 \
   SCOREPEEK_PREBUILT_SKINS=1 SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 \
   "$repo/scripts/with-isolated-skins.sh" deno run -A "$repo/scripts/overlay-fixture-host.deno.js" \
   "$root" 127.0.0.1:0 - "$root/overlay.toml" wayland \

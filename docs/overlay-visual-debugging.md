@@ -43,17 +43,18 @@ The checked-in bounded nested scenario runs Scroll in rootless Podman using the 
 `arch-scroll` image. Scroll creates two headless pixman outputs at 120 and 60 Hz in an
 isolated shared runtime directory; no host Wayland session or GPU device is needed.
 An external fixture starts the host-built production private Wayland role with one status canvas
-on each output under an isolated home and XDG state. The host selects Mesa software Vulkan
-through the Vulkan loader's driver filter and prints the reported backend and adapter for inspection.
-The harness injects a pointer drag through Scroll IPC,
-checks for a subsequent paint and complete summaries for both outputs, and rejects canvas failures:
+on each output under an isolated home and XDG state. The host uses an available Vulkan driver
+and prints the reported backend and adapter for inspection. CI installs Mesa's software driver
+so the scenario also runs without a GPU. The harness injects a pointer drag through
+Scroll IPC, checks for a subsequent paint and complete summaries for both outputs,
+and rejects canvas failures:
 
 ```text
 mise run overlay:visual:wayland:nested
 ```
 
 This scenario is part of `mise run test` and the existing PR and main-push CI job.
-On Linux x86-64 it requires rootless Podman and Mesa's lavapipe ICD; mise provides `jq`. The test
+On Linux x86-64 it requires rootless Podman and a Vulkan driver; mise provides `jq`. The test
 builds Scorepeek and skins on the host and only runs Scroll in the container. The routine
 lifecycle, revision, input and retained-resource oracle also runs in the fake-Wayland
 integration test. The nested harness keeps stdout, stderr and compositor logs until its
