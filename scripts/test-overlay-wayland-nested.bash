@@ -11,7 +11,7 @@ root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-nested-wayland.XXXXXX")
 container=scorepeek-nested-wayland-${root##*.}
 runtime=$root/runtime
 container_runtime=/tmp/scorepeek-runtime
-icd=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+icd=
 host_pid=
 
 cleanup() {
@@ -101,10 +101,17 @@ software_vulkan_on_both_outputs() {
 
 mkdir "$runtime"
 chmod 700 "$runtime"
-if [[ ! -f "$icd" ]]; then
-  printf 'Mesa software Vulkan ICD missing: %s\n' "$icd" >&2
+for candidate in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.x86_64.json; do
+  if [[ -f "$candidate" ]]; then
+    icd=$candidate
+    break
+  fi
+done
+if [[ -z "$icd" ]]; then
+  printf 'Mesa software Vulkan ICD missing (lvp_icd.json or lvp_icd.x86_64.json)\n' >&2
   exit 1
 fi
+printf 'Mesa software Vulkan ICD: %s\n' "$icd"
 if ! command -v podman >/dev/null || ! command -v jq >/dev/null; then
   printf 'nested Wayland test requires podman and jq\n' >&2
   exit 1
