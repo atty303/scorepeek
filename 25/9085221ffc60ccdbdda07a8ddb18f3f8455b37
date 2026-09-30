@@ -1,0 +1,18 @@
+Task: Make nested renderer diagnostics observational and remove fixed ICD path dependency
+Anchor: 259085221ffc60ccdbdda07a8ddb18f3f8455b37
+Base: 006f777220af69bf17554ff462dd907a15c4241f
+Branch: main
+Commits: 2590852 test: report nested renderer without asserting adapter identity
+Guidance: repository AGENTS.md; investigate-problem, develop-repository, design-program-observability, and review skills; failure oracle and Git task evidence references
+Conditions: user clarified diagnostic confirmation must not be a renderer string assertion; same host Scorepeek and container Scroll scope; no push authorized; host SSH signing agent unavailable, so local commit is unsigned
+## Evidence
+The previous nested harness asserted surface_configured gpu_backend == Vulkan and gpu_adapter name matching llvmpipe or lavapipe, while also pinning VK_DRIVER_FILES and VK_ICD_FILENAMES to distribution-specific manifest paths. Khronos Vulkan Loader documents VK_LOADER_DRIVERS_SELECT glob filtering of discovered manifest filenames since loader 1.3.234; Ubuntu 24.04 has a newer loader. Current script filters to *lvp* with inherited driver-file overrides removed, then prints backend and adapter diagnostics without asserting their string values.
+After the change, bash -n, git diff --check, mise run check, the dedicated nested scenario, and mise run test passed locally: 779 Rust tests, 4 browser tests, and Scroll on both outputs with pointer repaint. Local diagnostic output reported Vulkan llvmpipe on HEADLESS-1 and HEADLESS-2. Independent read-only review found no actionable issues. No new GitHub Actions run was triggered.
+Authority: latest user corrections, repository source and living documentation, repository AGENTS.md, and applicable development and review skills.
+## Transcript
+- U1: いや、それ確認であってassertは意図していないが。不必要なassertにより逆にポータビリティが失われてるだろ
+  - A: No agent action; the turn was interrupted before work began.
+- U2: いや、それ確認であってassertは意図していないが。不必要なassertにより逆にポータビリティが失われてるだろ
+  - A: Rechecked source and user-confirmed contract; replaced the test's backend and adapter string assertion with diagnostic reporting while retaining paint, input, summary and failure oracles; updated living documentation.
+- U3: lvp_icd.json配置への依存はなんのためだ？
+  - A: Explained the old path pin prevented hardware fallback; checked Khronos loader filter support, replaced fixed manifest paths with VK_LOADER_DRIVERS_SELECT=*lvp*, verified the dedicated and full tests, obtained independent review, and committed locally without push after signing failed.
