@@ -1,0 +1,16 @@
+Task: Repair nested Wayland CI failure on Ubuntu 24.04
+Anchor: 006f777220af69bf17554ff462dd907a15c4241f
+Base: b066bdcae9cb22aeec7b671fd875560dea52076c
+Branch: main
+Commits: 006f777 test: locate Mesa lavapipe ICD on Ubuntu runners
+Guidance: repository AGENTS.md; investigate-problem, develop-repository, design-program-observability, and review skills; failure oracle and Git task evidence references
+Conditions: user requested CI repair; no push authorized; local Linux x86-64 development host and Ubuntu 24.04 CI; host 1Password SSH agent unavailable during commit signing, so this local commit is unsigned
+## Evidence
+GitHub Actions run 36656972468 job 109703292614 on b066bdc passed 779 Rust and 4 browser tests, then nested failed before Scroll startup: Mesa software Vulkan ICD missing at /usr/share/vulkan/icd.d/lvp_icd.x86_64.json. The CI apt log installed mesa-vulkan-drivers 25.2.8-0ubuntu0.24.04.2. The exact amd64 package from archive.ubuntu.com contains /usr/share/vulkan/icd.d/lvp_icd.json and libvulkan_lvp.so. The development host has the architecture-suffixed manifest.
+The script now selects either lavapipe manifest, passes only that path to VK_DRIVER_FILES and VK_ICD_FILENAMES, retains both-output software adapter assertions, and reports the selected path. bash -n, git diff --check, mise run check, the dedicated nested scenario, and mise run test passed locally (779 Rust, 4 browser, nested Scroll). Independent read-only review found no actionable findings. Remote CI on the repair SHA remains unverified without a push.
+Authority: latest user request, repository source and living documentation, repository AGENTS.md, and applicable investigation, development, observability, and review skills.
+## Transcript
+- U1: ciがnestedで失敗してる。修正して
+  - A: Inspected the new remote CI run and compared its SHA with the checkout; verified the Ubuntu Mesa package payload against the failing fixed path; added lavapipe manifest selection and selected-path output; passed local checks, the dedicated nested scenario, and full mise run test; obtained independent review; committed locally without push after the host signing agent failed.
+- U2: なんでテストがvulkan実装をassertしてるの？
+  - A: Explained that the user-confirmed success criterion requires diagnostic proof of host Scorepeek software Vulkan and that the check prevents an implicit hardware adapter fallback; kept the assertion while fixing only the ICD manifest filename portability.
