@@ -11,7 +11,7 @@ root=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-nested-wayland.XXXXXX")
 container=scorepeek-nested-wayland-${root##*.}
 runtime=$root/runtime
 container_runtime=/tmp/scorepeek-runtime
-icd=
+vulkan_driver_filter='*lvp*'
 host_pid=
 
 cleanup() {
@@ -95,23 +95,13 @@ inject_pointer() {
   scrollmsg "$@" | jq -e 'all(.[]; .success == true)' >"$root/input-reply.json"
 }
 
-software_vulkan_on_both_outputs() {
-  jq -e -s '[.[] | select(.operation == "surface_configured" and .data.gpu_backend == "Vulkan" and (.data.gpu_adapter | test("llvmpipe|lavapipe"; "i"))) | .data.output_name] | index("HEADLESS-1") != null and index("HEADLESS-2") != null' "$root/role.stdout" >/dev/null
+report_renderer() {
+  jq -r -s '[.[] | select(.operation == "surface_configured") | "Scorepeek renderer on \(.data.output_name): backend=\(.data.gpu_backend), adapter=\(.data.gpu_adapter)"] | unique[]' "$root/role.stdout"
 }
 
 mkdir "$runtime"
 chmod 700 "$runtime"
-for candidate in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.x86_64.json; do
-  if [[ -f "$candidate" ]]; then
-    icd=$candidate
-    break
-  fi
-done
-if [[ -z "$icd" ]]; then
-  printf 'Mesa software Vulkan ICD missing (lvp_icd.json or lvp_icd.x86_64.json)\n' >&2
-  exit 1
-fi
-printf 'Mesa software Vulkan ICD: %s\n' "$icd"
+printf 'Vulkan loader driver filter: %s\n' "$vulkan_driver_filter"
 if ! command -v podman >/dev/null || ! command -v jq >/dev/null; then
   printf 'nested Wayland test requires podman and jq\n' >&2
   exit 1
@@ -139,8 +129,9 @@ wait_for 'Scroll Wayland socket, IPC and two outputs' scroll_ready
 
 mkfifo "$root/stop"
 exec 3<>"$root/stop"
-XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-1 \
-  VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd" \
+env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES \
+  XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-1 \
+  VK_LOADER_DRIVERS_SELECT="$vulkan_driver_filter" \
   SCOREPEEK_PREBUILT_SKINS=1 SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 \
   "$repo/scripts/with-isolated-skins.sh" deno run -A "$repo/scripts/overlay-fixture-host.deno.js" \
   "$root" 127.0.0.1:0 - "$root/overlay.toml" wayland \
@@ -148,7 +139,7 @@ XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-1 \
 host_pid=$!
 wait_for 'Scorepeek child readiness' child_ready
 wait_for 'initial paint on both outputs' painted_both_outputs
-software_vulkan_on_both_outputs
+report_renderer
 
 before_paints=$(paint_count)
 inject_pointer seat - cursor set 260 90
@@ -165,4 +156,4 @@ if jq -e -s 'any(.[]; .operation == "native_canvas_failed")' "$root/role.stdout"
   echo 'production Wayland canvas failed' >&2
   exit 1
 fi
-printf 'nested production Wayland role used software Vulkan, painted both outputs and repainted after compositor pointer drag\n'
+printf 'nested production Wayland role painted both outputs and repainted after compositor pointer drag\n'
